@@ -41,6 +41,9 @@ CI_OUT=""
 CI_IN_PLACE=0
 CI_REUSE_COPY=0
 CI_STRICT_CONTRACTS=0
+# Warning policy: 0 = engine WARNING lines are surfaced and counted but do not
+# fail a check (default); 1 = any WARNING line fails (--strict-warnings).
+CI_STRICT_WARNINGS=0
 
 ci_usage() {
 	cat <<'EOF'
@@ -58,6 +61,10 @@ Global options:
                      scratch copy. This writes the project's .godot/ import
                      cache; do not use it on a shared checkout.
   --reuse-copy       Keep an existing scratch copy instead of re-copying
+  --strict-contracts  Treat `pending` content-contract entries as failures
+  --strict-warnings   Fail a check when the engine log contains a WARNING line
+                      that is not listed in tools/ci/warnings.allow (default:
+                      warnings are surfaced and counted, not fatal)
   --timeout <sec>    Wall-clock limit per engine invocation (default 300)
   --source-sha <sha> Record the source revision under test in the report
   --no-color         Disable ANSI colour
@@ -73,6 +80,10 @@ Commands:
   test [--list] [--filter <substr>] [--require-tests]
                           Run the discovered headless checks; prove that a
                           deliberately failing check exits nonzero (M0.4).
+                          Every check is judged on its exit status AND on its
+                          captured engine log: a runtime error that leaves the
+                          engine running (exit 0) fails the check, exactly as
+                          tools/smoke/run_boot_smoke.sh does.
   capture --check | --list | --probe | --target <res://path>
                           Deterministic movie capture (AVI) driver. The requested
                           resolution is applied to the scratch copy's viewport
@@ -91,7 +102,7 @@ Commands:
 
 Environment:
   GODOT_BIN, GODOT_TEMPLATES_DIR, ROADSTORM_SOURCE_SHA, NO_COLOR,
-  CI_TIMEOUT_DEFAULT
+  CI_TIMEOUT_DEFAULT, CI_STRICT_WARNINGS
 
 Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run.
 EOF
@@ -150,6 +161,10 @@ while [ $# -gt 0 ]; do
 			;;
 		--strict-contracts)
 			CI_STRICT_CONTRACTS=1
+			shift
+			;;
+		--strict-warnings)
+			CI_STRICT_WARNINGS=1
 			shift
 			;;
 		--timeout)
@@ -582,7 +597,8 @@ cmd_validate() {
 ci_tooling_selfcheck() {
 	# Scoped result variable: a plain _rc here would clobber the caller's.
 	_self_rc="$CI_OK"
-	for _f in "$CI_TOOLS_DIR/ci.sh" "$CI_TOOLS_DIR/lib/common.sh"; do
+	for _f in "$CI_TOOLS_DIR/ci.sh" "$CI_TOOLS_DIR/lib/common.sh" \
+		"$CI_TOOLS_DIR/scripts/runtime_error_gate.sh"; do
 		if [ -x "$_f" ]; then
 			ci_ok "executable: $(ci_relpath "$_f")"
 		else
@@ -591,7 +607,7 @@ ci_tooling_selfcheck() {
 		fi
 	done
 	for _f in "$CI_TOOLS_DIR/scripts/"*.gd "$CI_TOOLS_DIR/pin/engine.txt" "$CI_TOOLS_DIR/contracts.list" \
-		"$CI_TOOLS_DIR/tests/run_tests.sh"; do
+		"$CI_TOOLS_DIR/warnings.allow" "$CI_TOOLS_DIR/tests/run_tests.sh"; do
 		if [ -f "$_f" ]; then
 			ci_ok "present: $(ci_relpath "$_f")"
 		else
@@ -696,6 +712,13 @@ CI_TEST_LIST=""
 CI_TEST_RUN=0
 CI_TEST_PASS=0
 CI_TEST_FAIL=0
+# Engine WARNING lines seen across the discovered checks: total, and how many of
+# them are not in tools/ci/warnings.allow. Both are reported, so a run that
+# printed warnings is never reported as an unqualified pass (Opus recheck
+# finding R7') and a warning the project has accepted is visibly accepted
+# rather than quietly dropped.
+CI_TEST_WARN=0
+CI_TEST_WARN_UNEXPECTED=0
 
 cmd_test() {
 	_list_only=0
@@ -751,7 +774,10 @@ EOF
 	ci_step "exit-code proof (PLAN.md M0.4)"
 	ci_exit_code_proof
 
-	ci_report "test result=$([ "$CI_TEST_FAIL" -eq 0 ] && [ "$CI_TEST_RUN" -gt 0 ] && printf pass || printf fail) run=$CI_TEST_RUN pass=$CI_TEST_PASS fail=$CI_TEST_FAIL"
+	if [ "$CI_TEST_WARN" -gt 0 ]; then
+		ci_warn "$CI_TEST_WARN engine warning line(s) across $CI_TEST_RUN check(s), $CI_TEST_WARN_UNEXPECTED of them not accepted in $CI_WARNINGS_ALLOW; surfaced, not fatal (use --strict-warnings to fail on unexpected ones)"
+	fi
+	ci_report "test result=$([ "$CI_TEST_FAIL" -eq 0 ] && [ "$CI_TEST_RUN" -gt 0 ] && printf pass || printf fail) run=$CI_TEST_RUN pass=$CI_TEST_PASS fail=$CI_TEST_FAIL warnings=$CI_TEST_WARN unexpected_warnings=$CI_TEST_WARN_UNEXPECTED strict_warnings=$CI_STRICT_WARNINGS"
 	if [ "$CI_TEST_FAIL" -gt 0 ]; then
 		ci_fail "test: FAIL ($CI_TEST_FAIL of $CI_TEST_RUN check(s) failed)"
 		return "$CI_FAIL"
@@ -790,6 +816,23 @@ ci_discover_tests() {
 	CI_TEST_LIST="$(cat "$_list_file" 2>/dev/null)"
 }
 
+# ci_run_one_test : run one discovered headless check and judge it.
+#
+# Three independent signals decide the verdict, because the pinned engine exits 0
+# for a script that throws at runtime (Opus recheck finding N1):
+#   1. the exit status;
+#   2. the captured engine log, gated on error lines exactly as the supported
+#      wrapper tools/smoke/run_boot_smoke.sh gates it;
+#   3. Jolt physics warnings in that log, which mean the physics step ignored
+#      contacts or fell back to a slower allocator (finding R7').
+# Signal 2 is what makes `ci.sh test` at least as strong as the wrapper: a
+# runtime error in any boot script (a missing dictionary key, push_error(), ...)
+# leaves the shell running, so the exit code alone reports a pass.
+#
+# Engine WARNING lines that do not name Jolt are surfaced and counted, never
+# silent, and are fatal only with --strict-warnings (see ci_log_warning_gate).
+# The exit-code proof is untouched: a deliberately failing check must still exit
+# nonzero.
 ci_run_one_test() {
 	_test="$1"
 	_res="$(ci_res_path "$_test")"
@@ -827,19 +870,59 @@ ci_run_one_test() {
 	esac
 	CI_RUN_TIMEOUT=""
 
-	if [ "$CI_LAST_EXIT" -eq 0 ]; then
-		ci_ok "PASS: $_res"
-		CI_TEST_PASS=$((CI_TEST_PASS + 1))
-		ci_report "check=$_res result=pass"
-	else
+	# Signal 1: the exit status.
+	if [ "$CI_LAST_EXIT" -ne 0 ]; then
 		ci_fail "FAIL: $_res exited $CI_LAST_EXIT"
-		grep -E '^(ERROR|SCRIPT ERROR|FATAL):' "$CI_LAST_LOG" 2>/dev/null | tail -n 20 | sed 's/^/    /'
+		ci_log_error_lines "$CI_LAST_LOG" | tail -n 20 | sed 's/^/    /'
 		CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
-		ci_report "check=$_res result=fail exit=$CI_LAST_EXIT"
+		ci_count_check_warnings "$CI_LAST_LOG"
+		ci_report "check=$_res result=fail exit=$CI_LAST_EXIT errors=$(ci_log_error_count "$CI_LAST_LOG") warnings=$(ci_log_warning_count "$CI_LAST_LOG") unexpected_warnings=$(ci_log_unexpected_warning_count "$CI_LAST_LOG") jolt_warnings=$(ci_log_jolt_warning_count "$CI_LAST_LOG")"
+		ci_log_warning_gate "$CI_LAST_LOG" "$_res" || CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
+		return "$CI_OK"
 	fi
+
+	# Signal 2: engine error lines in the captured log. The exit status was 0, so
+	# this is the only remaining signal that the check really ran clean.
 	_errs="$(ci_log_error_count "$CI_LAST_LOG")"
-	[ "$_errs" != "0" ] && ci_warn "$_errs engine error line(s) in the log for $_res (informational)"
+	if [ "$_errs" != "0" ]; then
+		ci_fail "FAIL: $_res exited 0 but the engine reported $_errs error line(s); the check did not fail on a runtime error"
+		ci_log_error_lines "$CI_LAST_LOG" | tail -n 20 | sed 's/^/    /'
+		CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
+		ci_count_check_warnings "$CI_LAST_LOG"
+		ci_report "check=$_res result=fail exit=0 reason=engine-errors errors=$_errs warnings=$(ci_log_warning_count "$CI_LAST_LOG") unexpected_warnings=$(ci_log_unexpected_warning_count "$CI_LAST_LOG") jolt_warnings=$(ci_log_jolt_warning_count "$CI_LAST_LOG")"
+		ci_log_warning_gate "$CI_LAST_LOG" "$_res" || CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
+		return "$CI_OK"
+	fi
+
+	# Signal 3, before the pass is recorded: a Jolt warning is a physics result,
+	# not noise (see ci_log_jolt_warning_lines for the five shapes the pinned
+	# engine emits), so it turns an exit-0 check into a failure.
+	_jolt="$(ci_log_jolt_warning_count "$CI_LAST_LOG")"
+	if [ "$_jolt" != "0" ]; then
+		ci_fail "FAIL: $_res reported $_jolt Jolt physics warning line(s); the engine ignores contacts or falls back to a slower allocator when these appear"
+		ci_log_jolt_warning_lines "$CI_LAST_LOG" | sed 's/^/    /'
+		CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
+		ci_count_check_warnings "$CI_LAST_LOG"
+		ci_report "check=$_res result=fail exit=0 reason=jolt-warning errors=0 warnings=$(ci_log_warning_count "$CI_LAST_LOG") unexpected_warnings=$(ci_log_unexpected_warning_count "$CI_LAST_LOG") jolt_warnings=$_jolt"
+		return "$CI_OK"
+	fi
+
+	ci_ok "PASS: $_res"
+	CI_TEST_PASS=$((CI_TEST_PASS + 1))
+	ci_count_check_warnings "$CI_LAST_LOG"
+	ci_report "check=$_res result=pass exit=0 errors=0 warnings=$(ci_log_warning_count "$CI_LAST_LOG") unexpected_warnings=$(ci_log_unexpected_warning_count "$CI_LAST_LOG") jolt_warnings=0"
+	ci_log_warning_gate "$CI_LAST_LOG" "$_res" || CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
 	return "$CI_OK"
+}
+
+# ci_count_check_warnings <logfile> : add one check's warning lines to the
+# stage totals used in the report.
+ci_count_check_warnings() {
+	_w="$(ci_log_warning_count "$1")"
+	_u="$(ci_log_unexpected_warning_count "$1")"
+	[ "$_w" != "0" ] && CI_TEST_WARN=$((CI_TEST_WARN + _w))
+	[ "$_u" != "0" ] && CI_TEST_WARN_UNEXPECTED=$((CI_TEST_WARN_UNEXPECTED + _u))
+	return 0
 }
 
 ci_exit_code_proof() {
@@ -1128,10 +1211,12 @@ ci_capture_run() {
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
-# Required native targets from docs/TECHNICAL_DESIGN.md ("Packaging and
-# operations"): macOS Apple Silicon, Windows x86-64, Linux x86-64.
-CI_EXPORT_PLATFORMS="macOS Windows Linux"
-
+# The required native targets (docs/TECHNICAL_DESIGN.md "Packaging and
+# operations") and their Godot preset `platform=` values live in
+# lib/common.sh: CI_EXPORT_PLATFORMS, ci_preset_platform_for and
+# ci_preset_platform_coverage. The names differ from the preset values
+# ("Windows" is platform="Windows Desktop" in export_presets.cfg), so the
+# coverage check must go through the mapping rather than compare directly.
 cmd_export() {
 	_sub="${1:-}"
 	[ -n "$_sub" ] && shift
@@ -1212,14 +1297,10 @@ ci_export_check() {
 		else
 			ci_ok "export presets: $(printf '%s\n' "$_presets" | grep -c .) preset(s) declared"
 			printf '%s\n' "$_presets" | sed 's/^/    /'
-			for _platform in $CI_EXPORT_PLATFORMS; do
-				if printf '%s\n' "$_presets" | cut -f3 | grep -qx "$_platform"; then
-					ci_ok "preset platform covered: $_platform"
-				else
-					ci_fail "preset platform missing: $_platform"
-					_rc="$CI_FAIL"
-				fi
-			done
+			# Map each required target to the platform value Godot writes in a
+			# preset before looking for it, so a covered target is not reported
+			# missing ("Windows" -> platform="Windows Desktop").
+			ci_preset_platform_coverage "$_cfg" || _rc="$CI_FAIL"
 		fi
 	fi
 
@@ -1238,22 +1319,6 @@ ci_export_list() {
 		--format | names) printf '%s\n' "$_presets" | cut -f2 ;;
 		*) printf '%s\n' "$_presets" ;;
 	esac
-}
-
-ci_preset_table() {
-	_cfg="$1"
-	awk '
-		/^\[/ {
-			if (inpreset) printf "%s\t%s\t%s\n", idx, name, platform
-			inpreset = ($0 ~ /^\[preset\.[0-9]+\]$/)
-			idx = ""; name = ""; platform = ""
-			if (inpreset) { idx = $0; sub(/^\[/, "", idx); sub(/\]$/, "", idx) }
-			next
-		}
-		inpreset && /^name=/ { v = $0; sub(/^name="/, "", v); sub(/"$/, "", v); name = v }
-		inpreset && /^platform=/ { v = $0; sub(/^platform="/, "", v); sub(/"$/, "", v); platform = v }
-		END { if (inpreset) printf "%s\t%s\t%s\n", idx, name, platform }
-	' "$_cfg" 2>/dev/null
 }
 
 ci_export_build() {

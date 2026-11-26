@@ -111,8 +111,63 @@ jobs:
       - name: Validate - pin, settings, resource/script scan (T01)
         run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" validate
 
-      - name: Test - headless checks and exit-code proof (M0.4)
+      # M0.4 plus Opus recheck finding N1: the deliberately failing probe must
+      # exit nonzero, and every discovered check is judged on its exit status AND
+      # on its captured engine log, so a runtime error in a boot script (a
+      # missing dictionary key, push_error(), ...) fails here exactly as the
+      # supported wrapper tools/smoke/run_boot_smoke.sh fails, instead of being
+      # reported as "(informational)".
+      - name: Test - headless checks, exit-code proof and engine-error gate (M0.4)
         run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" test
+
+      # Regression proof for that gate (N1), and for the warning handling behind
+      # R7'. It runs the same engine against throwaway snapshot copies in a
+      # private temporary directory, injects the defects there, and checks the
+      # ACTUAL exit status of `ci.sh test` each time. It is bounded twice over
+      # (per engine invocation and per case) and touches nothing in the checkout.
+      - name: Runtime-error gate regression (N1/R7)
+        shell: bash
+        env:
+          GODOT_BIN: ${{ steps.godot.outputs.bin }}
+        run: |
+          set -euo pipefail
+          tools/ci/scripts/runtime_error_gate.sh
+
+      # Warning watch. Every WARNING line the checks printed is written to the
+      # run summary -- printed, never filtered -- and a warning that names the
+      # physics backend fails the job: the pinned engine emits exactly five Jolt
+      # warnings and every one means contacts were ignored or a slower allocator
+      # was used, so a run that printed one must not be reported as a clean pass
+      # (the open R7 item is the job-system one). Warnings that do not name Jolt
+      # are reported, not fatal; the ones the project has accepted live in
+      # tools/ci/warnings.allow and are labelled as accepted in the output.
+      - name: Warning watch - surface engine warnings, fail on physics ones (R7)
+        shell: bash
+        run: |
+          set -uo pipefail
+          warnings="$(grep -rhE '^(WARNING|USER WARNING):' tools/ci/out/logs/ 2>/dev/null | sort -u || true)"
+          jolt="$(printf '%s\n' "$warnings" | grep -i 'jolt' || true)"
+          {
+            echo "### Engine warnings"
+            echo ""
+            if [ -z "$warnings" ]; then
+              echo "No \`WARNING:\` lines in the captured engine logs."
+            else
+              echo '```'
+              printf '%s\n' "$warnings"
+              echo '```'
+              echo ""
+              echo "Warnings the project has accepted are listed in"
+              echo "\`tools/ci/warnings.allow\`; they are still printed on every run"
+              echo "rather than filtered out."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$jolt" ]; then
+            echo "::error::a Jolt physics warning appeared in the engine logs. The pinned engine's Jolt warnings all mean contacts were ignored or a slower allocator was used, so this run is not a clean pass."
+            printf '%s\n' "$jolt"
+            exit 1
+          fi
+          echo "No physics-backend (Jolt) warnings in the captured engine logs."
 
       # Asset validation (PLAN.md M0.5). The validator is owned by
       # tools/asset_manifest/**; CI runs it when it is present and fails
@@ -225,9 +280,16 @@ jobs:
           mkdir -p build
           tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --list-presets |
             while IFS=$'\t' read -r section name platform; do
+              # The platform column is the value Godot writes in
+              # export_presets.cfg, so the Windows target is "Windows
+              # Desktop", not "Windows" -- the same mapping
+              # `ci.sh export --check` applies through
+              # ci_preset_platform_for (tools/ci/lib/common.sh). Matching the
+              # requirement name here would build the Windows preset with a
+              # .pck extension.
               case "$platform" in
                 macOS) ext="zip" ;;
-                Windows) ext="exe" ;;
+                "Windows Desktop") ext="exe" ;;
                 Linux) ext="" ;;
                 *) ext="pck" ;;
               esac

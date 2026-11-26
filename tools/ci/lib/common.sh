@@ -20,6 +20,19 @@ CI_FAIL=1
 CI_USAGE=2
 
 # ---------------------------------------------------------------------------
+# Warning policy. 0 = engine WARNING lines are surfaced and counted but do not
+# fail a check (the default: a warning is not an error, and the accepted ones
+# are recorded in tools/ci/warnings.allow rather than hidden); 1 = an unexpected
+# WARNING line fails the check (--strict-warnings, or CI_STRICT_WARNINGS=1 in
+# the environment).
+# ---------------------------------------------------------------------------
+CI_STRICT_WARNINGS="${CI_STRICT_WARNINGS:-0}"
+case "$CI_STRICT_WARNINGS" in
+0 | 1) : ;;
+*) CI_STRICT_WARNINGS=0 ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
 CI_C_RESET=""
@@ -141,10 +154,143 @@ ci_run_godot() {
 # engine errors. Verified against the pinned engine: a scene referencing a
 # missing script still loads and instantiates (exit 0) while printing
 # "ERROR: ..." lines, so log inspection is the only reliable signal.
+#
+# The pattern deliberately covers the same shapes as the supported smoke
+# wrapper tools/smoke/run_boot_smoke.sh, because Opus recheck finding N1 is
+# exactly that a bare `--script` run reports these as informational while the
+# wrapper fails on them. Measured against the pinned engine
+# 4.7.2.stable.official.ed1daf0bf:
+#   SCRIPT ERROR: Invalid access to property or key 'missing_key' ...
+#   ERROR: Failed to load script "res://..." with error "Parse error".
+#   ERROR: injected runtime error ...      <- push_error() from GDScript
+# USER ERROR: is kept for parity with the wrapper even though push_error() was
+# measured to print the plain "ERROR:" prefix on this build.
 ci_log_error_lines() {
 	_file="$1"
 	[ -f "$_file" ] || return 0
-	grep -nE '^(ERROR|SCRIPT ERROR|FATAL):' "$_file" 2>/dev/null
+	grep -nE '^(ERROR|SCRIPT ERROR|FATAL|USER ERROR):|^Failed to load script|^Parse Error' "$_file" 2>/dev/null
+}
+
+# ci_log_warning_lines <logfile>
+# Prints engine warning lines, with the same anchoring rule as the error lines
+# above. Warnings are not errors: the pinned engine prints them for conditions
+# that do not fail a check, and this project already emits a benign one
+# (measured: "WARNING: Detected another project.godot at
+# res://tools/tick_probe." during a headless --import). They are surfaced and
+# counted on every run anyway, because the open R7 item is precisely a warning
+# that used to pass unnoticed ("Jolt Physics job system exceeded the maximum
+# number of jobs ...").
+ci_log_warning_lines() {
+	_file="$1"
+	[ -f "$_file" ] || return 0
+	grep -nE '^(WARNING|USER WARNING):' "$_file" 2>/dev/null
+}
+
+# ci_warning_allow_file : the accepted-warning list (tools/ci/**), or empty
+# when the tooling is relocated without it. An accepted warning is still
+# printed on every run; it is recorded here rather than hidden, so a reviewer
+# can see what the project has decided to live with.
+CI_WARNINGS_ALLOW="warnings.allow"
+ci_warning_allow_file() {
+	if [ -n "${CI_TOOLS_DIR:-}" ] && [ -f "$CI_TOOLS_DIR/$CI_WARNINGS_ALLOW" ]; then
+		printf '%s\n' "$CI_TOOLS_DIR/$CI_WARNINGS_ALLOW"
+	fi
+}
+
+# ci_warning_is_accepted <log-line> : true when the line matches an entry in
+# the accepted-warning list. Entries are POSIX EREs; `#` starts a comment. A
+# pattern may match the line exactly as this tooling prints it (with the
+# `grep -n` line-number prefix) or the engine's own message without that prefix,
+# so the list reads the way the engine printed the warning.
+ci_warning_is_accepted() {
+	_file="$(ci_warning_allow_file)"
+	[ -n "$_file" ] || return 1
+	_message="$(printf '%s\n' "$1" | sed 's/^[[:space:]]*[0-9]\{1,\}://')"
+	while IFS= read -r _pattern || [ -n "$_pattern" ]; do
+		case "$_pattern" in
+			'' | \#*) continue ;;
+		esac
+		if printf '%s\n' "$1" | grep -qE "$_pattern" 2>/dev/null; then
+			return 0
+		fi
+		if printf '%s\n' "$_message" | grep -qE "$_pattern" 2>/dev/null; then
+			return 0
+		fi
+	done <"$_file"
+	return 1
+}
+
+# ci_log_unexpected_warning_lines <logfile> : warning lines that are NOT in the
+# accepted list. These are the ones strict mode fails on.
+ci_log_unexpected_warning_lines() {
+	ci_log_warning_lines "$1" | while IFS= read -r _line || [ -n "$_line" ]; do
+		ci_warning_is_accepted "$_line" || printf '%s\n' "$_line"
+	done
+}
+
+# ci_log_warning_count <logfile> : number of warning lines, normalised.
+ci_log_warning_count() {
+	ci_log_warning_lines "$1" | ci_count_lines
+}
+
+# ci_log_unexpected_warning_count <logfile>
+ci_log_unexpected_warning_count() {
+	ci_log_unexpected_warning_lines "$1" | ci_count_lines
+}
+
+# ci_log_jolt_warning_lines <logfile>
+# The unexpected WARNING lines that name the Jolt physics backend. Verified
+# against the pinned engine (4.7.2.stable.official.ed1daf0bf): it emits exactly
+# five of them, and every one reports a simulation limit being exceeded --
+#   "Jolt Physics job system exceeded the maximum number of jobs ..." (the open
+#   R7 item), "manifold cache exceeded capacity and contacts were ignored",
+#   "body pair cache exceeded capacity and contacts were ignored",
+#   "contact constraint buffer exceeded capacity and contacts were ignored",
+#   "temporary memory allocator exceeded capacity ... Falling back to slower
+#   general-purpose allocator".
+# None is informational: each one means the physics step ignored contacts or
+# fell back to a slower allocator, so a run that printed one must not be
+# reported as a clean pass (Opus recheck finding R7'). A Jolt warning the
+# project has decided to accept belongs in tools/ci/warnings.allow, which keeps
+# the acceptance explicit instead of hidden.
+ci_log_jolt_warning_lines() {
+	ci_log_unexpected_warning_lines "$1" | grep -i 'jolt' 2>/dev/null
+}
+
+# ci_log_jolt_warning_count <logfile>
+ci_log_jolt_warning_count() {
+	ci_log_jolt_warning_lines "$1" | ci_count_lines
+}
+
+# ci_log_warning_gate <logfile> [context]
+# Surfaces engine warnings: never silent, and fatal only when strict warnings
+# are requested (--strict-warnings / CI_STRICT_WARNINGS=1). Strict is opt-in
+# because a warning is not an error: failing a check for a warning the project
+# has not decided about would be failing for the wrong reason, which is the
+# defect this tooling avoids elsewhere. Every warning line is printed either
+# way, and the ones the project has accepted are labelled as accepted, so a
+# warning can be tolerated without being invisible.
+ci_log_warning_gate() {
+	_file="$1"
+	_context="${2:-}"
+	_total="$(ci_log_warning_count "$_file")"
+	[ "$_total" = "0" ] && return "$CI_OK"
+	_unexpected="$(ci_log_unexpected_warning_count "$_file")"
+	_accepted=$((_total - _unexpected))
+	_note=""
+	[ "$_accepted" -gt 0 ] && _note=" ($_accepted accepted in $CI_WARNINGS_ALLOW)"
+	if [ "${CI_STRICT_WARNINGS:-0}" -eq 1 ] && [ "$_unexpected" != "0" ]; then
+		ci_fail "$_unexpected unexpected engine warning line(s) in $(ci_relpath "$_file")${_context:+ ($_context)}; strict warnings are on:$_note"
+		ci_log_unexpected_warning_lines "$_file" | sed 's/^/    /'
+		return "$CI_FAIL"
+	fi
+	if [ "${CI_STRICT_WARNINGS:-0}" -eq 1 ]; then
+		ci_warn "$_total engine warning line(s) in $(ci_relpath "$_file")${_context:+ ($_context)}; all accepted:$_note"
+	else
+		ci_warn "$_total engine warning line(s) in $(ci_relpath "$_file")${_context:+ ($_context)} (surfaced, not fatal; --strict-warnings fails on unexpected ones):$_note"
+	fi
+	ci_log_warning_lines "$_file" | sed 's/^/    /'
+	return "$CI_OK"
 }
 
 # ci_count_lines <stdin-text> : number of non-empty lines, normalised to a
@@ -486,6 +632,10 @@ ci_prepare_copy() {
 		return "$CI_FAIL"
 	fi
 	ci_ok "import: no engine errors in the scratch copy"
+	# Warnings are surfaced here too, so the one this project is known to emit
+	# (the nested tools/tick_probe/project.godot) is visible on every run rather
+	# than only when someone greps the log by hand. Fatal only in strict mode.
+	ci_log_warning_gate "$CI_LAST_LOG" "headless import" || return "$CI_FAIL"
 	return "$CI_OK"
 }
 
@@ -551,6 +701,82 @@ ci_set_project_viewport_size() {
 		return "$CI_FAIL"
 	}
 	return "$CI_OK"
+}
+
+# ---------------------------------------------------------------------------
+# Export presets (export_presets.cfg)
+# ---------------------------------------------------------------------------
+# The required native targets from docs/TECHNICAL_DESIGN.md ("Packaging and
+# operations"): macOS Apple Silicon, Windows x86-64, Linux x86-64. These are the
+# plan's short names for those targets.
+CI_EXPORT_PLATFORMS="macOS Windows Linux"
+
+# ci_preset_table <export_presets.cfg> : prints one
+# "<preset.N>\t<name>\t<platform>" line per [preset.N] section, with the name
+# and platform exactly as written in the file (empty when a key is absent).
+# Variables are prefixed so calling it never clobbers the caller's state.
+ci_preset_table() {
+	_tbl_cfg="$1"
+	[ -f "$_tbl_cfg" ] || return 1
+	awk '
+		/^\[/ {
+			if (inpreset) printf "%s\t%s\t%s\n", idx, name, platform
+			inpreset = ($0 ~ /^\[preset\.[0-9]+\]$/)
+			idx = ""; name = ""; platform = ""
+			if (inpreset) { idx = $0; sub(/^\[/, "", idx); sub(/\]$/, "", idx) }
+			next
+		}
+		inpreset && /^name=/ { v = $0; sub(/^name="/, "", v); sub(/"$/, "", v); name = v }
+		inpreset && /^platform=/ { v = $0; sub(/^platform="/, "", v); sub(/"$/, "", v); platform = v }
+		END { if (inpreset) printf "%s\t%s\t%s\n", idx, name, platform }
+	' "$_tbl_cfg" 2>/dev/null
+}
+
+# ci_preset_platform_for <requirement> : prints the value Godot writes in a
+# preset's `platform=` line for that required target; fails for an unknown
+# requirement.
+#
+# The requirement names are the plan's; the preset values are Godot's, and they
+# are NOT the same strings. Comparing a requirement against the preset file
+# directly reported a covered platform as missing: Godot writes
+# `platform="Windows Desktop"` for the Windows desktop target, not
+# `platform="Windows"` ("Windows" names the template files
+# windows_<mode>_x86_64.exe and the CI platform list, never a preset). The
+# false "preset platform missing: Windows" that mapping fixes is why this
+# function exists instead of a direct string comparison.
+ci_preset_platform_for() {
+	case "$1" in
+		macOS) printf 'macOS\n' ;;
+		Windows) printf 'Windows Desktop\n' ;;
+		Linux) printf 'Linux\n' ;;
+		*) return 1 ;;
+	esac
+	return 0
+}
+
+# ci_preset_platform_coverage <export_presets.cfg> : verifies every required
+# native target has a preset whose platform value maps to it. Prints one
+# ci_ok/ci_fail line per requirement and returns CI_OK/CI_FAIL, so a preset
+# declared with a platform Godot does not use (or a missing preset) fails
+# instead of being waved through.
+#
+# Every variable is prefixed (_cov_*): a plain _rc here would clobber the
+# caller's result -- which is how a template failure earlier in
+# `ci.sh export --check` could be forgotten by the time it returns.
+ci_preset_platform_coverage() {
+	_cov_cfg="$1"
+	_cov_rc="$CI_OK"
+	_cov_table="$(ci_preset_table "$_cov_cfg" 2>/dev/null)"
+	for _cov_req in $CI_EXPORT_PLATFORMS; do
+		_cov_want="$(ci_preset_platform_for "$_cov_req")"
+		if printf '%s\n' "$_cov_table" | cut -f3 | grep -qxF -- "$_cov_want"; then
+			ci_ok "preset platform covered: $_cov_req (platform=\"$_cov_want\")"
+		else
+			ci_fail "preset platform missing: $_cov_req (no preset with platform=\"$_cov_want\")"
+			_cov_rc="$CI_FAIL"
+		fi
+	done
+	return "$_cov_rc"
 }
 
 # ci_is_positive_int <value> : true for a non-empty run of digits that is not

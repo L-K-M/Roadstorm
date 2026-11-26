@@ -21,7 +21,8 @@ tools/ci/ci.sh commands
 | --- | --- |
 | Godot editor | **4.7.2 Standard**, the version pinned in `pin/engine.txt` (PLAN.md M0.1). Found via `$GODOT_BIN`, then `godot`/`godot4`/`Godot` on `PATH`, then common install locations. |
 | Shell | Any POSIX `/bin/sh` (dash, bash, ash, busybox). No bashisms; verified under `dash`. |
-| Everything else | `tar`, `grep`, `sed`, `awk`, `find`, `sort`, `head`, `date`, `uname`. Python is **not** required by this tooling. |
+| Everything else | `tar`, `grep`, `sed`, `awk`, `find`, `sort`, `head`, `date`, `uname`. |
+| Python 3 | **Not** required by `ci.sh` itself. `scripts/runtime_error_gate.sh` needs `python3` to inject the GDScript faults into its snapshot copies (the same dependency `tools/smoke/fault_injection.sh` and `tools/asset_manifest/` already have); without it, that one script exits 2 and the rest of the tooling is unaffected. |
 
 Set `GODOT_BIN=/path/to/godot` when the engine is not on `PATH`. Set
 `GODOT_TEMPLATES_DIR` when the export templates live outside the usual Godot
@@ -144,9 +145,11 @@ never reported as a pass.
    present, and nothing under `tools/ci/out` is tracked by Git.
 5. **Tooling self-test** (`tests/run_tests.sh`): the tooling's own shell layer —
    pin parsing, digest comparison, the capture viewport override, the
-   recorded-resolution probe and the argument validation. Hermetic: no network,
-   no engine, no display, no Git. Both directions are covered, so a check that
-   stops checking fails the suite instead of passing silently.
+   recorded-resolution probe, the argument validation, and the engine-log gates
+   (error shapes, warning counting, the accepted-warning list, the strict and
+   Jolt warning behaviour). Hermetic: no network, no engine, no display, no Git.
+   Both directions are covered, so a check that stops checking fails the suite
+   instead of passing silently.
 5. **Content-contract inventory** (`contracts.list`): reports which planned
    content paths exist. This is an **inventory, not validation** — content
    validation (T09/T15) is not implemented and is not claimed. Entries marked
@@ -156,8 +159,58 @@ never reported as a pass.
 Every engine invocation is additionally gated on its captured log: the pinned
 engine **exits 0** even when a script fails to compile or a scene references a
 missing resource, so `ci_log_gate` fails the run when the log contains
-`ERROR:`/`SCRIPT ERROR:`/`FATAL:` lines. That behaviour was measured against
-4.7.2 while building this tooling.
+`ERROR:`/`SCRIPT ERROR:`/`FATAL:`/`USER ERROR:` lines, or one starting with
+`Failed to load script` or `Parse Error`. That behaviour was measured against
+4.7.2 while building this tooling; the extra shapes were added for parity with
+the supported smoke wrapper (finding N1).
+
+### The `test` stage judges the log as well as the exit code
+
+`ci_run_one_test` uses three independent signals, because the pinned engine
+exits 0 for a script that throws at runtime — an exception inside `_ready()`
+leaves the shell running, so the exit status alone reports a pass. That is Opus
+recheck finding N1: CI ran `tools/smoke/boot_smoke.gd` directly with `--script`,
+judged only the exit status, and passed a tree where the supported wrapper
+`tools/smoke/run_boot_smoke.sh` failed.
+
+1. **the exit status** — as before;
+2. **engine error lines in the captured log**, using the same shapes the wrapper
+   documents (`SCRIPT ERROR`, `Failed to load script`, `Parse Error`, `ERROR:`,
+   `USER ERROR:`). A check that exits 0 while the engine reported an error line
+   fails with `reason=engine-errors`;
+3. **Jolt physics warnings**, which mean the physics step ignored contacts or
+   fell back to a slower allocator — see *Engine warnings* below.
+
+`tools/ci/scripts/runtime_error_gate.sh` proves these signals on every run: it
+injects a missing dictionary key, a `push_error()` and a Jolt warning into
+throwaway snapshot copies and requires `ci.sh test` to exit nonzero for each.
+See *The runtime-error gate* below.
+
+There is deliberately **no allow-list for error lines**: an engine error line
+fails the check, because the shapes it matches are the ones the supported
+wrapper fails on and none of them is expected output from a healthy run. A
+warning is a different matter — see the next section.
+
+The exit-code proof is unchanged and still runs on every pass: a deliberately
+failing probe must exit nonzero (PLAN.md M0.4).
+
+### Engine warnings
+
+`WARNING:` lines are **surfaced and counted on every run** — printed, never
+filtered — because the open R7 item is exactly a warning that used to pass
+unnoticed. Three levels:
+
+| situation | behaviour |
+| --- | --- |
+| any warning | printed, and counted in the report as `warnings=` / `unexpected_warnings=` |
+| a warning the project has accepted, listed in `tools/ci/warnings.allow` | printed and labelled `(N accepted in warnings.allow)`; never fatal, even with `--strict-warnings` |
+| an unexpected warning | not fatal by default; fatal with `--strict-warnings` (or `CI_STRICT_WARNINGS=1`) |
+| a warning that names **Jolt** | **fatal**: the pinned engine emits exactly five Jolt warnings and every one means contacts were ignored or a slower allocator was used, so a run that printed one is not a clean pass |
+
+Strict warnings are opt-in because a warning is not an error, and failing a check
+for a warning the project has not decided about would be failing for the wrong
+reason. The acceptance list is the supported escape hatch, and it records the
+decision instead of hiding the output.
 
 ## Test discovery
 
@@ -176,6 +229,47 @@ success or `quit(nonzero)` on failure — the same shape as the existing
 
 `tests/` does not exist yet, so `test` currently runs the existing smoke runner
 and reports that no further checks are discovered. It never invents a pass.
+
+### The runtime-error gate
+
+`tools/ci/scripts/runtime_error_gate.sh` is the regression proof for these
+signals, and for the warning handling. It is engine-backed but needs no
+network, no Git and no display, and it runs entirely against throwaway snapshot
+copies of the checkout (no `.git`, no `.godot`, no `work/`, no previous
+`tools/ci/out`) in a private temporary directory with its own `HOME`, `TMPDIR`
+and XDG tree. Every case checks the **actual exit status** of `ci.sh test`, and
+the failure reason is asserted too, so a case cannot pass for an unrelated
+reason:
+
+| case | injected defect | expected `ci.sh test` exit |
+| --- | --- | --- |
+| clean snapshot | — | 0, and the exit-code proof still ran |
+| missing dictionary key in `_ready()` | `get_node_or_null("NoSuchNode")["missing_key"]` | 1 |
+| `push_error()` in `_ready()` | `push_error("…")` | 1 |
+| `push_warning()` in `_ready()` | `push_warning("…")` | 0, **and the warning is printed** |
+| `push_warning()` with `--strict-warnings` | `push_warning("…")` | 1 |
+| a Jolt physics warning | the real `Jolt Physics job system exceeded …` message | 1 |
+
+Both injected runtime errors are deliberate: the script still parses, the scene
+still loads, the boot handoff still completes and the engine exits 0, so only
+the log shows them. The `push_warning()` cases are the negative control — they
+show the gate fails on engine errors rather than on any stderr output.
+
+Isolation is verified, not assumed: fingerprints of `src/boot/`, `scenes/` and
+`project.godot` are taken before and after, and the harness fails if anything in
+the live checkout changed or if a `.godot/` cache appeared in it. Runs are
+bounded twice over — `--timeout` per engine invocation and a wall-clock watchdog
+per case.
+
+```sh
+tools/ci/scripts/runtime_error_gate.sh
+GODOT_BIN=/path/to/godot tools/ci/scripts/runtime_error_gate.sh
+GATE_TARGET_SCRIPT=src/boot/main_menu.gd tools/ci/scripts/runtime_error_gate.sh
+GATE_TIMEOUT=180 GATE_CASE_TIMEOUT=1200 tools/ci/scripts/runtime_error_gate.sh
+```
+
+Exit codes: 0 = every case behaved as expected, 1 = a case misbehaved, 2 = the
+harness could not run.
 
 ### The exit-code proof
 
@@ -236,11 +330,19 @@ required platforms (macOS Apple Silicon, Windows x86-64, Linux x86-64 per
 docs/TECHNICAL_DESIGN.md), and that `export_presets.cfg` declares a preset for
 each of them.
 
-**There is no `export_presets.cfg` in this checkout**, so `export --check` fails
-with the remediation text, and `export --list-presets`/`--export` refuse to run.
-That is deliberate: native export preparation is not implemented yet
-(PLAN.md M0.5/M9.1), and this tooling will not claim an export it cannot
-perform. Add the presets, then re-run the check.
+The requirement names are the plan's; the preset values are Godot's, and they
+differ: the Windows desktop target is `platform="Windows Desktop"` in
+`export_presets.cfg`, not `platform="Windows"` ("Windows" names the template
+files and the platform list). `ci_preset_platform_for` in `lib/common.sh` holds
+that mapping, so a covered target is never reported as missing — and a preset
+written with a value Godot does not use (`platform="Windows"`, a missing
+`platform=` line, a dropped preset) still fails the check. The mapping and the
+coverage decision are pinned by regression cases in `tests/run_tests.sh`.
+
+The presets in this checkout are honest M0 placeholders: ad-hoc signed,
+unnotarized, and cross-exported (only the macOS package is launched here).
+`export --check` passing means the presets and templates are in place, nothing
+more.
 
 A successful `--export` produces a **local package**, not a verified release:
 launching it on each target OS (M9.2) and signing/notarization (M9.3) are
@@ -292,9 +394,12 @@ generation-service account:
 - **checks** — resolve the pinned engine (`GODOT_BIN` when the runner has one,
   otherwise the official release asset for the pinned tag, **verified against the
   pinned publisher digest before extraction and before execution**), then
-  `doctor`, `import`, `validate` (which includes the tooling self-test), `test`,
-  asset manifest validation, and a report-only `capture --check` (a GitHub-hosted
-  runner has no display). Logs and reports are uploaded as an artifact.
+  `doctor`, `import`, `validate` (which includes the tooling self-test), `test`
+  (exit-code proof **and** the engine-error gate), the runtime-error gate
+  regression, a warning watch that surfaces every `WARNING:` line in the run
+  summary and fails on a Jolt physics warning, asset manifest validation, and a
+  report-only `capture --check` (a GitHub-hosted runner has no display). Logs and
+  reports are uploaded as an artifact.
 - **content-contracts** — non-blocking inventory of planned content paths, with
   the strict result written to the run summary. It is not a validation and is
   labelled as such in the job name and output.
@@ -322,8 +427,9 @@ tools/ci/ci.sh verify-engine --binary /tmp/godot/Godot_v4.7.2-stable_linux.x86_6
 tools/ci/
   ci.sh                 entry point and command implementations
   lib/common.sh         POSIX shell helpers (logging, Godot discovery, pin,
-                        scratch copy, log gating, reports)
+                        scratch copy, log gating, warnings, reports)
   pin/engine.txt        fallback engine pin (the M0.1 record wins when present)
+  warnings.allow        engine warnings the project has accepted (still printed)
   contracts.list        planned content paths for the inventory
   tests/
     run_tests.sh          hermetic self-test for the tooling's shell layer
@@ -332,5 +438,6 @@ tools/ci/
     scan_project.gd       resource/script scan
     environment_report.gd machine/engine/device report
     expect_failure_probe.gd  deliberate failure for the exit-code proof
+    runtime_error_gate.sh runtime-error and warning regression for `ci.sh test`
   out/                  gitignored local scratch (logs, reports, copies, output)
 ```
