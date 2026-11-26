@@ -1,6 +1,6 @@
 # Toolchain inventory (PLAN.md M0.1)
 
-Status: recorded 2026-11-26 on the development Mac. M0.1 remains open: the installed editor binary and three release template files match publisher-checksummed archives as described below, but Python pinning, the effective Jolt backend and its settings, full bundle verification, export and platform launch remain unverified.
+Status: recorded 2026-11-26 on the development Mac. M0.1 remains open: the installed editor binary and three release template files match publisher-checksummed archives as described below, while Python 3.15.2 and Jolt are selected locally. A headless contrast showed the backend setting changes observed behavior; remaining Python artifacts, complete Jolt settings, full bundle verification, export and platform launches remain unverified.
 
 Ownership: `docs/TOOLCHAIN.md` and `tools/toolchain/**`. Nothing else in the
 checkout was touched. Machine/OS/controller inventory for M0.6 is a separate
@@ -64,8 +64,7 @@ anything.
    class names (`JoltArea`, `JoltBody`, `JoltBodyActivationListener`, …), and a
    scratch project outside the checkout with
    `physics/3d/physics_engine="Jolt Physics"` was accepted by the engine with
-   the setting preserved. Jolt is compiled into this build; the project's own
-   physics settings are M0.2's business and were not modified.
+   the setting preserved. Jolt is compiled into this build. Subsequently the project and probe explicitly selected it; a same-host contrast produced differing contact measurements. Direct backend identity is not exposed by the GDScript probe.
 5. **Integrity and signature of the app bundle.** `codesign --verify --deep
    --strict` reports `valid on disk` and `satisfies its Designated
    Requirement`; Gatekeeper reports

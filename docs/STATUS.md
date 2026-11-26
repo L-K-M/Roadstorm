@@ -44,3 +44,7 @@ Schema slices `b20cb153-94a8-4997-be00-1f8335daa1a0` (handling) and `8cfeb70f-e5
 Provenance authority correction `a67680d9-2923-4992-a350-5804f0fcc193` completed; account terms remain open. The StepFun route notation identified in its report has been corrected.
 
 Python pin job `b2377a10-187a-40e6-94ae-8b239bc7a93e` completed. The coordinator checked the 3.15.2 source archive against python.org's published SHA-256; other artifacts, Sigstore verification, local interpreter provenance, and CI pin integration are open. Observation schema job `8667d71d-5817-4955-b069-aed859c8d8f8` owns only `schemas/observation/` and `fixtures/observation/`.
+
+Manifest remediation committed in `bdeb8e2`; Sol scoped recheck `/root/sol_recheck` is running against that immutable candidate. Opus scoped recheck for the same candidate remains due; CI, scenario, and observation jobs continue outside its scope.
+
+Sol recheck of `bdeb8e2` found the original manifest defects fixed but a new JSON `null` root false pass; the coordinator changed the decoder sentinel, added a null-root regression and independently observed structured failure exit 1. The suite passed. The Sol recheck and corrected candidate require another scoped review; Opus recheck of `bdeb8e2` remains in progress. Toolchain summary was updated to distinguish established local Jolt/Python pins from remaining evidence.

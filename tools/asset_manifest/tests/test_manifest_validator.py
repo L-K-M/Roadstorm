@@ -683,6 +683,8 @@ class ManifestValidatorTestCase(unittest.TestCase):
         manifest.parent.mkdir(parents=True, exist_ok=True)
         manifest.write_text("[]", encoding="utf-8")
         self.assertIn("not-an-object", error_codes(validate(self.root, manifest)))
+        manifest.write_text("null", encoding="utf-8")
+        self.assertIn("not-an-object", error_codes(validate(self.root, manifest)))
         manifest.write_text("{not json", encoding="utf-8")
         self.assertIn("invalid-json", error_codes(validate(self.root, manifest)))
 

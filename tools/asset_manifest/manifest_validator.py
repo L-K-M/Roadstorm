@@ -507,12 +507,15 @@ class _DuplicateMemberCollector:
         return obj
 
 
+_JSON_DECODE_FAILED = object()
+
+
 def _decode_manifest_document(
     findings: Findings, raw: str, source: Path
 ) -> Any | None:
     """Decode manifest JSON, reporting duplicate members as findings.
 
-    Returns ``None`` when the text is not valid JSON; the caller then stops,
+    Returns a unique sentinel when the text is not valid JSON; the caller then stops,
     because nothing else about the document can be trusted.
     """
     collector = _DuplicateMemberCollector()
@@ -524,7 +527,7 @@ def _decode_manifest_document(
             "<manifest>",
             "{} is not valid JSON: {}".format(source, exc),
         )
-        return None
+        return _JSON_DECODE_FAILED
     if collector.repeats:
         _report_duplicate_members(findings, document, collector.repeats)
     return document
@@ -611,7 +614,7 @@ def validate_manifest(
         return findings
 
     document = _decode_manifest_document(findings, raw, manifest_path)
-    if document is None:
+    if document is _JSON_DECODE_FAILED:
         return findings
 
     checker = PathChecker(root, file_checks=file_checks, check_hashes=check_hashes)
