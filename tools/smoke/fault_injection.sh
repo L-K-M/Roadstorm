@@ -16,13 +16,18 @@
 #                                                marker: the quit button is
 #                                                never connected)
 #   6. detached script in game.tscn          -> expect FAIL
+#   7. physics/3d/physics_engine absent      -> expect FAIL (the 3D backend is
+#                                                no longer named explicitly)
+#   8. physics/3d/physics_engine misspelled  -> expect FAIL (a typo is not the
+#                                                pinned backend name)
 #
 # Isolation: every case runs against a throwaway snapshot copy of the
 # checkout (no .git, no .godot, no work/) in a private temporary directory
 # with its own HOME and TMPDIR, so the engine cache never touches the live
 # tree. The live sources, scenes and scripts are never edited; the harness
 # verifies that with checksums before and after and refuses to report success
-# if anything in src/boot/ or scenes/ changed.
+# if anything in src/boot/ or scenes/ changed. project.godot is likewise only
+# ever read from the live checkout and written in the snapshot.
 #
 # Usage:
 #   tools/smoke/fault_injection.sh
@@ -67,6 +72,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 SNAPSHOT="$WORK_DIR/snapshot"
 SANDBOX_HOME="$WORK_DIR/home"
 SANDBOX_TMP="$WORK_DIR/tmp"
+PRISTINE_PROJECT_GODOT="$WORK_DIR/project.godot.pristine"
 
 # --- helpers -----------------------------------------------------------------
 
@@ -86,12 +92,55 @@ make_snapshot() {
 }
 
 # Restore the injectable files from the live checkout and drop the snapshot's
-# engine cache, so each case starts from a clean, cold state.
+# engine cache, so each case starts from a clean, cold state. project.godot is
+# restored from the copy taken at harness start (see PRISTINE_PROJECT_GODOT),
+# so a case that edits it cannot leak into the next case.
 reset_snapshot() {
 	rm -rf "$SNAPSHOT/src/boot" "$SNAPSHOT/scenes"
 	cp -R "$PROJECT_DIR/src/boot" "$SNAPSHOT/src/boot"
 	cp -R "$PROJECT_DIR/scenes" "$SNAPSHOT/scenes"
+	cp "$PRISTINE_PROJECT_GODOT" "$SNAPSHOT/project.godot"
 	rm -rf "$SNAPSHOT/.godot"
+}
+
+# Edit physics/3d/physics_engine in the snapshot's project.godot.
+#   inject_setting_change absent      drop the entry (and its comment block)
+#   inject_setting_change misspelled  replace the value with a transposed typo
+# The rest of the [physics] section (60 ticks/second, interpolation) is left
+# alone, so the failure can only come from the physics-engine assertion.
+inject_setting_change() {
+	# inject_setting_change <absent|misspelled>
+	python3 - "$SNAPSHOT/project.godot" "$1" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+mode = sys.argv[2]
+key = "3d/physics_engine="
+
+with open(path, "r", encoding="utf-8") as handle:
+	lines = handle.read().splitlines(keepends=True)
+
+index = None
+for position, line in enumerate(lines):
+	if line.startswith(key):
+		index = position
+		break
+if index is None:
+	sys.exit("no %s line found in %s" % (key, path))
+
+if mode == "absent":
+	start = index
+	while start > 0 and lines[start - 1].lstrip().startswith(";"):
+		start -= 1
+	del lines[start:index + 1]
+elif mode == "misspelled":
+	lines[index] = '3d/physics_engine="Jolt Phsyics"\n'
+else:
+	sys.exit("unknown mode %r" % mode)
+
+with open(path, "w", encoding="utf-8") as handle:
+	handle.write("".join(lines))
+PYEOF
 }
 
 # Insert a runtime error at the top of a _ready() function in a snapshot copy.
@@ -146,7 +195,7 @@ run_case() {
 	fi
 
 	log "case $CASES_RUN: $desc"
-	log "  expected: $expect (exit 0) / observed exit: $status -> $ok"
+	log "  expected: $expect / observed exit: $status -> $ok"
 	if [ -n "$verdict_line" ]; then
 		log "  smoke verdict: $verdict_line"
 	fi
@@ -173,6 +222,8 @@ LIVE_GODOT_BEFORE=no
 [ "$LIVE_GODOT_BEFORE" = yes ] && log "note: the live checkout already had a .godot cache directory before this run"
 
 mkdir -p "$SANDBOX_HOME" "$SANDBOX_TMP"
+[ -f "$PROJECT_DIR/project.godot" ] || die 2 "'$PROJECT_DIR' has no project.godot"
+cp "$PROJECT_DIR/project.godot" "$PRISTINE_PROJECT_GODOT" || die 2 "could not copy project.godot"
 make_snapshot
 [ -f "$SNAPSHOT/tools/smoke/run_boot_smoke.sh" ] || die 2 "snapshot is missing tools/smoke/run_boot_smoke.sh"
 
@@ -209,6 +260,18 @@ reset_snapshot
 sed -i.bak 's|path="res://src/boot/game.gd"|path="res://src/boot/does_not_exist.gd"|' "$SNAPSHOT/scenes/game.tscn"
 rm -f "$SNAPSHOT/scenes/game.tscn.bak"
 run_case "detached script in scenes/game.tscn fails" fail
+
+# 7. Absent physics engine setting: the entry is removed from the snapshot's
+#    project.godot, so the 3D backend is no longer named explicitly.
+reset_snapshot
+inject_setting_change absent
+run_case "physics/3d/physics_engine absent fails" fail
+
+# 8. Misspelled physics engine setting: a transposed value is not the pinned
+#    backend name, and it is not a valid engine value either.
+reset_snapshot
+inject_setting_change misspelled
+run_case "physics/3d/physics_engine misspelled fails" fail
 
 # --- isolation verification ---------------------------------------------------
 

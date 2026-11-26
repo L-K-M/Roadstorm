@@ -7,3 +7,12 @@
 # Python bytecode caches.
 __pycache__/
 *.py[cod]
+
+# Local credentials and disposable build or player data.
+/.env
+/.env.*
+!/.env.example
+/build/
+/dist/
+/captures/tmp/
+/saves/

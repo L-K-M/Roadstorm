@@ -64,6 +64,14 @@ tools/smoke/fault_injection.sh
 | runtime error | null dereference in `game.gd::_ready` | fail |
 | runtime error | null dereference in `main_menu.gd::_ready` | fail |
 | detached script | `game.tscn` points at a script that does not exist | fail |
+| absent setting | `3d/physics_engine` removed from the snapshot's `project.godot` | fail |
+| misspelled setting | `3d/physics_engine="Jolt Phsyics"` in the snapshot's `project.godot` | fail |
+
+Cases 7 and 8 only touch the snapshot's `project.godot`; the live file is
+read once at harness start and restored into the snapshot before every case,
+so neither can leak into another case. The rest of the `[physics]` section
+(60 ticks/second, interpolation) is left intact, so those failures can only
+come from the physics-engine assertion.
 
 Every case runs in a private temporary directory: a snapshot copy of the
 checkout (no `.git`, no `.godot`, no `work/`) with its own `HOME` and
@@ -80,7 +88,10 @@ expected, `1` = a case misbehaved, `2` = the harness could not run.
   `tools/toolchain/pin/engine.txt`; `tools/toolchain/verify.sh` independently
   pins the installed binary digest and the export templates).
 - Project settings: boot scene is the main scene, renderer is
-  `gl_compatibility` (provisional until M3), physics runs at 60 ticks/second.
+  `gl_compatibility` (provisional until M3), the 3D physics backend is named
+  explicitly as `Jolt Physics` (`DEFAULT` is not accepted: the backend is
+  part of the handling contract, so a backend change counts as a handling
+  revision), and physics runs at 60 ticks/second.
 - `scenes/boot.tscn`, `scenes/main_menu.tscn` and `scenes/game.tscn` exist,
   load and instantiate, and every script attached to them is loadable
   (`can_instantiate()`), so a parse error or a detached script fails.

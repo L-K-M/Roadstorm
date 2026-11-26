@@ -6,7 +6,10 @@ extends SceneTree
 ##   * the pinned engine is the exact official Godot 4.7.2 build: version,
 ##     status, build flavour and commit hash, not just major.minor.patch;
 ##   * project settings request the (provisional) Compatibility renderer,
-##     60 fixed physics ticks and the boot scene as the main scene;
+##     60 fixed physics ticks, the boot scene as the main scene and Jolt
+##     Physics as the explicit 3D physics backend ("DEFAULT" is not
+##     accepted: the backend is part of the handling contract, so a change
+##     counts as a handling revision);
 ##   * the owned scenes exist, load, instantiate, and their scripts are
 ##     attached and loadable, so a GDScript parse error or a detached script
 ##     fails this check instead of printing an engine error and passing;
@@ -51,6 +54,12 @@ const EXPECTED_BUILD := "official"
 ## Short commit hash recorded in the pin file. Engine.get_version_info()
 ## reports the full hash, so the comparison is a prefix match.
 const EXPECTED_COMMIT := "ed1daf0bf"
+
+## Explicit 3D physics backend (project.godot physics/3d/physics_engine).
+## The engine's own default value is deliberately not consulted here: this
+## check asserts the committed setting only, so an absent or misspelled entry
+## fails instead of silently resolving to a built-in backend.
+const EXPECTED_PHYSICS_ENGINE := "Jolt Physics"
 
 ## Generous ceiling: the shell should hand off within a few frames.
 const MAX_FRAMES := 600
@@ -141,7 +150,14 @@ func _check_settings() -> void:
 	if ticks != 60:
 		_fail("physics/common/physics_ticks_per_second is %d, expected 60" % ticks)
 
-	print("[boot-smoke] project settings: main scene, renderer and 60 ticks/second confirmed")
+	# The backend must be named explicitly. "DEFAULT", an empty value, an
+	# absent entry or a misspelling all fail here: tools/smoke/fault_injection.sh
+	# proves the absent and misspelled paths.
+	var physics_engine: String = ProjectSettings.get_setting("physics/3d/physics_engine", "")
+	if physics_engine != EXPECTED_PHYSICS_ENGINE:
+		_fail("physics/3d/physics_engine is '%s', expected '%s'" % [physics_engine, EXPECTED_PHYSICS_ENGINE])
+
+	print("[boot-smoke] project settings: main scene, renderer, %s backend and 60 ticks/second confirmed" % EXPECTED_PHYSICS_ENGINE)
 
 
 ## Pre-loads a scene and instantiates it once, off-tree, so that script parse
