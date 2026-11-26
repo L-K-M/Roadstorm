@@ -14,6 +14,10 @@ The project is at the planning stage. No playable game or build system has been 
 
 All new project-specific implementation and creative production will be authored by LLM agents. Existing engines and tools remain third-party infrastructure. The planned engine is Godot 4.7.2 with typed GDScript; the first implementation milestone will pin and verify the toolchain.
 
+## Independent plan reviews
+
+Review agents should follow [REVIEW_PROMPT.md](REVIEW_PROMPT.md). Each reviewer works in one chat without subagents, writes a unique `review/<uuid>.md` report, and commits/pushes only that report using the existing shared checkout.
+
 ## License
 
 The existing [LICENSE](LICENSE) is the Unlicense. The production plan retains it for original code, scripts, game data, and documentation, and specifies CC0 for original art and audio. Engine and dependency licenses retain their own terms and notices. See the [asset and licensing plan](docs/ASSET_PRODUCTION.md#license-scope).
