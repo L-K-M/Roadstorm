@@ -1,0 +1,44 @@
+# Roadstorm Racer! — toolchain pin (PLAN.md M0.1)
+#
+# Recorded by the M0.1 toolchain inventory on 2026-11-26 on the host named in
+# docs/TOOLCHAIN.md. This file is data for tools/toolchain/verify.sh; it is not
+# a substitute for the narrative record in docs/TOOLCHAIN.md.
+#
+# Rules that this file must never break:
+#   * A digest recorded here is a LOCAL observation. It is not upstream
+#     verification. Upstream verification requires comparing against the
+#     publisher's checksum file; selected artifacts were verified as recorded in docs/evidence.
+#   * Never invent, guess or copy a digest from an unofficial mirror. If a
+#     digest is unknown, leave the field empty and let the verifier report
+#     NOT RECORDED.
+#   * Update this file only through a recorded regression decision
+#     (PLAN.md M0.1): the pinned engine version changes deliberately, with the
+#     reason, the new observed digests and the verification status written down.
+
+# --- Pinned engine version -------------------------------------------------
+major=4
+minor=7
+patch=2
+tag=4.7.2-stable
+build=official
+commit=ed1daf0bf
+# Exact `--version` string the pinned binary prints.
+version_string=4.7.2.stable.official.ed1daf0bf
+
+# --- Official sources (version authority: godotengine.org/download/archive) -
+# URL liveness was confirmed with HTTP HEAD requests only (no content was
+# downloaded). See docs/TOOLCHAIN.md "Upstream verification".
+editor_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_macos.universal.zip
+templates_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz
+checksums_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/SHA512-SUMS.txt
+archive_url=https://godotengine.org/download/archive/
+
+# Upstream checksum comparison (local sha256 vs the publisher's SHA512-SUMS.txt)
+# performed? Values: no | yes. `no` means the local digests below have NOT been
+# confirmed against the official release assets.
+upstream_verified=yes
+
+# --- Export templates -------------------------------------------------------
+# The editor looks for templates in <version>.stable under the user data
+# directory; the pin is the version directory name, not an absolute path.
+templates_version=4.7.2.stable

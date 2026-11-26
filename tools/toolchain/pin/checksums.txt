@@ -1,0 +1,28 @@
+# Roadstorm Racer! — observed local digests (sha256) for the pinned toolchain
+#
+# Recorded 2026-11-26 on mac-studio-2026-32-1.home (macOS 27.0.1, arm64) with
+# `shasum -a 256`. These are LOCAL observations of files as installed on that
+# machine. Selected artifacts also matched publisher-checksummed archive members;
+# see docs/evidence/godot-4.7.2-archive-verification.md for scope.
+#
+# A digest here pins a specific local artifact so that later runs can detect
+# change. An empty field means "not recorded"; tools/toolchain/verify.sh
+# reports those as NOT RECORDED and never treats them as verified.
+
+# Godot 4.7.2 Standard editor binary (universal, arm64 + x86_64) as installed by
+# the Homebrew cask `godot` 4.7.2, which fetches the official GitHub release
+# asset Godot_v4.7.2-stable_macos.universal.zip.
+editor_sha256=c7cccbf8fb143e34e02fd6521e09be2c2b974f0d5db080b19071c9c570718ccf
+
+# Export templates 4.7.2.stable, installed under the Godot user data directory
+# (~/Library/Application Support/Godot/export_templates/4.7.2.stable/).
+templates_version_txt_sha256=38885c88f75abbc797a1db7559719800279a00cfb9fa8b2e2868a7f6f84bad2e
+templates_macos_zip_sha256=88df5e2e6fee99088699be66e6d42e4da4fb0c5619d054297d755a49558a4792
+templates_windows_x86_64_sha256=d34d36f3be1a6c49c56525ae86469b92e4f417ddf0b43cf00dd80c385c4b0562
+templates_linux_x86_64_sha256=d9f79ab89b5ae369aeed11c6052d402e8218cd503bf85b4a235f9c30c46a7c63
+
+# macOS export template's internal release binary
+# (macos.zip -> macos_template.app/Contents/MacOS/godot_macos_release.universal),
+# used by `verify.sh --deep`. It was executed on this host and printed
+# 4.7.2.stable.official.ed1daf0bf.
+macos_template_release_sha256=6135ad137facbb26cd73a5f7f7d541d334a84fc81650e870ef075cdd14a129cd
