@@ -42,3 +42,5 @@ Schema slices `b20cb153-94a8-4997-be00-1f8335daa1a0` (handling) and `8cfeb70f-e5
 `a67680d9-2923-4992-a350-5804f0fcc193` (StepFun) owns the authority/open-items subset of provenance for an accuracy correction: retain the plan's standing-record requirement while removing invented signature or approval requirements. It does not own provider-term snapshots.
 
 Provenance authority correction `a67680d9-2923-4992-a350-5804f0fcc193` completed; account terms remain open. The StepFun route notation identified in its report has been corrected.
+
+Python pin job `b2377a10-187a-40e6-94ae-8b239bc7a93e` completed. The coordinator checked the 3.15.2 source archive against python.org's published SHA-256; other artifacts, Sigstore verification, local interpreter provenance, and CI pin integration are open. Observation schema job `8667d71d-5817-4955-b069-aed859c8d8f8` owns only `schemas/observation/` and `fixtures/observation/`.

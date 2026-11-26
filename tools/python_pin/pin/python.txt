@@ -1,0 +1,87 @@
+# Roadstorm Racer! — asset-generation Python pin (PLAN.md M0.1)
+#
+# Recorded 2026-11-26 by the M0.1 asset-generation Python research job
+# (StepFun 5 Preview) on the host named in docs/PYTHON_TOOLCHAIN.md. This file
+# is data for tools/python_pin/verify.sh; it is not a substitute for the
+# narrative record in docs/PYTHON_TOOLCHAIN.md.
+#
+# Rules that this file must never break:
+#   * The SHA-256 values below are TRANSCRIBED from the publisher's release
+#     page over HTTPS. They are the publisher's published digests, but no
+#     artifact was downloaded to compare them against artifact bytes (every
+#     pinned artifact is >= 26.7 MB; the recording job's limit was 1 MB), so
+#     upstream_verified=no. `no` must never be reported as verified.
+#   * Never invent, guess or copy a digest from an unofficial mirror. If a
+#     digest is unknown, leave the field empty and let the verifier report
+#     NOT RECORDED.
+#   * Update this file only through a recorded regression decision
+#     (PLAN.md M0.1): the pinned Python version changes deliberately, with the
+#     reason, the new published digests and the verification status written
+#     down in docs/PYTHON_TOOLCHAIN.md together with this change.
+
+# --- Pinned interpreter version --------------------------------------------
+# CPython 3.15.2: the newest stable maintenance release (2026-10-25), an
+# expedited security release for the compromised eMudhra intermediate CA keys
+# (CVE-2026-115557) among ~130 bugfixes since 3.15.1. 3.15.0/3.15.1 predate
+# that fix and must not be pinned. Rationale and the rejected alternatives
+# (3.14.10, 3.13.18, pre-release 3.16) are in docs/PYTHON_TOOLCHAIN.md.
+major=3
+minor=15
+patch=2
+version=3.15.2
+release_tag=3.15.2
+release_date=2026-10-25
+
+# --- Official release source (version authority: python.org) ----------------
+release_page=https://www.python.org/downloads/release/python-3152/
+ftp_dir=https://www.python.org/ftp/python/3.15.2/
+all_releases=https://www.python.org/downloads/
+# Published integrity information for every artifact:
+#   * per-artifact SHA-256 checksums on the release page (below);
+#   * a Sigstore verification bundle <artifact>.sigstore next to each file in
+#     ftp_dir (Sigstore is the advertised signing method from the 3.14 series
+#     onward, PEP 761);
+#   * SPDX SBOM (.spdx.json) for the source tarballs and Windows artifacts;
+#   * legacy OpenPGP .sig files in the FTP directory (not advertised on the
+#     release page).
+sigstore_doc=https://www.python.org/download/sigstore/
+# Signer identity for Sigstore verification of this release (PEP 790):
+sigstore_signer_email=hugo@python.org
+sigstore_oidc_issuer=https://github.com/login/oauth
+
+# --- Pinned official artifacts and their published SHA-256 digests ----------
+# Coverage of the three PLAN.md target platforms:
+#   macOS (universal2, macOS 10.15+), Windows x86-64, and the source tarball
+#   from which a Linux x86-64 interpreter is built (python.org publishes no
+#   Linux binary artifact). URL liveness was confirmed with HTTP range/HEAD
+#   requests only; no content was downloaded.
+macos_pkg_file=python-3.15.2-macos11.pkg
+macos_pkg_url=https://www.python.org/ftp/python/3.15.2/python-3.15.2-macos11.pkg
+macos_pkg_size=78.1 MB
+macos_pkg_sha256=2c6104475535b720b45774c68b0dfc9fcca2235353cf9ff81e05488f89845396
+
+windows_amd64_exe_file=python-3.15.2-amd64.exe
+windows_amd64_exe_url=https://www.python.org/ftp/python/3.15.2/python-3.15.2-amd64.exe
+windows_amd64_exe_size=35.9 MB
+windows_amd64_exe_sha256=06e225a228191b0f4d1dcf6905fbb21bf9f6970d13a2ec63137ab9bee76f15aa
+
+source_tarxz_file=Python-3.15.2.tar.xz
+source_tarxz_url=https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz
+source_tarxz_size=26.7 MB
+source_tarxz_sha256=8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de
+
+source_tgzz_file=Python-3.15.2.tgz
+source_tgzz_url=https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tgz
+source_tgzz_size=34.2 MB
+source_tgzz_sha256=f74e1db0eabd651cd01e4e2a00201bd41866abe74869ab716f9bf33cbbaa0943
+
+# Upstream verification performed? Values: no | yes. `no` means the published
+# digests above have NOT been compared against downloaded artifact bytes.
+# What would close it (see docs/PYTHON_TOOLCHAIN.md "Open items"): download
+# each pinned artifact and its .sigstore bundle, compare the artifact's
+# SHA-256 with the value above, and verify the bundle with a Sigstore client
+# against the signer identity hugo@python.org (GitHub OIDC issuer). That
+# requires multi-megabyte downloads this recording job was not permitted to
+# make, so it remains open. A local interpreter's version or digest is NOT
+# upstream verification of anything.
+upstream_verified=no

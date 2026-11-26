@@ -1,0 +1,38 @@
+# Roadstorm Racer! — observed local interpreter digests (sha256)
+#
+# Recorded 2026-11-26 on mac-studio-2026-32-1.home (macOS 27.0.1, arm64) with
+# `shasum -a 256`. These are LOCAL observations of files as installed on that
+# machine. NONE of these files is an official python.org release artifact, so
+# none of these digests is or can be upstream verification; they only let a
+# later run detect that a local interpreter changed.
+#
+# The interpreter whose version matches the pin (3.15.2) is the Homebrew
+# build. The official python.org artifact for 3.15.2 is a different file with
+# a different digest (published in pin/python.txt, not verified here).
+#
+# An empty field means "not recorded"; tools/python_pin/verify.sh reports
+# those as NOT RECORDED and never treats them as verified.
+
+# Homebrew python@3.15 3.15.2 — version-matches the pin (local build).
+local_interpreter_315_path=/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/bin/python3.15
+local_interpreter_315_sha256=6cc907e4a022fefc843bcd93954eaf5a2cbfc77a095640bfadeeed96154190c5
+
+# Other local interpreters — recorded so drift is visible; none matches the
+# pinned version, so verify.sh reports them without comparing digests.
+# Xcode Command Line Tools 3.9.6 (what /usr/bin/python3 re-execs). The digest
+# is of the framework binary that sys.executable resolves to, not of the
+# 200 KB /usr/bin/python3 launcher.
+local_interpreter_396_path=/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9
+local_interpreter_396_sha256=c5a13e37785524fbc0384539d3c99aa4f888cb7c89e13e0bf0018436378b13bc
+
+# Homebrew python@3.13 3.13.18.
+local_interpreter_313_path=/opt/homebrew/Cellar/python@3.13/3.13.18/Frameworks/Python.framework/Versions/3.13/bin/python3.13
+local_interpreter_313_sha256=506f8a19083f841c29a3675a05c66a35a070080571064ac98f9b0ec4615d659d
+
+# uv-managed python-build-standalone 3.11.18 (astral-sh builds, not python.org).
+local_interpreter_311_path=/Volumes/PaseoData/TrueNAS/paseo-home/.local/share/uv/python/cpython-3.11.18-macos-aarch64-none/bin/python3.11
+local_interpreter_311_sha256=2dbdd6e2fd14df61c675551e8409243fbfbf3910d48cc5c1617a697c81ff6b9a
+
+# uv-managed python-build-standalone 3.12.16 (astral-sh builds, not python.org).
+local_interpreter_312_path=/Volumes/PaseoData/TrueNAS/paseo-home/.local/share/uv/python/cpython-3.12.16-macos-aarch64-none/bin/python3.12
+local_interpreter_312_sha256=7a427de7a538c033f821bae69d18dba1fcf01e1947f8fdfece0d9654f680a787
