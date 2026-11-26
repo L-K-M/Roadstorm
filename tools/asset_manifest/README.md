@@ -98,7 +98,7 @@ Per asset entry, the essential provenance and lineage metadata:
 | Generation | `generator` is recorded; first-party assets also record `recipe_path` and `regeneration_command` (the release gate blocks missing source recipes); `input_asset_ids` reference registered IDs; `seed` is a string, integer or null (a boolean is not a seed). |
 | Reproducibility | `reproducibility_class` is one of the contract's three classes. |
 | Technical | Optional free-form group: dimensions, triangle/material counts, LODs, duration, sample rate/channels, loop settings, model dimensions as applicable. Recorded, not verified (see Limitations); its members are deliberately not key-checked. |
-| Rights | `license_spdx` and `rights_holder_record` are present and not `unknown` (unknown legal origin blocks shipping); first-party creative material is limited to `CC0-1.0` (Unlicense covers code/tools/tests/schemas/text, which are not in this manifest), external input to verified item-level `CC0-1.0`; `service_generated` entries must reference provider terms (omission or `null` is an error, not a bypass, and the reference must resolve: the `not_applicable` first-party sentinel, any other placeholder, and a path to a record that does not exist are all rejected); `rights_holder_record` must resolve to a record under `provenance/`; `external_cc0` entries must record upstream url/date/evidence. |
+| Rights | `license_spdx` and `rights_holder_record` are present and not `unknown` (unknown legal origin blocks shipping); first-party creative material is limited to `CC0-1.0` (Unlicense covers code/tools/tests/schemas/text, which are not in this manifest), external input to verified item-level `CC0-1.0`; `service_generated` entries must reference provider terms (omission or `null` is an error, not a bypass, and the reference must resolve in one of the two documented forms: the register `provenance/PROVIDER_TERMS.md`, optionally with a `#route-id` anchor that must name a row that actually exists in the register - matched exactly, case included, so invented and wrongly-cased fragments are rejected - or a bounded snapshot `provenance/provider_terms/<route-id>/<file>` whose route component is a real directory in the checkout; the `not_applicable` first-party sentinel, any other placeholder, a file written directly under `provenance/provider_terms/` with no route directory, a route directory with no file, deeper nesting, a fragment on a snapshot reference, and a path to a record that does not exist are all rejected); `rights_holder_record` must resolve to a record under `provenance/`; `external_cc0` entries must record upstream url/date/evidence. |
 | Review | `status`, `reviewer`, `limitations`, `release_inclusion` are present; `release_inclusion: true` requires `status: approved`, and a rejected entry cannot be marked for release; an approved or release-included entry additionally records a known `reviewer`, `approval_revision`, `technical_check` and `perceptual_review` (the contract's Review group requires the visual/audio/model review), because `unknown` on a shipping claim is not an approval record. |
 | Lineage | `upstream_inputs` is present (possibly `[]`); each input has an `asset_id` or `path`, and external inputs carry license and evidence; an `external_cc0` entry records at least one upstream input, so its evidence trail is never empty; `depends_on` references registered IDs; referenced paths exist. |
 
@@ -186,6 +186,20 @@ Document level:
   `rights_holder_record` that does not resolve to an existing record under
   `provenance/` (including a symlinked one) is an error; resolution is
   skipped under `--no-file-checks` like every other existence check.
+- **provider-terms route resolution** (the M0 checkpoint recheck): a
+  `#route-id` anchor on the register must name a row that exists in
+  `provenance/PROVIDER_TERMS.md` - an invented fragment
+  (`#missing-fixture-route`), a wrongly-cased one (`#PI-STEPFUN` against the
+  row `pi-stepfun`) and a bare trailing `#` are `unresolved-reference`
+  errors, while the real rows (`pi-longcat`, `pi-stepfun`) and the real
+  snapshot directories resolve; a snapshot reference must match
+  `provenance/provider_terms/<route-id>/<file>` exactly - a file directly
+  under `provenance/provider_terms/` with no route directory, a route
+  directory with no file, deeper nesting, and a `#fragment` on a snapshot
+  are rejected - and the route directory must be real: missing, a plain
+  file in its place, or a symlink are all rejected. Covered end to end
+  through the CLI (valid route exits 0, invented route exits 1) and against
+  the checkout's real register and snapshot layout.
 - **exit contract**: an unreadable manifest (permission denied), invalid
   JSON and a nonexistent `--root` each exit 2, in text and `--json` mode,
   while invalid UTF-8 still exits 1.
@@ -223,11 +237,20 @@ temporary directory.
   rights work revises scope, this list must be revised with it.
 - **References resolve, their content is not verified.**
   `rights_holder_record` must resolve to an existing record under
-  `provenance/` and `service_terms_ref` to the terms register or a bounded
-  route snapshot, but the validator checks that the referenced file exists,
-  not that the referenced instrument is executed or that the terms are
-  compatible: `provenance/OWNER_AUTHORITY.md` may exist while OI-01 is still
-  open, and a located terms document is not a verified one.
+  `provenance/` and `service_terms_ref` to the terms register (with a
+  `#route-id` anchor that names a real register row, matched exactly and
+  case included) or a bounded route snapshot
+  `provenance/provider_terms/<route-id>/<file>` with a real route
+  directory, but the validator checks that the referenced file and row
+  exist, not that the referenced instrument is executed or that the terms
+  are compatible: `provenance/OWNER_AUTHORITY.md` may exist while OI-01 is
+  still open, and a located terms document is not a verified one. Provider
+  eligibility and terms verification remain separate, open tasks; nothing
+  here is a claim of legal adequacy. Route rows are read as register text,
+  so the row check is skipped under `--no-file-checks` like every other
+  existence check, and a snapshot route directory is checked on the local
+  filesystem (its case follows the local filesystem, per "Existence is
+  local" below).
 - **Dependency edges.** The cycle check covers `lineage.depends_on`, the
   production dependency order. `generation.input_asset_ids` records which
   registered assets a recipe consumed, not the build order, so it is checked
@@ -296,3 +319,26 @@ test still passes.
 Original project code under the Unlicense.
 
 **Follow-up:** `tools/ci/` was committed as `6e5b0d1` after the historical recheck above. `schemas/common.schema.json` remains pending integration.
+
+## Disposition of the M0 checkpoint recheck (Sol, 2026-11-26)
+
+Recorded from
+`review/implementation/m0-checkpoint-sol-recheck-15faf0d.md` (candidate
+`15faf0d572c1fd917b680a123f431c7086806227`, comparison base
+`bdeb8e24619ba7f833613301df43ffa09b0ce36d`). The remediation below was
+implemented inside the owned paths (`tools/asset_manifest/**`) only; the
+previous null-root fix (`935b9e2`) and the symlink hardening (`b28d5bf`) are
+preserved untouched, and their regression tests still pass.
+
+| Finding | Disposition |
+| --- | --- |
+| 1 (Medium) - a provider-terms snapshot passes without a route directory | Fixed. A snapshot reference must match the documented layout `provenance/provider_terms/<route-id>/<file>` exactly: a file written directly under `provenance/provider_terms/` (the reviewed `terms.md` case), a route directory with no file, and nesting deeper than `<route-id>/<file>` are `unresolved-reference` errors, and the route component must be a real directory in the checkout (missing, a plain file in its place, or a symlink are rejected). A `#fragment` on a snapshot reference is rejected as an invented fragment; the documented snapshot form has no fragment. |
+| 2 (Low) - explicit references to nonexistent register rows pass | Fixed. The `#route-id` anchor on `provenance/PROVIDER_TERMS.md` is now resolved against the register text: the anchor must name a row that exists (route IDs are read from the first backticked cell of the register's table rows and matched exactly, case included), so `#missing-fixture-route`, `#PI-STEPFUN` against the row `pi-stepfun`, and a bare trailing `#` are errors. The register itself without an anchor stays accepted, and reading the register is part of resolution, so the row check is skipped under `--no-file-checks` like every other existence check. This distinguishes file resolution from route resolution; it is not a terms verification and claims no legal adequacy - provider eligibility and terms verification remain open tasks. |
+| 3 (Low) - the smoke log confirms Jolt after reporting its settings check failed | Out of scope: `tools/smoke/**` is owned elsewhere. Not addressed here; reported to the coordinator instead. |
+
+Tests added for the two in-scope findings: real and missing route
+directories, malformed nesting (no route directory, no file, deeper
+nesting), unknown and wrongly-cased register fragments, snapshot fragments,
+a route path that is a file, a symlinked route directory, valid routes
+against the real register and real snapshot layout, and CLI end-to-end runs
+(valid route exits 0, invented route exits 1).

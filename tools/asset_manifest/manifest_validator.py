@@ -428,9 +428,38 @@ def _reference_target(reference: str) -> str:
 
     ``provenance/PROVIDER_TERMS.md`` holds one row per authoring route, so a
     terms reference may name the register and the route row it means. The
-    anchor is not part of the path and is not resolved here.
+    anchor is not part of the path and is not resolved *here*: whether a
+    supplied route ID names a real row is decided by the terms-reference
+    check (``_check_terms_reference``), which is the only reference whose
+    anchor is documented as a route ID. Anchors on other record references
+    (for example ``rights_holder_record``) stay unchecked metadata.
     """
     return reference.split("#", 1)[0].strip()
+
+
+# A register row starts with its backticked route ID in the first table cell,
+# for example '| `pi-stepfun` | StepFun (Step Plan); ... |'. Route IDs are
+# identifiers, so they are matched exactly - case included.
+TERMS_REGISTER_ROW_RE = re.compile(r"^\|\s*`([^`]+)`\s*\|")
+
+
+def _terms_register_route_ids(root: Path) -> set[str] | None:
+    """Route IDs recorded as rows in the provider-terms register.
+
+    Returns ``None`` when the register cannot be read as text, so a fragment
+    cannot be resolved against it. The caller reports that like any other
+    unresolved record rather than accepting the fragment as metadata.
+    """
+    try:
+        text = (root / PROVIDER_TERMS_REGISTER).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    routes: set[str] = set()
+    for line in text.splitlines():
+        match = TERMS_REGISTER_ROW_RE.match(line.strip())
+        if match:
+            routes.add(match.group(1).strip())
+    return routes
 
 
 def _symlinked_component(root: Path, relative: str) -> str | None:
@@ -686,13 +715,28 @@ def _check_terms_reference(
     """A ``service_terms_ref`` must resolve to the terms register or a snapshot.
 
     The legal origin of a service-generated asset *is* its provider terms, so
-    the reference has to name a real record: the register itself
-    (``provenance/PROVIDER_TERMS.md``, optionally with a ``#route-id`` anchor)
-    or a bounded snapshot under ``provenance/provider_terms/<route-id>/``. A
-    string that resolves to nothing lets the asset ship without terms, which
-    is exactly what the release rights gate blocks.
+    the reference has to name a real record in one of the two documented
+    forms:
+
+    * the register itself, ``provenance/PROVIDER_TERMS.md``, optionally with
+      a ``#route-id`` anchor - and a supplied anchor must name a row that
+      actually exists in the register (route IDs are matched exactly, case
+      included), because a fragment invented by the entry names terms the
+      record does not hold;
+    * a bounded snapshot, ``provenance/provider_terms/<route-id>/<file>`` -
+      the documented layout, so a file written directly under
+      ``provenance/provider_terms/`` (no route directory), a route directory
+      with no file, or deeper nesting does not match, and the route
+      directory must be a real directory in the checkout.
+
+    A string that resolves to nothing - or that names a route that was never
+    recorded - lets the asset ship without terms, which is exactly what the
+    release rights gate blocks. Resolving a reference is not verifying it:
+    a located register row or snapshot is still an OPEN/BLOCKING terms
+    question, not a legal determination.
     """
     target = _reference_target(reference)
+    fragment = reference.split("#", 1)[1].strip() if "#" in reference else None
     problem = _path_spelling_error(target)
     if problem is not None:
         findings.error(
@@ -701,16 +745,159 @@ def _check_terms_reference(
             "rights.service_terms_ref {}".format(problem),
         )
         return
-    if target != PROVIDER_TERMS_REGISTER and not target.startswith(PROVIDER_TERMS_SNAPSHOT_DIR):
+    if target == PROVIDER_TERMS_REGISTER:
+        _check_terms_register_reference(
+            findings, location, reference, target, fragment, checker
+        )
+        return
+    if target.startswith(PROVIDER_TERMS_SNAPSHOT_DIR):
+        _check_terms_snapshot_reference(
+            findings, location, reference, target, fragment, checker
+        )
+        return
+    findings.error(
+        "unresolved-reference",
+        location,
+        "rights.service_terms_ref '{}' does not point at the provider-terms register "
+        "({}, optionally with a '#route-id' anchor) or a bounded route snapshot under "
+        "{}<route-id>/; the reference must resolve to the record that holds the applicable "
+        "terms".format(
+            reference, PROVIDER_TERMS_REGISTER, PROVIDER_TERMS_SNAPSHOT_DIR
+        ),
+    )
+
+
+def _check_terms_register_reference(
+    findings: Findings,
+    location: str,
+    reference: str,
+    target: str,
+    fragment: str | None,
+    checker: PathChecker,
+) -> None:
+    """Resolve a register reference, including its optional route anchor.
+
+    The register holds one row per authoring route, so an anchor is a claim
+    about a specific row. The row must exist in the register text, matched
+    exactly: an invented fragment (``#missing-route``), a wrongly-cased one
+    (``#PI-STEPFUN`` against the row ``pi-stepfun``) and a bare ``#`` that
+    names nothing are all rejected. Reading the register is part of
+    resolving the reference, so it is skipped under ``--no-file-checks``
+    like every other existence check.
+    """
+    if fragment is not None and not fragment:
         findings.error(
             "unresolved-reference",
             location,
-            "rights.service_terms_ref '{}' does not point at the provider-terms register "
-            "({}, optionally with a '#route-id' anchor) or a bounded route snapshot under "
-            "{}<route-id>/; the reference must resolve to the record that holds the applicable "
-            "terms".format(
-                reference, PROVIDER_TERMS_REGISTER, PROVIDER_TERMS_SNAPSHOT_DIR
+            "rights.service_terms_ref '{}' ends in a bare '#' that names no route; the "
+            "documented anchor is the route ID of the applicable register row (for example "
+            "'{}#pi-stepfun'), so an empty anchor names no terms".format(
+                reference, PROVIDER_TERMS_REGISTER
             ),
+        )
+        return
+    _check_reference_resolves(
+        findings, location, target, "rights.service_terms_ref", checker
+    )
+    if fragment is None or not checker.file_checks or checker.root is None:
+        return
+    routes = _terms_register_route_ids(checker.root)
+    if routes is None:
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' names route '{}', but {} could not be read as "
+            "text, so no register row can be resolved for it; the '#route-id' anchor must "
+            "name a real row in the register".format(reference, fragment, PROVIDER_TERMS_REGISTER),
+        )
+        return
+    if fragment not in routes:
+        known = ", ".join(sorted(routes)) if routes else "none"
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' names route '{}', but no row for that route exists "
+            "in {} (recorded routes: {}); the '#route-id' anchor must name a real register "
+            "row, matched exactly and case included, because a fragment for a row that was "
+            "never written names terms the record does not hold".format(
+                reference, fragment, PROVIDER_TERMS_REGISTER, known
+            ),
+        )
+
+
+def _check_terms_snapshot_reference(
+    findings: Findings,
+    location: str,
+    reference: str,
+    target: str,
+    fragment: str | None,
+    checker: PathChecker,
+) -> None:
+    """Resolve a bounded snapshot reference in the documented layout.
+
+    The documented form is ``provenance/provider_terms/<route-id>/<file>``:
+    a route directory that identifies the authoring route, holding the
+    captured terms file. Anything else under ``provenance/provider_terms/``
+    - a file with no route directory, a route directory with no file, deeper
+    nesting, or a fragment - does not name the documented record and is
+    rejected instead of resolved by luck. The route directory must then be a
+    real directory in the checkout: a missing one, a plain file in its place
+    or a symlink (which can point outside the root) is reported.
+    """
+    if fragment is not None:
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' carries a '#{}' fragment, but the documented "
+            "snapshot form {}<route-id>/<file> has no fragment; the route is the directory "
+            "name, so a fragment here is an invented reference to a row that was never "
+            "written".format(reference, fragment, PROVIDER_TERMS_SNAPSHOT_DIR),
+        )
+        return
+    rest = target[len(PROVIDER_TERMS_SNAPSHOT_DIR):]
+    parts = rest.split("/")
+    if len(parts) != 2 or not all(part.strip() for part in parts):
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' does not match the documented snapshot layout "
+            "{}<route-id>/<file>; a terms snapshot lives in a per-route directory, so a "
+            "file written directly under {} (no route directory), a route directory with no "
+            "file, and nesting deeper than <route-id>/<file> are all rejected".format(
+                reference, PROVIDER_TERMS_SNAPSHOT_DIR, PROVIDER_TERMS_SNAPSHOT_DIR
+            ),
+        )
+        return
+    if not checker.file_checks or checker.root is None:
+        return
+    route_relative = PROVIDER_TERMS_SNAPSHOT_DIR + parts[0]
+    route_dir = checker.root / route_relative
+    linked = _symlinked_component(checker.root, route_relative)
+    if linked is not None:
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' resolves through the symlink '{}'; the route "
+            "directory must be a real directory inside the checkout, because a symlink can "
+            "point at a terms directory the entry does not govern".format(reference, linked),
+        )
+        return
+    if not route_dir.exists():
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' names the route directory {}, which does not "
+            "exist; a snapshot reference must match {}<route-id>/<file> with a real route "
+            "directory".format(reference, route_relative, PROVIDER_TERMS_SNAPSHOT_DIR),
+        )
+        return
+    if not route_dir.is_dir():
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' names the route path {}, which is not a "
+            "directory; the route component of {}<route-id>/<file> must be a real route "
+            "directory".format(reference, route_relative, PROVIDER_TERMS_SNAPSHOT_DIR),
         )
         return
     _check_reference_resolves(

@@ -138,6 +138,7 @@ func _check_version(version: Dictionary) -> void:
 
 
 func _check_settings() -> void:
+	var prior_failures := _failures.size()
 	var main_scene: String = ProjectSettings.get_setting("application/run/main_scene", "")
 	if main_scene != BOOT_SCENE_PATH:
 		_fail("application/run/main_scene is '%s', expected '%s'" % [main_scene, BOOT_SCENE_PATH])
@@ -157,7 +158,8 @@ func _check_settings() -> void:
 	if physics_engine != EXPECTED_PHYSICS_ENGINE:
 		_fail("physics/3d/physics_engine is '%s', expected '%s'" % [physics_engine, EXPECTED_PHYSICS_ENGINE])
 
-	print("[boot-smoke] project settings: main scene, renderer, %s backend and 60 ticks/second confirmed" % EXPECTED_PHYSICS_ENGINE)
+	if _failures.size() == prior_failures:
+		print("[boot-smoke] project settings: main scene, renderer, %s backend and 60 ticks/second confirmed" % EXPECTED_PHYSICS_ENGINE)
 
 
 ## Pre-loads a scene and instantiates it once, off-tree, so that script parse

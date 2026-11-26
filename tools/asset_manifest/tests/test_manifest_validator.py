@@ -107,6 +107,43 @@ def complete_entry(entry_id: str = "car.fixture.body") -> dict:
     }
 
 
+REAL_TERMS_REGISTER = _REPO_ROOT / "provenance" / "PROVIDER_TERMS.md"
+
+
+def write_terms_register(root: Path, route_ids) -> Path:
+    """Write a register fixture whose rows are exactly ``route_ids``.
+
+    Mirrors the real register's shape (one backticked route ID per row of the
+    observed-routes table) so row resolution is exercised against the same
+    text form the checkout uses.
+    """
+    rows = "".join(
+        "| `{}` | fixture service route | fixture-model | fixture terms | fixture basis | "
+        "fixture output | OPEN / BLOCKING |\n".format(route_id)
+        for route_id in route_ids
+    )
+    path = root / "provenance" / "PROVIDER_TERMS.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Provider-terms intake (fixture)\n\n"
+        "## Observed authoring routes\n\n"
+        "| Route ID | Service / API route | Model(s) observed | Terms document, version, "
+        "date | Input-rights basis | Output redistribution / dedication compatibility | "
+        "Verification |\n"
+        "| --- | --- | --- | --- | --- | --- | --- |\n" + rows,
+        encoding="utf-8",
+    )
+    return path
+
+
+def copy_real_terms_register(root: Path) -> Path:
+    """Copy the checkout's real register into a fixture root (read-only source)."""
+    path = root / "provenance" / "PROVIDER_TERMS.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REAL_TERMS_REGISTER, path)
+    return path
+
+
 def touch(root: Path, relative: str) -> Path:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -671,13 +708,73 @@ class ManifestValidatorTestCase(unittest.TestCase):
         self.assertIn("unresolved-reference", error_codes(findings))
 
     def test_service_generated_accepts_the_terms_register_with_a_route_anchor(self):
-        """Positive control: the register row is the applicable terms entry."""
+        """Positive control: the anchor names a row that exists in the register."""
         entry = service_entry(self.root)
-        touch(self.root, "provenance/PROVIDER_TERMS.md")
+        write_terms_register(self.root, ["pi-stepfun", "pi-longcat"])
         entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-stepfun"
         manifest = write_manifest(self.root, [entry])
         findings = validate(self.root, manifest, check_hashes=True)
         self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_service_generated_rejects_an_invented_register_fragment(self):
+        """Independent failure: a '#route-id' for a row that was never written."""
+        entry = service_entry(self.root)
+        write_terms_register(self.root, ["pi-stepfun", "pi-longcat"])
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#missing-fixture-route"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("unresolved-reference", codes)
+        text = messages(findings)
+        self.assertIn("missing-fixture-route", text)
+        self.assertIn("no row for that route exists", text)
+
+    def test_service_generated_rejects_a_wrongly_cased_register_fragment(self):
+        """Route IDs are identifiers: the row 'pi-stepfun' is not 'PI-STEPFUN'."""
+        entry = service_entry(self.root)
+        write_terms_register(self.root, ["pi-stepfun"])
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#PI-STEPFUN"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("PI-STEPFUN", messages(findings))
+
+    def test_service_generated_rejects_a_bare_register_anchor(self):
+        """A trailing '#' names no route row."""
+        entry = service_entry(self.root)
+        write_terms_register(self.root, ["pi-stepfun"])
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+
+    def test_service_generated_accepts_a_real_register_route_row(self):
+        """End to end against the checkout's real register: 'pi-stepfun' is a row."""
+        entry = service_entry(self.root)
+        copy_real_terms_register(self.root)
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-stepfun"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_service_generated_rejects_an_unregistered_route_against_the_real_register(self):
+        """The real register holds two rows; anything else is an invented fragment."""
+        entry = service_entry(self.root)
+        copy_real_terms_register(self.root)
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-mistral"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("pi-mistral", messages(findings))
+
+    def test_route_row_resolution_is_skipped_without_file_checks(self):
+        """Reading the register is resolution: --no-file-checks stays structural."""
+        entry = service_entry(self.root)
+        write_terms_register(self.root, ["pi-stepfun"])
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-missing"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, file_checks=False)
+        self.assertNotIn("unresolved-reference", error_codes(findings))
 
     def test_service_generated_accepts_a_route_snapshot(self):
         """Positive control: a bounded snapshot under provenance/provider_terms/."""
@@ -687,6 +784,131 @@ class ManifestValidatorTestCase(unittest.TestCase):
         manifest = write_manifest(self.root, [entry])
         findings = validate(self.root, manifest, check_hashes=True)
         self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_service_generated_accepts_a_real_route_snapshot(self):
+        """End to end: the real register's route id with a real snapshot directory."""
+        entry = service_entry(self.root)
+        copy_real_terms_register(self.root)
+        touch(self.root, "provenance/provider_terms/pi-stepfun/user-agreement.html")
+        entry["rights"]["service_terms_ref"] = (
+            "provenance/provider_terms/pi-stepfun/user-agreement.html"
+        )
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_service_generated_rejects_a_snapshot_file_without_a_route_directory(self):
+        """Malformed nesting: a file written directly under provider_terms/."""
+        entry = service_entry(self.root)
+        touch(self.root, "provenance/provider_terms/terms.md")
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/terms.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("unresolved-reference", codes)
+        self.assertIn("documented snapshot layout", messages(findings))
+
+    def test_service_generated_rejects_a_route_directory_without_a_file(self):
+        """Malformed nesting: <route-id>/ with no file below it."""
+        entry = service_entry(self.root)
+        (self.root / "provenance" / "provider_terms" / "pi-stepfun").mkdir(parents=True)
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/pi-stepfun"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("documented snapshot layout", messages(findings))
+
+    def test_service_generated_rejects_a_deeper_snapshot_nesting(self):
+        """Malformed nesting: deeper than <route-id>/<file> is not documented."""
+        entry = service_entry(self.root)
+        touch(self.root, "provenance/provider_terms/pi-stepfun/2026-11-26/INTAKE.md")
+        entry["rights"]["service_terms_ref"] = (
+            "provenance/provider_terms/pi-stepfun/2026-11-26/INTAKE.md"
+        )
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("documented snapshot layout", messages(findings))
+
+    def test_service_generated_rejects_a_snapshot_fragment(self):
+        """The documented snapshot form has no '#fragment' to resolve."""
+        entry = service_entry(self.root)
+        touch(self.root, "provenance/provider_terms/pi-stepfun/INTAKE.md")
+        entry["rights"]["service_terms_ref"] = (
+            "provenance/provider_terms/pi-stepfun/INTAKE.md#output-rights"
+        )
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("output-rights", messages(findings))
+
+    def test_service_generated_rejects_a_missing_route_directory(self):
+        """A route that was never captured has no snapshot directory."""
+        entry = service_entry(self.root)
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/pi-missing/INTAKE.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("unresolved-reference", codes)
+        text = messages(findings)
+        self.assertIn("pi-missing", text)
+        self.assertIn("route directory", text)
+
+    def test_service_generated_rejects_a_route_path_that_is_a_file(self):
+        """The route component must be a directory, not a file in its place."""
+        entry = service_entry(self.root)
+        touch(self.root, "provenance/provider_terms/pi-stepfun")
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/pi-stepfun/INTAKE.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("is not a", messages(findings))
+
+    def test_service_generated_rejects_a_symlinked_route_directory(self):
+        """A symlinked route directory can point outside the checkout."""
+        entry = service_entry(self.root)
+        outside = self.root.parent / ("roadstorm-fixture-terms-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "INTAKE.md").write_text("terms elsewhere\n", encoding="utf-8")
+        route_dir = self.root / "provenance" / "provider_terms" / "pi-stepfun"
+        route_dir.parent.mkdir(parents=True)
+        route_dir.symlink_to(outside)
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/pi-stepfun/INTAKE.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("symlink", messages(findings))
+
+    def test_cli_valid_route_reference_exits_0(self):
+        """End to end through the CLI: a real register row and a real snapshot pass."""
+        first = service_entry(self.root, "texture.service.sky")
+        copy_real_terms_register(self.root)
+        first["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-stepfun"
+        second = service_entry(self.root, "texture.service.ground")
+        with_output(second, "assets/generated/fixture/ground.res")
+        touch(self.root, "assets/generated/fixture/ground.res")
+        second["hashes"] = {
+            "assets/generated/fixture/ground.res": digest_of(
+                self.root / "assets/generated/fixture/ground.res"
+            )
+        }
+        touch(self.root, "provenance/provider_terms/pi-longcat/private.html")
+        second["rights"]["service_terms_ref"] = (
+            "provenance/provider_terms/pi-longcat/private.html"
+        )
+        manifest = write_manifest(self.root, [first, second])
+        self.assertEqual(
+            main([str(manifest), "--root", str(self.root), "--check-hashes", "--quiet"]), 0
+        )
+
+    def test_cli_missing_route_reference_exits_1(self):
+        """End to end through the CLI: an invented route fragment fails."""
+        entry = service_entry(self.root)
+        copy_real_terms_register(self.root)
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-unknown"
+        manifest = write_manifest(self.root, [entry])
+        self.assertEqual(main([str(manifest), "--root", str(self.root), "--quiet"]), 1)
 
     def test_first_party_entry_may_record_the_not_applicable_sentinel(self):
         """The sentinel stays valid where no service produced the asset."""
