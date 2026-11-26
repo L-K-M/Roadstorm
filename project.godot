@@ -1,0 +1,33 @@
+; Engine configuration file.
+; Roadstorm Racer! - M0 shell (placeholder). See PLAN.md milestone M0.2.
+;
+; It is a placeholder shell only: no track, car, motor, AI or menu system
+; exists yet. Renderer choice is provisional until M3's measured comparisons.
+
+config_version=5
+
+[application]
+
+config/name="Roadstorm Racer!"
+config/description="Original desktop arcade racer - M0 placeholder shell (no gameplay yet)."
+run/main_scene="res://scenes/boot.tscn"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+boot_splash/show_image=false
+
+[display]
+
+window/size/viewport_width=1920
+window/size/viewport_height=1080
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[physics]
+
+common/physics_ticks_per_second=60
+common/physics_interpolation=true
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0

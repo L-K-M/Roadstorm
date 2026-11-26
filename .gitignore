@@ -1,2 +1,5 @@
 # Private local orchestration sessions, logs, snapshots and scratch builds.
 /work/
+
+# Godot import cache.
+.godot/
