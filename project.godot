@@ -26,6 +26,10 @@ window/stretch/aspect="expand"
 
 common/physics_ticks_per_second=60
 common/physics_interpolation=true
+; 3D physics backend pinned to Jolt (PLAN M0.1, docs/TECHNICAL_DESIGN.md).
+; "DEFAULT" is not an acceptable value here: the backend is part of the
+; handling contract and a backend change counts as a handling revision.
+3d/physics_engine="Jolt Physics"
 
 [rendering]
 

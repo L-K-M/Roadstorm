@@ -1,0 +1,29 @@
+; Minimal self-contained probe project for Roadstorm M0.8 tick/reset/query fidelity.
+; Owned by the tick-probe job. Deliberately independent of the main game project.
+config_version=5
+
+[application]
+
+config/name="tick_probe"
+run/main_scene=""
+config/features=PackedStringArray("4.7")
+
+[physics]
+
+common/physics_ticks_per_second=60
+; 3D physics backend pinned to Jolt, matching the main project
+; (PLAN M0.1, docs/TECHNICAL_DESIGN.md, review finding 5 of
+; review/implementation/m0-five-jobs-opus-0bbb2f75-c3eb-47f5-9d89-771bce087012.md).
+; The probe must exercise the same backend the game will use.
+3d/physics_engine="Jolt Physics"
+common/physics_interpolation=false
+3d/default_gravity=9.8
+
+[debug]
+
+gdscript/warnings/unassigned_variable=0
+gdscript/warnings/unassigned_variable_op_assign=0
+gdscript/warnings/unused_variable=0
+gdscript/warnings/return_value_discarded=0
+gdscript/warnings/shadowed_variable=0
+gdscript/warnings/integer_division=0

@@ -1,0 +1,25 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+backend setting = Jolt Physics
+margin=0.00 gap=0.200 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=false test_travel=(0.0, 0.0, -0.166667) | commit_travel_z=-0.166667 collide=false
+margin=0.00 gap=0.120 | cast_safe=0.718750 pred_travel_z=-0.119792 | test_hit=true test_travel=(0.0, 0.000087, -0.119792) | commit_travel_z=-0.119792 collide=true
+margin=0.00 gap=0.100 | cast_safe=0.593750 pred_travel_z=-0.098958 | test_hit=true test_travel=(0.0, 0.000087, -0.098958) | commit_travel_z=-0.098958 collide=true
+margin=0.00 gap=0.050 | cast_safe=0.296875 pred_travel_z=-0.049479 | test_hit=true test_travel=(0.0, 0.000087, -0.049479) | commit_travel_z=-0.049479 collide=true
+margin=0.00 gap=0.020 | cast_safe=0.109375 pred_travel_z=-0.018229 | test_hit=true test_travel=(0.0, 0.000087, -0.018229) | commit_travel_z=-0.018229 collide=true
+margin=0.00 gap=0.010 | cast_safe=0.056641 pred_travel_z=-0.009440 | test_hit=true test_travel=(0.0, 0.000087, -0.00944) | commit_travel_z=-0.009440 collide=true
+margin=0.00 gap=0.000 | cast_safe=0.000000 pred_travel_z=-0.000000 | test_hit=true test_travel=(0.0, 0.000087, 0.000046) | commit_travel_z=0.000219 collide=true
+margin=0.04 gap=0.200 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=false test_travel=(0.0, 0.0, -0.166667) | commit_travel_z=-0.166667 collide=false
+margin=0.04 gap=0.120 | cast_safe=0.476562 pred_travel_z=-0.079427 | test_hit=true test_travel=(0.0, 0.034816, -0.119792) | commit_travel_z=-0.119792 collide=true
+margin=0.04 gap=0.100 | cast_safe=0.359375 pred_travel_z=-0.059896 | test_hit=true test_travel=(0.0, 0.034816, -0.098958) | commit_travel_z=-0.098958 collide=true
+margin=0.04 gap=0.050 | cast_safe=0.056641 pred_travel_z=-0.009440 | test_hit=true test_travel=(0.0, 0.034816, -0.049479) | commit_travel_z=-0.049479 collide=true
+margin=0.04 gap=0.020 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.034816, -0.018399) | commit_travel_z=-0.018229 collide=true
+margin=0.04 gap=0.010 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.034816, -0.009695) | commit_travel_z=-0.009440 collide=true
+margin=0.04 gap=0.000 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.034816, 0.000962) | commit_travel_z=0.000219 collide=true
+margin=0.08 gap=0.200 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=false test_travel=(0.0, 0.0, -0.166667) | commit_travel_z=-0.166667 collide=false
+margin=0.08 gap=0.120 | cast_safe=0.238281 pred_travel_z=-0.039714 | test_hit=true test_travel=(0.0, 0.069632, -0.119792) | commit_travel_z=-0.119792 collide=true
+margin=0.08 gap=0.100 | cast_safe=0.109375 pred_travel_z=-0.018229 | test_hit=true test_travel=(0.0, 0.069632, -0.098958) | commit_travel_z=-0.098958 collide=true
+margin=0.08 gap=0.050 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.069632, -0.049409) | commit_travel_z=-0.049479 collide=true
+margin=0.08 gap=0.020 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.069632, -0.019391) | commit_travel_z=-0.018229 collide=true
+margin=0.08 gap=0.010 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.069632, -0.009385) | commit_travel_z=-0.009440 collide=true
+margin=0.08 gap=0.000 | cast_safe=1.000000 pred_travel_z=-0.166667 | test_hit=true test_travel=(0.0, 0.069632, 0.000622) | commit_travel_z=0.000219 collide=true
+EXPERIMENT_DONE
