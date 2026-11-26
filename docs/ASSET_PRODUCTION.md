@@ -15,6 +15,8 @@ Retain the existing root `LICENSE` unchanged for original software, scripts, str
 | Development tools/libraries | Their original licenses, recorded separately; notices included when redistributing relevant code/binaries |
 | Any exceptional external creative input | Its verified original terms; only explicit CC0 accepted by this asset policy |
 
+License by material purpose with explicit manifest scope, not by a blanket folder rule. Executable generators, tests, schemas and game/event definitions remain Unlicense; original editable scores, glyph/mesh artwork sources and their creative outputs use CC0, as do original weights/datasets. List those overrides in the scope document so a JSON score is not confused with executable configuration. Third-party notices/marks retain their terms wherever located.
+
 Godot permits games under other licenses but its runtime and bundled components retain their own terms. Ship exact notices from the pinned engine/export-template version in the source and distribution, and make them readable offline in Licenses. Use the engine's license information and its matching copyright inventory to avoid stale attribution. See [Godot license](https://godotengine.org/license/) and [compliance guide](https://docs.godotengine.org/en/stable/about/complying_with_licenses.html).
 
 The release description should say: “Original Roadstorm Racer! source is released under the Unlicense. Original game art, audio, and learned model artifacts are dedicated under CC0. Engine and dependency notices are included separately.” Do not describe the entire exported executable as wholly public domain.
@@ -28,6 +30,12 @@ Every new project-specific source asset is authored by an LLM or an LLM-written 
 Record the agent/provider/model/date when available, the task/prompt reference, original inputs, generator version, seed, output hash, and reviewer. Do not fabricate model metadata or retain private reasoning, credentials, personal files, or API keys in provenance. A clean build uses committed approved artifacts, so an unavailable model provider cannot stop players from building or playing.
 
 Contributions include an explicit statement accepting the relevant Unlicense/CC0 dedication for rights the contributor controls. Keep it with the contribution record; do not have an agent sign as a person or claim rights on their behalf. The [Unlicense contribution guidance](https://unlicense.org/#unlicensing-contributions) recommends explicit dedication for substantial contributions. No additional approval loop is needed for routine asset generation within this established policy.
+
+M0 establishes the dedication authority once: a record from the authorized repository owner/operator identifying the basis on which applicable rights in configured agent outputs are dedicated, and which authoring accounts/routes it covers. Reference that standing record in task/commit provenance; do not require an agent to invent a human signature for every generated file. New external contributors need their own applicable authority record. The GitHub handle is an organizational reference, not proof of a person's legal identity or employer authority. Where no copyright arises, record the legal-basis assessment without inventing ownership.
+
+Use the existing license and owner instructions where they already establish intent/authorization; record the basis rather than requesting repeated approval for routine contributions. Only actual gaps in rights or terms need resolution before affected material ships.
+
+Provider-terms intake covers **all** LLM-produced material, including software, docs, tests, recipes, scores and training tools, not only remote media generation. A reusable record identifies the applicable provider/service/account or route terms, version/date, input-rights basis and output redistribution/dedication compatibility. Each authoring record references it. Unknown model branding can remain unknown when the service/legal basis is known; unknown or incompatible legal origin blocks inclusion. Keep private identifiers/credentials out of the public record. Resolve an actual rights uncertainty before shipping affected material rather than retroactively asserting a waiver.
 
 ## Art direction
 
@@ -68,7 +76,9 @@ Expect approximately 50–70 distinct reusable prop designs across the common an
 
 Course generation follows the technical track compiler: a manually authored-by-agent route recipe becomes shared render/collision/AI/recovery geometry. Keep scenic objects outside driving-space exclusion volumes. Animation uses simple transforms, paths, and shader/mesh changes, with no imported motion clips required.
 
-Generate icons and the logo from original SVG/polygon recipes. Render car/course thumbnails from the actual approved scenes so previews match gameplay. Create an original readable geometric font or glyph atlas and include its generator/source; do not silently rely on an operating-system or engine-default font. Any default/fallback font that remains packaged belongs in the dependency inventory under its actual terms. English glyph coverage includes uppercase/lowercase or an intentional all-caps UI, digits, all displayed punctuation, currency/units, and controller symbols; run a missing-glyph check over every string.
+Generate icons and the logo from original SVG/polygon recipes. Render car/course thumbnails from actual approved scenes. Prefer an original outline font generated from authored geometric glyphs; purpose-built raster atlases at native required sizes are also acceptable if the same readability tests pass. Include glyph source/generator and any font-building tool in the development inventory. Test every HUD/menu at 100/125/150% and every split layout; bitmap resampling is not automatically a failed accessibility gate, and outline format alone is not proof of readable type.
+
+Do not use `SystemFont` or an uncontrolled system fallback for shipped strings. Explicitly choose fonts rather than silently relying on the engine default. Derive exact fallback/bundled-font notices from the pinned engine/templates and actual export inventory; an original UI font does not itself remove engine-bundled font data. English coverage includes the chosen case style, digits, every displayed punctuation/units symbol and controller glyph; run a missing-glyph check over all strings.
 
 ## Effects and engine sound
 
@@ -86,11 +96,11 @@ Store each composition as a symbolic score with tempo, meter, note pitches/durat
 
 Generate instruments from original oscillator/noise recipes. Percussion, synth/brass/guitar-like timbres, and effects use no recorded instruments or third-party soundfonts. Render stereo masters and runtime encodings from the same score. A small final-lap intensity layer may be added only if it loops and mixes reliably; do not make an adaptive soundtrack engine a prerequisite.
 
-Review the score, note distribution, dynamics, loop transition, instrumentation balance, and actual in-game mix. A second agent should assess previews when audio-capable review is available. If tools cannot hear the result, report that limit and retain a playable preview for feedback; spectral statistics do not establish musical quality. Keep the symbolic source so agents can revise motifs and arrangements directly.
+Review the score, note distribution, dynamics, loop transition, instrumentation balance, and actual in-game mix. Every shipped theme and effect family requires an actual listening record from a capable independent agent or a human reviewer, as defined in [BENCHMARKS.md](BENCHMARKS.md#perceptual-and-production-review). If available tools cannot hear it, retain a preview and keep perceptual approval open; spectral statistics do not establish musical quality. Test engine/music loop seams and decoder cost in Godot, rather than assuming every compressed format has sample-accurate seeking. Keep symbolic sources for revisions. Actual sound/voice counts derive from the approved manifest and shared-mix allocation, not the approximate inventory target.
 
 ## External material policy
 
-The default is original generated content. If an external creative asset becomes useful, treat it as an explicit exception recorded in provenance, and describe it accurately as external rather than newly LLM-authored. Only explicit item-level CC0 evidence satisfies this project's creative-asset policy. “Free,” “royalty free,” or permission for commercial use is insufficient to establish public-domain status or source redistribution rights.
+The baseline uses original generated creative content. Do not import stock packs, fonts, samples or datasets as a shortcut to passing its production proof. If an external creative input is proposed, record its specific need, provenance and effect on the original-content claim; a change to agreed authorship scope needs an explicit scope decision. Only verified item-level CC0 evidence is compatible with this creative-asset policy. “Free,” “royalty free,” or commercial-use permission does not establish public-domain status or source redistribution rights. Engine/build infrastructure remains a separately licensed category, not a creative-asset exception.
 
 Potential sources are candidates, not assets selected for the game:
 
@@ -118,10 +128,16 @@ Remote image/audio/model generation is also optional rather than a build depende
 
 Never set missing facts to an invented author or model. Mark unknown metadata explicitly; unknown legal origin blocks shipping even when nonlegal authoring metadata can be incomplete. Commit original source recipes and approved outputs, with review previews and evidence stored at practical sizes. Asset IDs survive renaming and regeneration.
 
+Rights records link to the owner/contributor authority instrument and applicable authoring-service terms; code/task provenance has the same coverage outside the asset manifest. Lineage traverses all upstream inputs, including glyphs, synth instruments, samples, model weights and training data. Reproducibility class is `canonical_deterministic`, `statistical_training`, or `frozen_service_output`; only the first promises exact normalized hashes on its pinned canonical build image. Other hosts use measured semantic/numeric tolerances unless byte equivalence is demonstrated. CI regenerates changed dependencies and a rotating sample; release rebuilds the complete deterministic set.
+
 ## Release rights gate
 
 The package validator compares export contents with manifests and the dependency inventory. Block release for unknown origins, missing source recipes for first-party generated assets, missing hashes, unregistered fonts/samples/models/plugins, unapproved outputs, disallowed creative licenses, absent notices, or private credentials in artifacts.
 
 Verify that the in-game Licenses screen works offline and includes the original-project statement, CC0 notice, pinned Godot notice, and relevant dependency texts. Include the same notices in distributed source/build archives. The owner/contributor records must cover rights that exist in their contributions; an agent cannot create legal authority through a generated sentence.
+
+Schedule preliminary title/car/rival-name screening before finished badges/cards in M5, refresh before M7 content lock, and confirm at M9. Record jurisdictions, primary registries/store searches, date, evidence and limitations; screening is not a worldwide clearance guarantee. Existing real products sharing a common working name do not alone establish infringement. Keep stable IDs so an identified conflict can be renamed cheaply.
+
+Prefer original game branding and audit the actual export for default icons/splashes/fonts. If an engine/tool mark is deliberately used, retain its applicable branding/license evidence and avoid implying endorsement. Godot's [official press kit](https://godotengine.org/press/) already permits specified logo uses under CC BY 4.0; bespoke permission is not automatically required. Such a logo is outside the original-CC0 creative claim. No optional third-party logo is needed for this game's branding.
 
 Release the original scores, synth/geometry programs, track/car recipes, approved trained weights, training/evaluation configuration, and build instructions alongside final assets. A public-domain game should be useful to remix, not just free to run.

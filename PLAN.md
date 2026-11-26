@@ -1,6 +1,6 @@
 # Roadstorm Racer! implementation plan
 
-Planning baseline: 26 November 2026. Status: ready for implementation; no milestones completed. This plan and its four companion specifications define the proposed 1.0 game. Numerical handling, economy, and performance figures are initial targets to validate in the playable milestones, rather than claims about an existing build.
+Planning baseline: 26 November 2026, revised after ten independent reviews. Status: ready for implementation; no game milestones completed. This plan and its five companion specifications define the proposed 1.0 game. Numerical handling, economy, and performance figures remain initial targets to validate, not claims about a build. [Review responses](docs/REVIEW_RESPONSE.md) record the adopted changes and disputed recommendations.
 
 Build an original desktop arcade racer that makes a short race feel like a journey: an inviting drift through a coastal bend, a mountain climb into a waterfall reveal, and close racing with friends. Prove the driving and four-player experience early, then use reproducible production tools to expand the game.
 
@@ -9,7 +9,7 @@ Build an original desktop arcade racer that makes a short race feel like a journ
 | Area | Version 1.0 commitment |
 | --- | --- |
 | Driving | Forgiving, expressive grip and drift handling; automatic transmission; readable bumps, jumps, and fast recovery |
-| Racing | Eight-car fields; traditional racers plus two learned Roadstormers by default; three difficulties and shared physical limits |
+| Racing | Standard eight-car fields with two learned Roadstormers by default; three difficulties and shared limits; optional humans-only Quick Race has zero AI |
 | Local play | One to four players; four gamepads or keyboard plus three gamepads; a single shared simulation |
 | Courses | Six original authored circuits with elevation, changing width, varied corner rhythm, and animated landmarks |
 | Vehicles | Twelve fictional cars with distinct silhouettes and handling; three starters and nine deterministic unlocks |
@@ -21,7 +21,7 @@ Build an original desktop arcade racer that makes a short race feel like a journ
 | Rights | Original code under the Unlicense; original art/audio dedicated under CC0; complete third-party notices |
 | Authorship | Every new project-specific script, asset recipe, composition, design, and test produced by LLM agents |
 
-The gameplay specification is in [GAME_DESIGN.md](docs/GAME_DESIGN.md). Engineering decisions and tests are in [TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md). Traditional and learned rivals are specified in [OPPONENT_AI.md](docs/OPPONENT_AI.md). The complete asset inventory, generation process, and licensing gates are in [ASSET_PRODUCTION.md](docs/ASSET_PRODUCTION.md). Those documents resolve details behind this roadmap; a change affecting their shared counts or rules must update all affected documents together.
+The gameplay specification is in [GAME_DESIGN.md](docs/GAME_DESIGN.md). Engineering decisions/tests are in [TECHNICAL_DESIGN.md](docs/TECHNICAL_DESIGN.md); shared references, fixtures, metrics and tolerances are in [BENCHMARKS.md](docs/BENCHMARKS.md). Traditional and learned rivals are specified in [OPPONENT_AI.md](docs/OPPONENT_AI.md). Asset production and rights are in [ASSET_PRODUCTION.md](docs/ASSET_PRODUCTION.md). A change affecting shared rules updates all affected documents together.
 
 ### Meaning of LLM production
 
@@ -44,7 +44,7 @@ Version 1.0 includes finished courses rather than endless random roads. Defer on
 
 ## Milestone dependencies
 
-M0 establishes the tools. M1 proves the car. M2 proves the course tools. M3 proves four local players and performance. M4 completes racing rules and traditional opponents. M4B trains and proves learned rivals. M5 combines them into a polished vertical slice. After M5, M6 systems work and M7 content production can proceed in parallel against frozen interfaces. M8 validates the complete game. M9 packages and releases it.
+M0 establishes tools and proves tick/reset control; M1 proves the car and handling fixtures; M2 proves course tools and the shared AI contracts. M3 has separate simulation/rendering and physical-controller evidence. M4 may proceed after M3's technical gate while missing hardware checks remain open. Its late-stage teacher enables a bounded learning feasibility spike. M4B completes two learned styles alongside independent M5 art/audio/menu preparation; integrated M5 acceptance still requires both learned styles and actual controller verification. M6 and M7 then proceed against frozen interfaces. M7 prepares training candidates; M8.1 balances/freezes launch handling before M8.7 final training and evaluation. M9 packages/releases.
 
 The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are deliberate decision gates: resolve their failures before committing to bulk content. Record effort after each completed milestone to estimate the remaining work from actual project experience.
 
@@ -52,13 +52,15 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 **Result:** a reproducible empty game shell with clear rights and reliable checks. Dependency: none.
 
-- [ ] M0.1 Pin Godot 4.7.2 Standard, matching export templates, and the asset-generation Python version, with checksums and installation instructions. Verify the chosen release before installing; update the pinned version through a recorded decision if necessary. The official [release archive](https://godotengine.org/download/archive/) lists 4.7.2 as stable at this planning baseline.
+- [ ] M0.1 Pin Godot 4.7.2 Standard, matching templates, built-in Jolt/settings and asset-generation Python, with checksums. Verify before installation; update only through a recorded regression decision. The [official archive](https://godotengine.org/download/archive/) is the version authority.
 - [ ] M0.2 Create `project.godot`, a boot scene, game/menu scenes, typed resource schemas, the planned directory structure, and ignore rules for caches and local credentials.
-- [ ] M0.3 Preserve the existing Unlicense; add the explicit asset CC0 notice and scope, contribution instructions, dependency inventory, and empty asset/provenance manifests. Extract notices from the pinned runtime.
+- [ ] M0.3 Preserve the Unlicense; add explicit material-specific CC0 scope, owner/contributor authority basis, provider-terms intake for all LLM-authored work, dependency inventory and provenance manifests. Extract actual pinned-runtime notices; never invent signatures or rights holders.
 - [ ] M0.4 Build original command-line import, test, content-validation, capture, and export entry points. A deliberately failing test must return a failing exit code.
 - [ ] M0.5 Add CI for resource/script checks, tests, asset validation, and native export preparation. CI must run from a clean checkout without editor interactions or generation-service accounts.
-- [ ] M0.6 Select and record reference machines, OS versions, controller models, baseline renderer, and performance capture method. Compare Compatibility and Mobile rendering before locking the baseline.
+- [ ] M0.6 Record machines/OS/controllers, provisional renderer and capture methods. Inventory visual/audio/control review capabilities; make M3's representative tests authoritative for renderer selection.
 - [ ] M0.7 Establish `docs/STATUS.md`, an evidence directory, decision records, and task ownership for collaborating agents.
+- [ ] M0.8 Build a minimal coordinator/query/reset probe: twelve logical ticks per nonterminal training-style request, early stop with elapsed-tick count on termination/truncation, zero advancement while waiting, complete reset and measured accelerated-versus-real-time fidelity before the motor depends on it.
+- [ ] M0.9 Create versioned handling/AI/reference/scenario schemas and fixture configurations from BENCHMARKS; schema definitions do not require a working AI implementation yet.
 
 **Acceptance:** a second agent can follow the setup guide, import, run the boot scene, execute a passing and a failing check, and export a desktop smoke build. The license inventory identifies the runtime separately from original project material. No dependency or creative input has unknown terms. Record missing target hardware explicitly; an untested platform does not become verified through a successful export.
 
@@ -66,14 +68,15 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 **Result:** a driving laboratory worth iterating on. Dependency: M0.
 
-- [ ] M1.1 Implement a custom arcade motor, normalized driver commands, keyboard/gamepad steering, acceleration, braking, reverse, automatic gears, handbrake, and reset.
+- [ ] M1.1 Implement the custom motor and normalized commands using the coordinator/movement API contract; record acceleration/drag/grip/drift/surface parameters and dimension/contact envelopes, then implement controls, gears and reset.
 - [ ] M1.2 Build graybox straights, broad sweepers, hairpins, a bank, a crest, a jump, a compression, walls, gravel, shoulders, and a recovery zone.
 - [ ] M1.3 Add explicit drift entry, sustain, transition, exit, and capped exit surge; expose tuning resources and telemetry.
 - [ ] M1.4 Implement bounded ground adhesion, swept movement, landing recovery, gentle side contact, and strong-impact response. Presentation suspension cannot throw the simulation body.
 - [ ] M1.5 Add chase/near/hood cameras, rear view, speed readout, drift cues, and basic synthesized engine/tire feedback.
 - [ ] M1.6 Capture keyboard and controller runs, telemetry traces, and a handling comparison report using the three starter configurations.
+- [ ] M1.7 Build CalibrationDriver and immutable sweeper/hairpin/esses/surface/contact/drafting fixtures; compare surge candidates and stock/max loadouts with the declared tolerances. Offer a play/feedback checkpoint without requiring manual implementation.
 
-**Acceptance:** a standard assisted driver can repeatedly enter and recover a 12–40 degree drift, retain useful corner speed, and resume control after contact. A clean drift and a clean grip line through the benchmark sweeper are within 5% of each other's elapsed time after tuning. Extreme steering and countersteering do not produce uncontrolled oscillation. The car passes maximum-speed wall, crest, jump, reverse, and reset tests without tunneling, nonfinite values, or persistent stuck states. At 30, 60, and 120 rendered FPS the fixed-tick benchmark results remain within the documented tolerance. Review captured driving; metrics alone cannot close this milestone.
+**Acceptance:** the Standard-assisted fixture driver repeatedly enters/recovers a 12–40 degree drift and retains useful speed/control. Grip/drift comparison passes the 5% sweeper target and reports other corner classes/mixed laps; surge/drafting have measured effects. Contacts, crests, reverse and resets pass without tunneling/nonfinite/stuck states. The 30/60/120 FPS trace meets BENCHMARKS tolerances. Capability-labeled independent motion/control review records the experience limits; bot completion alone cannot certify fun.
 
 ## M2 build the course and geometry pipeline
 
@@ -85,8 +88,9 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 - [ ] M2.4 Build reusable original road, terrain, tunnel, bridge, tree, cliff, sign, and barrier generators with LOD and instancing support.
 - [ ] M2.5 Author the full Riviera Run route in graybox, with all its elevation and width changes, three landmark placements, and complete recovery boundaries.
 - [ ] M2.6 Add automated course flythroughs, minimaps, car turntables, contact sheets, and asset manifest generation.
+- [ ] M2.7 Validate closed-loop frame closure, actual car/grid/clearance envelopes, gate/runoff legality and tagged course-rhythm features; ratify shared observation/intent schemas before M4.2.
 
-**Acceptance:** the car completes repeated Riviera laps without a collision seam or progress jump. An overpass test never attaches the car to the wrong route segment. Course validation intentionally rejects broken fixtures. A second agent generates a small alternate test loop from documented inputs without editing generator code. A clean regeneration produces matching normalized outputs and hashes under the pinned toolchain.
+**Acceptance:** Riviera laps have no seam or progress jumps; overpass and blocked-anchor fixtures pass. Broken geometry/course-contract fixtures fail validation. Another agent generates an alternate loop without changing generator code. Canonical-toolchain regeneration matches normalized hashes; cross-host semantic tolerances are separate. Record measured Riviera lap/reference splits before final art.
 
 ## M3 prove four local players
 
@@ -94,49 +98,52 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 - [ ] M3.1 Implement device-to-player ownership, joining, readying, car selection, leaving, remapping, per-device deadzones, and persistent preferred controls.
 - [ ] M3.2 Render one shared world through one to four viewports. Implement all split layouts, native-resolution HUD overlays, and a nonrendered spare quadrant for three players.
-- [ ] M3.3 Add global pause, disconnect/reconnect/reassign handling, focus loss behavior, and safe conversion of a withdrawn participant to AI.
+- [ ] M3.3 Add global pause, disconnect/reconnect/reassign handling, focus loss and current-attempt retirement; explicit Local Cup withdrawal converts its slot to AI only at the next event.
 - [ ] M3.4 Run eight cars on representative route sections with provisional scripted drivers. Add scenery stress scenes, bounded particles, and shared audio mixing.
 - [ ] M3.5 Measure the worst four-camera scene and remove duplicate rendering, simulation, assets, or audio work. Freeze a documented rendering budget.
 
-**Acceptance:** four actual gamepads and keyboard-plus-three-gamepad sessions independently steer the correct cars; no device silently moves between players. A reconnect preserves slot ownership. Every layout remains usable at 1920×1080. With eight cars and representative scenery, the recorded reference machine meets the 60 FPS target and frame-time gates in the technical specification. Synthetic inputs verify routing logic but do not replace hardware verification. If hardware is unavailable, keep this gate open and continue independent tooling rather than claiming completion.
+**Acceptance has two records:** technical simulation/rendering/audio/routing must pass representative eight-car/four-view frame-time and mix gates, locking renderer/player-count presets. Actual-device verification must pass four gamepads and keyboard-plus-three-gamepad ownership/reconnect/remapping. Synthetic inputs cannot replace hardware. M4 and independent work may start after the technical record passes; missing physical evidence keeps that portion open and blocks integrated M5 acceptance/release. All layouts remain readable at 1080p including 150% HUD scale and held rear view.
 
 ## M4 complete racing and traditional opponents
 
-**Result:** a complete, replayable race from grid to results. Dependencies: M2 and M3.
+**Result:** a complete, replayable race from grid to results. Dependencies: M2 and M3's technical gate; physical controller evidence may complete in parallel before M5 acceptance.
 
 - [ ] M4.1 Implement the race state machine, countdown, validated laps, ranking, finish deadlines, ties, DNF, restart, and results.
-- [ ] M4.2 Implement AI planning, speed selection, drift decisions, drafting, legal overtakes, defending, mistakes, and safe recovery through the player command interface.
-- [ ] M4.3 Tune Rookie, Racer, and Expert profiles and four opponent personalities using the same car resources and physical limits as humans.
+- [ ] M4.2 Implement Classic planning through the shared AIObservation → TacticalIntent → safety/follower → DriverCommand interface from the start, including drift/drafting/overtake/recovery decisions and demonstration telemetry.
+- [ ] M4.3 Publish five-run calibration references and tune three difficulties/four Classic personalities against their desired speed profiles, perception ages and unchanged physical limits.
 - [ ] M4.4 Complete paired vehicle contacts, respawn immunity, wrong-way warnings, stuck detection, and shortcut protection.
 - [ ] M4.5 Add a seeded race harness with contact, recovery, progress, pacing, and input telemetry; add diagnostic replay captures.
+- [ ] M4.6 As soon as a stable teacher exists, run the bounded bridge/actor/learning spike in parallel with late M4 and M5 preparation. Measure throughput, inference cost and actual cloned-versus-learned behavior before extended training; estimate T11's wall/core-hour cost.
 
 **Acceptance:** at least 100 seeded races per difficulty on the slice route complete without race-state deadlocks. With finish deadlines disabled for mechanical evaluation, at least 99% of AI entries finish, and no route point repeatedly requires a recovery. Separately measure legitimate deadline DNFs against reference player paces. Dedicated blocking, narrow-pass, jump, and collision scenarios show no deliberate ramming, hidden speed changes, or teleporting catch-up. Test skipped gates, reverse crossings, resets, simultaneous finishes, pause, and abandonment. Review close-racing footage from both player and overhead cameras.
 
 ## M4B train learned Roadstormers
 
-**Result:** two special opponent styles use a small original learned tactical policy during real races. Dependency: M4 and stable handling/content revisions. Full design: [OPPONENT_AI.md](docs/OPPONENT_AI.md).
+**Result:** two special opponent styles use a small original learned tactical policy during races. Feasibility starts in late M4; accepted slice training uses frozen starter handling and M4's contracts. Independent M5 preparation can overlap. Full design/budgets: [OPPONENT_AI.md](docs/OPPONENT_AI.md).
 
-- [ ] M4B.1 Freeze the shared observation/intent contract and safety constraints. Instrument Classic drivers to generate original tactical demonstrations.
+- [ ] M4B.1 Ratify the already-defined shared schema, learning/reward/difficulty/style configuration, safety metrics and matched scenarios; freeze starter handling and collect balanced original intent demonstrations.
 - [ ] M4B.2 Build and validate a local-only headless Godot training bridge with explicit step/reset/timeout/shutdown semantics, then measure its throughput before a long run.
 - [ ] M4B.3 Pin the development-only learning toolchain; implement behavioral cloning followed by PPO training from original simulation data and random initial weights.
 - [ ] M4B.4 Export a small policy's numeric weights and normalization; implement original GDScript inference and verify parity with the training implementation.
 - [ ] M4B.5 Produce pressure-oriented Surge and patient-cutback Switch styles, with shared low-level control, difficulty settings, and physical limits.
 - [ ] M4B.6 Add mixed fields, roster identification, Classic Only preference, policy safety/failure handling, model cards, and repeatable evaluation scenarios.
 - [ ] M4B.7 Evaluate held-out situations against matched Classic baselines, review full-race clips, and record training cost and remaining generalization risks.
+- [ ] M4B.8 Respect the three-iteration pilot and cumulative compute caps; publish learning curves/failures and a concrete next decision at exhaustion. Do not hide failure behind endless retraining or remove required Roadstormers.
 
 **Acceptance:** real learned inference is active for two rivals on Riviera; no runtime cloud/model service is needed. Exported inference passes numerical parity tests, safety failures cannot corrupt racing, and learned rivals pass the slice completion/contact/pace criteria. Both styles show readable tactical differences in held-out traffic scenarios. A safe Classic fallback keeps an exceptional faulty race playable, but does not close this feature. Full six-course generalization and release model acceptance remain required in M7/M8.
 
 ## M5 finish the vertical slice
 
-**Result:** a small version of the intended finished game. Dependencies: M1 through M4 and M4B.
+**Result:** a small version of the intended finished game. Preparation depends on M1–M4's relevant interfaces; integrated acceptance additionally requires M4B and M3 physical-device evidence.
 
 - [ ] M5.1 Finish Riviera Run's beach, village, marina, tunnel, lighting, road signage, flyover, and scenery animation.
-- [ ] M5.2 Finish the three starter cars with distinct handling, LODs, paint options, thumbnails, and engine families.
+- [ ] M5.2 Finish the three starter cars' visuals, LODs, paints, thumbnails and engine families against frozen slice handling; physics changes reopen affected AI/handling evidence.
 - [ ] M5.3 Finish menu → join → select → race → results → rematch flow, a short playable driving tutorial, basic settings, and a real save round trip.
 - [ ] M5.4 Finish the first original race composition, menu/results themes, tires, contacts, environmental audio, and a balanced four-player mix.
 - [ ] M5.5 Complete original HUD typography, player markers, drift feedback, minimap, transition effects, and accessible readability settings.
 - [ ] M5.6 Have an agent other than each feature's implementer review the integrated build, footage, audio previews, performance evidence, and provenance.
 - [ ] M5.7 Demonstrate the mixed field of Classic Racers and Roadstormers and a comparison race with Classic Only, including readable rival identities and both learned styles.
+- [ ] M5.8 Complete preliminary title/car/rival-name screening before final badges/cards, and a capability-verified look/listen/rights package proof. Keep screening limitations and any unresolved experience review explicit.
 
 **Acceptance:** single-player and four-player sessions work from a fresh launch without developer intervention. The slice meets the handling, fairness, visual, audio, and performance criteria. Every asset has a source recipe and approved record. A reviewer can explain each car's handling identity and recognize at least three distinct Riviera landmarks. Record unresolved subjective feedback honestly; do not expand content to conceal a weak driving model.
 
@@ -145,25 +152,25 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 **Result:** the complete game structure works with temporary references to future content. Dependency: M5; can overlap M7 asset authoring.
 
 - [ ] M6.1 Implement all five modes, configurable Quick Race, solo career cups, local exhibition cups, Arcade Rush checkpoints, Time Attack records, and sampled ghosts.
-- [ ] M6.2 Implement the twelve-car collection, achievement unlocks, credit rewards, purchases, reversible upgrade loadouts, and paint selection.
-- [ ] M6.3 Implement four local profile slots plus a temporary guest profile; keep career rewards scoped to the selected host profile.
-- [ ] M6.4 Add versioned saves, atomic replacement, backups, validation, migration, and reward transactions that apply once per event instance.
+- [ ] M6.2 Implement twelve cars, defined cup-result unlocks, deterministic style/credit rewards and upgrade formulas, reversible loadouts, paints and stock medal sessions.
+- [ ] M6.3 Implement four local profile slots/guest, explicit room/device/player settings ownership and host succession; rewards belong only to the selected solo Career/solo Quick Race profile, never local exhibition.
+- [ ] M6.4 Add one-writer versioned saves, event IDs allocated before GO, monotonic generations, tested replacement/backups/recovery, write-failure handling and reward acknowledgement boundaries.
 - [ ] M6.5 Complete settings, tutorial prompts, progress explanations, medal targets, garage stat comparisons, licenses, and controller-only navigation.
 - [ ] M6.6 Run economy simulations and interruption tests; document expected unlock and upgrade pacing.
 
-**Acceptance:** the designed unlock graph reaches exactly twelve cars, permits recovery from poor results, and never requires spending upgrade credits to access a car. One standard three-lap finish buys a first upgrade; roughly eight typical standard finishes upgrade a favorite fully. Short/long Quick Race rewards scale with laps. Crashing during reward/save operations grants each valid reward once. Corrupt or old saves recover safely without silently overwriting the last usable copy. Local exhibition offers stock loaners and never contaminates solo career records. Records and ghosts reject incompatible handling/course versions.
+**Acceptance:** the unlock graph reaches twelve cars, permits recovery from poor results and never spends upgrade credits to access a car. One standard finish buys an upgrade; the documented economy reference takes roughly eight. Short/long Quick Race rewards scale with laps. Durably acknowledged results survive interruption and cannot apply twice; a pre-acknowledgement interrupted attempt may require replay. Startup recovery follows the deterministic generation/conflict rules and preserves the last usable copy. Exhibition loaners never change career records; incompatible records/ghosts are separated.
 
 ## M7 produce the full content
 
 **Result:** all launch courses, cars, music, effects, and events are finished. Dependency: M5, with mode integration from M6.
 
-- [ ] M7.1 Produce Alpine Switchback and Emerald Rally, plus three cars, using the existing production tools. Validate the second course before generating the rest.
+- [ ] M7.1 Prove a second contrasting course/car/music/HUD/mix bundle, including source edits and full regeneration; record production/review effort before scaling. Then finish Alpine/Emerald and three cars with the established tools.
 - [ ] M7.2 Produce Canyon Voltage and Metro Sunset, plus three cars. Reuse shared props while preserving unique silhouettes, palettes, and road rhythms.
 - [ ] M7.3 Produce Stormpeak Finale and the final three cars. Reserve the hardest sequences for the finale while retaining forgiving recovery space.
 - [ ] M7.4 Finish six race themes, all environment kits, animated spectacles, final previews/minimaps, paint sets, effects, and release graphics.
 - [ ] M7.5 Populate the exact championship schedule, car unlock awards, per-course Arcade Rush timing, and stock Time Attack medals.
 - [ ] M7.6 Validate the full car/course matrix at stock and maximum upgrades, targeted intermediate upgrade boundaries, pairwise layout/difficulty/assistance combinations, and curated stress cases; perform separate art, audio, route-readability, and rights reviews.
-- [ ] M7.7 Train/evaluate the learned rivals against the expanded roster and courses, retain held-out layouts/seeds, and ship approved original checkpoints with full model/data provenance.
+- [ ] M7.7 Prepare expanded training data and provisional checkpoints, preserving whole-course/seed holdouts; estimate bounded final-training cost. These are candidate models until M8.1 handling freeze and M8.7 acceptance.
 
 **Acceptance:** six distinct circuits and twelve finished cars exist; no required content is a placeholder. Each course passes its track contract and has three major set pieces. All modes reference valid content. Every course supports stock starter cars and eight-car fields; narrow sections do not force unavoidable collisions. The complete shipped asset set passes the manifest/license check. Performance is rechecked as each course lands rather than deferred to the end.
 
@@ -171,13 +178,13 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 **Result:** a release candidate with evidence against the full specification. Dependencies: M6 and M7.
 
-- [ ] M8.1 Tune car parity, drift versus grip, upgrades, AI pace/aggression, cup difficulty, rewards, and Arcade Rush extensions from telemetry and observed play.
+- [ ] M8.1 Tune parity, drift/grip, upgrades, AI/cup pace, rewards and per-car Arcade Rush budgets; publish references and freeze the launch motor/car/surface/course candidate before final model training/evaluation.
 - [ ] M8.2 Finish accessibility checks, remapping edge cases, four-player HUD readability, camera comfort, audio headroom, and complete menu flows.
 - [ ] M8.3 Profile each course at one, two, three, and four players; reduce excess draw calls, overdraw, memory, physics work, and audio voices.
 - [ ] M8.4 Run the release verification matrix, long-session tests, save corruption/migration cases, content regeneration, offline play, and clean-machine tests on each supported OS.
 - [ ] M8.5 Resolve all crash, progress-loss, controller-blocking, rules, and licensing defects. Record any remaining low-severity limitations and the exact tested configuration.
 - [ ] M8.6 Audit all project-authored work for its source record and all third-party components for applicable notices, including fonts, encoders, plugins, and export templates.
-- [ ] M8.7 Close the full learned-AI evaluation gate: course-level completion, fair contacts and pace, low safety-intervention rate, recognizable tactical styles, and inference cost with four viewports.
+- [ ] M8.7 Within the declared final allocation, train or demonstrate compatibility on the frozen candidate; close course/difficulty completion, contact/pace, intervention, useful style and four-view inference gates. Later physical changes reopen compatibility and only necessary bounded retraining.
 
 **Acceptance:** all blocking verification cases pass, the performance gates hold on recorded hardware, and a two-hour mixed-mode session shows no progressive memory growth or loss of input. No unresolved issue can corrupt progression, invalidate race results, or prevent a supported input configuration from playing. LLM visual/audio review and any available player feedback are recorded separately from automatic checks. If there has been no independent human playtest, report that limitation without calling bot results proof of enjoyment.
 
@@ -187,7 +194,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 - [ ] M9.1 Generate native release exports with a version/build identifier, checksums, correct icons, full notices, and offline license screens.
 - [ ] M9.2 Verify macOS Apple Silicon, Windows x86-64, and Linux x86-64 packages on their target operating systems using the stated supported versions.
-- [ ] M9.3 Sign/notarize macOS distribution when owner credentials are available. Keep secrets outside the repository. If unavailable, label the unsigned build accurately and document its installation steps; do not advertise it as notarized.
+- [ ] M9.3 Use Developer ID signing/notarization when credentials are available; otherwise use built-in ad-hoc signing and label the package unnotarized. Test a downloaded/quarantined package, document launch steps and keep secrets outside the repo.
 - [ ] M9.4 Publish source recipes, generation instructions, dependency versions, asset provenance, control guide, accessibility guide, known issues, and release notes with the builds.
 - [ ] M9.5 Generate screenshots and a short trailer from actual gameplay; show local split-screen and representative courses. No images should depict absent game features.
 - [ ] M9.6 Confirm the final product title and release destination with the owner if those have changed. The chosen working title is Roadstorm Racer!; public-domain dedication is not trademark clearance.
@@ -197,7 +204,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 ## How agents execute the plan
 
-At each milestone, a coordinating agent chooses the smallest dependency-ready task, describes its observable result, and assigns exclusive ownership of the affected files. Work in isolated branches/worktrees when parallel changes would overlap. Keep central scenes, resource schemas, and project settings under one integrator's ownership.
+At each milestone, a coordinating agent chooses dependency-ready tasks and assigns exclusive file ownership in the shared checkout. Do not create a branch/worktree per agent. Serialize overlapping edits and shared integration; keep central scenes/schemas/settings under one integrator. Commit explicitly owned paths with `--only`, preserve others' staged work, retry ordinary Git contention, and never rewrite shared history as a shortcut. Review agents follow REVIEW_PROMPT and work in one chat without subagents.
 
 | Agent responsibility | Typical independent work | Review evidence |
 | --- | --- | --- |
@@ -214,6 +221,8 @@ Each task record includes its milestone/task ID, scope, input versions, changed 
 The coordinator closes a milestone only after its checks and experiential reviews pass. Update `docs/STATUS.md` with completed tasks, open defects, the current runnable build, measured performance, and the next task. A milestone may remain open while unrelated tooling progresses. Do not replace a failed gate with a larger batch of generated content.
 
 ## Risks and decision gates
+
+Five consolidated feasibility packages cover the reviewers' overlapping proposals: M0/M1 exact-tick/reset/query/throughput probe; M1/M2 handling/contact/progress/reference fixtures; late M4/M4B bounded learning/semantic-style comparison; M3 four-view/controller/audio/font stress; M5/M7 first/second production and rights dry runs. Record inputs, maximum work/compute, pass criteria and the decision each unlocks before execution. None has been run by this planning revision.
 
 | Risk | Early evidence | Required response |
 | --- | --- | --- |

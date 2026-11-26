@@ -11,6 +11,8 @@ The project is at the planning stage. No playable game or build system has been 
 - [Technical design](docs/TECHNICAL_DESIGN.md) — engine, architecture, data contracts, content tools, performance, testing, and exports.
 - [Opponent AI](docs/OPPONENT_AI.md) — traditional racers, learned Roadstormers, offline training, fairness, and evaluation.
 - [Asset production and licensing](docs/ASSET_PRODUCTION.md) — original geometry, graphics, sound, music, provenance, and public-domain policy.
+- [Benchmarks and acceptance contracts](docs/BENCHMARKS.md) — reference drivers, fixtures, measurable AI/handling gates, performance evidence, and experience review.
+- [Review responses](docs/REVIEW_RESPONSE.md) — dispositions of the ten initial reviews and resulting plan changes.
 
 All new project-specific implementation and creative production will be authored by LLM agents. Existing engines and tools remain third-party infrastructure. The planned engine is Godot 4.7.2 with typed GDScript; the first implementation milestone will pin and verify the toolchain.
 

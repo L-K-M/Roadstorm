@@ -6,9 +6,7 @@ Complete the review yourself in this single chat. Do not spawn subagents, delega
 
 ## Review baseline
 
-Review this specific commit so concurrent reviewers assess the same plan:
-
-`206edf5eac85da73525dde79a36a4dbc61547e6a`
+At the start, record `git rev-parse HEAD` once as your reviewed commit and read that exact snapshot, so another concurrent review commit cannot silently change your baseline. The ten initial reviews in `review/` assessed `206edf5eac85da73525dde79a36a4dbc61547e6a`; the current plan incorporates their reconciliation, summarized in `docs/REVIEW_RESPONSE.md`.
 
 Read all of these files:
 
@@ -18,6 +16,7 @@ Read all of these files:
 - `docs/TECHNICAL_DESIGN.md`
 - `docs/OPPONENT_AI.md`
 - `docs/ASSET_PRODUCTION.md`
+- `docs/BENCHMARKS.md`
 - `LICENSE`
 
 If working files differ from the baseline, inspect the baseline using `git show <baseline-commit>:<path>`. Do not check out the old commit, switch branches, reset files, or overwrite anyone's work. Other agents may be writing and committing reviews concurrently in this same checkout.
