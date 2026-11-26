@@ -1,0 +1,20 @@
+{
+  "manifest_id": "roadstorm-asset-manifest",
+  "schema_version": "0.1.0",
+  "registry_status": "empty",
+  "prepared_utc": "2026-11-26",
+  "scope": "First-party creative assets and learned model artifacts for Roadstorm Racer!, recorded under the contract in provenance/MANIFEST_CONTRACT.md and the rights gate in docs/ASSET_PRODUCTION.md. Code, tools, tests, schemas and text definitions are not creative assets and are covered by the task/commit provenance records instead.",
+  "assets": [],
+  "notes": [
+    "Initial empty registry created by the M0 provenance manifest tooling (job 6058a51e-ae48-4329-8fb0-52c3c36eddad, base revision d544c1cfaa96a120e11a1a884bd45d7fe06c60bb). No first-party creative asset or learned model artifact has been produced or registered yet.",
+    "An empty manifest is not evidence that any milestone's asset inventory exists. No M7 or other milestone car, road/environment kit, course, UI/type, effect, sound, music, model or release material is claimed by this file.",
+    "Entries are added by the asset pipeline as outputs are produced, hashed and reviewed. This file records assets; it does not create them and it grants no rights.",
+    "The asset production milestones have not started. The launch inventory in docs/ASSET_PRODUCTION.md is a production target, not a statement about the current tree.",
+    "Rights authority and provider terms for the authoring routes remain open (provenance/OPEN_ITEMS.md OI-01, OI-02, OI-03). No entry may ship until its legal origin is resolved."
+  ],
+  "open_items": [
+    "OI-01",
+    "OI-02",
+    "OI-03"
+  ]
+}

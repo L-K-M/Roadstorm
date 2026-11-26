@@ -14,6 +14,7 @@ Active isolated jobs against the baseline (private sessions and logs under `work
 | 93555487-a479-4ecb-ac23-9e95067144cf | stepfun/step-5-preview | tools/ci/, .github/workflows/ | running; CI and commands |
 | 9724e895-7e6d-41a6-bc27-1bfd805167f3 | stepfun/step-5-preview | docs/TOOLCHAIN.md, tools/toolchain/ | completed; selected archives and installed files independently verified, see evidence |
 | 9370f30f-fbd7-42cb-b401-a69ff4d7a2b5 | stepfun/step-5-preview | docs/MACHINE_INVENTORY.md | running; hardware inventory |
+| 6058a51e-ae48-4329-8fb0-52c3c36eddad | stepfun/step-5-preview | assets/manifest.json, tools/asset_manifest/ | completed; independent 35-test suite and empty-manifest check passed; real assets and rights validation remain open |
 | ec6b876f-cdad-40f3-a154-ff99473a0c54 | longcat/LongCat-2.5 | tools/tick_probe/ | running; tick/query feasibility |
 
 Next: collect and independently verify each job, integrate coherent owned paths, establish tooling/checksum and CI, run acceptance against a frozen candidate, then request separate Opus 5.5 and GPT-6.2 Sol reviews. All review, platform, audio, controls, model training and release gates remain open. Do not infer completion from worker reports or auth readiness.
