@@ -1,0 +1,18 @@
+R7 reproduction attempts, isolated copy of tools/tick_probe, 2026-11-26 22:52 UTC
+run 1 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 2 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 3 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 4 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 5 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 6 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 7 (default pacing): exit=0 "checks_total":58 job_warning_lines=0
+run 8 (default pacing): exit=0 "checks_total":58 job_warning_lines=0
+run 9 (default pacing): exit=0 "checks_total":58 job_warning_lines=0
+warnings in any run: 0
+run 10 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 11 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 12 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 13 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 14 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+run 15 (--fixed-fps 60): exit=0 "checks_total":58 job_warning_lines=0
+totals: fixed-fps=12 default=3 warnings=0

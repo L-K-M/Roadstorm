@@ -1,0 +1,11 @@
+--- /var/folders/f8/bxkwrb8s42sc84xfq33fylvh0000gn/T//roadstorm-jolt-inventory.OboafF/defaults.pairs	2026-11-26 23:55:23
++++ /var/folders/f8/bxkwrb8s42sc84xfq33fylvh0000gn/T//roadstorm-jolt-inventory.OboafF/main.pairs	2026-11-26 23:55:23
+@@ -1,6 +1,6 @@
+ physics/3d/default_gravity 9.8
+-physics/3d/physics_engine DEFAULT
+-physics/common/physics_interpolation false
++physics/3d/physics_engine Jolt Physics
++physics/common/physics_interpolation true
+ physics/common/physics_ticks_per_second 60
+ physics/jolt_physics_3d/collisions/active_edge_threshold 0.87266463041306
+ physics/jolt_physics_3d/collisions/collision_margin_fraction 0.07999999821186

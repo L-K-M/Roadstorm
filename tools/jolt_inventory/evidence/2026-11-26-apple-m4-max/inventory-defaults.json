@@ -1,0 +1,223 @@
+{
+	"context_settings": {
+		"physics/3d/default_gravity": "9.8",
+		"physics/3d/physics_engine": "DEFAULT",
+		"physics/common/physics_interpolation": "false",
+		"physics/common/physics_ticks_per_second": "60"
+	},
+	"engine": {
+		"build": "official",
+		"commit": "ed1daf0bf001b61586d9930840f2f1394092c079",
+		"major": 4,
+		"minor": 7,
+		"patch": 2,
+		"status": "stable",
+		"version_string": "4.7.2-stable (official)"
+	},
+	"host": {
+		"display_driver": "headless",
+		"model": "Mac16,9",
+		"os": "macOS",
+		"os_version": "27.0.1",
+		"processor": "Apple M4 Max",
+		"processor_count": 14
+	},
+	"label": "engine-defaults",
+	"problems": [],
+	"schema": "roadstorm.jolt_inventory.v1",
+	"setting_count": 32,
+	"settings": [
+		{
+			"hint_string": "0,90,0.01,radians_as_degrees",
+			"name": "physics/jolt_physics_3d/collisions/active_edge_threshold",
+			"type": "float",
+			"value": "0.87266463041306"
+		},
+		{
+			"hint_string": "0,1,0.00001",
+			"name": "physics/jolt_physics_3d/collisions/collision_margin_fraction",
+			"type": "float",
+			"value": "0.07999999821186"
+		},
+		{
+			"hint_string": "Node A,Node B",
+			"name": "physics/jolt_physics_3d/joints/world_node",
+			"type": "int",
+			"value": "0"
+		},
+		{
+			"hint_string": "0,2700,0.01,or_greater,radians_as_degrees,suffix:°/s",
+			"name": "physics/jolt_physics_3d/limits/max_angular_velocity",
+			"type": "float",
+			"value": "47.1238899230957"
+		},
+		{
+			"hint_string": "1,10240,or_greater",
+			"name": "physics/jolt_physics_3d/limits/max_bodies",
+			"type": "int",
+			"value": "10240"
+		},
+		{
+			"hint_string": "8,65536,or_greater",
+			"name": "physics/jolt_physics_3d/limits/max_body_pairs",
+			"type": "int",
+			"value": "65536"
+		},
+		{
+			"hint_string": "8,20480,or_greater",
+			"name": "physics/jolt_physics_3d/limits/max_contact_constraints",
+			"type": "int",
+			"value": "20480"
+		},
+		{
+			"hint_string": "0,500,0.01,or_greater,suffix:m/s",
+			"name": "physics/jolt_physics_3d/limits/max_linear_velocity",
+			"type": "float",
+			"value": "500.0"
+		},
+		{
+			"hint_string": "1,32,or_greater,suffix:MiB",
+			"name": "physics/jolt_physics_3d/limits/temporary_memory_buffer_size",
+			"type": "int",
+			"value": "32"
+		},
+		{
+			"hint_string": "2,2000,0.1,or_greater,suffix:m",
+			"name": "physics/jolt_physics_3d/limits/world_boundary_shape_size",
+			"type": "float",
+			"value": "2000.0"
+		},
+		{
+			"hint_string": "0,1,0.01",
+			"name": "physics/jolt_physics_3d/motion_queries/recovery_amount",
+			"type": "float",
+			"value": "0.40000000596046"
+		},
+		{
+			"hint_string": "1,8,or_greater",
+			"name": "physics/jolt_physics_3d/motion_queries/recovery_iterations",
+			"type": "int",
+			"value": "4"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/motion_queries/use_enhanced_internal_edge_removal",
+			"type": "bool",
+			"value": "true"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/queries/enable_ray_cast_face_index",
+			"type": "bool",
+			"value": "false"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/queries/use_enhanced_internal_edge_removal",
+			"type": "bool",
+			"value": "false"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/simulation/allow_sleep",
+			"type": "bool",
+			"value": "true"
+		},
+		{
+			"hint_string": "0,1,0.01",
+			"name": "physics/jolt_physics_3d/simulation/baumgarte_stabilization_factor",
+			"type": "float",
+			"value": "0.20000000298023"
+		},
+		{
+			"hint_string": "0,180,0.01,radians_as_degrees",
+			"name": "physics/jolt_physics_3d/simulation/body_pair_contact_cache_angle_threshold",
+			"type": "float",
+			"value": "0.03490658476949"
+		},
+		{
+			"hint_string": "0,0.01,0.00001,or_greater,suffix:m",
+			"name": "physics/jolt_physics_3d/simulation/body_pair_contact_cache_distance_threshold",
+			"type": "float",
+			"value": "0.0010000000475"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/simulation/body_pair_contact_cache_enabled",
+			"type": "bool",
+			"value": "true"
+		},
+		{
+			"hint_string": "0,1,0.001,or_greater,suffix:m/s",
+			"name": "physics/jolt_physics_3d/simulation/bounce_velocity_threshold",
+			"type": "float",
+			"value": "1.0"
+		},
+		{
+			"hint_string": "0,1,0.01",
+			"name": "physics/jolt_physics_3d/simulation/continuous_cd_max_penetration",
+			"type": "float",
+			"value": "0.25"
+		},
+		{
+			"hint_string": "0,1,0.01",
+			"name": "physics/jolt_physics_3d/simulation/continuous_cd_movement_threshold",
+			"type": "float",
+			"value": "0.75"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/simulation/generate_all_kinematic_contacts",
+			"type": "bool",
+			"value": "false"
+		},
+		{
+			"hint_string": "0,1,0.00001,or_greater,suffix:m",
+			"name": "physics/jolt_physics_3d/simulation/penetration_slop",
+			"type": "float",
+			"value": "0.01999999955297"
+		},
+		{
+			"hint_string": "1,16,or_greater",
+			"name": "physics/jolt_physics_3d/simulation/position_steps",
+			"type": "int",
+			"value": "2"
+		},
+		{
+			"hint_string": "0,5,0.01,or_greater,suffix:s",
+			"name": "physics/jolt_physics_3d/simulation/sleep_time_threshold",
+			"type": "float",
+			"value": "0.5"
+		},
+		{
+			"hint_string": "0,1,0.001,or_greater,suffix:m/s",
+			"name": "physics/jolt_physics_3d/simulation/sleep_velocity_threshold",
+			"type": "float",
+			"value": "0.02999999932945"
+		},
+		{
+			"hint_string": "0,1,0.001,or_greater,suffix:m",
+			"name": "physics/jolt_physics_3d/simulation/soft_body_point_radius",
+			"type": "float",
+			"value": "0.00999999977648"
+		},
+		{
+			"hint_string": "0,1,0.00001,or_greater,suffix:m",
+			"name": "physics/jolt_physics_3d/simulation/speculative_contact_distance",
+			"type": "float",
+			"value": "0.01999999955297"
+		},
+		{
+			"hint_string": "",
+			"name": "physics/jolt_physics_3d/simulation/use_enhanced_internal_edge_removal",
+			"type": "bool",
+			"value": "true"
+		},
+		{
+			"hint_string": "2,16,or_greater",
+			"name": "physics/jolt_physics_3d/simulation/velocity_steps",
+			"type": "int",
+			"value": "10"
+		}
+	]
+}

@@ -1,0 +1,31 @@
+; Isolated throwaway project template for the Roadstorm M0.1 Jolt settings
+; inventory (tools/jolt_inventory, evidence in docs/evidence/jolt-settings.md).
+;
+; Ownership: tools/jolt_inventory/**.
+;
+; It deliberately contains NO physics settings, so reading
+; `physics/jolt_physics_3d/*` in this project yields the pinned engine's own
+; defaults. run_inventory.sh makes a second, equally temporary project from
+; the game project's own project.godot and runs the same script in it;
+; comparing the two runs is what separates explicit game-project overrides
+; from engine defaults.
+;
+; run_inventory.sh copies this file and src/jolt_inventory.gd into a
+; temporary directory. The engine is never pointed at the game project, so
+; the inventory cannot write the game project's .godot/ cache or settings.
+config_version=5
+
+[application]
+
+config/name="jolt_inventory"
+run/main_scene=""
+config/features=PackedStringArray("4.7")
+
+[debug]
+
+gdscript/warnings/unassigned_variable=0
+gdscript/warnings/unassigned_variable_op_assign=0
+gdscript/warnings/unused_variable=0
+gdscript/warnings/return_value_discarded=0
+gdscript/warnings/shadowed_variable=0
+gdscript/warnings/integer_division=0
