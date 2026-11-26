@@ -4,7 +4,11 @@ Initial M0.3 inventory, prepared 2026-11-26 from input revision
 `0ea596a4fa85ade19375e130313f020ed6010619`; revised 2026-11-26 by audit job
 `a67680d9-2923-4992-a350-5804f0fcc193` (StepFun `step-5-preview` through Pi),
 which aligned the authority-basis statements with the plan's standing-record
-requirement. This is a project rights document, not legal advice. Open and
+requirement. Reconciled 2026-11-27 by job
+`42e44973-c074-4141-aac7-9e7f0524a9e1` (StepFun 5 Preview through Pi): the
+external-input scope wording is aligned to the open CC0-boundary policy
+question (OI-07), and the CC0 legal-code evidence gap is noted. This is a
+project rights document, not legal advice. Open and
 unverified items are consolidated in
 [`provenance/OPEN_ITEMS.md`](../provenance/OPEN_ITEMS.md).
 
@@ -21,7 +25,7 @@ public domain. Third-party material keeps its own terms wherever it is located.
 | Original learned rival weights and authored training datasets | CC0-1.0 to the extent applicable rights exist, with model/data provenance |
 | Godot runtime and bundled components | Their original MIT/Expat and component licenses; exact required notices retained |
 | Development tools/libraries | Their original licenses, recorded separately; notices included when redistributing relevant code/binaries |
-| Exceptional external creative input | Only verified item-level CC0 accepted by the asset policy; anything else needs its verified original terms and an explicit scope decision |
+| Exceptional external creative input | Only verified item-level CC0 is stated as compatible by the asset policy; whether any other terms can be admitted via an explicit scope decision is an unresolved policy question (OI-07) |
 
 ### Explicit overrides
 
@@ -73,6 +77,13 @@ stored at [`licenses/CC0-1.0-legalcode.txt`](CC0-1.0-legalcode.txt):
 ```text
 a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499  licenses/CC0-1.0-legalcode.txt
 ```
+
+Evidence note: the retrieval date and SHA-256 are recorded (the M0.3 task
+record logs a `curl` of the official CC0 legal-code text on 2026-11-26), but
+unlike the provider-terms snapshots this file retains no URL, HTTP status,
+byte count, or `ETag`/`Date` metadata. That evidence-completeness gap is noted
+here rather than back-filled; no network retrieval was performed during this
+reconciliation.
 
 The full deed is <https://creativecommons.org/publicdomain/zero/1.0/deed>.
 CC0 dedication requires an authorized affirmer/contributor; AI generation
@@ -131,8 +142,9 @@ in [`provenance/DEPENDENCIES.md`](../provenance/DEPENDENCIES.md).
 None are currently selected. The candidate sources listed in
 [`docs/ASSET_PRODUCTION.md`](../docs/ASSET_PRODUCTION.md) are candidates only,
 not adopted dependencies. Any future external creative input requires verified
-item-level CC0 evidence (or an explicit scope decision for other terms) and a
-manifest record before inclusion.
+item-level CC0 evidence and a manifest record before inclusion; whether the
+asset policy can ever admit non-CC0 terms via an explicit scope decision is an
+unresolved policy question (OI-07), not settled here.
 
 ## Evidence requirements
 

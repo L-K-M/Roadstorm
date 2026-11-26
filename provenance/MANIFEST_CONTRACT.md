@@ -4,7 +4,11 @@ Initial M0.3 contract for project-authored material. It implements the task
 record and provenance requirements in [`../PLAN.md`](../PLAN.md),
 [`../docs/ASSET_PRODUCTION.md`](../docs/ASSET_PRODUCTION.md), and
 [`../docs/TECHNICAL_DESIGN.md`](../docs/TECHNICAL_DESIGN.md). This is a record
-format, not a legal dedication.
+format, not a legal dedication. Reconciled 2026-11-27 by job
+`42e44973-c074-4141-aac7-9e7f0524a9e1` to match committed artifacts (an empty
+asset manifest and captured provider-terms snapshots now exist) and to describe
+the owner/contributor basis as a standing record rather than a signed
+instrument.
 
 ## Applies to
 
@@ -14,7 +18,7 @@ format, not a legal dedication.
   by an LLM-written generator.
 - Every authoring route/provider/model used for such material, recorded in
   [`PROVIDER_TERMS.md`](PROVIDER_TERMS.md).
-- The owner/contributor authority instrument in
+- The owner/contributor authority record (the standing basis) in
   [`OWNER_AUTHORITY.md`](OWNER_AUTHORITY.md).
 
 Godot, operating systems, compilers, and other existing infrastructure remain
@@ -47,7 +51,8 @@ Provenance: task=<ID>; provider=<route>; model=<model-or-unknown>; date=YYYY-MM-
 
 ## Creative asset and model manifest fields
 
-`assets/manifest.json` (not yet created; first needed with the asset pipeline)
+`assets/manifest.json` (an empty initial registry exists as of 2026-11-26; first
+populated by the asset pipeline)
 must account for every shipped creative asset and model artifact. Repeated
 families may share a recipe/license record, but each output path and hash stays
 discoverable.
@@ -92,14 +97,14 @@ compare declared semantic/numeric tolerances unless byte equivalence is shown.
 ```text
 licenses/                    scope, CC0 notice, third-party notices
 provenance/
-  OWNER_AUTHORITY.md         standing dedication authority instrument
+  OWNER_AUTHORITY.md         standing dedication authority record
   PROVIDER_TERMS.md          provider/service/account terms register
   DEPENDENCIES.md            dev/runtime dependency inventory
   MANIFEST_CONTRACT.md       this file
   OPEN_ITEMS.md              consolidated open/unverified items
-  provider_terms/<route>/    bounded snapshots of official provider terms (future)
+  provider_terms/<route>/    bounded snapshots of official provider terms
   TASK_*.md                  task-level records
-assets/manifest.json         future creative asset/model manifest
+assets/manifest.json         creative asset/model manifest (empty initial registry)
 models/**, training/**       future model cards, datasets, training/evaluation records
 ```
 
@@ -110,5 +115,5 @@ only useful bounded review evidence here.
 
 A task or asset may close its provenance record only when its required fields
 are present or explicitly marked unknown, its legal origin is resolved, and its
-review limitations are recorded. Agent text cannot substitute for the owner
-authority instrument or verified provider terms.
+review limitations are recorded. Agent text cannot substitute for the recorded
+owner authority basis or verified provider terms.

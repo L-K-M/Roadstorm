@@ -80,6 +80,9 @@ hashes are recorded in [`DEPENDENCIES.md`](DEPENDENCIES.md).
 
 - **OI-01:** No executed owner/contributor authority instrument exists. The
   inventory documents the requirement and consequences but cannot close it.
+  *(Initial-inventory framing; re-scoped by the a67680d9 audit — the plan
+  requires a standing owner/operator record, not a signed instrument. See the
+  audit addendum below and OI-01.)*
 - **OI-02/OI-03:** LongCat and StepFun terms are unverified. No affected
   material may ship as Unlicense/CC0-backed project output until the register
   entries are verified.
@@ -201,9 +204,128 @@ supplied, and leaves genuinely missing authority/account-term evidence open.
 
 ## Authority boundary
 
-This record was produced by an LLM agent. It does not execute the owner
-authority instrument, sign for any person, assign rights, or create a
-dedication. Any future statement that project material is dedicated requires the
-authorized human instrument referenced by [`OWNER_AUTHORITY.md`](OWNER_AUTHORITY.md)
-and compatible provider terms referenced by
+This record was produced by an LLM agent. It does not execute any instrument,
+sign for any person, assign rights, or create a dedication. Any future
+statement that project material is dedicated rests on the standing
+owner/operator authority record in
+[`OWNER_AUTHORITY.md`](OWNER_AUTHORITY.md) — which the plan requires as a
+recorded basis, not a signed human instrument — together with compatible,
+verified provider terms referenced by
 [`PROVIDER_TERMS.md`](PROVIDER_TERMS.md).
+
+## Reconciliation addendum — job `42e44973-c074-4141-aac7-9e7f0524a9e1` (2026-11-27)
+
+Provenance reconciliation across the files this lineage owns
+(`provenance/*.md`, `licenses/README.md`), using the findings of audit job
+`b701fff7-4b11-49fc-bfb2-fb63be4af335`, `PLAN.md` M0.3,
+[`docs/ASSET_PRODUCTION.md`](../docs/ASSET_PRODUCTION.md), and the committed
+`review/` reports. It corrects supported factual contradictions only. It does
+not claim rights are cleared, invent any identity/signature/legal fact, inspect
+credentials, touch the `provider_terms/` snapshots, or mutate Git, and it adds
+no network access.
+
+| Field | Value |
+| --- | --- |
+| Job | provenance reconciliation `42e44973-c074-4141-aac7-9e7f0524a9e1` |
+| Role / provider | reconciliation / StepFun 5 Preview — pi provider `stepfun`, model `step-5-preview` (session evidence) |
+| Base revision | `7b27c2f` (working tree matched HEAD for the owned files before edits) |
+| Owned paths | `provenance/*.md` and `licenses/README.md` only; `provenance/provider_terms/**` snapshots untouched |
+
+### Corrections applied
+
+- **Authority basis (finding 1).** Removed the residual signed-"instrument"
+  requirement wording from the current records: `provenance/README.md` record
+  index (OWNER_AUTHORITY now **RECORDED** standing basis, not "OPEN — no
+  executed instrument") and its conventions; `provenance/MANIFEST_CONTRACT.md`
+  ("applies to", storage block, closing condition); and this file's concluding
+  "Authority boundary". The initial-inventory OI-01 bullet is preserved
+  verbatim with an added pointer marking it the superseded initial framing.
+  `docs/ASSET_PRODUCTION.md:135` ("owner/contributor authority instrument") is
+  outside this job's ownership and was **not** edited — see open issues.
+- **Reviewer/provider routes (finding 2).** `provenance/PROVIDER_TERMS.md` no
+  longer claims no candidate route "has produced repository material yet". It
+  now registers the reviewer/checkpoint routes that authored committed
+  `review/` reports — `devin-cli`/`swe-2-1-max`, `opencode-zai-glm`/
+  `zai-coding-plan/glm-5.4`, `pi-mistral`/`mistral-large-4`,
+  `claude-code-opus`/`claude-opus-5-5`, `pi-venice-opus`/`claude-opus-5-5`,
+  `openai-codex-sol`/`gpt-6.2-sol`, and `codex-cli-agent` (model unknown) —
+  each **UNKNOWN / BLOCKING** (no terms captured). `provenance/OWNER_AUTHORITY.md`
+  notes these routes produced committed material without asserting their terms
+  are cleared.
+- **Asset manifest (finding 3).** Corrected the stale "does not exist / not yet
+  created / (future)" claims in `provenance/DEPENDENCIES.md`,
+  `provenance/MANIFEST_CONTRACT.md`, and `provenance/README.md` to present the
+  existing empty registry (`registry_status: "empty"`, 2026-11-26) accurately.
+- **Toolchain pin (finding 4).** `provenance/OPEN_ITEMS.md` OI-09 and
+  `provenance/DEPENDENCIES.md` now record that a pin record exists
+  (`tools/toolchain/pin/engine.txt` + `checksums.txt`, `upstream_verified=yes`)
+  and that only formal M0.1 sign-off remains open.
+- **Artifact hashes (finding 5).** Historical hash tables are preserved
+  unchanged. Current hashes are re-recorded with a date below, kept distinct
+  from the historical values.
+- **Tool inventory (finding 6).** `provenance/DEPENDENCIES.md` D4 now reflects
+  that tracked project scripts exist (Python is an adopted development tool),
+  and D6 now states FFmpeg is referenced only as an optional (skip-if-absent)
+  test dependency in `tools/ci/tests/run_tests.sh`.
+
+### Hash drift, historical vs current
+
+The historical tables (the initial inventory's artifact list and the a67680d9
+post-correction list) are left as evidence. Two recorded values no longer match
+the committed files because those files were edited after that audit and
+committed in `7733fb1`: `provenance/OPEN_ITEMS.md` (recorded `0c95aac2…`,
+committed `17015a31…`) gained an OI-11 disposition note, and
+`provenance/PROVIDER_TERMS.md` (recorded `9327a94e…`, committed
+`d8abe531…`) had its StepFun route wording corrected. The provenance files are
+tracked in Git, so the a67680d9 addendum's "`provenance/` is untracked …
+unexplained" note no longer applies; the drift is attributable to those
+post-audit edits. The values below supersede the historical ones only for
+identifying the **current** files.
+
+### Re-recorded current hashes (2026-11-27, working tree after this job's edits)
+
+Not committed by this job (no Git mutation performed). This task record's own
+hash is excluded, as before.
+
+```text
+9d61b31a3fc811ad1f38dfd993a98fd3d232111518506030442b97150c52e0af  licenses/README.md
+a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499  licenses/CC0-1.0-legalcode.txt
+b0435e3b3e4e55238f05f4b306f30524a1b2e20147810d436eaa554fa6855c80  licenses/GODOT-LICENSE-MIT.txt
+cb1980c88089573bcacd7221d777c689bb8bbd778799f24c27fca0fe5f774d6d  licenses/GODOT-COPYRIGHT-INVENTORY.txt
+f576d515c465d416fdf68faa67d822e04500d6da30eb9f7d9fd0f0ee35a53d80  provenance/DEPENDENCIES.md
+ffc873191ebba7ff3b7634dfbf92053d3832fd540b24bc346670b9899a1634bb  provenance/MANIFEST_CONTRACT.md
+baedc4effb3d0f37f4106a9bc4e759c8c191c7035befcbb3662e789e0194e01f  provenance/OPEN_ITEMS.md
+74cba72cd9b51d2ca541a038b96c85fc533f36cfb211b9a96d1ef81a3dfcae99  provenance/OWNER_AUTHORITY.md
+518139c0abf480c14df7867b50f5287b4d5995653bc13c1f36929d875f8b0428  provenance/PROVIDER_TERMS.md
+e646019aa6d473940266e8a1627f51197d21d94de3bf1455c3231a55d27544b1  provenance/README.md
+```
+
+The `provenance/provider_terms/**` snapshots and INTAKE files were not touched;
+their SHA-256 values remain those recorded in
+[`PROVIDER_TERMS.md`](PROVIDER_TERMS.md).
+
+### Open issues after this reconciliation
+
+- **OI-02/OI-03/OI-12:** no authoring or reviewer route's provider/account terms
+  are verified; affected material must not ship as cleared project output.
+- **Review-report material scope (OI-12):** whether committed review reports
+  are dedicated "project material" or only review evidence is an explicit
+  policy decision that is not made here.
+- **External-input policy boundary (OI-07):** CC0-only vs. an explicit
+  scope-decision exception is unresolved.
+- **Out-of-ownership residue:** `docs/ASSET_PRODUCTION.md:135` still uses
+  "owner/contributor authority instrument"; `docs/ASSET_PRODUCTION.md` external
+  licensing characterizations (Kenney/Poly Haven/Freesound, Godot press kit)
+  carry no captured evidence. Both are outside this job's owned paths and are
+  flagged for the owning job, not edited here.
+- No identity, signature, employer authority, or no-copyright-arises legal
+  determination is supplied by this reconciliation.
+
+### Authority boundary
+
+This addendum was produced by an LLM agent. It executes no instrument, signs
+for no person, assigns no rights, creates no dedication, and gives no legal
+advice. It preserves the user-supplied standing authorization in
+[`OWNER_AUTHORITY.md`](OWNER_AUTHORITY.md) and the existing provider-terms
+snapshots unchanged, and it leaves genuinely missing account-term evidence
+open.

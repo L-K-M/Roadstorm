@@ -5,11 +5,18 @@ Initial M0.3 inventory, prepared 2026-11-26 from input revision
 **distribution/runtime dependencies** from **available host development tools**
 and from **candidate but unadopted components**. Version strings below are
 observed on this machine; formal pin approval and a checksum manifest belong to
-M0.1, which was still in progress at preparation time.
+M0.1, which was still in progress at preparation time. Reconciled 2026-11-27 by
+job `42e44973-c074-4141-aac7-9e7f0524a9e1` (StepFun 5 Preview through Pi):
+tracked project scripts and a committed toolchain pin now exist, so the tool
+inventory, the FFmpeg role, and OI-09 below are updated to match; a pin record
+exists and formal M0.1 sign-off of it remains open.
 
 Creative assets/models are tracked separately: the baseline has no external
-creative inputs yet, and `assets/manifest.json` does not exist until the asset
-pipeline lands (M2.6+). See [`../licenses/README.md`](../licenses/README.md) for
+creative inputs yet. An empty initial `assets/manifest.json` registry exists
+(`registry_status: "empty"`, prepared 2026-11-26, created by the manifest
+tooling job `6058a51e-ae48-4329-8fb0-52c3c36eddad`); it holds no assets and is
+populated when the asset pipeline lands (M2.6+). See
+[`../licenses/README.md`](../licenses/README.md) for
 the license scope and extracted Godot notices.
 
 ## Runtime / distribution dependencies
@@ -51,9 +58,11 @@ Rouwe`, license `Expat` (MIT). Covered by D1's extracted inventory; no separate
 notice file is currently stored.
 
 D4 — Python 3.15.2: observed at `/opt/homebrew/opt/python@3.15/bin/python3.15`,
-built with Apple Clang 21.0.0. Planned role is asset-generation scripting
-(PLAN M0.1), but project scripts are not written yet, so this is an available
-tool, not an adopted pin. License: Python Software Foundation License Agreement
+built with Apple Clang 21.0.0. Now used by tracked project scripts (for example
+`tools/asset_manifest/manifest_validator.py`, `tools/asset_manifest/validate_manifest.py`,
+`tools/tick_probe/compare_modes.py`, and the schema/fixture validators and tests), so it
+is an adopted development tool rather than only an available host tool; it is
+not a redistributed binary and has no separate version pin here. License: Python Software Foundation License Agreement
 plus additional bundled-component licenses. Local notice:
 `/opt/homebrew/opt/python@3.15/Frameworks/Python.framework/Versions/3.15/lib/python3.15/LICENSE.txt`,
 SHA-256 `b0e25a78cffb43f4d92de8b61ccfa1f1f98ecbc22330b54b5251e7b6ba010231`.
@@ -65,7 +74,7 @@ code/binary is redistributed.
 | ID | Component | Observed version | Role | License classification | Notice status |
 | --- | --- | --- | --- | --- | --- |
 | D5 | Git (Apple Git) | `2.54.0` | Version control | GPL-2.0 for the Git project; verify build-specific terms | No local notice text found; needed only if Git code/binaries are redistributed |
-| D6 | FFmpeg | `9.0.2_1` Homebrew build, configuration includes `--enable-gpl` and `--enable-version3` | Optional audio encoding tool; not chosen or pinned by any project script | Build appears GPL-3.0-or-later with additional LGPL component notices; effective terms depend on enabled libraries | Local notices: `COPYING.GPLv3` SHA-256 `8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903`, `COPYING.LGPLv3` SHA-256 `da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768`; do not ship without re-verifying configuration |
+| D6 | FFmpeg | `9.0.2_1` Homebrew build, configuration includes `--enable-gpl` and `--enable-version3` | Optional audio/video tool; referenced only as an optional (skipped-if-absent) test dependency by `tools/ci/tests/run_tests.sh` (`ffmpeg`/`ffprobe` synthesize a probe video); not a build or redistribution dependency and not pinned | Build appears GPL-3.0-or-later with additional LGPL component notices; effective terms depend on enabled libraries | Local notices: `COPYING.GPLv3` SHA-256 `8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903`, `COPYING.LGPLv3` SHA-256 `da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768`; do not ship without re-verifying configuration |
 | D7 | macOS / Apple toolchain | macOS `27.0.1`; Apple clang `21.0.0` | Host OS and compiler for development/testing | Proprietary Apple terms | Not redistributed; target-platform claims need real per-OS tests |
 
 ## Candidate / not adopted
@@ -74,7 +83,7 @@ code/binary is redistributed.
 | --- | --- | --- |
 | D8 | Learned-opponent training stack (for example PyTorch, Stable Baselines3, Gymnasium mentioned in planning/review material) | **Not adopted or pinned.** No version, license record, compute budget approval, or model provenance exists yet. M4B must pin versions/licenses before use. |
 | D9 | Blender or other optional content tools | **Not adopted.** TECHNICAL_DESIGN permits an original scripted Blender tool only if it solves a measured production problem; its version/license would then enter this inventory. |
-| D10 | External creative packs/fonts/samples/datasets (Kenney, Poly Haven, Freesound are candidate examples only) | **None selected or downloaded.** Baseline policy accepts only verified item-level CC0 creative input, with explicit scope decision for any exception. Any future input needs provenance and rights records before inclusion. |
+| D10 | External creative packs/fonts/samples/datasets (Kenney, Poly Haven, Freesound are candidate examples only) | **None selected or downloaded.** Baseline policy accepts only verified item-level CC0 creative input; whether any non-CC0 external input can ever be admitted via an explicit scope decision is an unresolved policy question (OI-07), not settled here. Any future input needs provenance and rights records before inclusion. |
 
 ## Engine-bundled fonts/data
 
@@ -91,9 +100,13 @@ per-build reconciliation item below.
 
 ## Open gaps
 
-- **OI-09:** M0.1 has not yet formally approved a pinned runtime/download record
-  with canonical source URLs and checksums. The hashes above are observed
-  evidence, not an approved pin.
+- **OI-09:** A pinned-runtime record now exists — canonical editor/template/
+  checksum URLs and observed SHA-256 digests are recorded in
+  `tools/toolchain/pin/engine.txt` and `checksums.txt` (`upstream_verified=yes`;
+  see `docs/TOOLCHAIN.md` and
+  `docs/evidence/godot-4.7.2-archive-verification.md`). What remains open is
+  formal M0.1 milestone sign-off approving that record as the project pin, not
+  the absence of a pin record.
 - **OI-04:** Exact third-party component list per exported template/platform is
   not reconciled against `GODOT-COPYRIGHT-INVENTORY.txt`. Source-tree inventory
   can include platform-specific components not present in a given build.

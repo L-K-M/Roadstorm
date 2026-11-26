@@ -62,7 +62,15 @@ project environment. Observed to have produced project material: `pi-longcat`
 `step-5-preview` through the local Pi harness), registered in
 [`PROVIDER_TERMS.md`](PROVIDER_TERMS.md). Any other configured route needs its
 own register entry there before first use; this standing record covers the
-configured agent routes as a class.
+configured agent routes as a class. Separately, the independent checkpoint and
+plan reviewers' routes (Devin `swe-2-1-max`, OpenCode `zai-coding-plan/glm-5.4`,
+Mistral Large 4 via Pi, Claude Opus 5.5 as a Claude Code agent and via provider
+`venice`, and OpenAI Codex `gpt-6.2-sol`) have also authored committed review
+reports; those routes are registered in
+[`PROVIDER_TERMS.md`](PROVIDER_TERMS.md) with terms UNKNOWN/BLOCKING, and
+whether such review reports count as dedicated "project material" (rather than
+review evidence) is an open policy question recorded as OI-12. This record
+does not assert that any reviewer route's terms are cleared.
 
 ## What this record does not establish
 
@@ -119,3 +127,9 @@ configured agent routes as a class.
   plan's actual requirement and recorded the user-supplied authorization and
   dedication intent above, without inventing identity, signature, legal
   conclusions, or rights. See [`TASK_M0.3_RIGHTS.md`](TASK_M0.3_RIGHTS.md).
+- 2026-11-27, job `42e44973-c074-4141-aac7-9e7f0524a9e1` (StepFun 5 Preview
+  through Pi): provenance reconciliation; left the user-supplied standing
+  basis above unchanged, and recorded that reviewer/checkpoint routes also
+  authored committed review reports (registered in
+  [`PROVIDER_TERMS.md`](PROVIDER_TERMS.md), terms open; scope question OI-12).
+  No identity, signature, or legal fact was added.

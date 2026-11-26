@@ -16,7 +16,13 @@ terms apply to another. Keep private identifiers and credentials out of this
 public record.
 
 Prepared 2026-11-26 from input revision
-`0ea596a4fa85ade19375e130313f020ed6010619`.
+`0ea596a4fa85ade19375e130313f020ed6010619`. Reconciled 2026-11-27 by job
+`42e44973-c074-4141-aac7-9e7f0524a9e1` (StepFun 5 Preview through Pi): the
+reviewer/checkpoint routes that authored committed `review/` reports are now
+registered below with terms still UNKNOWN/BLOCKING, correcting the earlier
+statement that no advertised route had produced repository material. The two
+authoring routes and their bounded snapshots are unchanged. Nothing here
+verifies terms or clears rights.
 
 ## Observed authoring routes
 
@@ -38,16 +44,50 @@ Pi provider metadata. They are not license terms. Account type, plan, legal
 entity, and terms version are deliberately not inferred. The local auth file
 contains credentials and was not copied or inspected for content.
 
+## Reviewer/checkpoint routes observed in committed repository material
+
+Committed reports under [`review/`](../review/) self-identify the authoring
+route that produced them. Those are tracked repository files, so the earlier
+statement that no advertised route had "produced repository material yet" was
+inaccurate. Each route below is registered with its self-reported model and the
+committed evidence, but **no provider/account terms have been captured or
+verified** for any of them; every row is UNKNOWN / BLOCKING for shipping
+affected material. Whether review reports count as dedicated "project
+material" (as opposed to review evidence) is an open policy decision recorded
+as OI-12 and is not settled here. Attributions are read from the files' own
+headers; they are evidence of the route used, not verification of terms, and no
+credential, account, or private identifier was inspected to compile this table.
+
+| Route ID | Service / route | Model(s) (self-reported) | Evidence (committed `review/` files) | Verification |
+| --- | --- | --- | --- | --- |
+| `devin-cli` | Local Devin CLI | `swe-2-1-max` | `973757bc-5a9b-492b-b9aa-9926f7c5d33c` | **UNKNOWN / BLOCKING** — no terms captured |
+| `opencode-zai-glm` | Zai coding-plan through OpenCode | `zai-coding-plan/glm-5.4` | `baddc856-cf9f-4c90-922a-3c23a75f00f4` | **UNKNOWN / BLOCKING** — no terms captured |
+| `pi-mistral` | Mistral Large 4 via the local Pi harness (exact Pi provider ID not recorded in the file) | `mistral-large-4` | `84f146b5-54df-4256-a229-ec14c0a834e7` | **UNKNOWN / BLOCKING** — no terms captured |
+| `claude-code-opus` | Claude Opus 5.5 as a Claude Code agent | `claude-opus-5-5` | `2506a658-428a-4846-ad5d-f0a1c9af0ded` | **UNKNOWN / BLOCKING** — no terms captured |
+| `pi-venice-opus` | Claude Opus 5.5, provider `venice`, through Pi | `claude-opus-5-5` | `implementation/m0-five-jobs-opus-0bbb2f75…`, `…-opus-recheck-929c4082…`, `m0-checkpoint-opus-recheck-2963edd5…` | **UNKNOWN / BLOCKING** — no terms captured |
+| `openai-codex-sol` | OpenAI Codex, GPT-6.2 Sol (native) | `gpt-6.2-sol` | `implementation/m0-five-jobs-sol-native`, `…-sol-recheck-bdeb8e2`, `m0-checkpoint-sol-recheck-15faf0d` | **UNKNOWN / BLOCKING** — no terms captured |
+| `codex-cli-agent` | Codex CLI/agent (plan reviews); exact model not exposed | unknown (one self-reports GPT-5-based) | plan reviews `386eb383…`, `6a45bc14…`, `737d6d48…`, `82923d41…`, `acd5167d…`, `eb571c59…` | **UNKNOWN / BLOCKING** — no terms captured; model unknown |
+
+The `pi-venice-opus` and `openai-codex-sol` routes are the plan's mandated
+independent implementation reviewers (Opus 5.5 plus GPT-6.2 Sol; see
+[`PLAN.md`](../PLAN.md) and [`plan/IMPLEMENTATION.md`](../plan/IMPLEMENTATION.md)),
+so their committed review output is expected. The plan-review cluster also
+includes several Codex-agent reviews whose exact model the reviewer recorded as
+unknown rather than guessed.
+
 ## Candidate routes not yet adopted for project output
 
-The session environment also advertises other authoring routes (for example
-Zai coding-plan models through OpenCode, Mistral through Vibe, Venice models,
-Devin SWE, Cline, Command Code, and OpenRouter free routes). None is recorded
-as having produced repository material yet. Each must receive its own register
-entry before first use. In particular, the mandatory independent checkpoint
-reviewers required by [`PLAN.md`](../PLAN.md) must have their actual
-provider/account route and output terms registered before their review output
-is treated as project material.
+The session environment advertises other authoring routes (for example Mistral
+through Vibe, Cline, Command Code, remaining OpenRouter free routes, and the
+Zai/Venice/Devin/Codex/GLM routes not listed in the register above). Several
+routes once described only as candidates have in fact produced committed
+repository material and are now registered — the reviewer/checkpoint routes in
+the previous section — with terms still UNKNOWN/BLOCKING. Any route that has
+not yet produced committed material must receive its own register entry before
+first use. The mandatory independent checkpoint reviewers required by
+[`PLAN.md`](../PLAN.md) now have their routes registered; their
+provider/account/output terms must still be captured and verified before their
+review output is treated as cleared project material (OI-12).
 
 ## Intake procedure
 
@@ -66,8 +106,8 @@ material:
 5. Mark the entry `VERIFIED`, `COMPATIBLE-WITH-CONDITIONS`, or
    `UNKNOWN/BLOCKING`. Re-review when the provider terms or route version
    changes.
-6. Link every affected authoring record to this register entry and to the
-   authority instrument in [`OWNER_AUTHORITY.md`](OWNER_AUTHORITY.md).
+6. Link every affected authoring record to this register entry and to the standing
+   authority record in [`OWNER_AUTHORITY.md`](OWNER_AUTHORITY.md).
 7. Never store API keys, tokens, passwords, or personal identifiers here.
 
 An agent cannot execute these records on a person's behalf. Provider terms may
