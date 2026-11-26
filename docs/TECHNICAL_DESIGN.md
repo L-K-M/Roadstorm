@@ -55,7 +55,8 @@ Keep generated files clearly separate from editable sources. Commit final assets
 | ContactResolver | Stable pair contacts, bounded response and immunity | Hidden advantages for AI |
 | CourseProgress | Valid gates, route-local position, recovery anchors, lap timing | Nearest-road teleportation |
 | SaveService | Versioned snapshots, transactions, backups and migrations | Loading executable code from saves |
-| Audio/Presentation directors | Playback, effects, cameras and HUDs from events | Changing speed, rank, random decisions or rewards |
+| Audio/Presentation directors | Playback, effects, cameras and HUDs from events | Changing speed, rank, race RNG decisions or rewards |
+| CosmeticDamage/VisualDebris directors | Part visibility/looseness, one-shot detachment, pooled visual motion, sparks and debris cues from committed impacts | Changing car contact hull/mass/handling, race RNG/progress, AI observations or physical contact response |
 
 Use a `DriverCommand` structure with steer in [-1,1], throttle/brake/handbrake in [0,1], reset request, and relevant edge-triggered actions. Commands are sampled once per physics tick. A controller or either AI family supplies the same structure. Special learned opponents are specified separately in [OPPONENT_AI.md](OPPONENT_AI.md).
 
@@ -68,6 +69,10 @@ Tick order is: snapshot poses/velocities and commands; update support/surface st
 Construct speculative trajectories with nonmutating `test_move`/body-motion queries from explicit simulated transforms, keeping real bodies at the tick-start snapshot during planning/contact solving. Use `CharacterBody3D.move_and_collide()` with explicit displacement only in the final movement phase, once for each accepted path segment; do not integrate velocity a second time or expose provisional body poses. Record any discrepancy between predicted and committed world motion. Do not mix `move_and_slide()` velocity mutation/floor snapping with custom adhesion. Disable automatic snap/platform motion and interpolate only the visual child. One coordinator owns velocity/transform writes. M1 proves the API choice before dependent work; alternatives require a recorded decision and equivalent checks. See [PhysicsBody3D motion queries](https://docs.godotengine.org/en/stable/classes/class_physicsbody3d.html) and [CharacterBody3D](https://docs.godotengine.org/en/stable/classes/class_characterbody3d.html).
 
 Publish typed events such as countdown changed, drift began, impact occurred, gate crossed, lap completed, participant finished, and result committed. Consumers may draw or play sounds but cannot mutate the originating race result. Use scoped event connections and explicit teardown to prevent duplicate listeners after rematches.
+
+Committed impact events carry a unique contact/event ID, car IDs, road/local contact point and normal, contact-induced velocity-change severity and post-contact velocity. Cosmetic damage consumes those events after simulation commit, coalesces repeats and selects a configured attachment region. Use separate cosmetic state/RNG and event IDs; toggling effects cannot consume race randomness or alter contact classification. Car reset/grid events restore visual parts without changing the intact motor/collision resources.
+
+Visual debris is a pooled mesh with lightweight velocity/spin/gravity/friction and read-only static-world shape/ray queries. It registers no active physics body or collision shape in the authoritative world. Queries use only road/terrain/barrier layers, excluding racers, gates, other debris and AI sensors. Bound casts/substeps and use a simple resting/slide fallback for difficult geometry; a cosmetic query failure cannot delay a race tick. Cap globally at 24 pieces, six seconds each, 128 sparks and four prioritized sliding emitters; recycle/skip on saturation as specified in GAME_DESIGN. The same shared meshes render in all active views. Freeze/clear them on pause/scene teardown, and disable their work in headless training without changing simulation results.
 
 ## Movement and contacts
 
@@ -93,7 +98,7 @@ Use stable semantic IDs that do not change with display names. Definitions have 
 
 | Definition | Required information |
 | --- | --- |
-| Car | ID/version, source mesh and LODs, dimensions, mass/contact proxy, stock handling, engine family, paints, icon, upgrade applicability |
+| Car | ID/version, source mesh and LODs, dimensions, intact mass/contact proxy, handling, engine/paints/icon/upgrades, detachable-part IDs/meshes/LODs, attachment transforms/impact regions and cosmetic thresholds |
 | Track | ID/revision, spline controls, width/bank/elevation, surfaces, barriers, grid, ordered gates, sectors, safe anchors, AI lines/speed hints, scenery/audio triggers, bounds, lighting |
 | Event | ID, mode, track order, laps, AI roster/difficulty/families, configuration rules, time limits, reward table, unlock dependencies |
 | Upgrade | ID, car/category, level, price, additive/multiplicative effects, caps and display text |
@@ -136,6 +141,8 @@ Route raw input by device ID to a stable player slot. Keyboard occupies at most 
 Use one explicit shared audio output. Disable automatic positional/listener audio for race viewports and play chosen logical sources once through nonpositional players. `AudioDirector` computes virtual listeners from every local camera/car, attenuation and relevance per listener, then combines normalized gains and weighted stereo pan without privileging the host. Local engines have reserved gain; distant ambience uses the strongest relevant listener rather than summing four identical copies. Smooth layout/listener changes over 0.25 seconds; mono sets pan to zero. This is a chosen shared downmix, not a claim that Godot has only one global viewport listener.
 
 Initial total allocation, including crossfades: local engines 8 (two per human), nearby rival engines 4, local tire blends 4, environment 4, music 2, impact/landing transients 6, UI/essential cues 4 = 32 voices. Select/blend one tire state per local car; virtualize extra distant tires. Idle/load/coast are asset variants, not three mandatory simultaneous loops. Fade/cull low-priority ambience/rivals before stealing local-engine or essential-cue reservations. Count music transitions and transient peaks; coalesce checkpoint cues shared by several players. Profile decoder/voice cost and final mix rather than treating the inventory as a simultaneous-playback requirement. Pre-render expensive synthesis.
+
+Bumper knocks/rattles/sliding share the six contact/transient voices; at most one continuing debris scrape has priority at a time, chosen by visibility/relevance. Retiring or stealing its voice fades it cleanly. Cosmetic sounds cannot displace reserved player engines or essential cues, or silently increase the total voice count.
 
 Global pause halts simulation time, race deadlines, and gameplay-triggered animations. Menu sound remains functional. Music may duck or pause according to one consistent setting. No cue depends on a particular camera being active.
 
@@ -203,6 +210,7 @@ Implement a small original `SceneTree` headless test runner with assertions and 
 | T14 | Performance and endurance | Every course/layout benchmark plus a two-hour mixed-mode session; no progressive resource leak |
 | T15 | Provenance, rights, package contents, offline notices | All shipped paths accounted for; exact runtime/dependency notices present |
 | T16 | Native platform distribution | Launch/join/race/save/relaunch offline on each supported OS, release checksum and build ID captured |
+| T17 | Cosmetic damage/debris isolation | Correct struck-part detachment/repair, global pool/particle/voice caps, pause/teardown and four-view stress; FX on/off uses identical commands/race RNG, exact rule/reward events and existing same-host trajectory tolerances |
 
 Run fast checks on changes; run relevant scenarios when their systems or assets change. Full endurance/evaluation batches belong at milestone and release gates. Seeded tests aid reproduction but do not guarantee identical physics on different machines. Record engine, platform, content, handling, and model revisions with failures.
 

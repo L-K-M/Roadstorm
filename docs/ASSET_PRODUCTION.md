@@ -51,14 +51,14 @@ Lighting uses a single sun, ambient color, simple fog, limited contact shadows, 
 
 | Category | Required production set |
 | --- | --- |
-| Twelve cars | Body/wheels/windows, three LODs, simple contact proxy, four paints, optional original decals, garage thumbnail, handling and engine-family definitions |
+| Twelve cars | Body/wheels/windows, three LODs, intact contact proxy, four paints/decals, thumbnail/handling/engine definitions, separate front/rear bumpers and optional wing with attachment/impact regions and damage LODs |
 | Common road kit | Asphalt/gravel/shoulder profiles, markings, curbs, guardrails, barriers, arrows, gate structures, start/finish pieces, road signs |
 | Common environment kit | Rocks/cliffs, terrain profiles, several tree shapes, bushes, buildings, fences, lamps, original flags and geometric spectator groups |
 | Six environment kits | Beach/marina/village; alpine/cable-car/viaduct; forest/lake/timber; canyon/wind-farm/railway; metro/port/suspension-bridge; dam/tunnel/turbine-ridge |
 | Landmark animation | Plane, helicopter, cable cars, freight train, ship/cranes, turning turbines, flowing waterfalls, flags/spectators; shared deterministic trigger definitions |
 | Six course bundles | Road/terrain/collision chunks, barriers, scenery, lighting, gates, grid, AI metadata, safe anchors, minimap, preview and audio zones |
 | UI and type | Original logo, geometric alphabet/numerals and required punctuation, HUD/menu icons, player symbols, original controller prompts, car/course cards, reward graphics |
-| Effects | Tire smoke/dust, sparks, landing dust, drift feedback, speed accents, menu/result transitions, reset-immunity cue |
+| Effects | Tire smoke/dust, bounded sliding-debris sparks, landing dust, loose/detached bumper states, drift feedback, speed accents, transitions and reset-immunity cue |
 | Sound | Four engine families with idle/load/coast variants; approximately 40 reusable tire/contact/UI/environment layers |
 | Music | Six original race themes, one menu/garage theme, one results theme, original start/finish/reward stingers |
 | Learned opponents | Two approved tactical styles, source training configurations, original observation datasets, inference weights and model cards |
@@ -76,6 +76,8 @@ Expect approximately 50–70 distinct reusable prop designs across the common an
 
 Course generation follows the technical track compiler: a manually authored-by-agent route recipe becomes shared render/collision/AI/recovery geometry. Keep scenic objects outside driving-space exclusion volumes. Animation uses simple transforms, paths, and shader/mesh changes, with no imported motion clips required.
 
+Car generators emit front/rear bumpers as separate reusable mesh children and an optional third trim/wing slot. Give each a stable part ID, local attachment transform/impact region, intact/loose/detached presentation data, matching paint and simple closed mounting surfaces so removal does not expose an empty shell. Include parts in the car's ordinary triangle/material/LOD budget; detached versions use at most 200 triangles each. Reuse original materials without per-impact texture generation. Render damage-state turntables and sliding/sparking previews in the three-starter M5 proof, then complete all twelve in M7. Keep the intact contact hull/mass independent of visible part removal.
+
 Generate icons and the logo from original SVG/polygon recipes. Render car/course thumbnails from actual approved scenes. Prefer an original outline font generated from authored geometric glyphs; purpose-built raster atlases at native required sizes are also acceptable if the same readability tests pass. Include glyph source/generator and any font-building tool in the development inventory. Test every HUD/menu at 100/125/150% and every split layout; bitmap resampling is not automatically a failed accessibility gate, and outline format alone is not proof of readable type.
 
 Do not use `SystemFont` or an uncontrolled system fallback for shipped strings. Explicitly choose fonts rather than silently relying on the engine default. Derive exact fallback/bundled-font notices from the pinned engine/templates and actual export inventory; an original UI font does not itself remove engine-bundled font data. English coverage includes the chosen case style, digits, every displayed punctuation/units symbol and controller glyph; run a missing-glyph check over all strings.
@@ -87,6 +89,8 @@ Use LLM-authored synthesis tools with oscillators, envelopes, filtered determini
 Four engine families can cover light/high-rev, rally/raspy, muscle/low, and exotic/smooth characters. Produce idle, load, and coast loops for each, with clean loop points and crossfades. Map RPM and throttle to bounded pitch/layer changes, add short generated shift transients, and keep movement physics independent of the audio estimate. Avoid obvious pitch jumps or four identical engines masking one another.
 
 Tire layers cover asphalt scrub, sustained slip, gravel, and soft shoulders. Contacts include light scrape, stronger wall/car impact, curb, and landing. UI/gameplay cues include navigation, confirm/back, join/ready, countdown/GO, checkpoint, finish, unlock/purchase, invalid action, and reset. Environmental layers include surf, wind, forest, waterfall, helicopter, plane, turbine, train/ship, and abstract crowd noise. Use synthetic, nonverbal crowd sound rather than identifiable voices.
+
+Synthesize original loose-bumper rattle, detachment clank and sliding-metal scrape from the existing oscillator/noise tools. Record their sources in the same CC0 manifest and test the debris-priority mix under four-player load; these sounds share the existing contact/transient reservation.
 
 Initial asset gates: finite sample values; no clipping; true peak no higher than about -1 dBTP for final mastered tracks; music around -18 to -14 LUFS integrated before game-bus balancing; no DC offset; appropriate fade-in/out; and no audible loop discontinuity. Meter the final four-player mix as well as isolated assets. Use a final limiter for accidental peaks, not as a substitute for gain staging. Keep useful warnings audible without harsh transient overload. Audio perception requires review beyond waveform checks.
 

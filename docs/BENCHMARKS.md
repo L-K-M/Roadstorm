@@ -43,6 +43,8 @@ The initial Python/GDScript actor parity gate is maximum absolute continuous-out
 
 Assert exact outcomes for normal/skipped/reversed/duplicate gates, finish crossings within a tick, displayed-time equality, exact internal ties, overpasses, wide runoff, jump landings, reset/depenetration across a gate, blocked anchors, immunity expiry, finished-car removal, both deadline policies, last-human departure, cup DNF versus withdrawal, and Arcade Rush gate/expiry boundaries.
 
+Cosmetic-damage fixtures hit front/rear/optional-third attachment regions, scrape repeatedly, detach at threshold boundaries and restore on new grid/recovery. Include a bank, tunnel, overpass and jump landing for sliding fragments, plus repeated resets while old debris remains to saturate the pool. Assert ≤24 global pieces, ≤128 sparks and the existing 32-voice total, with no debris collider in car/gate/AI queries. Compare enabled/disabled effects using identical input/race RNG: rule/reward events match exactly and trajectories meet the existing same-host tolerances. Capture four divergent views at the cap, review sliding/sparks without obstructing turns, and verify pause/scene cleanup. This is planned T17 evidence, not a completed test.
+
 Telemetry distinguishes accepted swept motion, positional correction, reset, and route-local projection. Only legal swept motion crosses gates. All ordered validation gates are required in Time Attack. Test shared settings/device ownership separately from profile rewards. Seeded grids and cup rosters must survive a save/restart exactly.
 
 ## AI metrics

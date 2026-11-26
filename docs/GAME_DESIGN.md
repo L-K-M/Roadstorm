@@ -40,7 +40,7 @@ Use meters, seconds, and meters per second internally. The HUD converts to km/h 
 
 Asphalt is the baseline. Gravel gently reduces lateral grip and makes slides broader; it does not secretly punish drift. Short gravel sectors should remain competitive for every car. Dirt shoulders slow a car progressively and encourage a return to the road. Sand/grass beyond the shoulder impose stronger drag. Waterfall spray, rain decoration, and road paint do not introduce hidden friction changes. Communicate every handling-relevant surface with color, geometry, and tire sound.
 
-No permanent mechanical damage, tire wear, fuel, repair bills, or manual tuning minigame. Cosmetic sparks and body movement communicate contact.
+No permanent mechanical damage, tire wear, fuel, repair bills, or manual tuning minigame. Contact can loosen/detach cosmetic parts as specified below.
 
 ### Contact and recovery
 
@@ -49,6 +49,18 @@ Side contact nudges both cars and produces modest speed loss. Wall brushes scrub
 Small jumps and crests are part of the road design. Landings preserve a usable forward direction, with visual suspension movement separated from collision. Reset after an explicit one-second hold, falling out of bounds, or remaining immobile away from valid road for three seconds. Flipped/invalid poses auto-recover. Practice also exposes an immediate reset action in its pause menu.
 
 Reset to the last unoccupied safe route anchor at or behind valid progress, at no more than 10 m/s, with 1.5 seconds of visibly indicated car-contact immunity. Keep terrain and barrier collision active. If an anchor is blocked, search farther backward or hold the car harmlessly until clear. At immunity expiry, resolve overlap through safe placement before enabling contact; never release a large overlap impulse. The one-second reset hold consumes ordinary race time; there is no extra hidden time penalty. Reset never skips a checkpoint or advances rank unfairly. Suppression during recovery applies to new drift style/surge, not previously earned race/cup payouts.
+
+### Cosmetic impact damage
+
+Front and rear bumpers can loosen, rattle and detach after contact. A rear wing or comparable trim piece may be a third detachable slot on cars that have one. Use at most three slots per car; wheels, doors and major body deformation are outside this simple model. Impact locations select the affected part rather than making an unrelated bumper pop off.
+
+Each part has intact, loose and detached visual states. Initial tuning: a contact-induced velocity change of at least 2 m/s loosens the struck part; at least 5 m/s in one hit, or 8 m/s accumulated across that part's hits, detaches it. These are cosmetic thresholds to validate in M5, not another collision-response calculation. Coalesce one physical contact's repeated notifications and detach at most one part per impact, with a 0.5-second per-car effect cooldown. Repeated wall grinding cannot spawn an unlimited stream of copies.
+
+A detached bumper inherits the car's committed motion, bounces/tumbles briefly, then slides along the road with short metal sparks and a synthesized scrape. Debris interacts visually with the static road/terrain; racers drive through it. It never blocks a car, changes a surface, advances a gate, becomes an AI obstacle or adds a second impact impulse. Part removal never changes car mass, collision hull, grip, acceleration, steering or top speed. Ordinary impact speed loss still applies once, as already specified.
+
+Share a pool of at most 24 debris pieces across the race and all cameras, with six-second lifetimes and a final one-second fade. At capacity recycle the oldest off-screen piece; if every piece is visible, skip the new fragment while still showing the car's correct detached state. Cap global spark particles at 128 and prioritize at most four visible sliding sources. Fade pieces that leave all views; no per-camera copies. Existing effects/audio budgets include this feature.
+
+Start each grid, restarted session and manual/automatic recovery with repaired visual parts. Hide restoration in the recovery fade; earlier debris simply expires. Time Attack/Arcade Rush otherwise keep the current session's cosmetic state until restart/recovery. No garage repair cost, damage-based reward, performance penalty or persistent damage save. Offer reduced sparks and a cosmetic-effects toggle for comfort/performance; the car and race follow identical rules in every setting.
 
 ### Drafting
 

@@ -14,6 +14,8 @@ Start with two recognizable learned styles. **Surge** seeks sustained pressure a
 
 These rivals respond to the recent race situation rather than becoming faster when behind. A rival may notice that an outside lane repeatedly closes, wait behind, and try the other side at the next useful opening. It does not read a player's future inputs, access private data, or change its own physical limits. No continuous on-device training or persistent player profiling is required; the learned weights are fixed for a released model revision.
 
+Cosmetic bumper/trim damage and visual debris do not enter AI observations, obstacle queries, reward functions or car parameters. Training may disable their presentation entirely; impact penalties still use the original committed physical contact once. Neither family reacts to harmless detached pieces as if they blocked the road.
+
 ## Architecture
 
 Use a hierarchical controller so learning focuses on interesting race decisions rather than rediscovering basic steering.

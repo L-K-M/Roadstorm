@@ -9,6 +9,7 @@ Build an original desktop arcade racer that makes a short race feel like a journ
 | Area | Version 1.0 commitment |
 | --- | --- |
 | Driving | Forgiving, expressive grip and drift handling; automatic transmission; readable bumps, jumps, and fast recovery |
+| Cosmetic damage | Impact-loosened/detached bumpers, sliding/tumbling debris and sparks; handling stays governed by the intact car configuration |
 | Racing | Standard eight-car fields with two learned Roadstormers by default; three difficulties and shared limits; optional humans-only Quick Race has zero AI |
 | Local play | One to four players; four gamepads or keyboard plus three gamepads; a single shared simulation |
 | Courses | Six original authored circuits with elevation, changing width, varied corner rhythm, and animated landmarks |
@@ -31,7 +32,7 @@ People may direct the work, provide credentials, play the game, report observati
 
 ### Scope boundaries
 
-Version 1.0 includes finished courses rather than endless random roads. Defer online multiplayer, rollback networking, mobile and console ports, steering-wheel force feedback, VR, a cockpit with working instruments, licensed vehicles, pedestrians, traffic simulation, combat, police pursuits, vehicle damage, complex tuning, dynamic weather physics, a public mod editor, and a photo/video editor. Reverse courses and route branches can follow after release. These omissions keep four-player racing and the six-course campaign achievable without sacrificing their quality.
+Version 1.0 includes finished courses and simple cosmetic part damage. Defer online multiplayer, rollback networking, mobile and console ports, steering-wheel force feedback, VR, a working-instrument cockpit, licensed vehicles, pedestrians, traffic simulation, combat, police pursuits, mechanical damage/repair economy, complex tuning, dynamic weather physics, a public mod editor, and a photo/video editor. Reverse courses and route branches can follow after release. Cosmetic bumpers/debris do not add damage-dependent handling.
 
 ## Delivery principles
 
@@ -75,6 +76,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 - [ ] M1.5 Add chase/near/hood cameras, rear view, speed readout, drift cues, and basic synthesized engine/tire feedback.
 - [ ] M1.6 Capture keyboard and controller runs, telemetry traces, and a handling comparison report using the three starter configurations.
 - [ ] M1.7 Build CalibrationDriver and immutable sweeper/hairpin/esses/surface/contact/drafting fixtures; compare surge candidates and stock/max loadouts with the declared tolerances. Offer a play/feedback checkpoint without requiring manual implementation.
+- [ ] M1.8 Publish committed impact events with contact region, severity and imparted motion for later cosmetic damage; presentation never feeds a second contact impulse into the motor.
 
 **Acceptance:** the Standard-assisted fixture driver repeatedly enters/recovers a 12–40 degree drift and retains useful speed/control. Grip/drift comparison passes the 5% sweeper target and reports other corner classes/mixed laps; surge/drafting have measured effects. Contacts, crests, reverse and resets pass without tunneling/nonfinite/stuck states. The 30/60/120 FPS trace meets BENCHMARKS tolerances. Capability-labeled independent motion/control review records the experience limits; bot completion alone cannot certify fun.
 
@@ -99,7 +101,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 - [ ] M3.1 Implement device-to-player ownership, joining, readying, car selection, leaving, remapping, per-device deadzones, and persistent preferred controls.
 - [ ] M3.2 Render one shared world through one to four viewports. Implement all split layouts, native-resolution HUD overlays, and a nonrendered spare quadrant for three players.
 - [ ] M3.3 Add global pause, disconnect/reconnect/reassign handling, focus loss and current-attempt retirement; explicit Local Cup withdrawal converts its slot to AI only at the next event.
-- [ ] M3.4 Run eight cars on representative route sections with provisional scripted drivers. Add scenery stress scenes, bounded particles, and shared audio mixing.
+- [ ] M3.4 Run eight cars on representative route sections with provisional drivers. Stress scenery, the pooled cosmetic-debris/spark limits using proxy fragments, and shared audio mixing within the existing frame/voice budgets.
 - [ ] M3.5 Measure the worst four-camera scene and remove duplicate rendering, simulation, assets, or audio work. Freeze a documented rendering budget.
 
 **Acceptance has two records:** technical simulation/rendering/audio/routing must pass representative eight-car/four-view frame-time and mix gates, locking renderer/player-count presets. Actual-device verification must pass four gamepads and keyboard-plus-three-gamepad ownership/reconnect/remapping. Synthetic inputs cannot replace hardware. M4 and independent work may start after the technical record passes; missing physical evidence keeps that portion open and blocks integrated M5 acceptance/release. All layouts remain readable at 1080p including 150% HUD scale and held rear view.
@@ -144,6 +146,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 - [ ] M5.6 Have an agent other than each feature's implementer review the integrated build, footage, audio previews, performance evidence, and provenance.
 - [ ] M5.7 Demonstrate the mixed field of Classic Racers and Roadstormers and a comparison race with Classic Only, including readable rival identities and both learned styles.
 - [ ] M5.8 Complete preliminary title/car/rival-name screening before final badges/cards, and a capability-verified look/listen/rights package proof. Keep screening limitations and any unresolved experience review explicit.
+- [ ] M5.9 Finish cosmetic damage on all three starter cars: detachable front/rear bumpers, optional rear wing, shared sliding/tumbling debris, sparks and synthesized rattles/scrapes. Verify repair-on-reset/new-grid, pool saturation, four-player readability and authoritative-state isolation before extending it to all cars.
 
 **Acceptance:** single-player and four-player sessions work from a fresh launch without developer intervention. The slice meets the handling, fairness, visual, audio, and performance criteria. Every asset has a source recipe and approved record. A reviewer can explain each car's handling identity and recognize at least three distinct Riviera landmarks. Record unresolved subjective feedback honestly; do not expand content to conceal a weak driving model.
 
@@ -171,6 +174,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 - [ ] M7.5 Populate the exact championship schedule, car unlock awards, per-course Arcade Rush timing, and stock Time Attack medals.
 - [ ] M7.6 Validate the full car/course matrix at stock and maximum upgrades, targeted intermediate upgrade boundaries, pairwise layout/difficulty/assistance combinations, and curated stress cases; perform separate art, audio, route-readability, and rights reviews.
 - [ ] M7.7 Prepare expanded training data and provisional checkpoints, preserving whole-course/seed holdouts; estimate bounded final-training cost. These are candidate models until M8.1 handling freeze and M8.7 acceptance.
+- [ ] M7.8 Complete detachable bumper assets, attachment/impact regions and damage LODs for all twelve cars; validate appearance, pooled debris/mix cost and identical gameplay behavior with cosmetic damage enabled/disabled.
 
 **Acceptance:** six distinct circuits and twelve finished cars exist; no required content is a placeholder. Each course passes its track contract and has three major set pieces. All modes reference valid content. Every course supports stock starter cars and eight-car fields; narrow sections do not force unavoidable collisions. The complete shipped asset set passes the manifest/license check. Performance is rechecked as each course lands rather than deferred to the end.
 
