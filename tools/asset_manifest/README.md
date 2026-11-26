@@ -66,13 +66,18 @@ python3 tools/asset_manifest/validate_manifest.py assets/manifest.json --no-file
 # Machine-readable output
 python3 tools/asset_manifest/validate_manifest.py assets/manifest.json --json
 
-# Run the test suite
+# Run the test suite (a <pattern> filters tests with unittest -k)
 tools/asset_manifest/run_tests.sh            # or: python3 -m unittest discover -s tools/asset_manifest/tests -t tools/asset_manifest -v
+tools/asset_manifest/run_tests.sh rights    # only tests whose names match "rights"
 ```
 
 Exit codes follow the project convention (`tools/ci/ci.sh`,
 `tools/toolchain/verify.sh`): `0` = no errors, `1` = validation errors,
-`2` = the manifest could not be read or the command line was wrong.
+`2` = the manifest could not be read or the command line was wrong. "Could
+not be read" is the read itself: a missing or unreadable file, a nonexistent
+`--root` (`bad-root`), or text that is not JSON (`invalid-json`) each exit 2.
+A document that decodes but breaks the contract - including one that is not
+valid UTF-8 (`invalid-encoding`) - is a content defect and exits 1.
 
 ## What the validator checks
 
@@ -85,15 +90,31 @@ Per asset entry, the essential provenance and lineage metadata:
 
 | Group | Checked |
 | --- | --- |
-| Identity | `id` is a non-empty, unique, project-pattern stable ID; `category` is present; `identity.source_paths` and `identity.output_paths` are non-empty, clean, project-relative POSIX paths that exist. |
-| Hashes | Every `identity.output_paths` entry has a `sha256:<64 hex>` record, and no hash is recorded for an unlisted path; `--check-hashes` recomputes them. |
+| Identity | `id` is a non-empty, unique, project-pattern stable ID; `category` is present; `identity.source_paths` and `identity.output_paths` are non-empty, clean, project-relative POSIX paths that exist as regular files; optional `identity.schema`/`identity.revision` record which definition of the asset's format the entry describes (recorded, not verified). |
+| Hashes | Every `identity.output_paths` entry has a `sha256:<64 hex>` record, and no hash is recorded for an unlisted path; hash keys must be clean project-relative POSIX paths, so `--check-hashes` never resolves or hashes a path outside the root; `--check-hashes` recomputes them. |
 | Origin | `origin` is one of `llm_script_generated`, `service_generated`, `external_cc0`. |
 | Authoring | `authoring` is present; `task`/`prompt_ref`/`agent`/`provider`/`model`/`date`/`route` are strings and may be `unknown`. |
-| Generation | `generator` is recorded; first-party assets also record `recipe_path` and `regeneration_command` (the release gate blocks missing source recipes); `input_asset_ids` reference registered IDs. |
+| Generation | `generator` is recorded; first-party assets also record `recipe_path` and `regeneration_command` (the release gate blocks missing source recipes); `input_asset_ids` reference registered IDs; `seed` is a string, integer or null (a boolean is not a seed). |
 | Reproducibility | `reproducibility_class` is one of the contract's three classes. |
-| Rights | `license_spdx` and `rights_holder_record` are present and not `unknown` (unknown legal origin blocks shipping); first-party licenses are limited to `CC0-1.0`/`Unlicense`, external input to verified item-level `CC0-1.0`; `service_generated` entries must reference provider terms; `external_cc0` entries must record upstream URL/date/evidence. |
-| Review | `status`, `reviewer`, `limitations`, `release_inclusion` are present; `release_inclusion: true` requires `status: approved`, and a rejected entry cannot be marked for release. |
-| Lineage | `upstream_inputs` is present (possibly `[]`); each input has an `asset_id` or `path`, and external inputs carry license and evidence; `depends_on` references registered IDs; referenced paths exist. |
+| Technical | Optional free-form group: dimensions, triangle/material counts, LODs, duration, sample rate/channels, loop settings, model dimensions as applicable. Recorded, not verified (see Limitations); its members are deliberately not key-checked. |
+| Rights | `license_spdx` and `rights_holder_record` are present and not `unknown` (unknown legal origin blocks shipping); first-party creative material is limited to `CC0-1.0` (Unlicense covers code/tools/tests/schemas/text, which are not in this manifest), external input to verified item-level `CC0-1.0`; `service_generated` entries must reference provider terms (omission or `null` is an error, not a bypass); `external_cc0` entries must record upstream url/date/evidence. |
+| Review | `status`, `reviewer`, `limitations`, `release_inclusion` are present; `release_inclusion: true` requires `status: approved`, and a rejected entry cannot be marked for release; an approved or release-included entry additionally records a known `reviewer`, `approval_revision` and `technical_check`, because `unknown` on a shipping claim is not an approval record. |
+| Lineage | `upstream_inputs` is present (possibly `[]`); each input has an `asset_id` or `path`, and external inputs carry license and evidence; an `external_cc0` entry records at least one upstream input, so its evidence trail is never empty; `depends_on` references registered IDs; referenced paths exist. |
+
+Cross-entry, once the whole registry is known:
+
+| Check | Rule |
+| --- | --- |
+| Output ownership | Each `identity.output_paths` entry has exactly one owning entry, and is listed once inside it (`duplicate-output-path`). Two entries claiming one output path make the provenance, lineage and hash of that file ambiguous. Sharing a *source* path is ordinary lineage and stays allowed. |
+| Path safety | Referenced paths must be regular files inside the root: a symlink is rejected (`symlinked-path`) because it can name a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. |
+| Dependency order | `lineage.depends_on` is acyclic (`dependency-cycle`): direct (A↔B), self (A→A) and indirect (A→B→C→A) loops are all rejected, because an asset can only be built once the entries it depends on exist. The search is iterative, so a long chain cannot exhaust the stack. |
+
+Document level:
+
+| Check | Rule |
+| --- | --- |
+| Duplicate JSON members | A member written twice in the same JSON object is an error at any depth (`duplicate-json-member`) — top level, entry level, and nested `rights`, `review`, `lineage` and array-element objects. Python's JSON keeps only the last value, so a repeat silently overwrites the earlier record (for example a second `registry_status`). Repeated *array items* are values, not members, and stay allowed. |
+| Encoding | The manifest must be valid UTF-8. A decoding failure is reported as the structured finding `invalid-encoding` (exit 1) instead of a traceback, in both text and `--json` output. |
 
 ## Tests
 
@@ -112,6 +133,45 @@ Per asset entry, the essential provenance and lineage metadata:
 - review/release consistency, dangling lineage references, unknown fields,
   schema version/manifest ID mismatches, malformed JSON, unreadable manifest,
   bad root, and CLI exit codes 0/1/2.
+- **output ownership**: two individually valid entries with distinct IDs, the
+  same output path and correct hashes are rejected with
+  `duplicate-output-path` even with `--check-hashes`; a path listed twice in
+  one entry is rejected; a shared *source* path stays valid;
+- **dependency cycles**: a direct A↔B loop, a self-dependency, an indirect
+  A→B→C→A loop, and a loop combined with a dangling reference are each
+  rejected with `dependency-cycle`, while a three-entry acyclic chain and a
+  1500-entry acyclic chain validate cleanly with hash verification on;
+- **duplicate JSON members**: the contradictory `registry_status` pair and
+  repeated nested `rights.license_spdx`, `review.status` and
+  `lineage.upstream_inputs[0].path` members are each reported once at their
+  exact location; repeated array items are not;
+- **encoding**: a one-byte invalid UTF-8 manifest yields the structured
+  `invalid-encoding` finding and exit 1, in text mode and under `--json`
+  (no traceback).
+- **rights omissions** (the gate must not be bypassable by leaving a field
+  out): a `service_generated` entry with no `service_terms_ref`, or with it
+  set to `null`; an `external_cc0` entry with no `rights.upstream`, with it
+  `null`, or with an empty `upstream_inputs` list; and the positive control
+  of a fully evidenced external entry that passes with hash verification.
+- **approval records**: an approved entry with an `unknown` reviewer, and an
+  approved entry missing `approval_revision`/`technical_check`, are errors,
+  while a pending, non-released entry may still record `unknown`.
+- **technical and identity metadata**: the free-form `technical` group is
+  accepted (unknown members are not errors) but must be an object;
+  `identity.schema`/`revision` are recorded strings.
+- **creative licensing**: a first-party entry claiming `Unlicense` is a
+  `disallowed-license` error, with the message naming the CC0-1.0
+  requirement for creative assets.
+- **type and path safety**: `seed: true` is rejected (a boolean is not a
+  seed); a symlinked reference - including one escaping the root - is
+  `symlinked-path`; with a malformed `output_paths`, `--check-hashes` does
+  not hash an absolute key such as `/etc/hosts`.
+- **exit contract**: an unreadable manifest (permission denied), invalid
+  JSON and a nonexistent `--root` each exit 2, in text and `--json` mode,
+  while invalid UTF-8 still exits 1.
+- **test runner**: `run_tests.sh <pattern>` runs the matching tests via a
+  unittest `-k` filter instead of failing with "Start directory is not
+  importable".
 
 Run them with `tools/asset_manifest/run_tests.sh` (or the `unittest discover`
 command above). They use only the standard library and write fixtures into a
@@ -121,8 +181,10 @@ temporary directory.
 
 - **Scope.** This validates the manifest, not the assets. Technical metadata
   (triangle/material counts, LODs, duration, sample rate, loop settings, model
-  dimensions) is recorded by entries but is not independently verified here;
-  that belongs to the producing pipeline and to the review record.
+  dimensions) is recorded by entries in the free-form `technical` group but is
+  not independently verified here; that belongs to the producing pipeline and
+  to the review record. Likewise `identity.schema`/`revision` are recorded
+  declarations: no per-asset schema files exist yet.
 - **No hash discovery.** Hashes are only checked for paths the manifest
   records, and only with `--check-hashes`. Nothing scans the tree for
   unregistered files; that is the package validator's job at T15.
@@ -131,22 +193,59 @@ temporary directory.
   `schemas/common.schema.json`. The contract constants live at the top of
   `manifest_validator.py`; there is no separate JSON Schema file to drift from.
 - **Policy-derived license sets.** The allowed license identifiers are derived
-  from `docs/ASSET_PRODUCTION.md` and `licenses/README.md` at M0
-  (first-party `CC0-1.0`/`Unlicense`, external item-level `CC0-1.0`). If the
+  from `docs/ASSET_PRODUCTION.md` and `licenses/README.md` at M0. This
+  manifest covers creative assets and model artifacts only, so its first-party
+  set is `CC0-1.0`: Unlicense remains the project dedication for code, tools,
+  tests, schemas and text definitions, which are not listed here. If the
   rights work revises scope, this list must be revised with it.
 - **References are not verified content.** `rights_holder_record` may point at
   `provenance/OWNER_AUTHORITY.md` while OI-01 is still open; the validator
   checks that a reference is recorded, not that the referenced instrument is
   executed. Likewise `service_terms_ref` is checked for presence, not for
   verified terms.
+- **Dependency edges.** The cycle check covers `lineage.depends_on`, the
+  production dependency order. `generation.input_asset_ids` records which
+  registered assets a recipe consumed, not the build order, so it is checked
+  for registration (dangling references) but not for cycles.
 - **Existence is local.** Path checks resolve against the given root on the
-  machine running the check. Cross-platform path case sensitivity is not
-  simulated.
+  machine running the check, and referenced files must be regular files: a
+  symlinked reference is rejected rather than followed. Cross-platform path
+  case sensitivity is not simulated.
 - **No CI wiring yet.** `tools/ci/` is owned by another job; wiring this
   validator into `ci.sh validate` (and `contracts.list`) is a follow-up for
   that owner. Until then, run it directly.
 - **No asset entries exist.** The positive-control entry in the tests is a
   fixture. The first real entries will exercise parts of this contract that
   fixtures cannot, and may legitimately require a `schema_version` bump.
+
+## Disposition of review findings
+
+Recorded from `review/implementation/m0-five-jobs-opus-0bbb2f75-c3eb-47f5-9d89-771bce087012.md`
+(job `ed8c1319-fabb-47d5-8b27-266cc1348576`, owned paths
+`tools/asset_manifest/**` and `assets/manifest.json`). Each item below states
+what was done, or why nothing was done; nothing was implemented that the plan
+and contract do not require.
+
+| Finding | Disposition |
+| --- | --- |
+| 1 - rights gate bypassable by omitting fields | Fixed. `service_terms_ref` is required for `service_generated`; `rights.upstream` (url/date/evidence) and at least one upstream input with license and evidence are required for `external_cc0`. Omission and explicit `null` are both errors. First-party entries may still record `upstream_inputs: []`. |
+| 2 - approved/released entry with unknown reviewer and no approval revision | Fixed. When `status == "approved"` or `release_inclusion` is true, `reviewer`, `approval_revision` and `technical_check` must be present and not `unknown`. Pending entries may keep unknowns. The positive-control fixture now uses real-looking values. |
+| 3 - headless smoke test passes despite script errors | Out of scope: `tools/smoke/**` and the engine runs are owned elsewhere. Not addressed here. |
+| 4 - Technical group and identity schema/revision not recordable | Fixed. `technical` is an optional free-form object (recorded, not verified); `identity.schema`/`revision` are optional recorded strings. No per-asset schema exists yet, so contents are not validated - see Limitations. |
+| 5 - Jolt not selected in `project.godot` | Out of scope: `project.godot` is owned elsewhere. Not addressed here. |
+| 6 - toolchain documents contradict their verification status | Out of scope: `docs/TOOLCHAIN.md` and `tools/toolchain/**` are owned elsewhere. Not addressed here. |
+| 7 - `verify.sh` passes when export templates are absent | Out of scope: `tools/toolchain/**` is owned elsewhere. Not addressed here. |
+| 8 - changed files point to files absent at the reviewed SHA | Reconciled honestly. Every referenced file (`provenance/MANIFEST_CONTRACT.md`, `provenance/OPEN_ITEMS.md`, `provenance/PROVIDER_TERMS.md`, `provenance/OWNER_AUTHORITY.md`, `schemas/common.schema.json`, `licenses/README.md`, `tools/ci/**`) exists in this working tree now, but `provenance/`, `schemas/`, `licenses/` and `tools/ci/` are still uncommitted and owned by other jobs. The references are therefore accurate against the working tree, not evidence of committed content; no file was added, moved or committed here. |
+| 9 - exit-code contract violated | Fixed. `bad-root`, `unreadable-manifest` and `invalid-json` now exit 2 ("could not be read or the command line was wrong"), matching the documented convention; a decodable but defective document (including `invalid-encoding`) still exits 1, because it was read and failed validation. The documentation was not changed to match the old behavior. |
+| 10 - documented `<pattern>` form of `run_tests.sh` broken | Fixed. A first positional argument is passed to `unittest` as a `-k` filter; flags still pass through. |
+| 11 - first-party creative assets may be marked `Unlicense` | Fixed. `FIRST_PARTY_LICENSES` is now `CC0-1.0` only, per `docs/ASSET_PRODUCTION.md` ("original editable scores, glyph/mesh artwork sources and their creative outputs use CC0, as do original weights/datasets"). Unlicense remains correct for code, tools, tests, schemas and text definitions, which are not creative assets and are not listed in this manifest; the error message says so. |
+| 12 - further boundary cases that should not pass | Fixed for the remaining items. `seed: true` is rejected (a boolean is not a seed, though `bool` subclasses `int`); symlinked references are rejected; hash keys are spelling-checked so `--check-hashes` cannot hash a path outside the root. The symlink rule is deliberately stricter than the review's minimum (reject only symlinks escaping the root): a symlink inside the root still hides the governed file's real location, so any symlinked reference is reported. Duplicate output paths and duplicate JSON members were fixed by the previous job and are preserved. |
+| 13 - smoke version check ignores build and commit | Out of scope: `tools/smoke/**`. Not addressed here. |
+| 14 - `.gitignore` coverage | Out of scope: repository-root file, open M0.2 item. Not addressed here. |
+
+No review recommendation conflicted with the plan or the manifest contract;
+where the review offered a choice (finding 9: map exit codes vs. correct the
+documentation), the documented contract was kept and the code was made to
+match it.
 
 Original project code under the Unlicense.

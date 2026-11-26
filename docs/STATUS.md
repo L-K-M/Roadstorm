@@ -31,7 +31,7 @@ The GPT-6.2 Sol manifest fixes (`3845159a-f14b-4572-ac8d-25bf5f43d841`) and Opus
 
 `a04dc96f-1f5a-44ff-a636-217034a045fd` (StepFun) completed official LongCat/StepFun terms intake source capture; account applicability and dedication compatibility remain open. `b20cb153-94a8-4997-be00-1f8335daa1a0` (StepFun) owns only `schemas/handling/` and `fixtures/handling/` for a bounded M0.9 slice. The interrupted AI schema remains unaccepted.
 
-`ed8c1319-fabb-47d5-8b27-266cc1348576` completed further manifest remediation; 76 tests and 22 negative probes passed independently, pending commit and both scoped rechecks. `8cfeb70f-e5b3-4cac-8b4c-83a933d0970b` (StepFun) owns `schemas/intent/` and `fixtures/intent/` for a bounded AI-intent schema slice.
+`ed8c1319-fabb-47d5-8b27-266cc1348576` completed further manifest remediation; 76 tests and 22 negative probes passed independently; both scoped rechecks remain required. `8cfeb70f-e5b3-4cac-8b4c-83a933d0970b` (StepFun) owns `schemas/intent/` and `fixtures/intent/` for a bounded AI-intent schema slice.
 
 `93555487-a479-4ecb-ac23-9e95067144cf` completed CI tooling, uncommitted and not accepted: its Linux workflow extracts a download without verifying the publisher checksum first, and the machine inventory identified doctor/capture issues. Follow-on `6848aca2-16e6-42f1-abfd-4e493b125af5` owns `tools/ci/` and `.github/workflows/` for targeted fixes. Its claim of a missing nested tick coordinator conflicts with the present file and requires isolated reproduction. Do not call M0 CI complete until independently checked.
 

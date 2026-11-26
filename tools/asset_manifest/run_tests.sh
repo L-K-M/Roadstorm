@@ -10,6 +10,11 @@
 #   tools/asset_manifest/run_tests.sh -v         verbose (one line per test)
 #   tools/asset_manifest/run_tests.sh <pattern>  run tests matching <pattern>
 #
+# <pattern> is passed to unittest as a -k filter, not as a positional start
+# directory: a positional argument would be treated as an importable package
+# path ("Start directory is not importable"), which made the documented form
+# fail. Any other flags are passed through to unittest unchanged.
+#
 # Exit codes: 0 = all tests passed, 1 = a test failed, 2 = the suite could not
 # run (same convention as tools/ci/ci.sh and tools/toolchain/verify.sh).
 #
@@ -34,6 +39,20 @@ if [ -z "$PYTHON" ]; then
 	exit 2
 fi
 
+# Translate the documented <pattern> form into a unittest -k filter. A first
+# argument that is not a flag is the pattern; everything else passes through.
+PATTERN=""
+if [ "$#" -gt 0 ]; then
+	case "$1" in
+	-*)
+		;;
+	*)
+		PATTERN="$1"
+		shift
+		;;
+	esac
+fi
+
 # The suite imports manifest_validator from this directory and reads the
 # shipped assets/manifest.json; run it from the repository root so relative
 # paths behave the same everywhere.
@@ -43,7 +62,11 @@ printf 'asset manifest validator tests (python: %s)\n' "$("$PYTHON" --version 2>
 printf 'tool directory: %s\n' "$TOOLS_DIR"
 printf ''
 
-set -- "$PYTHON" -m unittest discover -s "$TOOLS_DIR/tests" -t "$TOOLS_DIR" "$@"
+if [ -n "$PATTERN" ]; then
+	set -- "$PYTHON" -m unittest discover -s "$TOOLS_DIR/tests" -t "$TOOLS_DIR" -k "$PATTERN" "$@"
+else
+	set -- "$PYTHON" -m unittest discover -s "$TOOLS_DIR/tests" -t "$TOOLS_DIR" "$@"
+fi
 "$@"
 _rc=$?
 

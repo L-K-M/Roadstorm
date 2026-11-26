@@ -19,6 +19,14 @@ lets a reviewer answer:
 * who may ship it - license/SPDX identifier, rights record, service terms;
 * whether it was reviewed and is approved for release inclusion.
 
+Across entries it also enforces the two rules that make the registry usable as
+a record rather than a pile of independent claims: every registered output
+path has exactly one owning entry, and ``lineage.depends_on`` is acyclic, so
+the lineage can be traversed as a production dependency order. At the document
+level it rejects repeated JSON members (Python keeps only the last value of a
+repeat, which silently overwrites the earlier record) and manifests that are
+not valid UTF-8, both as structured findings rather than as tracebacks.
+
 Deliberate limitations (documented in README.md):
 
 * Standard library only, standalone. It does not resolve hashes against a
@@ -37,7 +45,12 @@ Usage as a library::
     findings = validate_manifest(Path("assets/manifest.json"), root=Path("."))
 
 Exit codes for the CLI wrapper: 0 = no errors, 1 = validation errors,
-2 = the manifest could not be read or the command line was wrong.
+2 = the manifest could not be read or the command line was wrong. "Could
+not be read" means the read itself failed or the bytes are not a JSON record
+at all: a missing/unreadable file, a nonexistent ``--root`` (``bad-root``)
+and text that is not JSON (``invalid-json``) all exit 2, while a document
+that decodes but violates the contract - including one that is not valid
+UTF-8 (``invalid-encoding``) - is a content defect and exits 1.
 
 Original project code under the Unlicense.
 """
@@ -85,11 +98,19 @@ REVIEW_STATUSES = ("pending", "approved", "rejected")
 
 # Policy-derived license sets (docs/ASSET_PRODUCTION.md "License scope" and
 # "External material policy"; licenses/README.md "Scope rule"): first-party
-# creative material is dedicated CC0-1.0, project code/tools/text stays
-# Unlicense, and the only external creative input the policy accepts is
-# verified item-level CC0.
-FIRST_PARTY_LICENSES = ("CC0-1.0", "Unlicense")
+# creative material - artwork sources, creative outputs, weights and
+# datasets - is dedicated CC0-1.0, and the only external creative input the
+# policy accepts is verified item-level CC0. Unlicense covers executable
+# generators, tests, schemas and game/event definitions, which are not
+# creative assets and are therefore never listed in this manifest; an entry
+# claiming Unlicense is claiming the wrong dedication for a creative asset.
+FIRST_PARTY_LICENSES = ("CC0-1.0",)
 EXTERNAL_LICENSES = ("CC0-1.0",)
+
+# Findings that mean the manifest could not be read (or the command line was
+# wrong) rather than that its contents failed validation. The CLI maps these
+# to exit code 2, per README.md; everything else that fails is exit 1.
+READ_FAILURE_CODES = ("bad-root", "unreadable-manifest", "invalid-json")
 
 # Explicit unknown markers. A field carrying one of these is recorded as
 # unknown; it is never treated as a fact.
@@ -115,11 +136,19 @@ ENTRY_REQUIRED_KEYS = (
     "review",
     "lineage",
 )
-ENTRY_OPTIONAL_KEYS = ("display_name",)
+ENTRY_OPTIONAL_KEYS = ("display_name", "technical")
 ENTRY_KNOWN_KEYS = ENTRY_REQUIRED_KEYS + ENTRY_OPTIONAL_KEYS
 
 AUTHORING_KEYS = ("task", "prompt_ref", "agent", "provider", "model", "date", "route")
-IDENTITY_KEYS = ("source_paths", "output_paths")
+# "schema" and "revision" record which definition/revision of the asset's
+# format the entry describes (provenance/MANIFEST_CONTRACT.md, Identity
+# group). They are recorded, not verified: no per-asset schema exists yet.
+IDENTITY_KEYS = ("source_paths", "output_paths", "schema", "revision")
+# "technical" is a free-form recorded group: dimensions, triangle/material
+# counts, LODs, duration, sample rate/channels, loop settings and model
+# dimensions as applicable (contract, Technical group). Its contents belong
+# to the producing pipeline and the review record and are not verified here,
+# so its members are deliberately not key-checked.
 HASHES_KEYS = ()  # hashes is a free-form map: output path -> "sha256:<hex>"
 GENERATION_KEYS = (
     "generator",
@@ -351,12 +380,36 @@ def _require_enum(
 # ---------------------------------------------------------------------------
 
 
+def _path_spelling_error(value: Any) -> str | None:
+    """Return why a manifest path spelling is unacceptable, or ``None``.
+
+    Pure and filesystem-free, so it can gate both existence checks and
+    hashing: a path that fails here must never be resolved against the root.
+    """
+    if not _is_string(value) or not value.strip():
+        return "must be a non-empty path string"
+    path = value
+    if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
+        return "must be project-relative, not absolute: {!r}".format(path)
+    if "\\" in path:
+        return "must use POSIX '/' separators: {!r}".format(path)
+    parts = path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return "must be a clean relative path without '', '.' or '..' segments: {!r}".format(
+            path
+        )
+    return None
+
+
 class PathChecker:
     """Resolves manifest-relative paths against a project root.
 
     Manifest paths must be POSIX-style, project-relative, and free of ``..``
     so that a manifest cannot point outside the checkout or hide an absolute
-    machine path in the record.
+    machine path in the record. Referenced files must additionally be regular
+    files: a symlink can name a file outside the checkout that the entry does
+    not govern, so its existence and hash would vouch for content the record
+    never accounted for.
     """
 
     def __init__(self, root: Path | None, file_checks: bool = True, check_hashes: bool = False):
@@ -371,38 +424,25 @@ class PathChecker:
 
     def check(self, findings: Findings, location: str, value: Any, what: str) -> None:
         """Validate the spelling and (optionally) the existence of a path."""
-        if not _is_string(value) or not value.strip():
-            findings.error("invalid-path", location, "{} must be a non-empty path string".format(what))
+        problem = _path_spelling_error(value)
+        if problem is not None:
+            findings.error("invalid-path", location, "{} {}".format(what, problem))
             return
         path = value
-        if path.startswith("/") or re.match(r"^[A-Za-z]:", path):
-            findings.error(
-                "invalid-path",
-                location,
-                "{} must be project-relative, not absolute: {!r}".format(what, path),
-            )
-            return
-        if "\\" in path:
-            findings.error(
-                "invalid-path",
-                location,
-                "{} must use POSIX '/' separators: {!r}".format(what, path),
-            )
-            return
-        parts = path.split("/")
-        if any(part in ("", ".", "..") for part in parts):
-            findings.error(
-                "invalid-path",
-                location,
-                "{} must be a clean relative path without '', '.' or '..' segments: {!r}".format(
-                    what, path
-                ),
-            )
-            return
         if not self.file_checks:
             return
         target = self.resolve(path)
         if target is None:
+            return
+        if target.is_symlink():
+            findings.error(
+                "symlinked-path",
+                location,
+                "{} is a symlink ({}); a manifest reference must be a regular file inside the "
+                "checkout, because a symlink can point at a file outside the root that the "
+                "entry does not govern, and its existence and hash would vouch for content the "
+                "record never accounted for".format(what, path),
+            )
             return
         if not target.exists():
             findings.error(
@@ -422,14 +462,102 @@ class PathChecker:
     def digest(self, relative: str) -> str | None:
         if self.root is None:
             return None
+        if _path_spelling_error(relative) is not None:
+            # Never resolve an unvalidated spelling against the root: an
+            # absolute key such as /etc/hosts would otherwise be hashed.
+            return None
         target = self.resolve(relative)
-        if target is None or not target.is_file():
+        if target is None or target.is_symlink() or not target.is_file():
             return None
         hasher = hashlib.sha256()
         with open(target, "rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 hasher.update(chunk)
         return hasher.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Document decoding
+# ---------------------------------------------------------------------------
+
+
+class _DuplicateMemberCollector:
+    """Counts repeated JSON object members while a document is decoded.
+
+    Python's ``json`` module keeps the *last* value of a repeated member and
+    says nothing about the repeat. A manifest is a record, so a member written
+    twice (for example a second ``registry_status``, or a second
+    ``review.status`` inside one entry) is a contradiction in the record: the
+    earlier value is silently overwritten and cannot be reviewed. The
+    collector records, per decoded object, which members were repeated so the
+    findings can point at the exact location.
+    """
+
+    def __init__(self) -> None:
+        # id(decoded object) -> {member name: number of repeats}
+        self.repeats: dict[int, dict[str, int]] = {}
+
+    def __call__(self, pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+        obj: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in obj:
+                repeats = self.repeats.setdefault(id(obj), {})
+                repeats[key] = repeats.get(key, 0) + 1
+            obj[key] = value
+        return obj
+
+
+def _decode_manifest_document(
+    findings: Findings, raw: str, source: Path
+) -> Any | None:
+    """Decode manifest JSON, reporting duplicate members as findings.
+
+    Returns ``None`` when the text is not valid JSON; the caller then stops,
+    because nothing else about the document can be trusted.
+    """
+    collector = _DuplicateMemberCollector()
+    try:
+        document = json.loads(raw, object_pairs_hook=collector)
+    except json.JSONDecodeError as exc:
+        findings.error(
+            "invalid-json",
+            "<manifest>",
+            "{} is not valid JSON: {}".format(source, exc),
+        )
+        return None
+    if collector.repeats:
+        _report_duplicate_members(findings, document, collector.repeats)
+    return document
+
+
+def _report_duplicate_members(
+    findings: Findings,
+    document: Any,
+    repeats: Mapping[int, Mapping[str, int]],
+) -> None:
+    """Emit one finding per repeated member, at any depth in the document."""
+    pending = dict(repeats)
+    stack: list[tuple[str, Any]] = [("", document)]
+    while stack:
+        location, value = stack.pop()
+        if _is_mapping(value):
+            counted = pending.pop(id(value), None)
+            if counted:
+                for key in sorted(counted):
+                    findings.error(
+                        "duplicate-json-member",
+                        _join(location, key),
+                        "JSON member '{}' appears {} times in the same object; JSON keeps only the "
+                        "last value, so the earlier record is silently overwritten - list the "
+                        "member once with the value that is meant".format(
+                            key, counted[key] + 1
+                        ),
+                    )
+            for key in reversed(list(value)):
+                stack.append((_join(location, key), value[key]))
+        elif _is_sequence(value):
+            for index in reversed(range(len(value))):
+                stack.append(("{}[{}]".format(location, index), value[index]))
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +593,7 @@ def validate_manifest(
         return findings
 
     try:
-        raw = manifest_path.read_text(encoding="utf-8")
+        raw = manifest_path.read_bytes().decode("utf-8")
     except OSError as exc:
         findings.error(
             "unreadable-manifest",
@@ -473,14 +601,17 @@ def validate_manifest(
             "cannot read {}: {}".format(manifest_path, exc),
         )
         return findings
-    try:
-        document = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except UnicodeDecodeError as exc:
         findings.error(
-            "invalid-json",
+            "invalid-encoding",
             "<manifest>",
-            "{} is not valid JSON: {}".format(manifest_path, exc),
+            "{} is not valid UTF-8 ({}); the manifest is a UTF-8 JSON document, so it cannot be "
+            "read as a record - re-save it as UTF-8".format(manifest_path, exc),
         )
+        return findings
+
+    document = _decode_manifest_document(findings, raw, manifest_path)
+    if document is None:
         return findings
 
     checker = PathChecker(root, file_checks=file_checks, check_hashes=check_hashes)
@@ -621,6 +752,208 @@ def _validate_document(
                 seen[entry_id] = index
         _validate_entry(findings, location, entry, checker, allow_unknown_keys, set(entry_ids))
 
+    # Cross-entry checks: they need the whole registry, not one entry.
+    _check_output_ownership(findings, entries)
+    _check_dependency_cycles(findings, entries)
+
+
+def _check_output_ownership(findings: Findings, entries: Sequence[Any]) -> None:
+    """Enforce one owner per registered output path.
+
+    An output path is the asset the entry stands for: the file its recipe
+    writes and the file its hash identifies. Provenance for that file is the
+    entry, so a path registered by two entries has two owners, two lineage
+    records and (potentially) two hashes for one file. A reviewer can no
+    longer tell which entry governs it, and the lineage cannot be traversed
+    as a production dependency order. Every output path therefore needs
+    exactly one owning entry, and must be listed once inside it.
+    """
+    owners: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        if not _is_mapping(entry):
+            continue
+        location = "assets[{}]".format(index)
+        identity = entry.get("identity")
+        if not _is_mapping(identity):
+            continue
+        output_paths = identity.get("output_paths")
+        if not _is_sequence(output_paths):
+            continue
+        claimed_here: set[str] = set()
+        for position, path in enumerate(output_paths):
+            if not _is_string(path) or not path.strip():
+                continue
+            where = "{}.output_paths[{}]".format(location, position)
+            if path in claimed_here:
+                findings.error(
+                    "duplicate-output-path",
+                    where,
+                    "output path '{}' is listed twice in {}.identity.output_paths; list each "
+                    "output path once so the entry names one file per hash".format(path, location),
+                )
+                continue
+            claimed_here.add(path)
+            if path in owners:
+                findings.error(
+                    "duplicate-output-path",
+                    where,
+                    "output path '{}' is registered by {} as well (first claimed by {}); each "
+                    "output path must have exactly one owning entry, otherwise the provenance, "
+                    "lineage and hash of that file are ambiguous and the dependency order "
+                    "cannot be traversed".format(path, location, owners[path]),
+                )
+                continue
+            owners[path] = location
+
+
+def _check_dependency_cycles(findings: Findings, entries: Sequence[Any]) -> None:
+    """Reject dependency cycles in ``lineage.depends_on``.
+
+    ``depends_on`` is the production dependency order: an entry may only be
+    built once the entries it depends on exist. A cycle (A needs B, B needs A;
+    or a longer loop) makes that order impossible, so it is an error. Unknown
+    or malformed IDs are reported by the per-entry checks and ignored here.
+    """
+    order: list[str] = []
+    rank: dict[str, int] = {}
+    edges: dict[str, set[str]] = {}
+    for entry in entries:
+        if not _is_mapping(entry):
+            continue
+        entry_id = entry.get("id")
+        if not _is_string(entry_id) or not entry_id.strip() or entry_id in rank:
+            # Missing, non-string and duplicate IDs are reported elsewhere; a
+            # duplicate ID cannot be given a second node in the graph.
+            continue
+        rank[entry_id] = len(order)
+        order.append(entry_id)
+        lineage = entry.get("lineage")
+        depends_on = lineage.get("depends_on") if _is_mapping(lineage) else None
+        successors: set[str] = set()
+        if _is_sequence(depends_on):
+            for dependency in depends_on:
+                if _is_string(dependency) and dependency.strip():
+                    successors.add(dependency)
+        edges[entry_id] = successors
+
+    for component in _strongly_connected_components(order, rank, edges):
+        members = set(component)
+        if len(members) == 1:
+            node = component[0]
+            if node not in edges.get(node, ()):
+                continue  # a lone entry without a self-dependency is not a cycle
+        cycle = _cycle_path(rank, edges, members)
+        first = cycle[0]
+        location = "assets[{}].lineage.depends_on".format(rank[first])
+        path = " -> ".join(cycle + [cycle[0]])
+        message = (
+            "dependency cycle in lineage.depends_on: {}; an asset can only be built once the "
+            "entries it depends on exist, so a cyclic dependency order cannot be traversed - "
+            "record the upstream dependencies so the graph is acyclic".format(path)
+        )
+        unlisted = sorted(members.difference(cycle), key=lambda node: rank[node])
+        if unlisted:
+            message += "; the same cycle also involves {}".format(", ".join(unlisted))
+        findings.error("dependency-cycle", location, message)
+
+
+def _cycle_path(
+    rank: Mapping[str, int],
+    edges: Mapping[str, set[str]],
+    members: set[str],
+) -> list[str]:
+    """Walk one closed cycle out of a strongly connected component.
+
+    The walk starts at the component member that appears first in the manifest
+    and always takes the earliest-registered successor inside the component,
+    so the reported path is deterministic.
+    """
+    start = min(members, key=lambda node: rank[node])
+    path = [start]
+    current = start
+    while True:
+        successors = sorted(
+            (node for node in edges.get(current, ()) if node in members),
+            key=lambda node: rank[node],
+        )
+        if not successors:
+            return path  # unreachable inside a strongly connected component
+        successor = successors[0]
+        if successor in path:
+            return path[path.index(successor):]
+        path.append(successor)
+        current = successor
+
+
+def _rank_key(rank: Mapping[str, int]):
+    """Deterministic traversal order: manifest order, unknown IDs last."""
+    return lambda node: rank.get(node, len(rank))
+
+
+def _strongly_connected_components(
+    order: Sequence[str],
+    rank: Mapping[str, int],
+    edges: Mapping[str, set[str]],
+) -> list[list[str]]:
+    """Tarjan's algorithm, iterative so deep chains cannot exhaust the stack.
+
+    Only registered IDs are nodes; dependencies on unregistered IDs are
+    reported as dangling references by the per-entry checks. Successors are
+    visited in manifest order so the traversal is deterministic.
+    """
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    components: list[list[str]] = []
+    counter = 0
+
+    for root in order:
+        if root in index:
+            continue
+        index[root] = lowlink[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        work: list[tuple[str, Any]] = [
+            (root, iter(sorted(edges.get(root, ()), key=_rank_key(rank))))
+        ]
+        while work:
+            node, successors = work[-1]
+            descended = False
+            for successor in successors:
+                if successor not in index:
+                    index[successor] = lowlink[successor] = counter
+                    counter += 1
+                    stack.append(successor)
+                    on_stack.add(successor)
+                    work.append(
+                        (
+                            successor,
+                            iter(sorted(edges.get(successor, ()), key=_rank_key(rank))),
+                        )
+                    )
+                    descended = True
+                    break
+                if successor in on_stack:
+                    lowlink[node] = min(lowlink[node], index[successor])
+            if descended:
+                continue
+            work.pop()
+            if lowlink[node] == index[node]:
+                component: list[str] = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                components.append(component)
+            if work:
+                parent = work[-1][0]
+                lowlink[parent] = min(lowlink[parent], lowlink[node])
+    return components
+
 
 def _validate_entry(
     findings: Findings,
@@ -641,6 +974,9 @@ def _validate_entry(
 
     if "display_name" in entry:
         _require_string(findings, _join(location, "display_name"), entry["display_name"], "display_name")
+
+    if "technical" in entry:
+        _validate_technical(findings, _join(location, "technical"), entry["technical"])
 
     if "id" in entry:
         entry_id = entry["id"]
@@ -732,6 +1068,20 @@ def _validate_entry(
         )
 
 
+def _validate_technical(findings: Findings, location: str, value: Any) -> None:
+    """Record the Technical group without verifying it.
+
+    The contract's Technical data (dimensions, triangle/material counts, LODs,
+    duration, sample rate/channels, loop settings, model dimensions, as
+    applicable) is produced by the pipeline and confirmed by the review
+    record, not by this validator: it cannot measure an asset. The group is
+    therefore free-form - its members are deliberately not key-checked, so a
+    producer may record whatever its category needs - but it must be a JSON
+    object, so the group cannot silently swallow a malformed record.
+    """
+    _require_mapping(findings, location, value, "technical")
+
+
 def _validate_authoring(
     findings: Findings, location: str, value: Any, allow_unknown_keys: bool
 ) -> None:
@@ -777,6 +1127,15 @@ def _validate_identity(
         for index, path in enumerate(paths):
             checker.check(findings, "{}.{}[{}]".format(location, key, index), path, "identity.{}".format(key))
 
+    # Schema/revision of the asset's own format definition. Recorded, not
+    # verified: the project has no per-asset schema files yet, so the field
+    # carries the producer's declaration for reviewers to check.
+    for key in ("schema", "revision"):
+        if key in identity:
+            _require_string(
+                findings, _join(location, key), identity[key], "identity.{}".format(key)
+            )
+
 
 def _validate_hashes(
     findings: Findings,
@@ -819,12 +1178,24 @@ def _validate_hashes(
             )
             continue
         if checker.check_hashes:
+            if _path_spelling_error(path) is not None:
+                # The key is unchecked by identity when output_paths is
+                # malformed, so it is validated here before anything is
+                # resolved and hashed.
+                findings.error(
+                    "invalid-path",
+                    where,
+                    "hashes key {}; --check-hashes only hashes clean, project-relative paths "
+                    "inside the root".format(_path_spelling_error(path)),
+                )
+                continue
             actual = checker.digest(path)
             if actual is None:
                 findings.error(
                     "missing-file",
                     where,
-                    "cannot hash '{}' with --check-hashes: the file is missing or unreadable".format(path),
+                    "cannot hash '{}' with --check-hashes: the file is missing, unreadable, a "
+                    "symlink or outside the root".format(path),
                 )
             elif "sha256:" + actual != digest:
                 findings.error(
@@ -897,11 +1268,15 @@ def _validate_generation(
             )
 
     if "seed" in generation and generation["seed"] is not None:
-        if not _is_string(generation["seed"]) and not isinstance(generation["seed"], int):
+        seed = generation["seed"]
+        # bool is a subclass of int in Python, so True would otherwise pass as
+        # the integer 1 and record a regeneration seed that was never given.
+        if isinstance(seed, bool) or not (_is_string(seed) or isinstance(seed, int)):
             findings.error(
                 "invalid-value",
                 _join(location, "seed"),
-                "generation.seed must be a string, an integer or null",
+                "generation.seed must be a string, an integer or null (got {!r}); a boolean is "
+                "not a seed".format(seed),
             )
 
     if "input_asset_ids" in generation:
@@ -983,8 +1358,11 @@ def _validate_rights(
                 findings.error(
                     "disallowed-license",
                     _join(location, "license_spdx"),
-                    "first-party material must be CC0-1.0 (creative) or Unlicense (code, tools, "
-                    "tests, schemas, text definitions); got {!r}".format(license_spdx),
+                    "first-party creative material must be CC0-1.0 (got {!r}); this manifest "
+                    "covers creative assets and model artifacts, and Unlicense - the project "
+                    "dedication for code, tools, tests, schemas and text definitions - is not "
+                    "a creative-asset dedication, so an entry claiming it claims the wrong "
+                    "license for what it registers".format(license_spdx),
                 )
 
     if "rights_holder_record" in rights:
@@ -1008,7 +1386,7 @@ def _validate_rights(
             findings, _join(location, "rights_basis"), rights["rights_basis"], "rights.rights_basis"
         )
 
-    if "service_terms_ref" in rights:
+    if "service_terms_ref" in rights and rights["service_terms_ref"] is not None:
         terms = _require_string(
             findings,
             _join(location, "service_terms_ref"),
@@ -1023,20 +1401,48 @@ def _validate_rights(
                 "entry in provenance/PROVIDER_TERMS.md; unknown or incompatible terms block "
                 "inclusion",
             )
+    if origin == "service_generated" and (
+        "service_terms_ref" not in rights or rights["service_terms_ref"] is None
+    ):
+        # The legal origin of a service-generated asset *is* its provider
+        # terms. Omitting the field (or recording null) hides exactly the fact
+        # the release rights gate needs, so it is required for this origin
+        # rather than merely checked when present.
+        findings.error(
+            "missing-required-field",
+            _join(location, "service_terms_ref"),
+            "a service_generated entry must reference the applicable provider/service terms "
+            "entry in provenance/PROVIDER_TERMS.md; omitting the reference, or recording it as "
+            "null, leaves the asset's legal origin unrecorded and blocks inclusion",
+        )
 
-    if "upstream" in rights and rights["upstream"] is not None:
-        upstream = _require_mapping(
+    if origin == "external_cc0":
+        upstream_value = rights.get("upstream")
+        if "upstream" not in rights or upstream_value is None:
+            findings.error(
+                "missing-required-field",
+                _join(location, "upstream"),
+                "an external_cc0 entry must record rights.upstream with the item-level CC0 "
+                "evidence (url, date, evidence); omitting it, or recording it as null, leaves the "
+                "external material's origin unverifiable and blocks inclusion",
+            )
+        else:
+            upstream = _require_mapping(
+                findings, _join(location, "upstream"), upstream_value, "rights.upstream"
+            )
+            if upstream is not None:
+                for key in ("url", "date", "evidence"):
+                    if key not in upstream or _is_unknown(upstream.get(key)):
+                        findings.error(
+                            "missing-required-field",
+                            "{}.upstream.{}".format(location, key),
+                            "external creative input must record upstream '{}' as item-level CC0 "
+                            "evidence".format(key),
+                        )
+    elif "upstream" in rights and rights["upstream"] is not None:
+        _require_mapping(
             findings, _join(location, "upstream"), rights["upstream"], "rights.upstream"
         )
-        if upstream is not None and origin == "external_cc0":
-            for key in ("url", "date", "evidence"):
-                if key not in upstream or _is_unknown(upstream.get(key)):
-                    findings.error(
-                        "missing-required-field",
-                        "{}.upstream.{}".format(location, key),
-                        "external creative input must record upstream '{}' as item-level CC0 "
-                        "evidence".format(key),
-                    )
 
 
 def _validate_review(
@@ -1122,6 +1528,43 @@ def _validate_review(
             _require_string(
                 findings, _join(location, key), review[key], "review.{}".format(key)
             )
+    # An approved or release-included entry is a shipping claim, and the
+    # release rights gate blocks "unapproved outputs". "unknown" records the
+    # absence of a fact, so an approval whose reviewer, approval revision or
+    # technical check is unknown is not an approval record at all; a capable
+    # reviewer's actual record is required (docs/BENCHMARKS.md). A pending
+    # entry may still carry unknowns while its review is open.
+    shipping = status == "approved" or release_inclusion is True
+    if shipping:
+        if _is_unknown(review.get("reviewer")):
+            findings.error(
+                "unknown-value",
+                _join(location, "reviewer"),
+                "review.reviewer is 'unknown' on an approved or release-included entry; record "
+                "the actual reviewer (a capable independent agent or a human) that approved "
+                "this revision",
+            )
+        for key in ("approval_revision", "technical_check"):
+            value = review.get(key)
+            what = {
+                "approval_revision": "the revision this approval applies to",
+                "technical_check": "the actual technical check result",
+            }[key]
+            if key not in review or value is None:
+                findings.error(
+                    "missing-required-field",
+                    _join(location, key),
+                    "an approved or release-included entry must record review.{}; the release "
+                    "rights gate blocks unapproved outputs, and an approval without its revision "
+                    "and technical check cannot be reviewed".format(key),
+                )
+            elif _is_unknown(value):
+                findings.error(
+                    "unknown-value",
+                    _join(location, key),
+                    "review.{} is 'unknown' on an approved or release-included entry; record {}, "
+                    "or keep the entry pending".format(key, what),
+                )
 
 
 def _validate_lineage(
@@ -1153,6 +1596,17 @@ def _validate_lineage(
             "lineage.upstream_inputs",
         )
         if inputs is not None:
+            if origin == "external_cc0" and not inputs:
+                # An external asset's evidence trail *is* its upstream inputs:
+                # an empty list leaves the CC0 material it derives from
+                # unrecorded, so the origin cannot be verified.
+                findings.error(
+                    "missing-required-field",
+                    _join(location, "upstream_inputs"),
+                    "an external_cc0 entry must record at least one upstream input with its "
+                    "license and item-level CC0 evidence; an empty list leaves the external "
+                    "material's lineage unverifiable",
+                )
             for index, item in enumerate(inputs):
                 _validate_upstream_input(
                     findings,
@@ -1331,6 +1785,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_unknown_keys=args.allow_unknown_keys,
     )
 
+    # Exit-code contract (README.md): 2 is for a manifest that could not be
+    # read, or a wrong command line - a missing/unreadable file, a nonexistent
+    # --root, or bytes that are not JSON at all. A document that decodes but
+    # breaks the contract (including invalid UTF-8) is a content defect: 1.
+    unreadable = any(f.code in READ_FAILURE_CODES for f in findings.errors)
+
     if args.as_json:
         payload = {
             "manifest": str(manifest_path),
@@ -1360,6 +1820,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
 
+    if unreadable:
+        if not args.as_json and not args.quiet:
+            print(
+                "the manifest could not be read as a JSON record: {}".format(manifest_path),
+                file=sys.stderr,
+            )
+        return 2
     return 0 if findings.ok else 1
 
 
