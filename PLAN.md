@@ -208,7 +208,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 ## How agents execute the plan
 
-At each milestone, a coordinating agent chooses dependency-ready tasks and assigns exclusive file ownership in the shared checkout. Do not create a branch/worktree per agent. Serialize overlapping edits and shared integration; keep central scenes/schemas/settings under one integrator. Commit explicitly owned paths with `--only`, preserve others' staged work, retry ordinary Git contention, and never rewrite shared history as a shortcut. Review agents follow REVIEW_PROMPT and work in one chat without subagents.
+At each milestone, a coordinating agent chooses dependency-ready tasks and assigns exclusive file ownership in the shared checkout. Do not create a branch/worktree per agent. Serialize overlapping edits/shared integration and keep central scenes/schemas/settings under one integrator. Commit owned ready paths with `--only`, preserve others' staged work and never rewrite shared history as a shortcut. [plan/IMPLEMENTATION.md](plan/IMPLEMENTATION.md) defines end-to-end execution, primary Step 5 Preview/Longcat workers through pi, quota-available free/GLM/SWE workers (SWE through local Devin), and mandatory independent **Opus 5.5 plus GPT-6.2 Sol** implementation reviews at regular checkpoints. Each worker/reviewer stays in its own chat without nested subagents. REVIEW_PROMPT applies to independent plan reviews, not the implementation assignment.
 
 | Agent responsibility | Typical independent work | Review evidence |
 | --- | --- | --- |

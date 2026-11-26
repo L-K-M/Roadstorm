@@ -4,6 +4,10 @@ An original, colorful arcade racer inspired by the energy of early polygonal rac
 
 The project is at the planning stage. No playable game or build system has been implemented yet.
 
+## Implementation execution
+
+To start or resume the full build, follow [plan/IMPLEMENTATION.md](plan/IMPLEMENTATION.md). The coordinator delegates mainly to Step 5 Preview/Longcat 2.5 through pi, uses other available free/quota workers including SWE 2.1 through the local Devin CLI, and obtains independent Opus 5.5 and GPT-6.2 Sol reviews at regular checkpoints.
+
 ## Implementation documents
 
 - [Implementation plan and milestones](PLAN.md) — launch scope, delivery order, acceptance gates, agent workflow, and release requirements.
