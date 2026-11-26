@@ -48,3 +48,11 @@ Python pin job `b2377a10-187a-40e6-94ae-8b239bc7a93e` completed. The coordinator
 Manifest remediation committed in `bdeb8e2`; Sol scoped recheck `/root/sol_recheck` is running against that immutable candidate. Opus scoped recheck for the same candidate remains due; CI, scenario, and observation jobs continue outside its scope.
 
 Sol recheck of `bdeb8e2` found the original manifest defects fixed but a new JSON `null` root false pass; the coordinator changed the decoder sentinel, added a null-root regression and independently observed structured failure exit 1. The suite passed. The Sol recheck and corrected candidate require another scoped review; Opus recheck of `bdeb8e2` remains in progress. Toolchain summary was updated to distinguish established local Jolt/Python pins from remaining evidence.
+
+Opus recheck of `bdeb8e2` returned changes required; report `review/implementation/m0-five-jobs-opus-recheck-929c4082-0280-464e-830a-00dd35c164e1.md`. Remaining key findings: symlinked parent escape and invalid service-terms references, main-project Jolt guard/settings, missing committed CI/schema references, and an intermittent Jolt job-system warning. `bc086adc-5f31-492e-8d48-54b10fb081cf` (StepFun) owns `tools/asset_manifest/` to fix path/rights findings while preserving the null fix; `a35656d6-09c1-4698-a699-ad211125217d` (StepFun) owns `tools/smoke/` and `docs/evidence/jolt-settings.md` for the Jolt assertion, fault injection and settings/warning evidence. Both reviewers must recheck the eventual corrected candidate.
+
+Scenario contract job `847d8664-1028-4233-a67c-39f1465b4964` completed; its reported 21 tests/20 fixtures remain to be independently checked. Shipped fixtures are planned examples, not measured race results.
+
+CI follow-up `6848aca2-16e6-42f1-abfd-4e493b125af5` completed; it reports checksum-before-extraction and capture/doctor repairs. Coordinator reran the 53-case self-test successfully. GitHub-hosted CI, complete content validation and export presets remain open; do not treat an empty manifest as content completion.
+
+An independent `ci.sh all` run passed on a `git archive` of `935b9e2` with the completed CI files overlaid, in `work/agents/ci-candidate/`; it reported content validation and export presets as missing. This is a local snapshot check, not a GitHub-hosted CI or export pass.

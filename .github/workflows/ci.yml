@@ -1,0 +1,246 @@
+# Roadstorm Racer! continuous integration.
+#
+# PLAN.md M0.5: "Add CI for resource/script checks, tests, asset validation, and
+# native export preparation. CI must run from a clean checkout without editor
+# interactions or generation-service accounts."
+#
+# Everything runs through tools/ci/ci.sh, which is the same entry point a
+# developer or an independent reviewer uses (plan/IMPLEMENTATION.md requires
+# reviewers to run checks in isolated source snapshots with isolated caches;
+# ci.sh always works on a scratch copy and never touches a shared .godot/).
+#
+# The pinned engine is Godot 4.7.2.stable (PLAN.md M0.1). CI either uses a
+# GODOT_BIN provided by the runner (a self-hosted runner with the pinned editor
+# installed) or downloads the official release asset for the pinned tag and
+# VERIFIES IT AGAINST THE PUBLISHER'S CHECKSUM BEFORE EXTRACTION. M0.1 requires
+# "checksums. Verify before installation": a runner that downloads an archive and
+# runs whatever came out of it has not done that, so the download path below
+# fails the step before `unzip` and again before the binary is executed.
+#
+# The pinned version, the official URL and the pinned digests all live in
+# tools/ci/pin/engine.txt (read with `ci.sh pin`), so there is one record rather
+# than a second copy of the numbers in this file. The version authority is the
+# official archive at https://godotengine.org/download/archive/.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: import, validate, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bounded by design: a stalled transfer fails the step instead of holding
+      # the runner, and the archive is hashed before anything is unpacked.
+      - name: Resolve and verify the pinned Godot editor
+        id: godot
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_desc="runner GODOT_BIN"
+          if [ -n "${GODOT_BIN:-}" ] && [ -x "${GODOT_BIN:-}" ]; then
+            echo "Using GODOT_BIN from the runner environment."
+            bin="$GODOT_BIN"
+          else
+            echo "Downloading the official release asset for the pinned tag."
+            url="$(tools/ci/ci.sh pin --field release_archive_url)"
+            archive="$RUNNER_TEMP/godot-editor.zip"
+            curl -fsSL --retry 3 --retry-delay 2 \
+              --connect-timeout 30 --max-time 1800 \
+              -o "$archive" "$url"
+            echo "downloaded $(wc -c <"$archive" | tr -d ' ') bytes from $url"
+
+            # PLAN.md M0.1: verify before installation. This compares the
+            # archive against the publisher's pinned digest and exits nonzero on
+            # a mismatch, so a tampered, truncated or substituted archive never
+            # reaches `unzip`.
+            tools/ci/ci.sh verify-engine --archive "$archive"
+
+            mkdir -p "$RUNNER_TEMP/godot"
+            unzip -q "$archive" -d "$RUNNER_TEMP/godot"
+            bin="$(find "$RUNNER_TEMP/godot" -maxdepth 2 -type f -name 'Godot*' -perm -u+x | head -n 1)"
+            if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+              echo "::error::the extracted archive contained no executable Godot binary"
+              exit 1
+            fi
+            chmod +x "$bin"
+
+            # Second, cheap check: the extracted binary is the one the pin
+            # recorded, before anything executes it.
+            tools/ci/ci.sh verify-engine --binary "$bin"
+            source_desc="official release asset, digest-verified before extraction and execution"
+          fi
+          engine_version="$("$bin" --version 2>/dev/null || echo unavailable)"
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+          echo "Engine reports: $engine_version"
+          {
+            echo "### Pinned engine"
+            echo ""
+            echo "| fact | value |"
+            echo "| --- | --- |"
+            echo "| pinned tag | $(tools/ci/ci.sh pin --field tag) |"
+            echo "| pinned version | $(tools/ci/ci.sh pin --field version) |"
+            echo "| source | $source_desc |"
+            echo "| resolved binary | $bin |"
+            echo "| sha256 | $(sha256sum "$bin" | awk '{print $1}') |"
+            echo "| --version | $engine_version |"
+            echo ""
+            echo "A downloaded archive was compared against the pinned publisher"
+            echo "digest in \`tools/ci/pin/engine.txt\` BEFORE extraction, and the"
+            echo "extracted binary before execution (PLAN.md M0.1). Reproduce locally"
+            echo "with \`tools/ci/ci.sh verify-engine --archive <file> --binary <file>\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Doctor - environment and engine pin
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" doctor
+
+      - name: Import - headless resource import (T01)
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" import
+
+      - name: Validate - pin, settings, resource/script scan (T01)
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" validate
+
+      - name: Test - headless checks and exit-code proof (M0.4)
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" test
+
+      # Asset validation (PLAN.md M0.5). The validator is owned by
+      # tools/asset_manifest/**; CI runs it when it is present and fails
+      # clearly when it is not, because a missing validator is a gap in the
+      # check set rather than a pass. Its exit code propagates: the wrapper
+      # exits 1 on validation errors and 2 when the manifest cannot be read.
+      - name: Asset manifest validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f tools/asset_manifest/validate_manifest.py ]; then
+            python3 tools/asset_manifest/validate_manifest.py
+          else
+            echo "::error::tools/asset_manifest/validate_manifest.py is missing, so asset validation (T15) did not run. This is a missing check, not a pass."
+            exit 1
+          fi
+
+      # Report only: a GitHub-hosted runner has no display, so movie capture
+      # cannot run there. The check records that limitation instead of claiming
+      # a capture it did not perform. It also records the project's viewport
+      # size, because a capture records the viewport size rather than the
+      # window size requested with --resolution.
+      - name: Capture readiness (report only)
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" capture --check
+
+      - name: Upload CI logs and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: tools/ci/out/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Not implemented yet: content validation (T09/T15) has no validator, so this
+  # job only reports which planned content paths exist. It is non-blocking on
+  # purpose and is labelled as such; it must not be read as content validation.
+  content-contracts:
+    name: content-contract inventory (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inventory planned content paths
+        run: |
+          {
+            echo "### Content-contract inventory"
+            echo ""
+            echo "Non-blocking inventory of the paths PLAN.md requires. Absence is"
+            echo "reported, never validated: content validation (T09/T15) is not"
+            echo "implemented. Enforce the gate locally with \`ci.sh validate"
+            echo "--strict-contracts\` once the paths are expected to exist."
+            echo ""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          tools/ci/ci.sh validate --strict-contracts 2>&1 |
+            grep -E '^\[ci:(ok|warn|fail)\] (present|absent)' |
+            sed 's/^/ /' >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # Native export preparation (M0.5). The job is skipped until export_presets.cfg
+  # exists, because no preset means there is nothing to prepare and claiming an
+  # export would be false. `ci.sh export --check` fails clearly when it is run
+  # without presets, and the README documents that behaviour.
+  export-preparation:
+    name: export preparation
+    runs-on: ubuntu-latest
+    if: hashFiles('export_presets.cfg') != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve and verify the pinned Godot editor
+        id: godot
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${GODOT_BIN:-}" ] && [ -x "${GODOT_BIN:-}" ]; then
+            bin="$GODOT_BIN"
+          else
+            url="$(tools/ci/ci.sh pin --field release_archive_url)"
+            archive="$RUNNER_TEMP/godot-editor.zip"
+            curl -fsSL --retry 3 --retry-delay 2 \
+              --connect-timeout 30 --max-time 1800 \
+              -o "$archive" "$url"
+            # M0.1: verify before extraction.
+            tools/ci/ci.sh verify-engine --archive "$archive"
+            mkdir -p "$RUNNER_TEMP/godot"
+            unzip -q "$archive" -d "$RUNNER_TEMP/godot"
+            bin="$(find "$RUNNER_TEMP/godot" -maxdepth 2 -type f -name 'Godot*' -perm -u+x | head -n 1)"
+            if [ -z "$bin" ] || [ ! -x "$bin" ]; then
+              echo "::error::the extracted archive contained no executable Godot binary"
+              exit 1
+            fi
+            chmod +x "$bin"
+            # Verify before execution.
+            tools/ci/ci.sh verify-engine --binary "$bin"
+          fi
+          echo "bin=$bin" >> "$GITHUB_OUTPUT"
+
+      - name: Export preparation check (templates and presets)
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --check
+
+      # A locally produced package is not a verified release: PLAN.md M9.2 still
+      # requires launching each package on its target OS, and M9.3 covers
+      # signing/notarization.
+      - name: Build each declared preset
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --list-presets |
+            while IFS=$'\t' read -r section name platform; do
+              case "$platform" in
+                macOS) ext="zip" ;;
+                Windows) ext="exe" ;;
+                Linux) ext="" ;;
+                *) ext="pck" ;;
+              esac
+              out="build/${name}${ext:+.$ext}"
+              echo "Exporting preset '${name}' (${platform}) to ${out}"
+              tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --export "$name" --out "$out"
+            done
+
+      - name: Upload built packages
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: export-packages
+          path: build/
+          if-no-files-found: warn
+          retention-days: 14

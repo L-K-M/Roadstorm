@@ -1,0 +1,5 @@
+# Local scratch output of tools/ci/ci.sh: engine logs, per-command reports,
+# project copies used for isolated imports, captures and exports.
+# Nothing in here is a source file; keep it out of the repository.
+*
+!.gitignore

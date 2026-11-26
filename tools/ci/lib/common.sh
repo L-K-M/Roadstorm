@@ -1,0 +1,733 @@
+#!/bin/sh
+# Shared helpers for the Roadstorm Racer! command-line tooling.
+#
+# Sourced by tools/ci/ci.sh. Everything here is POSIX shell so the same
+# commands run on macOS, Linux and any host with a Bourne-compatible /bin/sh
+# (Git Bash, WSL, busybox ash). No project-specific paths are hardcoded: the
+# project root, Godot binary and output directory are all overridable.
+#
+# Ownership: tools/ci/** only (PLAN.md "How agents execute the plan").
+# This file is original project code under the Unlicense.
+
+# ---------------------------------------------------------------------------
+# Exit codes used across the tooling
+# ---------------------------------------------------------------------------
+# 0  check passed / command completed
+# 1  check failed (a real, reported problem)
+# 2  the command could not run at all (usage error, missing tool, bad path)
+CI_OK=0
+CI_FAIL=1
+CI_USAGE=2
+
+# ---------------------------------------------------------------------------
+# Output helpers
+# ---------------------------------------------------------------------------
+CI_C_RESET=""
+CI_C_RED=""
+CI_C_GREEN=""
+CI_C_YELLOW=""
+CI_C_BLUE=""
+CI_C_BOLD=""
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+	CI_C_RESET="$(printf '\033[0m')"
+	CI_C_RED="$(printf '\033[31m')"
+	CI_C_GREEN="$(printf '\033[32m')"
+	CI_C_YELLOW="$(printf '\033[33m')"
+	CI_C_BLUE="$(printf '\033[34m')"
+	CI_C_BOLD="$(printf '\033[1m')"
+fi
+
+ci_info() { printf '%s[ci]%s %s\n' "$CI_C_BLUE" "$CI_C_RESET" "$*"; }
+ci_ok() { printf '%s[ci:ok]%s %s\n' "$CI_C_GREEN" "$CI_C_RESET" "$*"; }
+ci_warn() { printf '%s[ci:warn]%s %s\n' "$CI_C_YELLOW" "$CI_C_RESET" "$*" >&2; }
+ci_fail() { printf '%s[ci:fail]%s %s\n' "$CI_C_RED" "$CI_C_RESET" "$*" >&2; }
+ci_step() { printf '%s==>%s %s\n' "$CI_C_BOLD" "$CI_C_RESET" "$*"; }
+ci_note() { printf '    %s\n' "$*"; }
+
+# ci_die <message> : the command itself is unusable (not a check failure).
+ci_die() {
+	ci_fail "$*"
+	ci_fail "this is a tooling/usage error (exit $CI_USAGE), not a check result"
+	exit "$CI_USAGE"
+}
+
+# ---------------------------------------------------------------------------
+# Logging of engine invocations. Every Godot run is captured so a failure can
+# be inspected without re-running it.
+# ---------------------------------------------------------------------------
+CI_LOG_DIR=""
+CI_LOG_SEQ=0
+
+ci_init_logs() {
+	CI_LOG_DIR="$CI_OUT/logs"
+	mkdir -p "$CI_LOG_DIR" || ci_die "cannot create log directory: $CI_LOG_DIR"
+}
+
+# ci_run_bounded <seconds> <command...>
+# Runs a short command with a wall-clock limit, without capturing its output.
+# Used where a full engine run is not needed (the `--version` probe) but a hung
+# or wedged binary must not hang the tooling with it. Same supervision shape as
+# ci_run_godot, and for the same reason: POSIX has no `timeout`.
+ci_run_bounded() {
+	_limit="$1"
+	shift
+	( "$@" ) &
+	_pid=$!
+	(
+		sleep "$_limit" 2>/dev/null
+		kill -TERM "$_pid" 2>/dev/null
+		sleep 2 2>/dev/null
+		kill -KILL "$_pid" 2>/dev/null
+	) >/dev/null 2>&1 &
+	_watch=$!
+	wait "$_pid" 2>/dev/null
+	_rc=$?
+	kill "$_watch" 2>/dev/null
+	wait "$_watch" 2>/dev/null
+	return "$_rc"
+}
+
+# ci_run_godot <label> <godot args...>
+# Runs Godot with a wall-clock timeout, capturing combined stdout/stderr.
+# Sets CI_LAST_EXIT and CI_LAST_LOG. Set CI_RUN_TIMEOUT before the call to
+# override the limit for one invocation; assign it as a normal variable rather
+# than a command prefix, because prefixed assignments to shell functions do not
+# behave the same way in every /bin/sh.
+CI_LAST_EXIT=0
+CI_LAST_LOG=""
+CI_TIMEOUT_DEFAULT="${CI_TIMEOUT_DEFAULT:-300}"
+
+ci_run_godot() {
+	_label="$1"
+	shift
+	CI_LOG_SEQ=$((CI_LOG_SEQ + 1))
+	CI_LAST_LOG="$CI_LOG_DIR/${CI_RUN_NAME}-${CI_LOG_SEQ}-${_label}.log"
+	_timeout="${CI_RUN_TIMEOUT:-$CI_TIMEOUT_DEFAULT}"
+
+	ci_info "godot $_label: $GODOT_BIN $*"
+	ci_info "  log: $CI_LAST_LOG (timeout ${_timeout}s)"
+
+	# Portable timeout: `timeout` is not part of POSIX and is missing from a
+	# stock macOS install, so supervise the child ourselves. Both background
+	# processes must not inherit this script's stdout, or a caller piping our
+	# output would wait for them before seeing end-of-file.
+	(
+		"$GODOT_BIN" "$@"
+	) >"$CI_LAST_LOG" 2>&1 &
+	_pid=$!
+	(
+		sleep "$_timeout" 2>/dev/null
+		kill -TERM "$_pid" 2>/dev/null
+		sleep 3 2>/dev/null
+		kill -KILL "$_pid" 2>/dev/null
+	) >/dev/null 2>&1 &
+	_watch=$!
+	wait "$_pid" 2>/dev/null
+	CI_LAST_EXIT=$?
+	kill "$_watch" 2>/dev/null
+	wait "$_watch" 2>/dev/null
+
+	if [ "$CI_LAST_EXIT" -ge 124 ] && [ "$CI_LAST_EXIT" -le 137 ]; then
+		# 128+signal, or the 124/137 conventions of coreutils' timeout.
+		if grep -q . "$CI_LAST_LOG" 2>/dev/null; then :; fi
+		ci_warn "godot $_label exited with $CI_LAST_EXIT (timeout or signal?)"
+	fi
+	return "$CI_LAST_EXIT"
+}
+
+# ci_log_error_lines <logfile>
+# Prints engine error lines. Godot prefixes them at the start of a line, so
+# anchor the match: mid-line mentions of "ERROR" in ordinary output are not
+# engine errors. Verified against the pinned engine: a scene referencing a
+# missing script still loads and instantiates (exit 0) while printing
+# "ERROR: ..." lines, so log inspection is the only reliable signal.
+ci_log_error_lines() {
+	_file="$1"
+	[ -f "$_file" ] || return 0
+	grep -nE '^(ERROR|SCRIPT ERROR|FATAL):' "$_file" 2>/dev/null
+}
+
+# ci_count_lines <stdin-text> : number of non-empty lines, normalised to a
+# bare integer. `grep -c` prints 0 *and* exits 1 when nothing matches, so the
+# `|| printf 0` idiom would otherwise produce "0\n0".
+ci_count_lines() {
+	_n="$(grep -c . 2>/dev/null)"
+	case "$_n" in
+		'' | *[!0-9]*) _n=0 ;;
+	esac
+	printf '%s\n' "$_n"
+}
+
+ci_log_error_count() {
+	ci_log_error_lines "$1" | ci_count_lines
+}
+
+# ci_log_gate <logfile> : CI_OK when the captured engine log has no error lines.
+# Essential because the pinned engine exits 0 even when a script fails to load
+# or a scene references a missing resource; the log is the only signal.
+ci_log_gate() {
+	_n="$(ci_log_error_count "$1")"
+	if [ "$_n" != "0" ]; then
+		ci_fail "$_n engine error line(s) in $(ci_relpath "$1"):"
+		ci_log_error_lines "$1" | sed 's/^/    /'
+		return "$CI_FAIL"
+	fi
+	return "$CI_OK"
+}
+
+ci_prune_logs() {
+	# Keep the newest 20 logs; `out/` is local scratch and gitignored.
+	[ -d "$CI_LOG_DIR" ] || return 0
+	_count="$(ls -1 "$CI_LOG_DIR" 2>/dev/null | ci_count_lines)"
+	if [ "$_count" -gt 20 ]; then
+		ls -1t "$CI_LOG_DIR" 2>/dev/null | tail -n +21 | while read -r _old; do
+			rm -f "$CI_LOG_DIR/$_old" 2>/dev/null
+		done
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Godot discovery and the engine pin (PLAN.md M0.1)
+# ---------------------------------------------------------------------------
+GODOT_BIN="${GODOT_BIN:-}"
+GODOT_VERSION_FULL=""
+
+# ci_find_godot : resolves $GODOT_BIN and verifies it runs.
+ci_find_godot() {
+	if [ -n "$GODOT_BIN" ]; then
+		[ -x "$GODOT_BIN" ] || ci_die "GODOT_BIN is set but not executable: $GODOT_BIN"
+	else
+		for candidate in \
+			"$(command -v godot 2>/dev/null)" \
+			"$(command -v godot4 2>/dev/null)" \
+			"$(command -v Godot 2>/dev/null)" \
+			"/Applications/Godot.app/Contents/MacOS/Godot" \
+			"/opt/homebrew/bin/godot" \
+			"/usr/local/bin/godot" \
+			"/usr/bin/godot"
+		do
+			if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+				GODOT_BIN="$candidate"
+				break
+			fi
+		done
+	fi
+	[ -n "$GODOT_BIN" ] || ci_die "no Godot editor binary found. Set GODOT_BIN=/path/to/godot (see tools/ci/README.md)."
+
+	GODOT_VERSION_FULL="$(ci_run_bounded 30 "$GODOT_BIN" --version 2>/dev/null | head -n 1)"
+	[ -n "$GODOT_VERSION_FULL" ] || ci_die "cannot read the engine version from: $GODOT_BIN"
+	# Example: 4.7.2.stable.official.ed1daf0bf
+	case "$GODOT_VERSION_FULL" in
+		*.*.*) : ;;
+		*) ci_die "unexpected engine version string from $GODOT_BIN: $GODOT_VERSION_FULL" ;;
+	esac
+}
+
+# ci_pin_load : reads the pinned engine version into CI_PIN_* variables.
+#
+# Precedence: tools/toolchain/pin/engine.txt when the project carries it, because
+# that is the M0.1 record (PLAN.md M0.1) and holds the upstream-verification
+# status; tools/ci/pin/engine.txt is the fallback for a standalone checkout of
+# this tooling. Both files use the same fields, so a single source of truth is
+# kept even though the files live in different owned directories.
+# ci_pin_load : reads the pinned engine version into CI_PIN_* variables.
+#
+# Two pin files with two different jobs, so neither can silently win:
+#
+#   tools/toolchain/pin/engine.txt  the M0.1 record for the INSTALLED toolchain
+#                                   (version, official sources, local digests,
+#                                   upstream-verification status). Authoritative
+#                                   for the version fields when the project
+#                                   carries it, so the two files cannot drift
+#                                   apart on what version is required.
+#   tools/ci/pin/engine.txt         owned by tools/ci/**. Always supplies the
+#                                   RELEASE ARTIFACT fields: the official
+#                                   archive CI downloads and verifies before
+#                                   extraction and execution. The toolchain
+#                                   record deliberately does not carry them: a
+#                                   digest recorded on one host for an installed
+#                                   file is not a portable expectation, but a
+#                                   published release archive is the same bytes
+#                                   everywhere.
+#
+# Both files use `key=value` lines, so a single parser reads either.
+CI_PIN_SOURCE=""
+CI_PIN_VERSION_STRING=""
+CI_PIN_UPSTREAM_VERIFIED=""
+# Official release artifact that CI downloads and verifies before use. Empty
+# means "not recorded"; ci_verify_digest refuses an empty expectation.
+CI_PIN_RELEASE_URL=""
+CI_PIN_RELEASE_CHECKSUMS_URL=""
+CI_PIN_RELEASE_SHA512=""
+CI_PIN_RELEASE_SHA256=""
+CI_PIN_RELEASE_BINARY_SHA256=""
+
+# ci_pin_parse_version <file> : version/authority fields.
+ci_pin_parse_version() {
+	while IFS='=' read -r _key _value; do
+		case "$_key" in
+			'' | \#*) continue ;;
+			major) CI_PIN_MAJOR="$_value" ;;
+			minor) CI_PIN_MINOR="$_value" ;;
+			patch) CI_PIN_PATCH="$_value" ;;
+			tag) CI_PIN_TAG="$_value" ;;
+			version_string) CI_PIN_VERSION_STRING="$_value" ;;
+			upstream_verified) CI_PIN_UPSTREAM_VERIFIED="$_value" ;;
+		esac
+	done <"$1"
+}
+
+# ci_pin_parse_release <file> : release-artifact fields (tools/ci's own pin).
+ci_pin_parse_release() {
+	while IFS='=' read -r _key _value; do
+		case "$_key" in
+			'' | \#*) continue ;;
+			release_archive_url) CI_PIN_RELEASE_URL="$_value" ;;
+			release_checksums_url) CI_PIN_RELEASE_CHECKSUMS_URL="$_value" ;;
+			release_archive_sha512) CI_PIN_RELEASE_SHA512="$_value" ;;
+			release_archive_sha256) CI_PIN_RELEASE_SHA256="$_value" ;;
+			release_binary_sha256) CI_PIN_RELEASE_BINARY_SHA256="$_value" ;;
+		esac
+	done <"$1"
+}
+
+ci_pin_load() {
+	_own="$CI_TOOLS_DIR/pin/engine.txt"
+	[ -f "$_own" ] || ci_die "missing engine pin file: $_own"
+	_toolchain="$CI_PROJECT/tools/toolchain/pin/engine.txt"
+
+	_pin="$_own"
+	CI_PIN_SOURCE="$(ci_relpath "$_own")"
+	if [ -f "$_toolchain" ]; then
+		_pin="$_toolchain"
+		CI_PIN_SOURCE="$(ci_relpath "$_toolchain") (M0.1 record)"
+	fi
+
+	ci_pin_parse_version "$_pin"
+	# The release artifact block always comes from tools/ci's own pin file.
+	ci_pin_parse_release "$_own"
+
+	[ -n "$CI_PIN_MAJOR$CI_PIN_MINOR$CI_PIN_PATCH" ] || ci_die "engine pin file is incomplete: $_pin"
+	return 0
+}
+
+# ci_check_engine_pin : prints one line per fact, returns CI_OK/CI_FAIL.
+ci_check_engine_pin() {
+	_rc="$CI_OK"
+	_major="${GODOT_VERSION_FULL%%.*}"
+	_rest="${GODOT_VERSION_FULL#*.}"
+	_minor="${_rest%%.*}"
+	_rest="${_rest#*.}"
+	_patch="${_rest%%.*}"
+
+	if [ "$_major" = "$CI_PIN_MAJOR" ] && [ "$_minor" = "$CI_PIN_MINOR" ] && [ "$_patch" = "$CI_PIN_PATCH" ]; then
+		ci_ok "engine pin: $GODOT_VERSION_FULL matches pinned ${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH} (from $CI_PIN_SOURCE)"
+	else
+		ci_fail "engine pin: expected Godot ${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}, found $GODOT_VERSION_FULL ($GODOT_BIN); pin source: $CI_PIN_SOURCE"
+		_rc="$CI_FAIL"
+	fi
+
+	# Advisory: the pinned build's exact --version string. A different official
+	# build of the same version (another platform, another commit) prints a
+	# different string, so this is a warning rather than a failure.
+	if [ -n "$CI_PIN_VERSION_STRING" ] && [ "$CI_PIN_VERSION_STRING" != "$GODOT_VERSION_FULL" ]; then
+		ci_warn "engine build string: pinned '$CI_PIN_VERSION_STRING', found '$GODOT_VERSION_FULL' (same version, different build)"
+	fi
+
+	case "$CI_PIN_UPSTREAM_VERIFIED" in
+		yes)
+			ci_ok "engine checksum: the pin records upstream verification (selected artifacts only; see tools/ci/pin/engine.txt for scope and tools/toolchain/pin/engine.txt for the M0.1 record)"
+			;;
+		no)
+			ci_warn "engine checksum: pin records upstream_verified=no; the version is checked, the artifact digests are not verified here"
+			;;
+		*)
+			ci_warn "engine checksum: pin does not record an upstream-verification status"
+			;;
+	esac
+
+	# The release artifact CI downloads is pinned separately from the installed
+	# editor: 'ci.sh verify-engine' compares it against the publisher's digest
+	# BEFORE extraction and before execution (PLAN.md M0.1).
+	if [ -n "$CI_PIN_RELEASE_SHA512" ]; then
+		ci_ok "release artifact: pinned sha512 digest recorded for the official editor archive ($CI_PIN_RELEASE_URL)"
+	else
+		ci_warn "release artifact: no release_archive_sha512 recorded; 'ci.sh verify-engine' would refuse the download"
+	fi
+
+	# Export templates (needed by export preparation only).
+	_tdir="$(ci_templates_dir)"
+	if [ -n "$_tdir" ] && [ -d "$_tdir/${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable" ]; then
+		_tver="$(head -n 1 "$_tdir/${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable/version.txt" 2>/dev/null)"
+		if [ "$_tver" = "${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable" ]; then
+			ci_ok "export templates: ${_tver} installed in $_tdir"
+		else
+			ci_fail "export templates: version.txt reports '$_tver' in $_tdir"
+			_rc="$CI_FAIL"
+		fi
+	elif [ -n "$_tdir" ]; then
+		ci_warn "export templates: no ${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable directory in $_tdir (only needed by 'ci.sh export')"
+	else
+		ci_warn "export templates: template directory not found (only needed by 'ci.sh export')"
+	fi
+
+	ci_note "local artifact digests are checked by tools/toolchain/verify.sh on the machine that recorded them, not here: a digest from one host is not a portable expectation for another."
+	return "$_rc"
+}
+
+# ci_templates_dir : prints the Godot user-data export_templates directory.
+ci_templates_dir() {
+	if [ -n "${GODOT_TEMPLATES_DIR:-}" ] && [ -d "$GODOT_TEMPLATES_DIR" ]; then
+		printf '%s\n' "$GODOT_TEMPLATES_DIR"
+		return 0
+	fi
+	for candidate in \
+		"${HOME}/Library/Application Support/Godot/export_templates" \
+		"${HOME}/.local/share/godot/export_templates" \
+		"${HOME}/.var/app/org.godotengine.Godot/data/godot/export_templates" \
+		"${APPDATA:-}/Godot/export_templates"
+	do
+		if [ -n "$candidate" ] && [ -d "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+# Project copy
+# ---------------------------------------------------------------------------
+# Every engine run happens in a scratch copy of the project so the shared
+# checkout's .godot/ import cache is never written by CI tooling. Reviewers
+# get the same behaviour for their immutable source snapshots
+# (plan/IMPLEMENTATION.md: "isolated .godot/import caches and output paths").
+CI_PROJECT_COPY=""
+
+ci_copy_project() {
+	_src="$1"
+	_dst="$2"
+	rm -rf "$_dst" || ci_die "cannot clear scratch copy: $_dst"
+	mkdir -p "$_dst" || ci_die "cannot create scratch copy: $_dst"
+
+	_excludes=""
+	if [ -n "${CI_OUT_REL_PATTERN:-}" ]; then
+		_excludes="--exclude=$CI_OUT_REL_PATTERN"
+	fi
+
+	# tar with --exclude works with both bsdtar (macOS) and GNU tar (Linux).
+	if tar -cf - -C "$_src" --exclude=./.git --exclude=./.godot --exclude=./work $_excludes . 2>/dev/null |
+		(cd "$_dst" && tar -xf - 2>/dev/null); then
+		:
+	else
+		ci_warn "tar copy failed; falling back to cp -R"
+		cp -R "$_src/." "$_dst/" 2>/dev/null || ci_die "cannot copy project to $_dst"
+		rm -rf "$_dst/.git" "$_dst/.godot" "$_dst/work" 2>/dev/null
+	fi
+
+	if [ ! -f "$_dst/project.godot" ]; then
+		# Belt and braces: a silently empty copy would make later checks lie.
+		ci_die "scratch copy has no project.godot ($_dst); refusing to run checks against it"
+	fi
+	# Remove the nested output directory if it survived the copy.
+	if [ -n "${CI_OUT_REL_PATH:-}" ]; then
+		rm -rf "$_dst/$CI_OUT_REL_PATH" 2>/dev/null
+	fi
+	return 0
+}
+
+# ci_tools_fingerprint : cheap content hash of the tooling itself, so a reused
+# scratch copy can never run a stale copy of these scripts.
+ci_tools_fingerprint() {
+	( cd "$CI_TOOLS_DIR" 2>/dev/null && find . -type f ! -path './out/*' ! -path './out' -exec cat {} + 2>/dev/null ) |
+		ci_sha256_stdin
+}
+
+# ci_prepare_copy : creates a fresh scratch copy and imports it once.
+ci_prepare_copy() {
+	CI_PROJECT_COPY="$CI_OUT/project-copy"
+	_stamp="$CI_OUT/project-copy/.ci-tools-fingerprint"
+	_fingerprint="$(ci_tools_fingerprint)"
+	if [ "${CI_REUSE_COPY:-0}" -eq 1 ] && [ -f "$CI_PROJECT_COPY/project.godot" ] &&
+		[ -f "$_stamp" ] && [ "$(cat "$_stamp" 2>/dev/null)" = "$_fingerprint" ]; then
+		ci_info "reusing scratch copy: $CI_PROJECT_COPY"
+		return "$CI_OK"
+	fi
+	if [ "${CI_REUSE_COPY:-0}" -eq 1 ] && [ -f "$CI_PROJECT_COPY/project.godot" ]; then
+		ci_warn "the tooling changed since the scratch copy was made; refreshing it"
+	fi
+	ci_step "preparing scratch project copy (shared .godot/ cache is not touched)"
+	ci_copy_project "$CI_PROJECT" "$CI_PROJECT_COPY"
+	# Overlay this checkout's tooling into the copy. Without it, a project
+	# snapshot that carries an older tools/ci/ (or none at all) would run stale
+	# scripts and report results for code that is not the one being tested.
+	if ! tar -cf - -C "$CI_TOOLS_DIR" --exclude=./out . 2>/dev/null |
+		(cd "$CI_PROJECT_COPY/tools/ci" 2>/dev/null && tar -xf - 2>/dev/null); then
+		ci_warn "could not overlay tools/ci into the scratch copy; using the project's own tooling"
+	fi
+	printf '%s\n' "$_fingerprint" >"$_stamp" 2>/dev/null
+	ci_info "scratch copy: $CI_PROJECT_COPY"
+
+	if [ -d "$CI_PROJECT_COPY/.godot" ]; then
+		ci_info "scratch copy already has an import cache"
+	else
+		ci_step "importing the scratch copy (headless --import)"
+		ci_run_godot import --headless --path "$CI_PROJECT_COPY" --import
+		if [ "$CI_LAST_EXIT" -ne 0 ]; then
+			ci_fail "headless import exited $CI_LAST_EXIT (log: $CI_LAST_LOG)"
+			ci_log_error_lines "$CI_LAST_LOG" | sed 's/^/    /'
+			return "$CI_FAIL"
+		fi
+	fi
+	_errs="$(ci_log_error_count "$CI_LAST_LOG")"
+	if [ "$_errs" != "0" ]; then
+		ci_fail "import log contains $_errs engine error line(s) (log: $CI_LAST_LOG)"
+		ci_log_error_lines "$CI_LAST_LOG" | sed 's/^/    /'
+		return "$CI_FAIL"
+	fi
+	ci_ok "import: no engine errors in the scratch copy"
+	return "$CI_OK"
+}
+
+# ---------------------------------------------------------------------------
+# Project viewport size (used by the capture path)
+# ---------------------------------------------------------------------------
+# Godot's movie writer records the PROJECT VIEWPORT size, not the window size.
+# `--resolution <W>x<H>` only requests a window size (verified against the
+# pinned engine: it changes DisplayServer.window_get_size() while
+# `--write-movie` still reports and records the project's viewport size). A
+# capture therefore has to set the viewport size in the scratch copy's
+# project.godot to record at the requested resolution. The shared checkout's
+# project.godot is never touched.
+
+# ci_project_viewport_size <project.godot> : prints "<w>x<h>" or nothing.
+#
+# Godot writes section-relative keys, so the viewport size appears as
+# `window/size/viewport_width=1920` under `[display]`; a full
+# `display/window/size/viewport_width=` form is accepted too.
+ci_project_viewport_size() {
+	_cfg="$1"
+	[ -f "$_cfg" ] || return 1
+	_out="$(awk '
+		/^window\/size\/viewport_width=/ { v = $0; sub(/^[^=]*=/, "", v); w = v; next }
+		/^display\/window\/size\/viewport_width=/ { v = $0; sub(/^[^=]*=/, "", v); w = v; next }
+		/^window\/size\/viewport_height=/ { v = $0; sub(/^[^=]*=/, "", v); h = v; next }
+		/^display\/window\/size\/viewport_height=/ { v = $0; sub(/^[^=]*=/, "", v); h = v; next }
+		END { if (w != "" && h != "") printf "%sx%s\n", w, h }
+	' "$_cfg" 2>/dev/null)"
+	case "$_out" in
+		'' | *[!0-9x]*) return 1 ;;
+	esac
+	printf '%s\n' "$_out"
+}
+
+# ci_set_project_viewport_size <project.godot> <w> <h> : rewrites the viewport
+# (and any explicit window-size overrides) in place. Returns CI_FAIL when the
+# file has no viewport_width/viewport_height keys to rewrite, so a silent
+# no-op cannot be reported as a successful override.
+ci_set_project_viewport_size() {
+	_cfg="$1"
+	_w="$2"
+	_h="$3"
+	[ -f "$_cfg" ] || return "$CI_FAIL"
+	_tmp="$_cfg.ci-viewport.tmp"
+	awk -v w="$_w" -v h="$_h" '
+		/^window\/size\/viewport_width=/ { print "window/size/viewport_width=" w; seen++; next }
+		/^display\/window\/size\/viewport_width=/ { print "display/window/size/viewport_width=" w; seen++; next }
+		/^window\/size\/viewport_height=/ { print "window/size/viewport_height=" h; seen++; next }
+		/^display\/window\/size\/viewport_height=/ { print "display/window/size/viewport_height=" h; seen++; next }
+		/^window\/size\/window_width_override=/ { print "window/size/window_width_override=" w; next }
+		/^display\/window\/size\/window_width_override=/ { print "display/window/size/window_width_override=" w; next }
+		/^window\/size\/window_height_override=/ { print "window/size/window_height_override=" h; next }
+		/^display\/window\/size\/window_height_override=/ { print "display/window/size/window_height_override=" h; next }
+		{ print }
+		END { if (seen < 2) exit 1 }
+	' "$_cfg" >"$_tmp" 2>/dev/null || {
+		rm -f "$_tmp" 2>/dev/null
+		return "$CI_FAIL"
+	}
+	mv "$_tmp" "$_cfg" 2>/dev/null || {
+		rm -f "$_tmp" 2>/dev/null
+		return "$CI_FAIL"
+	}
+	return "$CI_OK"
+}
+
+# ci_is_positive_int <value> : true for a non-empty run of digits that is not
+# zero. Used for --frames/--fps: `--quit-after 0` tells Godot to never quit, so
+# accepting 0 would turn a bounded probe into an unbounded one.
+ci_is_positive_int() {
+	case "$1" in
+		'' | *[!0-9]*) return 1 ;;
+	esac
+	case "$1" in
+		*[!0]*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# ci_is_wxh <value> : true for exactly "<positive int>x<positive int>".
+ci_is_wxh() {
+	case "$1" in
+		'' | *x*x*) return 1 ;;
+	esac
+	case "$1" in
+		*x*) : ;;
+		*) return 1 ;;
+	esac
+	_w="${1%%x*}"
+	_h="${1##*x}"
+	ci_is_positive_int "$_w" || return 1
+	ci_is_positive_int "$_h" || return 1
+	return 0
+}
+
+# ci_probe_video_size <file> : prints "<w>x<h>" of the first video stream, or
+# nothing when ffprobe is unavailable or the file has no video stream. Used to
+# confirm what a capture ACTUALLY recorded instead of what was requested.
+ci_probe_video_size() {
+	_file="$1"
+	[ -s "$_file" ] || return 1
+	command -v ffprobe >/dev/null 2>&1 || return 1
+	_out="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
+		-of default=noprint_wrappers=1:nokey=1 "$_file" 2>/dev/null | tr '\n' ' ')"
+	_w="$(printf '%s' "$_out" | awk '{print $1}')"
+	_h="$(printf '%s' "$_out" | awk '{print $2}')"
+	case "$_w$_h" in
+		'' | *[!0-9\ ]*) return 1 ;;
+	esac
+	printf '%sx%s\n' "$_w" "$_h"
+}
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+CI_RUN_NAME="${CI_RUN_NAME:-run}"
+CI_REPORT=""
+
+ci_init_report() {
+	mkdir -p "$CI_OUT/reports" 2>/dev/null
+	_stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%s)"
+	CI_REPORT="$CI_OUT/reports/${CI_RUN_NAME}-${_stamp}.txt"
+	{
+		printf 'command: %s\n' "$CI_RUN_NAME"
+		printf 'utc: %s\n' "$_stamp"
+		printf 'project: %s\n' "$CI_PROJECT"
+		printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}"
+		printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
+		printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
+	} >"$CI_REPORT" 2>/dev/null
+}
+
+ci_report() {
+	[ -n "$CI_REPORT" ] || return 0
+	printf '%s\n' "$*" >>"$CI_REPORT" 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Small utilities
+# ---------------------------------------------------------------------------
+# ci_yes_no <value> : normalises truthy strings.
+ci_is_true() {
+	case "$1" in
+		1 | true | TRUE | True | yes | YES | on | ON) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# ci_sha256 <file> : portable sha256 (macOS has shasum, Linux usually sha256sum).
+ci_sha256() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'
+	elif command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" 2>/dev/null | awk '{print $1}'
+	else
+		printf 'unavailable'
+	fi
+}
+
+# ci_sha512 <file> : portable sha512. Needed because the publisher's
+# SHA512-SUMS.txt is SHA-512, so the pinned artifact digest is compared with the
+# same algorithm the publisher used rather than a re-derived one.
+ci_sha512() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 512 "$1" 2>/dev/null | awk '{print $1}'
+	elif command -v sha512sum >/dev/null 2>&1; then
+		sha512sum "$1" 2>/dev/null | awk '{print $1}'
+	else
+		printf 'unavailable'
+	fi
+}
+
+# ci_sha256_tool : prints the name of an available sha256 utility, or nothing.
+ci_sha256_tool() {
+	if command -v shasum >/dev/null 2>&1; then
+		printf 'shasum'
+	elif command -v sha256sum >/dev/null 2>&1; then
+		printf 'sha256sum'
+	fi
+}
+
+# ci_sha512_tool : prints the name of an available sha512 utility, or nothing.
+ci_sha512_tool() {
+	if command -v shasum >/dev/null 2>&1; then
+		printf 'shasum'
+	elif command -v sha512sum >/dev/null 2>&1; then
+		printf 'sha512sum'
+	fi
+}
+
+# ci_verify_digest <label> <file> <expected> <sha256|sha512>
+# Returns CI_OK when the file's digest equals <expected>, CI_FAIL otherwise.
+# An empty <expected> is a FAIL, not a pass: an unrecorded pin must never let an
+# artifact through (PLAN.md M0.1: "never invent ... a digest").
+ci_verify_digest() {
+	_label="$1"
+	_file="$2"
+	_expected="$3"
+	_algo="$4"
+
+	[ -n "$_expected" ] || {
+		ci_fail "$_label: no pinned digest recorded; refusing to accept the artifact unverified"
+		return "$CI_FAIL"
+	}
+	case "$_algo" in
+		sha256) _observed="$(ci_sha256 "$_file")" ;;
+		sha512) _observed="$(ci_sha512 "$_file")" ;;
+		*) ci_die "ci_verify_digest: unknown algorithm '$_algo'" ;;
+	esac
+	case "$_observed" in
+		'' | unavailable)
+			ci_fail "$_label: cannot compute a $_algo digest of $_file (file unreadable or no $_algo utility on PATH)"
+			return "$CI_FAIL"
+			;;
+	esac
+	if [ "$_observed" = "$_expected" ]; then
+		ci_ok "$_label: $_algo matches the pinned digest ($_observed)"
+		return "$CI_OK"
+	fi
+	ci_fail "$_label: $_algo MISMATCH"
+	ci_fail "  expected: $_expected"
+	ci_fail "  observed: $_observed"
+	ci_fail "  file:     $_file"
+	return "$CI_FAIL"
+}
+
+# ci_sha256_stdin : portable sha256 of standard input.
+ci_sha256_stdin() {
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 2>/dev/null | awk '{print $1}'
+	elif command -v sha256sum >/dev/null 2>&1; then
+		sha256sum 2>/dev/null | awk '{print $1}'
+	else
+		printf 'unavailable'
+	fi
+}
+
+# ci_relpath <abs> : path relative to the project root, for reporting.
+ci_relpath() {
+	case "$1" in
+		"$CI_PROJECT"/*) printf '%s\n' "${1#$CI_PROJECT/}" ;;
+		*) printf '%s\n' "$1" ;;
+	esac
+}

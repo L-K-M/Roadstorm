@@ -1,0 +1,83 @@
+# Fallback engine pin for tools/ci (PLAN.md M0.1).
+#
+# tools/ci/lib/common.sh reads this file only when the project does not carry
+# tools/toolchain/pin/engine.txt, which is the M0.1 record and therefore the
+# authoritative pin (version, official sources, observed digests and upstream
+# verification status). Keeping the fallback here means a standalone checkout of
+# tools/ci/ still pins the engine instead of accepting whatever is installed.
+#
+# Version authority: the official Godot download archive
+#   https://godotengine.org/download/archive/
+# Do not track a moving "stable" download (docs/TECHNICAL_DESIGN.md).
+#
+# Fields read by the tooling:
+#   major/minor/patch  exact engine version required by every CI check
+#   tag                official release tag
+#   version_string     exact `--version` output of the pinned build (advisory:
+#                      another host's official build of the same version may
+#                      print a different build string, so a mismatch is a
+#                      warning, not a failure)
+#   upstream_verified  no | yes - whether the digests recorded HERE have been
+#                      compared against the publisher's checksum file. `no` must
+#                      never be reported as verified.
+#   release_archive_url
+#                      official release asset downloaded by CI on runners that
+#                      do not provide GODOT_BIN
+#   release_checksums_url
+#                      the publisher's checksum file for the pinned tag
+#   release_archive_sha512
+#                      publisher's SHA-512 digest of release_archive_url (the
+#                      pinned release artifact). This is what
+#                      `ci.sh verify-engine` checks BEFORE extraction.
+#   release_archive_sha256
+#                      locally computed SHA-256 of the same verified download
+#   release_binary_sha256
+#                      locally computed SHA-256 of the editor binary inside
+#                      release_archive_url, checked BEFORE it is executed
+#
+# Why digests live here after all: a digest recorded on one host for an
+# *installed* file is not a portable expectation for another host, so those stay
+# in tools/toolchain/pin/checksums.txt. A digest of a *published release
+# artifact* is different: the publisher publishes it, every host downloads the
+# same bytes, and CI is exactly the place that must refuse to extract or run an
+# archive it did not expect. That is the M0.1 requirement ("with checksums.
+# Verify before installation"), so the artifact digests are recorded here and
+# verified by `ci.sh verify-engine` and by .github/workflows/ci.yml.
+#
+# Never invent, guess or copy a digest from an unofficial mirror. An empty field
+# means "not recorded" and is reported as such, never treated as verified.
+major=4
+minor=7
+patch=2
+tag=4.7.2-stable
+version_string=4.7.2.stable.official.ed1daf0bf
+
+# --- Official release artifact CI downloads --------------------------------
+# Recorded 2026-11-26 (job 6848aca2) for the pinned tag 4.7.2-stable.
+#
+# Provenance of release_archive_sha512:
+#   1. https://github.com/godotengine/godot/releases/download/4.7.2-stable/SHA512-SUMS.txt
+#      was fetched and its line for Godot_v4.7.2-stable_linux.x86_64.zip used.
+#   2. The same checksum file also carries the two digests recorded in
+#      docs/evidence/godot-4.7.2-archive-verification.md
+#      (Godot_v4.7.2-stable_macos.universal.zip and
+#      Godot_v4.7.2-stable_export_templates.tpz), which independently confirms
+#      that this is the publisher's file for this tag and not a mirror.
+#   3. Godot_v4.7.2-stable_linux.x86_64.zip was then downloaded from the
+#      official release URL and hashed locally; its SHA-512 matches the
+#      publisher's line.
+#
+# Scope: the Linux x86_64 editor ZIP and the editor binary inside it -- the
+# artifact this workflow downloads. The other release assets (macOS editor,
+# export templates, source tarball) are covered by the separate M0.1 record in
+# tools/toolchain/pin/engine.txt and docs/evidence/. No target platform was
+# launched; a verified download is not a working build.
+release_archive_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_linux.x86_64.zip
+release_checksums_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/SHA512-SUMS.txt
+release_archive_sha512=9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65
+release_archive_sha256=cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4
+release_binary_sha256=8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf934953f71e
+
+# The digests above were compared against the publisher's checksum file for the
+# pinned tag (scope: the Linux x86_64 editor ZIP and its contained binary).
+upstream_verified=yes

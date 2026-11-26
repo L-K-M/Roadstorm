@@ -1,0 +1,27 @@
+# Content-contract inventory consumed by `tools/ci/ci.sh validate`.
+#
+# Format: status|path|milestone|note
+#   required  the path must exist or `validate` fails
+#   pending   the path is planned and not produced yet: reported as a warning,
+#             and enforced as a failure with `validate --strict-contracts`
+#   optional  reported for information only
+#
+# This list is an inventory of what the plan requires, not a content
+# validation. Validating course geometry, asset provenance or license notices
+# (verification matrix rows T09/T15) is not implemented and is not claimed here.
+# When those validators land, wire them into `ci.sh validate` and move the
+# matching rows to `required`.
+required|project.godot|M0.2|Engine configuration and the shell's entry point.
+required|scenes/|M0.2|Boot, menu and race scenes.
+required|src/|M0.2|Typed GDScript sources.
+required|tools/smoke/|M0.4|Existing headless smoke runner used by `ci.sh test`.
+pending|tests/|M0.4|Original headless test runner, fixtures and integration scenarios.
+pending|schemas/|M0.9|Versioned handling/AI/reference/scenario schemas.
+pending|fixtures/|M0.9|Fixture configurations derived from docs/BENCHMARKS.md.
+pending|licenses/|M0.3|CC0 asset notice and exact dependency notices.
+pending|provenance/|M0.3|Authoring records and third-party evidence.
+pending|content/|M1|Car, track and event source definitions.
+pending|assets/|M2|Generated assets and assets/manifest.json.
+pending|models/|M4B|Learned policy weights and model cards.
+pending|training/|M4B|Environment bridge, datasets and training/evaluation tools.
+optional|export_presets.cfg|M0.5|Native export presets; `ci.sh export --check` fails clearly until they exist.
