@@ -1,0 +1,14 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results",
+      "check": "evidence_status"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results.hashes.car_hash",
+      "check": "null_unknown_pairing"
+    }
+  ]
+}

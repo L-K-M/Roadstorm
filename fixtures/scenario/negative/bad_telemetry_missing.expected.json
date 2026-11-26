@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.required_telemetry",
+      "check": "telemetry_required"
+    }
+  ]
+}

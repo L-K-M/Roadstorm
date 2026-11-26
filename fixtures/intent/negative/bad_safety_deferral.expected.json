@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "const",
+      "path": "records.0.safety.max_deferral_ticks"
+    }
+  ]
+}

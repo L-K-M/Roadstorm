@@ -1,0 +1,357 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.intent.negative_difficulty_age",
+  "fixture_family": "wait_hold",
+  "title": "NEGATIVE fixture: rookie record carries the racer traffic age",
+  "description": "Deliberately invalid variant used by fixtures/intent/validate_intent_contract.py to keep this rejection rejected. Defect: rookie record carries the racer traffic age. Derived from fixture.intent.classic_wait_hold; everything except the named defect is valid.",
+  "revision": "1.1.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "road_width_m": 10.0,
+    "car_width_m": 1.7,
+    "difficulty": "rookie",
+    "style": "none",
+    "producer_kind": "classic_planner",
+    "producer_revision": "pending_m4_2_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.0.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.classic_wait.t000500",
+      "participant_id": "ai.classic_2",
+      "source_observation_id": "obs.t000500.ai_classic_2",
+      "producer": {
+        "kind": "classic_planner",
+        "producer_revision": "pending_m4_2_ratification"
+      },
+      "difficulty": "rookie",
+      "style": "none",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 500,
+      "sampled_tick": 504,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 12,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": -0.2,
+        "legal_corridor_half_width_m": 3.65,
+        "decoded_offset_m": -0.73,
+        "note": "Corridor half-width is (10.0 - 1.7)/2 - 0.5 m = 3.65 m; -0.2 x 3.65 m = -0.73 m, legal with no correction."
+      },
+      "pace": {
+        "pace_norm": 0.5,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": null
+      },
+      "commitment": {
+        "commitment_raw": 0.0,
+        "label": "wait",
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": "0.0 is inside the -1/3 through +1/3 wait band."
+      },
+      "drift": {
+        "drift_raw": -0.5,
+        "label": "grip",
+        "note": "Below -0.25, so the preference is grip."
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "note": null
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    },
+    {
+      "schema_version": "1.0.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.classic_wait.t000512",
+      "participant_id": "ai.classic_2",
+      "source_observation_id": "obs.t000512.ai_classic_2",
+      "producer": {
+        "kind": "classic_planner",
+        "producer_revision": "pending_m4_2_ratification"
+      },
+      "difficulty": "rookie",
+      "style": "none",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 512,
+      "sampled_tick": 516,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 18,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": -0.15,
+        "legal_corridor_half_width_m": 3.65,
+        "decoded_offset_m": -0.5475,
+        "note": "-0.15 x 3.65 m = -0.5475 m, legal with no correction."
+      },
+      "pace": {
+        "pace_norm": 0.55,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": null
+      },
+      "commitment": {
+        "commitment_raw": 0.2,
+        "label": "wait",
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": "0.2 is still inside the wait band."
+      },
+      "drift": {
+        "drift_raw": -0.4,
+        "label": "grip",
+        "note": null
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "note": null
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.decode_legal",
+      "check": "decode_consistency",
+      "path": "records.0",
+      "statement": "The decoded lateral target equals the raw decode and stays inside the corridor."
+    },
+    {
+      "expectation_id": "expect.decode_legal_hold",
+      "check": "decode_consistency",
+      "path": "records.1",
+      "statement": "The second intent's decode is also consistent."
+    },
+    {
+      "expectation_id": "expect.wait_label",
+      "check": "label_thresholds",
+      "path": "records.0",
+      "statement": "commitment_raw 0.0 decodes to wait; drift_raw -0.5 decodes to grip."
+    },
+    {
+      "expectation_id": "expect.wait_label_hold",
+      "check": "label_thresholds",
+      "path": "records.1",
+      "statement": "commitment_raw 0.2 is still wait; drift_raw -0.4 is still grip."
+    },
+    {
+      "expectation_id": "expect.cadence",
+      "check": "sampling_cadence",
+      "path": "records",
+      "statement": "Consecutive intents are 12 ticks apart at 5 Hz on a 60 Hz tick."
+    },
+    {
+      "expectation_id": "expect.age",
+      "check": "age_arithmetic",
+      "path": "records.0",
+      "statement": "intent_age_ticks equals sampled_tick minus generated_tick."
+    },
+    {
+      "expectation_id": "expect.age_hold",
+      "check": "age_arithmetic",
+      "path": "records.1",
+      "statement": "The second record's age arithmetic is consistent."
+    },
+    {
+      "expectation_id": "expect.rookie_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Rookie difficulty uses the 18-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.rookie_age_hold",
+      "check": "difficulty_age",
+      "path": "records.1",
+      "statement": "The second record carries the same Rookie traffic age."
+    },
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style, producer kind and revision match the fixture context; Classic-only style is 'none'."
+    },
+    {
+      "expectation_id": "expect.context_hold",
+      "check": "context_agreement",
+      "path": "records.1",
+      "statement": "The second record also matches the fixture context."
+    },
+    {
+      "expectation_id": "expect.deferral",
+      "check": "safety_deferral",
+      "path": "records.0",
+      "statement": "Hazard checks are never deferred while an intent is held."
+    },
+    {
+      "expectation_id": "expect.min_commit",
+      "check": "min_commitment",
+      "path": "records.0",
+      "statement": "The intent carries the 0.4 s minimum commitment constant even while waiting."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the initial acceptance targets for the Classic planning path that shares this contract from M4.2 onward.",
+    "metrics": [
+      {
+        "name": "material_corrections_fraction",
+        "description": "Material road/collision corrections per proposed 5 Hz intent, material per BENCHMARKS.md.",
+        "comparator": "lt",
+        "value": 0.05,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "emergency_replacements_fraction",
+        "description": "Emergency safety substitutions per proposed 5 Hz intent.",
+        "comparator": "lt",
+        "value": 0.01,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements."
+  },
+  "unknowns": [
+    {
+      "path": "records.0.pace.speed_profile_interval_m_s",
+      "reason": "The rookie desired speed-profile interval is tuned at M4.3 and is not numerically specified.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.speed_profile_interval_m_s",
+      "reason": "Same unratified interval as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.pace.target_speed_m_s",
+      "reason": "Target speed cannot be decoded until the difficulty interval is ratified.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.target_speed_m_s",
+      "reason": "Same unratified decoding as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.commitment.hold_window_s",
+      "reason": "The short anti-jitter commitment window length is not numerically specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.commitment.hold_window_s",
+      "reason": "Same unratified window length as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.interpolation.curve",
+      "reason": "The interpolation curve is not specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.interpolation.curve",
+      "reason": "Same unratified curve as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.producer_revision",
+      "reason": "Placeholder only: no Classic planner revision exists until M4.2 implements the shared interface.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "intent_age_ticks",
+      "reason": "Required behavior for a stale intent (at or beyond 12 ticks) is not specified.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:0a9302c8d9d11071d25743420db17983a6ba689261bde514750fc718c9330f5f",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
+    "author": "pi coding agent (job 8cfeb70f-e5b3-4cac-8b4c-83a933d0970b)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Negative fixture authored at M0.9; expects rejection, not execution."
+  }
+}

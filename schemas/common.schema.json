@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm shared schema vocabulary",
+  "description": "Definitions shared by Roadstorm versioned resource, fixture, reference and scenario files. Version 1.0.0 is defined at M0.9. Later contract changes require a new schema_version recorded with a decision; the files in this directory are text contracts, not runtime code.",
+  "type": "object",
+  "$defs": {
+    "stable_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z0-9_-]+)*$",
+      "description": "Stable semantic ID. Display names may change; IDs must not."
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "examples": ["1.0.0"]
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 over canonical JSON (sorted keys, compact separators, UTF-8) of the file with the content_hash member removed."
+    },
+    "unknown_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "reason"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Dotted path to the unfixed value or absent section."
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "blocking": {
+          "type": "boolean",
+          "default": true,
+          "description": "true when dependent work must not freeze the value."
+        },
+        "until": {
+          "type": ["string", "null"],
+          "description": "Milestone or decision that resolves the unknown, when one is known."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_contract": {
+          "type": ["string", "null"],
+          "description": "Design/benchmark document this artifact was derived from."
+        },
+        "author": {
+          "type": ["string", "null"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "provider": {
+          "type": ["string", "null"]
+        },
+        "date_utc": {
+          "type": ["string", "null"]
+        },
+        "note": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "acceptance_metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "comparator", "status"],
+      "description": "One documented acceptance target or reporting requirement. Which bound members are legal depends on the comparator, enforced by the allOf rules below: threshold comparators (eq, lte, gte, lt, gt) require a numeric value and no range bounds; range/ratio_range require value_min and value_max and no value; report carries no bound at all. This mirrors schemas/handling/validate_fixtures.py so a metric cannot satisfy one contract and violate the other. The handling validator additionally requires the value to be numeric for threshold comparators; this schema deliberately leaves value untyped for other contracts' comparators over non-numeric quantities.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "comparator": {
+          "enum": ["eq", "lte", "gte", "lt", "gt", "range", "ratio_range", "report"],
+          "description": "report means measure and publish without declaring a pass/fail gate yet."
+        },
+        "value": {},
+        "value_min": {
+          "type": "number"
+        },
+        "value_max": {
+          "type": "number"
+        },
+        "unit": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "enum": ["documented_initial_target", "measured", "undecided"],
+          "default": "documented_initial_target"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["comparator"],
+            "properties": {"comparator": {"enum": ["eq", "lte", "gte", "lt", "gt"]}}
+          },
+          "then": {
+            "required": ["value"],
+            "properties": {"value_min": false, "value_max": false}
+          }
+        },
+        {
+          "if": {
+            "required": ["comparator"],
+            "properties": {"comparator": {"enum": ["range", "ratio_range"]}}
+          },
+          "then": {
+            "required": ["value_min", "value_max"],
+            "properties": {"value": false}
+          }
+        },
+        {
+          "if": {
+            "required": ["comparator"],
+            "properties": {"comparator": {"const": "report"}}
+          },
+          "then": {
+            "properties": {"value": false, "value_min": false, "value_max": false}
+          }
+        }
+      ]
+    }
+  }
+}

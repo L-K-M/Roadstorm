@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "pattern",
+      "path": "records.0.participant_id"
+    }
+  ]
+}

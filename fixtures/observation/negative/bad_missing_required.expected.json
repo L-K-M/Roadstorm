@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "required",
+      "path": "records.0.masks"
+    }
+  ]
+}

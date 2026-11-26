@@ -1,0 +1,250 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.observation.fallback_zero_width",
+  "fixture_family": "fallback",
+  "title": "Safe diagnostic fallback on zero usable width (Racer, Switch)",
+  "description": "One 5 Hz observation in which the ObservationBuilder hit zero usable road width and produced the safe diagnostic fallback (OPPONENT_AI.md 'Shared schema version 1': unknown schema, zero usable width or nonfinite input produces a safe diagnostic fallback). The sensor-derived features (ego 0-11, road-ahead 12-26, neighbor 27-50, history 51-56, occupancy 62-63) are replaced by the safe defaults (zeros here); masks.history_valid is 0 because no valid history is available. The explicit difficulty and style inputs are configuration, not sensors, so their one-hots stay correct (Racer at index 58, Switch at index 61) and the tick bookkeeping still satisfies traffic-age arithmetic (Racer 12). fallback.active is true with a reason and the substituted groups in defaults_applied. The exact safe-default vector content is an authored placeholder, not a specified value; see unknowns. No raw_inputs are supplied because normalization is bypassed in fallback. Status 'provisional'.",
+  "revision": "1.0.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "participant_id": "ai.switch_3",
+    "difficulty": "racer",
+    "style": "switch",
+    "top_speed_m_s": 65.0,
+    "usable_half_width_m": 0.0,
+    "observation_builder_revision": "pending_m4_2_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.0.0",
+      "observation_layout_revision": "ai_shared_v1",
+      "feature_count": 64,
+      "observation_id": "obs.t001200.ai_switch_3",
+      "participant_id": "ai.switch_3",
+      "difficulty": "racer",
+      "style": "switch",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "sampled_tick": 1200,
+      "traffic_snapshot_tick": 1188,
+      "traffic_age_ticks": 12,
+      "feature_vector": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "masks": {
+        "neighbor_slots": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "history_valid": 0
+      },
+      "reset": {
+        "reset_generation": 0,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": []
+      },
+      "normalization": {
+        "clip_min": -1,
+        "clip_max": 1,
+        "coefficients_revision": "ai_shared_v1_norm"
+      },
+      "fallback": {
+        "active": true,
+        "reason": "zero usable road width at sampled_tick; sensor features replaced by safe diagnostic defaults",
+        "defaults_applied": [
+          "ego",
+          "road_ahead",
+          "neighbor",
+          "history",
+          "occupancy"
+        ]
+      },
+      "occupancy_encounter_gap_m": null
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style and participant_id match the fixture context."
+    },
+    {
+      "expectation_id": "expect.difficulty_hot",
+      "check": "difficulty_one_hot",
+      "path": "records.0",
+      "statement": "Even in fallback the explicit difficulty one-hot stays correct (Racer, index 58)."
+    },
+    {
+      "expectation_id": "expect.style_hot",
+      "check": "style_one_hot",
+      "path": "records.0",
+      "statement": "Even in fallback the explicit style one-hot stays correct (Switch, index 61)."
+    },
+    {
+      "expectation_id": "expect.neighbor_presence",
+      "check": "neighbor_presence",
+      "path": "records.0",
+      "statement": "The fallback zeroes all neighbor slots and clears masks.neighbor_slots."
+    },
+    {
+      "expectation_id": "expect.traffic_age",
+      "check": "traffic_age_arithmetic",
+      "path": "records.0",
+      "statement": "The tick bookkeeping still satisfies traffic-age arithmetic (1200 - 1188 = 12)."
+    },
+    {
+      "expectation_id": "expect.difficulty_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Racer difficulty uses the 12-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.history_mask",
+      "check": "history_mask",
+      "path": "records.0",
+      "statement": "history_valid is 0 and every history feature is masked to zero."
+    },
+    {
+      "expectation_id": "expect.fallback",
+      "check": "fallback_defaults",
+      "path": "records.0",
+      "statement": "fallback.active is true, so a non-empty reason and defaults_applied are required."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the safe-fallback requirement a correct observation builder must satisfy, plus the standing parity target that includes invalid-input rejection.",
+    "metrics": [
+      {
+        "name": "actor_parity_max_abs_error",
+        "description": "Python/GDScript actor-output parity over the observation corpus, including invalid-input rejection and fallback inputs.",
+        "comparator": "lte",
+        "value": 0.0001,
+        "unit": "max abs error",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements."
+  },
+  "unknowns": [
+    {
+      "path": "records.0.occupancy_encounter_gap_m",
+      "reason": "The 'planned encounter' distance for corridor occupancy is not fixed by OPPONENT_AI.md.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.observation_builder_revision",
+      "reason": "Placeholder only: no ObservationBuilder revision is ratified until M4.2 implements the shared interface.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.feature_vector",
+      "reason": "The exact safe diagnostic fallback vector (zeros for sensor features here) is an authored placeholder; OPPONENT_AI.md requires a safe diagnostic fallback but does not fix its contents.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.masks.history_valid",
+      "reason": "history_valid is 0 with reset_generation 0 and post_reset_defaults_applied false: the safe diagnostic fallback masks history without a reset, and OPPONENT_AI.md never says whether a fallback must also bump reset_generation or set post_reset_defaults_applied. The validator accepts this state (one-way implication only) rather than inventing a stricter rule.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:e5c3df75ccbe8d3aaa9f71b9dcfeda1add7bd21e28af062807cc5a4ef85d52ac",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
+    "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Authored M0.9 text contract; no implementation is exercised by this file."
+  }
+}

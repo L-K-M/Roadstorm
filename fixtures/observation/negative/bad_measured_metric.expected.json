@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "comparison.metrics.4",
+      "check": "comparison_metrics"
+    }
+  ]
+}

@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm TacticalIntent record (intent schema version 1)",
+  "description": "Machine-readable contract for the TacticalIntent that a Classic planner or a Roadstormer policy produces and the shared safety layer and path follower consume (docs/OPPONENT_AI.md 'Architecture' steps 2-4; the 'AIObservation/TacticalIntent' row of docs/TECHNICAL_DESIGN.md 'Content contracts': version, ordered shape/fields, road frame, masks, observation age, normalization/action decoding, personality/difficulty and reset defaults, defined before M4.2). This is a text contract defined at M0.9. It requires no working AI implementation and defines no model, weights, export, training or inference interface; those are ratified separately at M4B and are deliberately absent here. Every field, bound, age rule and reset rule below restates semantics specified in docs/OPPONENT_AI.md; values that document leaves undetermined are null in instances and MUST be listed in the enclosing fixture's 'unknowns' (see intent_fixture.schema.json).",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "intent_layout_revision",
+    "intent_id",
+    "participant_id",
+    "source_observation_id",
+    "producer",
+    "difficulty",
+    "style",
+    "road_frame",
+    "generated_tick",
+    "sampled_tick",
+    "intent_age_ticks",
+    "traffic_age_ticks",
+    "sampling",
+    "lateral",
+    "pace",
+    "commitment",
+    "drift",
+    "interpolation",
+    "safety",
+    "reset",
+    "units"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision. A record whose schema_version differs is rejected, not silently migrated; a contract change requires a new version and a recorded decision."
+    },
+    "intent_layout_revision": {
+      "const": "tactical_intent_v1",
+      "description": "Field-order/layout revision of this contract, parallel to observation_layout_revision in schemas/observation/observation_record.schema.json (the accepted 'Shared schema version 1' observation contract)."
+    },
+    "intent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable ID of this intent record, e.g. intent.surge_commit.t000996."
+    },
+    "participant_id": {
+      "$ref": "../common.schema.json#/$defs/stable_id",
+      "description": "Participant the intent belongs to."
+    },
+    "source_observation_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "ID of the observation record this intent was computed from, as defined by schemas/observation/observation_record.schema.json (observation_id). The intent never observes more than that contract allows."
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "producer_revision"],
+      "properties": {
+        "kind": {
+          "enum": ["classic_planner", "cloning_only_policy", "learned_policy"],
+          "description": "Which producer emitted the intent: authored Classic rules, the behavioral-cloning-only Roadstormer policy, or the PPO-trained Roadstormer learned tactical policy. All three emit this same contract; OPPONENT_AI.md requires Classic planners to emit the shared intent from M4.2 onward. cloning_only_policy is the teacher-initialized policy that OPPONENT_AI.md ('Training approach') and docs/BENCHMARKS.md ('Tactical comparison') require to be evaluated separately from the PPO-trained policy, and it is the same driver kind schemas/scenario/scenario.schema.json's participant driver enum already names; the two producers are distinguished by producer_revision, never by an undocumented convention."
+        },
+        "producer_revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revision of the producing code/configuration, recorded like handling_fixture.schema.json's controller_revision: a producer change is a dependency change recorded before reruns. A placeholder string is acceptable only while the real revision is unratified and listed in the fixture unknowns."
+        }
+      }
+    },
+    "difficulty": {
+      "enum": ["rookie", "racer", "expert"],
+      "description": "Explicit difficulty input. Selects the delayed traffic age (18/12/7 ticks) and the desired speed-profile interval used to decode pace."
+    },
+    "style": {
+      "enum": ["surge", "switch", "none"],
+      "description": "Explicit style input. 'surge'/'switch' are the two learned styles; 'none' is the Classic-only style input pair 0/0 (OPPONENT_AI.md 'Shared schema version 1')."
+    },
+    "road_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forward", "right", "up"],
+      "properties": {
+        "forward": { "type": "string", "minLength": 1 },
+        "right": { "type": "string", "minLength": 1 },
+        "up": { "type": "string", "minLength": 1 }
+      },
+      "description": "Route frame is forward tangent, right lateral, up road normal; positive lane offset is right (same convention as schemas/observation/observation_record.schema.json). The strings name the frame's axes; concrete vectors are runtime state, not frozen here."
+    },
+    "generated_tick": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "60 Hz simulation tick at which the planner emitted this intent. Tactical decisions run at 5 Hz, so consecutive intents for one participant are 12 ticks apart."
+    },
+    "sampled_tick": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "60 Hz tick at which this record was exported for telemetry/demonstration. intent_age_ticks = sampled_tick - generated_tick."
+    },
+    "intent_age_ticks": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Age of this intent at sampled_tick, in 60 Hz ticks. Fresh intents are re-issued every 12 ticks (5 Hz); an age at or beyond the 12-tick staleness threshold means a missed tactical update. The required behavior for a stale intent (hold, decay, fall back) is not specified by OPPONENT_AI.md and is unratified; see the fixture unknowns."
+    },
+    "traffic_age_ticks": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18,
+      "description": "Age of the delayed traffic snapshot this intent was computed from, inherited from the source observation: Rookie 18, Racer 12, Expert 7 ticks at 60 Hz (OPPONENT_AI.md 'Shared schema version 1'). Ego/road data and the emergency guard remain current; only traffic-derived data is delayed."
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tactical_rate_hz", "period_ticks", "period_s"],
+      "properties": {
+        "tactical_rate_hz": {
+          "const": 5,
+          "description": "Tactical decision rate. OPPONENT_AI.md specifies 'initially' 5 Hz; changing it requires a new schema_version and a recorded decision."
+        },
+        "period_ticks": { "const": 12, "description": "Sampling period in 60 Hz ticks (5 Hz)." },
+        "period_s": { "const": 0.2, "description": "Sampling period in seconds. A held tactical intent never suspends hazard checks for this long." }
+      }
+    },
+    "lateral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lateral_target_norm"],
+      "properties": {
+        "lateral_target_norm": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Preferred lane/offset as the continuous proposed value (action 0 of the shared action contract), positive right. The planner proposes; the safety layer may correct."
+        },
+        "legal_corridor_half_width_m": {
+          "type": ["number", "null"],
+          "description": "Half-width of the legal lateral corridor used to decode the target: (road_width - car_width)/2 - 0.5 m. null when the record does not fix road/car width; a null requires a matching unknowns entry."
+        },
+        "decoded_offset_m": {
+          "type": ["number", "null"],
+          "description": "Decoded/executed lateral target in meters after the safety layer: lateral_target_norm times the corridor half-width, bounded to the legal corridor. Recorded separately from the proposed normalized value, as OPPONENT_AI.md requires ('Record the proposed intent, ordinary difficulty decoding, safety changes and final commands separately'). null when the record does not fix road/car width; a null requires a matching unknowns entry."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "pace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pace_norm"],
+      "properties": {
+        "pace_norm": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Target pace within the safe envelope: (action 1 + 1)/2 mapped into the selected difficulty's desired speed-profile interval, before safety counting."
+        },
+        "speed_profile_interval_m_s": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "number", "minimum": 0 },
+            "max": { "type": "number", "minimum": 0 }
+          },
+          "description": "The difficulty's desired speed-profile interval the pace decodes into. The per-difficulty intervals are tuned at M4.3 and are not numerically specified by OPPONENT_AI.md, so this is null until ratified; a null requires a matching unknowns entry."
+        },
+        "target_speed_m_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Decoded target speed in m/s when the difficulty interval is known. null until the speed-profile intervals are ratified; a null requires a matching unknowns entry."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "commitment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "commitment_raw", "min_commitment_s", "interrupted"],
+      "properties": {
+        "commitment_raw": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Follow/pass commitment as the continuous proposed value (action 2 of the shared action contract)."
+        },
+        "label": {
+          "enum": ["follow", "wait", "commit_pass"],
+          "description": "Decoded commitment: below -1/3 follow, -1/3 through +1/3 wait/hold, above +1/3 commit to a legal pass. The wait band includes both thresholds."
+        },
+        "min_commitment_s": {
+          "const": 0.4,
+          "description": "Minimum commitment duration in seconds for a pass commitment, interrupted by hazards (OPPONENT_AI.md action table)."
+        },
+        "hold_window_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Length of the short anti-jitter commitment window held around the label. OPPONENT_AI.md requires holding 'a short commitment window' but does not fix its length, so this is null until ratified; a null requires a matching unknowns entry."
+        },
+        "interrupted": {
+          "type": "boolean",
+          "description": "true when a hazard interrupted the held commitment. A held tactical intent never suspends hazard checks."
+        },
+        "interruption_reason": { "type": ["string", "null"] },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "drift": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["drift_raw", "label"],
+      "properties": {
+        "drift_raw": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Drift preference as the continuous proposed value (action 3 of the shared action contract)."
+        },
+        "label": {
+          "enum": ["drift", "grip", "retain"],
+          "description": "Decoded drift preference: above +0.25 drift, below -0.25 grip, retain the preference between thresholds. The follower still enforces legal drift entry conditions; the label never grants them."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "interpolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "window_s"],
+      "properties": {
+        "enabled": {
+          "const": true,
+          "description": "Intents are interpolated between 5 Hz decisions to prevent jitter and lane weaving (OPPONENT_AI.md 'Architecture')."
+        },
+        "window_s": {
+          "const": 0.2,
+          "description": "Interpolation window, equal to the 5 Hz sampling period."
+        },
+        "curve": {
+          "type": ["string", "null"],
+          "description": "Interpolation curve identifier. OPPONENT_AI.md does not specify the curve, so this is null until ratified; a null requires a matching unknowns entry."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_deferral_ticks", "corrections"],
+      "properties": {
+        "max_deferral_ticks": {
+          "const": 0,
+          "description": "Immediate hazard safety never waits for the delayed traffic snapshot or the 0.2 s tactical period: a held intent never suspends hazard checks, so the safety layer may defer hazard checks by zero ticks."
+        },
+        "corrections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/correction" },
+          "description": "Safety-layer changes to the proposed intent, one entry per corrected field. The safety layer constrains the intent to the road, available passing room, contact rules and physical capability (OPPONENT_AI.md 'Architecture' step 3). Empty when the proposal was already legal."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "reset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reset_generation", "history_valid", "post_reset_defaults_applied", "defaults_applied"],
+      "properties": {
+        "reset_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Counts participant resets/recoveries. Reset restores timers, counters, history, contact/recovery state and queued events (OPPONENT_AI.md 'Training approach'; TECHNICAL_DESIGN fixed-tick reset), so the generation makes intent history comparable across resets."
+        },
+        "history_valid": {
+          "type": "number",
+          "enum": [0, 1],
+          "description": "1 when pass/occupancy/contact history feeding this intent is valid; 0 when it is masked to zero/default after a reset, mirroring the observation masks ('Preserve feature timestamps and reset history to zero/masked defaults')."
+        },
+        "post_reset_defaults_applied": {
+          "type": "boolean",
+          "description": "true when this intent was produced after a reset with default history substituted."
+        },
+        "defaults_applied": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Dotted field names reverted to defaults after the reset."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "speed", "time"],
+      "properties": {
+        "length": { "const": "m" },
+        "speed": { "const": "m/s" },
+        "time": { "const": "s" }
+      },
+      "description": "Car units are meters/seconds (TECHNICAL_DESIGN 'Content contracts')."
+    }
+  },
+  "$defs": {
+    "constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single source of truth for the numeric semantics of this contract, all from docs/OPPONENT_AI.md. The fixtures/intent validator reads these instead of restating them.",
+      "required": [
+        "tactical_rate_hz",
+        "sampling_period_ticks",
+        "sampling_period_s",
+        "intent_staleness_ticks",
+        "commitment_min_s",
+        "commitment_follow_below",
+        "commitment_commit_above",
+        "drift_above",
+        "drift_below",
+        "lateral_margin_m",
+        "material_lane_change_car_widths",
+        "material_speed_change_fraction",
+        "traffic_age_ticks_by_difficulty"
+      ],
+      "properties": {
+        "tactical_rate_hz": { "const": 5 },
+        "sampling_period_ticks": { "const": 12 },
+        "sampling_period_s": { "const": 0.2 },
+        "intent_staleness_ticks": {
+          "const": 12,
+          "description": "An intent at or beyond this age marks a missed 5 Hz update; the required stale-intent behavior is unratified."
+        },
+        "commitment_min_s": { "const": 0.4 },
+        "commitment_follow_below": {
+          "const": -0.3333333333333333,
+          "description": "Exactly -1/3: commitment_raw below this is 'follow'."
+        },
+        "commitment_commit_above": {
+          "const": 0.3333333333333333,
+          "description": "Exactly +1/3: commitment_raw above this is 'commit_pass'."
+        },
+        "drift_above": { "const": 0.25 },
+        "drift_below": { "const": -0.25 },
+        "lateral_margin_m": {
+          "const": 0.5,
+          "description": "Lateral decode: target times (road_width - car_width)/2 - 0.5 m."
+        },
+        "material_lane_change_car_widths": {
+          "const": 0.1,
+          "description": "BENCHMARKS.md 'AI metrics': a safety-caused lane change greater than 0.1 car widths is material."
+        },
+        "material_speed_change_fraction": {
+          "const": 0.05,
+          "description": "BENCHMARKS.md 'AI metrics': abs(safe - proposed) / max(proposed, 1 m/s) greater than 0.05 is material."
+        },
+        "traffic_age_ticks_by_difficulty": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rookie", "racer", "expert"],
+          "properties": {
+            "rookie": { "const": 18 },
+            "racer": { "const": 12 },
+            "expert": { "const": 7 }
+          }
+        }
+      }
+    },
+    "action_decoding": {
+      "type": "array",
+      "description": "The shared action contract (one continuous Box vector of four values in [-1,1]) and its decoding into this intent, restated from OPPONENT_AI.md 'Shared schema version 1'. It is documented here as decoding only; the model/export interface that produces the vector is ratified at M4B and is not part of this contract.",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "intent_field", "decode"],
+        "properties": {
+          "action": { "type": "integer", "minimum": 0, "maximum": 3 },
+          "intent_field": {
+            "enum": [
+              "lateral.lateral_target_norm",
+              "pace.pace_norm",
+              "commitment.commitment_raw",
+              "drift.drift_raw"
+            ]
+          },
+          "decode": { "type": "string", "minLength": 1 },
+          "bounds": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "category", "proposed", "applied", "material"],
+      "properties": {
+        "field": {
+          "enum": ["lateral.decoded_offset_m", "pace.target_speed_m_s"],
+          "description": "Intent field the safety layer corrected. Commitment interruption is recorded on commitment.interrupted, not as a correction."
+        },
+        "category": {
+          "enum": ["road", "passing_room", "contact_rule", "physical_capability"],
+          "description": "Which constraint forced the change; the safety layer constrains the intent to the road, available passing room, contact rules and physical capability."
+        },
+        "proposed": {
+          "type": "number",
+          "description": "Pre-safety decoded value in the field's units (for lateral: lateral_target_norm times the corridor half-width)."
+        },
+        "applied": {
+          "type": "number",
+          "description": "Post-safety value actually handed to the path follower."
+        },
+        "material": {
+          "type": "boolean",
+          "description": "Whether the change is material per BENCHMARKS.md: lateral change greater than 0.1 car widths, or speed-target change abs(applied - proposed) / max(proposed, 1 m/s) greater than 0.05, in either direction."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.commitment.label",
+      "check": "label_thresholds"
+    }
+  ]
+}

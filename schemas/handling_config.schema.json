@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm versioned handling configuration",
+  "description": "Versioned car/handling resource contract defined at M0.9 from TECHNICAL_DESIGN.md and GAME_DESIGN.md. Numeric coefficients not fixed by the design documents are JSON null and must be listed in unknowns. M1 records and freezes measured coefficients before dependent implementation; this schema does not assert a working motor.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "car_id",
+    "display_name",
+    "revision",
+    "status",
+    "units",
+    "coordinate_frame",
+    "dimensions",
+    "mass_kg",
+    "contact_proxy",
+    "engine",
+    "handling",
+    "upgrades",
+    "detachable_parts",
+    "unknowns",
+    "content_hash",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "car_id": { "$ref": "common.schema.json#/$defs/stable_id" },
+    "display_name": { "type": "string", "minLength": 1 },
+    "revision": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["provisional", "measured", "frozen", "superseded", "example"]
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "mass", "time", "angle"],
+      "properties": {
+        "length": { "const": "m" },
+        "mass": { "const": "kg" },
+        "time": { "const": "s" },
+        "angle": { "const": "deg" }
+      }
+    },
+    "coordinate_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forward", "up", "origin"],
+      "properties": {
+        "forward": { "const": "-Z" },
+        "up": { "const": "+Y" },
+        "origin": { "const": "ground_projection_of_axle_midpoint" }
+      }
+    },
+    "dimensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length_m", "width_m", "height_m", "wheelbase_m", "ground_clearance_m", "jump_envelope_m"],
+      "properties": {
+        "length_m": { "type": "number", "minimum": 3.6, "maximum": 4.8 },
+        "width_m": { "type": "number", "minimum": 1.7, "maximum": 2.2 },
+        "height_m": { "type": "number", "minimum": 1.0, "maximum": 1.8 },
+        "wheelbase_m": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "ground_clearance_m": { "type": ["number", "null"], "minimum": 0 },
+        "jump_envelope_m": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "mass_kg": { "type": "number", "exclusiveMinimum": 0 },
+    "contact_proxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["shape", "derived_from", "roof", "underside"],
+      "properties": {
+        "shape": { "enum": ["rounded_box", "convex_hull"] },
+        "derived_from": { "const": "declared_dimensions" },
+        "roof": { "type": ["string", "null"] },
+        "underside": { "type": ["string", "null"] }
+      }
+    },
+    "presentation": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional paints/icon references; presentation never changes contact or handling."
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["top_speed_kmh", "acceleration_curve"],
+      "properties": {
+        "top_speed_kmh": {
+          "type": ["number", "null"],
+          "minimum": 205,
+          "maximum": 235,
+          "description": "Stock target range from GAME_DESIGN.md; upgraded caps are applied by the loadout, not stored here."
+        },
+        "acceleration_curve": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/speed_acceleration_point" }
+        }
+      }
+    },
+    "handling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceleration_curve",
+        "braking_acceleration_m_s2",
+        "drag",
+        "yaw_gain",
+        "lateral_damping",
+        "drift",
+        "surge",
+        "drafting",
+        "airborne",
+        "contact_caps",
+        "surfaces"
+      ],
+      "properties": {
+        "acceleration_curve": {
+          "type": ["array", "null"],
+          "items": { "$ref": "#/$defs/speed_acceleration_point" }
+        },
+        "braking_acceleration_m_s2": { "type": ["number", "null"], "minimum": 0 },
+        "drag": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["aerodynamic", "rolling"],
+          "properties": {
+            "aerodynamic": { "type": ["number", "null"], "minimum": 0 },
+            "rolling": { "type": ["number", "null"], "minimum": 0 }
+          }
+        },
+        "yaw_gain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grip", "drift"],
+          "properties": {
+            "grip": { "type": ["number", "null"], "minimum": 0 },
+            "drift": { "type": ["number", "null"], "minimum": 0 }
+          }
+        },
+        "lateral_damping": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grip_per_s", "drift_per_s"],
+          "properties": {
+            "grip_per_s": { "type": ["number", "null"], "minimum": 0 },
+            "drift_per_s": { "type": ["number", "null"], "minimum": 0 }
+          }
+        },
+        "drift": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entry_min_speed_m_s",
+            "entry_blend_s",
+            "target_slip_deg_min",
+            "target_slip_deg_max",
+            "recovery_blend_s",
+            "stability_assist_max_slip_deg"
+          ],
+          "properties": {
+            "entry_min_speed_m_s": { "type": "number", "minimum": 0 },
+            "entry_blend_s": { "type": "number", "minimum": 0 },
+            "target_slip_deg_min": { "type": "number", "minimum": 0 },
+            "target_slip_deg_max": { "type": "number", "minimum": 0 },
+            "recovery_blend_s": { "type": "number", "minimum": 0 },
+            "stability_assist_max_slip_deg": { "type": ["number", "null"], "minimum": 0 }
+          }
+        },
+        "surge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidate_deltas_m_s", "duration_s", "cooldown_s", "stackable", "selected_delta_m_s"],
+          "properties": {
+            "candidate_deltas_m_s": {
+              "type": "array",
+              "items": { "type": "number", "minimum": 0 },
+              "minItems": 1,
+              "description": "Initial candidates 0.5/1/1.5 m/s from GAME_DESIGN.md; M1 selects one."
+            },
+            "duration_s": { "type": "number", "minimum": 0 },
+            "cooldown_s": { "type": "number", "minimum": 0 },
+            "stackable": { "type": "boolean" },
+            "selected_delta_m_s": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "description": "Null until M1 compares candidates and records a selection."
+            }
+          }
+        },
+        "drafting": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min_gap_m",
+            "max_gap_m",
+            "cone_deg",
+            "lateral_separation_m",
+            "eligible_s",
+            "fade_s",
+            "max_drag_reduction",
+            "stackable"
+          ],
+          "properties": {
+            "min_gap_m": { "type": "number", "minimum": 0 },
+            "max_gap_m": { "type": "number", "minimum": 0 },
+            "cone_deg": { "type": "number", "minimum": 0 },
+            "lateral_separation_m": { "type": "number", "minimum": 0 },
+            "eligible_s": { "type": "number", "minimum": 0 },
+            "fade_s": { "type": "number", "minimum": 0 },
+            "max_drag_reduction": { "type": "number", "minimum": 0, "maximum": 1 },
+            "stackable": { "type": "boolean" }
+          }
+        },
+        "airborne": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["gravity_m_s2", "adhesion_bounds"],
+          "properties": {
+            "gravity_m_s2": { "type": ["number", "null"], "minimum": 0 },
+            "adhesion_bounds": { "type": ["object", "null"] }
+          }
+        },
+        "contact_caps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["solver_iterations", "overlap_passes", "max_single_correction_m", "max_total_correction_m"],
+          "properties": {
+            "solver_iterations": { "type": "integer", "minimum": 0 },
+            "overlap_passes": { "type": "integer", "minimum": 0 },
+            "max_single_correction_m": { "type": "number", "minimum": 0 },
+            "max_total_correction_m": { "type": "number", "minimum": 0 }
+          }
+        },
+        "surfaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/surface_modifier" }
+        }
+      }
+    },
+    "upgrades": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["levels", "engine", "tires", "chassis", "max_increase_percent"],
+      "properties": {
+        "levels": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0, "maximum": 2 },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "engine": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["acceleration_factors", "top_speed_factors"],
+          "properties": {
+            "acceleration_factors": { "type": "array", "items": { "type": "number", "minimum": 1 }, "minItems": 3, "maxItems": 3 },
+            "top_speed_factors": { "type": "array", "items": { "type": "number", "minimum": 1 }, "minItems": 3, "maxItems": 3 }
+          }
+        },
+        "tires": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["grip_lateral_damping_factors", "drift_exit_blend_divisors"],
+          "properties": {
+            "grip_lateral_damping_factors": { "type": "array", "items": { "type": "number", "minimum": 1 }, "minItems": 3, "maxItems": 3 },
+            "drift_exit_blend_divisors": { "type": "array", "items": { "type": "number", "minimum": 1 }, "minItems": 3, "maxItems": 3 }
+          }
+        },
+        "chassis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["yaw_gain_factors", "impact_speed_loss_factors"],
+          "properties": {
+            "yaw_gain_factors": { "type": "array", "items": { "type": "number", "minimum": 1 }, "minItems": 3, "maxItems": 3 },
+            "impact_speed_loss_factors": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 3, "maxItems": 3 }
+          }
+        },
+        "max_increase_percent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["acceleration", "top_speed"],
+          "properties": {
+            "acceleration": { "type": "number", "minimum": 0 },
+            "top_speed": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "detachable_parts": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/detachable_part" }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/unknown_entry" }
+    },
+    "content_hash": { "$ref": "common.schema.json#/$defs/content_hash" },
+    "provenance": { "$ref": "common.schema.json#/$defs/provenance" }
+  },
+  "$defs": {
+    "speed_acceleration_point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["speed_m_s", "acceleration_m_s2"],
+      "properties": {
+        "speed_m_s": { "type": "number", "minimum": 0 },
+        "acceleration_m_s2": { "type": "number", "minimum": 0 }
+      }
+    },
+    "surface_modifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface_id", "lateral_grip_scale", "drag_scale"],
+      "properties": {
+        "surface_id": { "type": "string", "minLength": 1 },
+        "lateral_grip_scale": { "type": ["number", "null"], "minimum": 0 },
+        "drag_scale": { "type": ["number", "null"], "minimum": 0 },
+        "notes": { "type": ["string", "null"] }
+      }
+    },
+    "detachable_part": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "mesh_id", "lod_ids", "attachment_transform", "impact_region", "thresholds"],
+      "properties": {
+        "slot": { "enum": ["front_bumper", "rear_bumper", "rear_wing"] },
+        "mesh_id": { "type": ["string", "null"] },
+        "lod_ids": { "type": "array", "items": { "type": "string" } },
+        "attachment_transform": { "type": ["object", "null"] },
+        "impact_region": { "type": ["object", "null"] },
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["loosen_m_s", "detach_single_m_s", "detach_accumulated_m_s"],
+          "properties": {
+            "loosen_m_s": { "type": "number", "minimum": 0 },
+            "detach_single_m_s": { "type": "number", "minimum": 0 },
+            "detach_accumulated_m_s": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

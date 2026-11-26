@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.reference",
+      "check": "reference_linkage"
+    }
+  ]
+}

@@ -1,0 +1,380 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.scenario.reference_capture_flying",
+  "fixture_family": "reference_lap_capture",
+  "title": "NEGATIVE fixture: the capture protocol omits the missed_gate rejection criterion",
+  "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the capture protocol omits the missed_gate rejection criterion. Derived from a shipped positive fixture; everything except the named defect is valid.",
+  "revision": "1.0.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "scenario": {
+    "schema_version": "1.0.0",
+    "scenario_id": "scenario.reference_capture.riviera_flying",
+    "scenario_family": "reference_lap_capture",
+    "title": "Flying-lap reference capture, balanced starter, Riviera Run",
+    "description": "One calibration-driver run capturing the flying-lap reference for car.balanced_starter (currently displayed as Comet) at stock loadout with Standard assists. The tactical opportunity-window protocol does not apply and is omitted.",
+    "revision": "1.0.0",
+    "status": "provisional",
+    "units": {
+      "length": "m",
+      "speed": "m/s",
+      "time": "s"
+    },
+    "course": {
+      "course_id": "course.riviera_run",
+      "course_revision": null
+    },
+    "dependencies": {
+      "engine_revision": "4.7.2.stable.official.ed1daf0bf",
+      "physics_backend": "jolt",
+      "handling_revision": null,
+      "calibration_driver_revision": null,
+      "classic_planner_revision": null,
+      "learned_policy_revision": null,
+      "reference_line_revision": null,
+      "metric_version": "benchmarks_metrics_v1"
+    },
+    "participants": [
+      {
+        "slot": "subject",
+        "role": "reference_subject",
+        "car_id": "car.balanced_starter",
+        "loadout": "stock",
+        "assists": "standard",
+        "driver": {
+          "kind": "calibration_driver",
+          "note": "Fixed, versioned, traffic-free path follower with no tactical planner, learning, difficulty scaling or random mistakes."
+        }
+      }
+    ],
+    "initial_state": {
+      "start_mode": "rolling",
+      "description": "Flying-lap capture: the car is already at speed on the run-up, matching the Time Attack run-up in docs/GAME_DESIGN.md. BENCHMARKS fixes neither the entry speed nor the warm-up lap count; both are left to the M1 capture protocol."
+    },
+    "protocol": {
+      "tick_rate_hz": 60,
+      "handover_max_position_m": 0.1,
+      "handover_max_speed_m_s": 0.1
+    },
+    "seeds": {
+      "race_seed": 4101,
+      "scenario_seed": 4102,
+      "note": "Authored seeds; recording them costs no measurement."
+    },
+    "required_telemetry": [
+      "gate_crossings",
+      "lap_times",
+      "sector_splits",
+      "speed_samples",
+      "contacts",
+      "resets",
+      "progress_corrections",
+      "validity_flags"
+    ]
+  },
+  "reference_records": [
+    {
+      "schema_version": "1.0.0",
+      "record_id": "reference.balanced_starter.riviera_flying",
+      "kind": "flying_lap_set",
+      "status": "planned",
+      "title": "Planned flying-lap reference record, balanced starter, Riviera Run",
+      "description": "Capture plan for the five clean flying laps that establish the balanced starter's reference profile on Riviera Run. Results are deliberately absent: this record becomes measured only when M1/M4 tooling captures the laps against exactly these dependencies. The initial Bronze/Silver/Gold thresholds are 1.25/1.12/1.05 times the measured flying-lap median once it exists.",
+      "revision": "1.0.0",
+      "subject": {
+        "car_id": "car.balanced_starter",
+        "car_display_name": "Comet",
+        "loadout": "stock",
+        "assists": "standard"
+      },
+      "course": {
+        "course_id": "course.riviera_run",
+        "course_revision": null
+      },
+      "driver": {
+        "kind": "calibration_driver",
+        "traffic_free": true,
+        "driver_revision": null,
+        "reference_line_revision": null
+      },
+      "dependencies": {
+        "engine_revision": "4.7.2.stable.official.ed1daf0bf",
+        "physics_backend": "jolt",
+        "handling_revision": null,
+        "metric_version": "benchmarks_metrics_v1",
+        "platform": null
+      },
+      "capture_protocol": {
+        "warmup_laps": null,
+        "required_clean_laps": 5,
+        "traffic_free": true,
+        "rejection_criteria": [
+          "contact",
+          "reset",
+          "invalid_progress",
+          "numerical_error"
+        ]
+      },
+      "results": {
+        "laps": [],
+        "statistics": {
+          "median_s": null,
+          "min_s": null,
+          "max_s": null
+        },
+        "speed_samples": [],
+        "hashes": {
+          "car_hash": null,
+          "loadout_hash": null,
+          "assist_hash": null
+        }
+      },
+      "seeds": {
+        "race_seed": 4101,
+        "scenario_seed": 4102
+      },
+      "derived_thresholds": {
+        "bronze_multiplier": 1.25,
+        "silver_multiplier": 1.12,
+        "gold_multiplier": 1.05,
+        "bronze_s": null,
+        "silver_s": null,
+        "gold_s": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.family",
+      "check": "family_agreement",
+      "path": "",
+      "statement": "The fixture family equals the enclosed scenario's family."
+    },
+    {
+      "expectation_id": "expect.capture_has_no_window",
+      "check": "window_protocol",
+      "path": "scenario",
+      "statement": "A reference_lap_capture scenario omits the tactical opportunity-window members."
+    },
+    {
+      "expectation_id": "expect.telemetry",
+      "check": "telemetry_required",
+      "path": "scenario",
+      "statement": "The scenario declares the full reference-capture telemetry minimum: gate crossings, lap times, sector splits, speed samples, contacts, resets, progress corrections and validity flags."
+    },
+    {
+      "expectation_id": "expect.planned_no_results",
+      "check": "evidence_status",
+      "path": "reference_records.0",
+      "statement": "The embedded record is planned and carries no laps, statistics, hashes or thresholds."
+    },
+    {
+      "expectation_id": "expect.rejection_criteria",
+      "check": "rejection_criteria_complete",
+      "path": "reference_records.0",
+      "statement": "The capture protocol rejects runs with contacts, reset, missed gates, invalid progress or numerical errors - all five criteria."
+    },
+    {
+      "expectation_id": "expect.nulls",
+      "check": "null_unknown_pairing",
+      "path": "",
+      "statement": "Every null (unratified revisions, unrecorded platform, warm-up count, all results and thresholds) has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.metrics",
+      "check": "metric_status_honesty",
+      "path": "",
+      "statement": "No comparison metric claims measured status; the medal factors are documented initial targets."
+    },
+    {
+      "expectation_id": "expect.hash",
+      "check": "content_hash",
+      "path": "",
+      "statement": "The content hash recomputes over canonical JSON with the content_hash member removed."
+    }
+  ],
+  "comparison": {
+    "purpose": "Record the capture protocol and documented initial targets for the balanced starter's flying-lap reference; the measured record is produced later by capture tooling, not by this fixture.",
+    "metrics": [
+      {
+        "name": "clean_flying_laps_recorded",
+        "description": "Five clean flying laps per car/course revision after warm-up (BENCHMARKS 'Reference driver and records').",
+        "comparator": "gte",
+        "value": 5,
+        "unit": "laps",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "bronze_threshold_factor",
+        "description": "Initial Bronze threshold times the measured flying-lap median.",
+        "comparator": "eq",
+        "value": 1.25,
+        "unit": "factor",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "silver_threshold_factor",
+        "description": "Initial Silver threshold times the measured flying-lap median.",
+        "comparator": "eq",
+        "value": 1.12,
+        "unit": "factor",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "gold_threshold_factor",
+        "description": "Initial Gold threshold times the measured flying-lap median.",
+        "comparator": "eq",
+        "value": 1.05,
+        "unit": "factor",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements. The thresholds are tuned after captured play and the final values are recorded then."
+  },
+  "unknowns": [
+    {
+      "path": "scenario.course.course_revision",
+      "reason": "Course content is authored at M2; no course revision exists yet.",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "scenario.dependencies.handling_revision",
+      "reason": "Motor/car/surface handling is implemented and frozen at M1; no handling revision exists yet.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "scenario.dependencies.calibration_driver_revision",
+      "reason": "The CalibrationDriver is built at M1.7; no controller revision exists yet.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "scenario.dependencies.classic_planner_revision",
+      "reason": "No Classic planner implementation exists before M4.2.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "scenario.dependencies.learned_policy_revision",
+      "reason": "No learned policy exists before M4B.",
+      "blocking": false,
+      "until": "M4B"
+    },
+    {
+      "path": "scenario.dependencies.reference_line_revision",
+      "reason": "The authored line and conservative speed profile are calibrated at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.course.course_revision",
+      "reason": "Same unratified course revision as the scenario.",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.driver.driver_revision",
+      "reason": "The CalibrationDriver revision is assigned at M1.7.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.driver.reference_line_revision",
+      "reason": "The reference line and speed profile revision is assigned at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.dependencies.handling_revision",
+      "reason": "Handling is frozen at M1; the captured revision is recorded then.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.dependencies.platform",
+      "reason": "The capture host/OS is recorded by the capture tooling when the first measured record is produced (M0.6 records the machine inventory).",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.capture_protocol.warmup_laps",
+      "reason": "BENCHMARKS requires warm-up before the recorded laps but does not fix a count.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.median_s",
+      "reason": "No flying lap has been measured; the median is produced by capture tooling.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.min_s",
+      "reason": "No flying lap has been measured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.max_s",
+      "reason": "No flying lap has been measured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.car_hash",
+      "reason": "The car definition hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.loadout_hash",
+      "reason": "The loadout hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.assist_hash",
+      "reason": "The assist set hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.bronze_s",
+      "reason": "1.25 x the measured flying-lap median; the median does not exist yet.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.silver_s",
+      "reason": "1.12 x the measured flying-lap median; the median does not exist yet.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.gold_s",
+      "reason": "1.05 x the measured flying-lap median; the median does not exist yet.",
+      "blocking": true,
+      "until": "M1.7"
+    }
+  ],
+  "content_hash": "sha256:0f258ebc3ed726b55dcbb338a0086385850c8070dfbe49bc9e2c029e26034f3c",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md; docs/TECHNICAL_DESIGN.md; docs/GAME_DESIGN.md",
+    "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Negative fixture authored at M0.9; expects rejection, not execution."
+  }
+}

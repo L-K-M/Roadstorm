@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm versioned scenario/reference fixture (scenario fixture schema version 1)",
+  "description": "Fixture contract for the scenario configuration contract in scenario.schema.json and the reference record contract in reference_run.schema.json, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'AI metrics', 'Tactical comparison'), docs/GAME_DESIGN.md (Arcade Rush budgets) and docs/TECHNICAL_DESIGN.md ('Content contracts'). A fixture bundles one scenario configuration with the reference records it depends on, the behavioral expectations the fixtures/scenario validator checks semantically, and the documented initial acceptance targets. Like the sibling handling and intent fixture contracts, this is a text contract: numeric values are authored initial values or documented targets, never measurements. A value that is not yet determined is JSON null and MUST be listed in 'unknowns'; the validator enforces that pairing in both directions. A fixture may not contain a measured or superseded reference record: measured evidence is produced later by M1/M4 capture tooling as separate artifacts, and an authored file must not impersonate a record. Companion vocabulary lives in ../common.schema.json. This fixture defines no simulation, capture or evaluation implementation; a valid fixture is a well-formed contract, not a completed test.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "fixture_family",
+    "title",
+    "description",
+    "revision",
+    "status",
+    "units",
+    "scenario",
+    "reference_records",
+    "expectations",
+    "comparison",
+    "unknowns",
+    "content_hash",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision identifier. A fixture whose schema_version differs is rejected, not silently migrated."
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^fixture\\.scenario\\.[a-z][a-z0-9_]*$",
+      "description": "Stable semantic ID, e.g. fixture.scenario.reference_capture_flying."
+    },
+    "fixture_family": {
+      "enum": [
+        "reference_lap_capture",
+        "slower_lead_straight_pass",
+        "open_two_lane_corner_entry",
+        "narrow_section_patience",
+        "legal_defended_line_cutback",
+        "multi_car_merge",
+        "noisy_human_proxy",
+        "regression"
+      ],
+      "description": "Which benchmark this fixture instantiates; must equal the enclosed scenario's scenario_family (the validator checks the agreement)."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "Fixture content revision. Any semantic change to the scenario, records, expectations or metrics bumps this and recomputes content_hash."
+    },
+    "status": {
+      "enum": ["provisional", "example"],
+      "description": "provisional = authored initial contract, not yet executed; example = contract illustration that deliberately instantiates unratified producers (learned policies, unbuilt planners) without claiming they exist. 'measured' is not valid: fixtures carry targets and requirements, never measured outcomes."
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "speed", "time"],
+      "properties": {
+        "length": { "const": "m" },
+        "speed": { "const": "m/s" },
+        "time": { "const": "s" }
+      }
+    },
+    "scenario": {
+      "$ref": "scenario.schema.json",
+      "description": "The scenario configuration this fixture fixes."
+    },
+    "reference_records": {
+      "type": "array",
+      "items": { "$ref": "reference_run.schema.json" },
+      "description": "Reference records the fixture depends on, embedded so the fixture is self-contained. Every record must be status 'planned' at M0.9; a scenario's 'reference' member must resolve to one of these."
+    },
+    "expectations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/expectation" },
+      "description": "Contract expectations the validator checks. Each names a semantic check the validator implements and the part it applies to; a check id the validator does not implement is a fixture error, so expectations cannot drift from the executable checks."
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "metrics"],
+      "properties": {
+        "purpose": { "type": "string", "minLength": 1 },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "../common.schema.json#/$defs/acceptance_metric" },
+          "description": "Documented initial targets from BENCHMARKS/GAME_DESIGN. A metric with status 'measured' is invalid in a fixture file; measured values belong to reference records and evaluation reports."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": { "$ref": "../common.schema.json#/$defs/unknown_entry" },
+      "description": "Every JSON null in this document must have a matching entry here (dotted path, e.g. reference_records.0.results.statistics.median_s), and every entry must point at a null: a value must not appear determined while it is not, and an explained value must not be null."
+    },
+    "content_hash": {
+      "$ref": "../common.schema.json#/$defs/content_hash",
+      "description": "SHA-256 over canonical JSON (sorted keys, compact separators, UTF-8) of this file with the content_hash member removed. Recomputed by the validator on every check."
+    },
+    "provenance": { "$ref": "../common.schema.json#/$defs/provenance" }
+  },
+  "$defs": {
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectation_id", "check", "path", "statement"],
+      "properties": {
+        "expectation_id": {
+          "type": "string",
+          "pattern": "^expect\\.[a-z0-9_]+$"
+        },
+        "check": {
+          "enum": [
+            "family_agreement",
+            "reference_linkage",
+            "evidence_status",
+            "clean_lap_accounting",
+            "medal_threshold_arithmetic",
+            "rejection_criteria_complete",
+            "dependency_completeness",
+            "measured_evidence_completeness",
+            "window_protocol",
+            "telemetry_required",
+            "initial_state_agreement",
+            "driver_revision_pinning",
+            "null_unknown_pairing",
+            "content_hash",
+            "metric_status_honesty",
+            "metric_shape"
+          ],
+          "description": "Semantic check implemented by fixtures/scenario/validate_scenario_contract.py."
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(scenario|reference_records(\\.[0-9]+)?|)$",
+          "description": "Part of the fixture the expectation applies to, e.g. scenario, reference_records.0, or '' for the whole document."
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable restatement of the specified behavior being checked."
+        }
+      }
+    }
+  }
+}

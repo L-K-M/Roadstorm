@@ -1,0 +1,268 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.handling.straight",
+  "fixture_family": "straight",
+  "title": "Straight-line acceleration, braking, top speed and reverse",
+  "description": "500 m asphalt straight from BENCHMARKS.md 'Handling fixtures' (Straight row): standing and 30 m/s rolling starts covering acceleration, braking, top speed and reverse. Road width is an authored initial value; BENCHMARKS specifies only the length and surface.",
+  "revision": "1.0.1",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg",
+    "speed": "m/s"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "right": "+X"
+  },
+  "geometry": {
+    "start_reference": "World origin at the start of segment 0 on the centerline; forward -Z, right +X, up +Y.",
+    "closed_loop": false,
+    "segments": [
+      {
+        "type": "straight",
+        "length_m": 500,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Authored initial width; BENCHMARKS specifies 500 m asphalt only. GAME_DESIGN course widths generally range 9-20 m."
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "surface_id": "asphalt",
+      "description": "Dry asphalt baseline surface."
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "standing_acceleration",
+      "role": "primary",
+      "description": "Standing start, full throttle held; measures the acceleration curve and time to the stock top speed.",
+      "initial_state": {
+        "start_mode": "standing",
+        "velocity_m_s": 0,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard",
+        "note": "Single entry holds to the end of the run. The schedule needs no measured end time; run length is the 500 m geometry."
+      }
+    },
+    {
+      "run_id": "rolling_top_speed",
+      "role": "primary",
+      "description": "30 m/s rolling start, full throttle held; measures top speed against the documented 205-235 km/h stock range.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "braking",
+      "role": "primary",
+      "description": "30 m/s rolling start, full throttle, then full braking at the authored trigger time; measures the braking phase.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          },
+          {
+            "t_s": 2,
+            "throttle": 0,
+            "brake": 1
+          }
+        ],
+        "assists": "standard",
+        "note": "The 2 s brake trigger is an authored initial value; BENCHMARKS specifies no braking point. Braking distance itself is an M1 measurement, not a value claimed here."
+      }
+    },
+    {
+      "run_id": "reverse",
+      "role": "primary",
+      "description": "Standing start with brake held; reverse must engage only below 1 m/s after a 0.3 s hold (GAME_DESIGN controls contract).",
+      "initial_state": {
+        "start_mode": "standing",
+        "velocity_m_s": 0,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "brake": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    }
+  ],
+  "timing_gates": [
+    {
+      "gate_id": "start",
+      "kind": "start",
+      "segment_index": 0,
+      "arc_length_m": 0,
+      "purpose": "Start of the measured section."
+    },
+    {
+      "gate_id": "braking_marker",
+      "kind": "intermediate",
+      "segment_index": 0,
+      "arc_length_m": 250,
+      "purpose": "Authored intermediate marker at 250 m; a position marker only, unrelated to the braking run's brake command at t_s 2."
+    },
+    {
+      "gate_id": "finish",
+      "kind": "finish",
+      "segment_index": 0,
+      "arc_length_m": 500,
+      "purpose": "End of the 500 m section."
+    }
+  ],
+  "expected_events": [
+    {
+      "event": "acceleration_phase_complete",
+      "required": true,
+      "applies_to_runs": [
+        "standing_acceleration",
+        "rolling_top_speed"
+      ]
+    },
+    {
+      "event": "top_speed_reached",
+      "required": true,
+      "applies_to_runs": [
+        "standing_acceleration",
+        "rolling_top_speed"
+      ],
+      "note": "Reaching a speed within the documented stock range is expected; the measured value is recorded by M1 reference runs, not asserted here."
+    },
+    {
+      "event": "braking_phase_complete",
+      "required": true,
+      "applies_to_runs": [
+        "braking"
+      ]
+    },
+    {
+      "event": "reverse_engaged",
+      "required": true,
+      "applies_to_runs": [
+        "reverse"
+      ]
+    }
+  ],
+  "comparison": {
+    "purpose": "Record the stock acceleration, braking, top-speed and reverse envelopes for the three starters at stock and maximum upgrades.",
+    "paired_runs_required": 10,
+    "metrics": [
+      {
+        "name": "stock_top_speed_kmh",
+        "description": "Documented stock top-speed target range from GAME_DESIGN; upgraded caps are applied by the loadout, not stored in the fixture.",
+        "comparator": "range",
+        "value_min": 205,
+        "value_max": 235,
+        "unit": "km/h",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "standing_acceleration_and_braking_records",
+        "description": "Record acceleration/braking envelopes per car and loadout. No pass/fail threshold is claimed before M1 measurements.",
+        "comparator": "report",
+        "unit": "s",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Measured envelopes are produced by M1 reference runs against this fixture; this file carries no measured values."
+  },
+  "cars": {
+    "car_ids": [
+      "car.balanced_starter",
+      "car.sparrow",
+      "car.slidewinder"
+    ],
+    "loadouts": [
+      "stock",
+      "max_upgrade"
+    ],
+    "handling_revision": null,
+    "note": "BENCHMARKS handling comparisons use all three starters at stock and maximum upgrades."
+  },
+  "unknowns": [
+    {
+      "path": "cars.car_ids",
+      "reason": "car.balanced_starter is the fixed ID of the balanced starter (Comet) from BENCHMARKS; the Sparrow and Slidewinder IDs are working names until the M1 car registry assigns stable IDs.",
+      "blocking": false,
+      "until": "M1"
+    },
+    {
+      "path": "cars.handling_revision",
+      "reason": "The per-car handling resource (../handling_config.schema.json) is M1 work; the revision this fixture targets is undetermined until M1 assigns it. BENCHMARKS regenerates reference records when handling dependencies change, so the fixture records the target revision instead of duplicating coefficients.",
+      "blocking": true,
+      "until": "M1"
+    }
+  ],
+  "content_hash": "sha256:a65bff368f34af5da4ff4f1f24f4742321bbc2b1b2d86a722eeb4ddbe9f17e46",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md#handling-fixtures",
+    "author": "pi coding agent (job b20cb153-94a8-4997-be00-1f8335daa1a0)",
+    "model": "step-5-preview",
+    "provider": "stepfun-ai-step-plan",
+    "date_utc": "2026-11-26",
+    "note": "M0.9 authored initial fixture contract (job b20cb153-94a8-4997-be00-1f8335daa1a0). Numeric values are authored initial values or documented targets; nothing here is measured. Repaired 2026-11-27 by job 896f97f0-41d9-491a-8d44-1ef435adbaac (model step-5-preview, provider stepfun-ai-step-plan): wake-window contradiction, barrier extents, handling-revision dependency, unknowns pairing and documentation repairs."
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.protocol",
+      "check": "window_protocol"
+    }
+  ]
+}

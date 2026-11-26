@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.dependencies.metric_version",
+      "check": "null_unknown_pairing"
+    }
+  ]
+}

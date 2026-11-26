@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.lateral.decoded_offset_m",
+      "check": "decode_consistency"
+    }
+  ]
+}

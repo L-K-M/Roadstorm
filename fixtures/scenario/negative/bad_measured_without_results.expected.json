@@ -1,0 +1,39 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "reference_records.0.status",
+      "check": "evidence_status"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results.laps",
+      "check": "clean_lap_accounting"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results.statistics",
+      "check": "clean_lap_accounting"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0.derived_thresholds",
+      "check": "medal_threshold_arithmetic"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0",
+      "check": "dependency_completeness"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results.speed_samples",
+      "check": "measured_evidence_completeness"
+    },
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results.hashes",
+      "check": "measured_evidence_completeness"
+    }
+  ]
+}

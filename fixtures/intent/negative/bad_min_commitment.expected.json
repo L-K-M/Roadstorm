@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "const",
+      "path": "records.0.commitment.min_commitment_s"
+    }
+  ]
+}

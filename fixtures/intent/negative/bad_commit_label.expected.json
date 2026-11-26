@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "enum",
+      "path": "records.0.commitment.label"
+    }
+  ]
+}

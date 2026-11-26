@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm shared AI observation (partial, unaccepted draft - superseded by schemas/observation/observation_record.schema.json)",
+  "description": "Historical partial draft of the shared legal AI sensor contract from OPPONENT_AI.md, written before the accepted contract existed. It is NOT the ratified 'Shared schema version 1' contract: that contract is schemas/observation/observation_record.schema.json, whose observation_layout_revision is the ratified string 'ai_shared_v1'. To keep the two revision namespaces unambiguous this partial file declares its own, clearly non-ratified feature_layout_revision ('ai_shared_partial_v0') and no fixture, validator or consumer may treat it as 'ai_shared_v1'. All 64 features are finite float32 values in fixed index order, clipped to [-1,1]; booleans are 0/1. Ego and road data are current; neighbor traffic, occupancy and derived history use the delayed snapshot. Neighbor slots are within 70 m ahead or 35 m behind on the valid route neighborhood, sorted by absolute gap then stable participant ID; absent slots are zero including their presence mask. This is a text schema only; no working AI implementation is required at M0.9. Recorded decision (M0.9 integration, 2026-11-27): the file is retained as the authoring record of the earlier attempt and its layout revision was disambiguated rather than deleted; whether the file is removed from the tree entirely remains the coordinator's decision.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_id",
+    "participant_id",
+    "generated_tick",
+    "decision_tick",
+    "traffic_snapshot_tick",
+    "traffic_age_ticks",
+    "feature_layout_revision",
+    "road_frame",
+    "feature_vector",
+    "masks",
+    "normalization",
+    "fallback",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "observation_id": { "type": "string", "minLength": 1 },
+    "participant_id": { "$ref": "common.schema.json#/$defs/stable_id" },
+    "generated_tick": { "type": "integer", "minimum": 0 },
+    "decision_tick": { "type": "integer", "minimum": 0 },
+    "traffic_snapshot_tick": { "type": "integer", "minimum": 0 },
+    "traffic_age_ticks": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18,
+      "description": "Difficulty-specific delayed traffic age: Rookie 18, Racer 12, Expert 7 at 60 Hz."
+    },
+    "planning_latency_ms": { "type": ["number", "null"], "minimum": 0, "maximum": 200 },
+    "feature_layout_revision": { "const": "ai_shared_partial_v0" },
+    "feature_count": { "const": 64 },
+    "road_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forward", "right", "up"],
+      "properties": {
+        "forward": { "type": "string", "minLength": 1 },
+        "right": { "type": "string", "minLength": 1 },
+        "up": { "type": "string", "minLength": 1 }
+      },
+      "description": "Route frame is forward tangent, right lateral, up road normal; positive lane offset is right. Concrete vectors are runtime state, not frozen here."
+    },
+    "feature_vector": {
+      "type": "array",
+      "minItems": 64,
+      "maxItems": 64,
+      "items": { "type": "number", "minimum": -1, "maximum": 1 }
+    },
+    "masks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["neighbor_slots", "history_valid"],
+      "properties": {
+        "neighbor_slots": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number", "enum": [0, 1] }
+        },
+        "history_valid": { "type": "number", "enum": [0, 1] }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clip_min", "clip_max", "coefficients_revision"],
+      "properties": {
+        "clip_min": { "const": -1 },
+        "clip_max": { "const": 1 },
+        "coefficients_revision": { "type": "string", "minLength": 1 }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active"],
+      "properties": {
+        "active": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] },
+        "defaults_applied": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "provenance": { "$ref": "common.schema.json#/$defs/provenance" }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "group", "name", "normalization", "dtype"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "maximum": 63 },
+        "group": {
+          "enum": ["ego", "road_ahead", "neighbor", "history", "difficulty_one_hot", "style_one_hot", "occupancy"]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "normalization": { "type": "string", "minLength": 1 },
+        "dtype": {
+          "enum": ["continuous_clipped", "flag", "fraction", "one_hot", "signed_enum"]
+        },
+        "range": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "groups": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "first_index", "count", "allow_all_zero"],
+        "properties": {
+          "name": {
+            "enum": ["ego", "road_ahead", "neighbor", "history", "difficulty_one_hot", "style_one_hot", "occupancy"]
+          },
+          "first_index": { "type": "integer", "minimum": 0 },
+          "count": { "type": "integer", "minimum": 1 },
+          "allow_all_zero": { "type": "boolean" }
+        }
+      }
+    },
+    "feature_table": {
+      "type": "array",
+      "minItems": 64,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/feature" }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "reference_records.0.capture_protocol.rejection_criteria",
+      "check": "rejection_criteria_complete"
+    }
+  ]
+}

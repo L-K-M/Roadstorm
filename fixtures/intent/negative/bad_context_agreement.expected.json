@@ -1,0 +1,6 @@
+{
+  "expected_failures": [
+    { "code": "semantic", "path": "records.0.style", "check": "context_agreement" },
+    { "code": "semantic", "path": "records.1.style", "check": "context_agreement" }
+  ]
+}

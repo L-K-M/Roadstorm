@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.occupancy_encounter_gap_m",
+      "check": "unknown_pairing"
+    }
+  ]
+}

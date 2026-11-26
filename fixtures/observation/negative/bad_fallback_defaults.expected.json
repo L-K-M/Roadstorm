@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.fallback.defaults_applied",
+      "check": "fallback_defaults"
+    }
+  ]
+}

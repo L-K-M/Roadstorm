@@ -1,0 +1,515 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.handling.draft",
+  "fixture_family": "draft",
+  "title": "Drafting wake gaps with outside-cone control",
+  "description": "Draft fixture from BENCHMARKS.md 'Handling fixtures' (Draft row): equal stock cars on a 500 m straight with initial gaps of 4/5/10/20/21 m plus an outside-cone control. The 4 m and 21 m runs bracket the documented 5-20 m wake window from below and above, and the control run sits outside the +/-10 degree cone with more than 1.5 m lateral separation, so none of the three may become eligible. The 30 m/s entry speed is an authored initial value; BENCHMARKS specifies the gaps only. Drafting parameters are the GAME_DESIGN documented initial values; their perceptual effect is undetermined until M1 measurement and review.",
+  "revision": "1.0.1",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg",
+    "speed": "m/s"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "right": "+X"
+  },
+  "geometry": {
+    "start_reference": "World origin at the start of segment 0 on the centerline; forward -Z, right +X, up +Y.",
+    "closed_loop": false,
+    "segments": [
+      {
+        "type": "straight",
+        "length_m": 500,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Authored 500 m asphalt straight and width for the drafting runs."
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "surface_id": "asphalt",
+      "description": "Dry asphalt baseline surface."
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "gap_4",
+      "role": "primary",
+      "description": "4 m initial gap, the lower bracket below the documented 5-20 m wake window; no drafting eligibility is expected.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true,
+        "note": "30 m/s is an authored initial entry speed."
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -4
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": 30,
+          "driver": {
+            "kind": "controller",
+            "controller_id": "calibration_driver",
+            "controller_revision": null,
+            "assists": "standard",
+            "note": "Leader holds the versioned reference speed profile; controller implementation is M1 work."
+          }
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard",
+        "note": "Full throttle held so the closing-distance effect is observable."
+      }
+    },
+    {
+      "run_id": "gap_5",
+      "role": "primary",
+      "description": "5 m initial gap, the lower edge of the documented wake window.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -5
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": 30,
+          "driver": {
+            "kind": "controller",
+            "controller_id": "calibration_driver",
+            "controller_revision": null,
+            "assists": "standard"
+          }
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "gap_10",
+      "role": "primary",
+      "description": "10 m initial gap, mid-window.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -10
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": 30,
+          "driver": {
+            "kind": "controller",
+            "controller_id": "calibration_driver",
+            "controller_revision": null,
+            "assists": "standard"
+          }
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "gap_20",
+      "role": "primary",
+      "description": "20 m initial gap, the upper edge of the documented wake window.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -20
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": 30,
+          "driver": {
+            "kind": "controller",
+            "controller_id": "calibration_driver",
+            "controller_revision": null,
+            "assists": "standard"
+          }
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "gap_21",
+      "role": "primary",
+      "description": "21 m initial gap, just outside the documented wake window; no drafting eligibility is expected.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -21
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": 30,
+          "driver": {
+            "kind": "controller",
+            "controller_id": "calibration_driver",
+            "controller_revision": null,
+            "assists": "standard"
+          }
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "outside_cone_control",
+      "role": "control",
+      "description": "4 m gap but 2.0 m lateral separation, outside the documented +/-10 degree cone and beyond the 1.5 m lateral limit; no drafting eligibility is expected.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              2.0,
+              0,
+              -4
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": 30,
+          "driver": {
+            "kind": "controller",
+            "controller_id": "calibration_driver",
+            "controller_revision": null,
+            "assists": "standard"
+          }
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    }
+  ],
+  "timing_gates": [
+    {
+      "gate_id": "start",
+      "kind": "start",
+      "segment_index": 0,
+      "arc_length_m": 0,
+      "purpose": "Section start; initial gap and closing distance are measured from here."
+    },
+    {
+      "gate_id": "finish",
+      "kind": "finish",
+      "segment_index": 0,
+      "arc_length_m": 500,
+      "purpose": "End of the 500 m straight."
+    }
+  ],
+  "expected_events": [
+    {
+      "event": "drafting_eligible",
+      "required": true,
+      "applies_to_runs": [
+        "gap_5",
+        "gap_10",
+        "gap_20"
+      ],
+      "note": "Eligibility requires the documented 0.7 s inside the wake window and cone."
+    },
+    {
+      "event": "drafting_eligible",
+      "required": false,
+      "applies_to_runs": [
+        "gap_4"
+      ],
+      "note": "4 m is below the documented 5-20 m wake window (lower bracket)."
+    },
+    {
+      "event": "drafting_eligible",
+      "required": false,
+      "applies_to_runs": [
+        "gap_21"
+      ],
+      "note": "21 m exceeds the documented 5-20 m wake window."
+    },
+    {
+      "event": "drafting_eligible",
+      "required": false,
+      "applies_to_runs": [
+        "outside_cone_control"
+      ],
+      "note": "2.0 m lateral separation exceeds the documented 1.5 m and leaves the +/-10 degree cone."
+    },
+    {
+      "event": "drafting_fade",
+      "required": false,
+      "note": "No run leaves the wake within the 500 m section; the 0.5 s fade is exercised by M1 motor tests rather than by this fixture."
+    }
+  ],
+  "comparison": {
+    "purpose": "Record drafting-on/off closing distance and overtaking opportunity at each gap, with the outside-cone control proving the eligibility rule. AI and players use identical drafting.",
+    "paired_runs_required": 10,
+    "metrics": [
+      {
+        "name": "wake_gap_window_m",
+        "description": "GAME_DESIGN documented initial wake window of approximately 5-20 m.",
+        "comparator": "range",
+        "value_min": 5,
+        "value_max": 20,
+        "unit": "m",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "cone_half_angle_deg",
+        "description": "GAME_DESIGN documented initial cone of +/-10 degrees of the leader's rear direction.",
+        "comparator": "eq",
+        "value": 10,
+        "unit": "deg",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "lateral_separation_limit_m",
+        "description": "GAME_DESIGN documented initial lateral separation limit of 1.5 m.",
+        "comparator": "lte",
+        "value": 1.5,
+        "unit": "m",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "wake_eligible_s",
+        "description": "GAME_DESIGN documented initial eligibility time of 0.7 s inside the wake before any drag reduction applies.",
+        "comparator": "eq",
+        "value": 0.7,
+        "unit": "s",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "drag_fade_s",
+        "description": "GAME_DESIGN documented initial fade of 0.5 s after leaving the wake.",
+        "comparator": "eq",
+        "value": 0.5,
+        "unit": "s",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "max_drag_reduction_fraction",
+        "description": "GAME_DESIGN documented initial candidate of up to 2% drag reduction; it cannot stack or exceed the normal maximum-speed allowance. The magnitude is a candidate, not a validated perceptible effect.",
+        "comparator": "lte",
+        "value": 0.02,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "closing_distance_and_overtaking_records",
+        "description": "BENCHMARKS: record drafting-on/off closing distance and overtaking opportunity per gap. Recording requirement; no threshold is claimed.",
+        "comparator": "report",
+        "unit": "m",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "drafting_perceptual_review",
+        "description": "BENCHMARKS: choose final magnitudes from measurements and perceptual review; an untested calculation cannot establish whether the mechanic is satisfying. No value is claimed here.",
+        "comparator": "report",
+        "status": "undecided"
+      }
+    ]
+  },
+  "cars": {
+    "car_ids": [
+      "car.balanced_starter"
+    ],
+    "loadouts": [
+      "stock"
+    ],
+    "handling_revision": null,
+    "note": "The BENCHMARKS draft row specifies equal stock cars. Other cars and the garage loadout are compared in the corner fixtures instead."
+  },
+  "unknowns": [
+    {
+      "path": "runs[0].other_participants[0].driver.controller_revision",
+      "reason": "The calibration driver is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[1].other_participants[0].driver.controller_revision",
+      "reason": "The calibration driver is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[2].other_participants[0].driver.controller_revision",
+      "reason": "The calibration driver is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[3].other_participants[0].driver.controller_revision",
+      "reason": "The calibration driver is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[4].other_participants[0].driver.controller_revision",
+      "reason": "The calibration driver is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[5].other_participants[0].driver.controller_revision",
+      "reason": "The calibration driver is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "cars.handling_revision",
+      "reason": "The per-car handling resource (../handling_config.schema.json) is M1 work; the revision this fixture targets is undetermined until M1 assigns it. BENCHMARKS regenerates reference records when handling dependencies change, so the fixture records the target revision instead of duplicating coefficients.",
+      "blocking": true,
+      "until": "M1"
+    }
+  ],
+  "content_hash": "sha256:26702d951e0836c36cff70e21ea5ae8e100346ad1f5380223dbe19d73294c00e",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md#handling-fixtures",
+    "author": "pi coding agent (job b20cb153-94a8-4997-be00-1f8335daa1a0)",
+    "model": "step-5-preview",
+    "provider": "stepfun-ai-step-plan",
+    "date_utc": "2026-11-26",
+    "note": "M0.9 authored initial fixture contract (job b20cb153-94a8-4997-be00-1f8335daa1a0). Numeric values are authored initial values or documented targets; nothing here is measured. Repaired 2026-11-27 by job 896f97f0-41d9-491a-8d44-1ef435adbaac (model step-5-preview, provider stepfun-ai-step-plan): wake-window contradiction, barrier extents, handling-revision dependency, unknowns pairing and documentation repairs."
+  }
+}

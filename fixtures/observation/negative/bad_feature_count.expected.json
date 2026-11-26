@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "minItems",
+      "path": "records.0.feature_vector"
+    }
+  ]
+}

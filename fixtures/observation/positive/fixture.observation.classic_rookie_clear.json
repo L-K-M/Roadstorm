@@ -1,0 +1,264 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.observation.classic_rookie_clear",
+  "fixture_family": "classic_only",
+  "title": "Classic-only observation on a clear straight (Rookie)",
+  "description": "One 5 Hz observation for a Classic-only participant at Rookie difficulty on a clear 10 m straight (top speed 65 m/s, usable half-width 5.0 m). Style is 'none', so both style one-hot inputs are 0/0 while the rule personality remains explicit configuration (OPPONENT_AI.md 'Shared schema version 1'). No neighbor is present: all four neighbor slots are absent and fully zeroed, and the corridor-occupancy fractions are 0. History is valid with no recent pass attempt (pass side 0, attempt age saturated at the 3 s clip). traffic_age_ticks is the Rookie default 18 (sampled_tick 500, traffic_snapshot_tick 482). Status 'provisional'.",
+  "revision": "1.0.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "participant_id": "ai.classic_2",
+    "difficulty": "rookie",
+    "style": "none",
+    "top_speed_m_s": 65.0,
+    "usable_half_width_m": 5.0,
+    "observation_builder_revision": "pending_m4_2_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.0.0",
+      "observation_layout_revision": "ai_shared_v1",
+      "feature_count": 64,
+      "observation_id": "obs.t000500.ai_classic_2",
+      "participant_id": "ai.classic_2",
+      "difficulty": "rookie",
+      "style": "none",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "sampled_tick": 500,
+      "traffic_snapshot_tick": 482,
+      "traffic_age_ticks": 18,
+      "feature_vector": [
+        0.6,
+        0.0,
+        0.02,
+        0.05,
+        0.0,
+        -0.05,
+        1,
+        0,
+        0,
+        0.0,
+        0.95,
+        1,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.95,
+        0.1,
+        0.0,
+        0.5,
+        0.0,
+        0.95,
+        0.2,
+        0.0,
+        0.5,
+        0.05,
+        0.95,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0.0,
+        0.0,
+        0,
+        1.0,
+        0.3,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0.0,
+        0.0
+      ],
+      "raw_inputs": {
+        "0": 39,
+        "9": 0,
+        "13": 0,
+        "55": 58.5
+      },
+      "masks": {
+        "neighbor_slots": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "history_valid": 1
+      },
+      "reset": {
+        "reset_generation": 0,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": []
+      },
+      "normalization": {
+        "clip_min": -1,
+        "clip_max": 1,
+        "coefficients_revision": "ai_shared_v1_norm"
+      },
+      "fallback": {
+        "active": false,
+        "reason": null,
+        "defaults_applied": []
+      },
+      "occupancy_encounter_gap_m": null
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style and participant_id match the fixture context; Classic-only style is 'none'."
+    },
+    {
+      "expectation_id": "expect.difficulty_hot",
+      "check": "difficulty_one_hot",
+      "path": "records.0",
+      "statement": "Exactly one difficulty one-hot is set and it is Rookie (index 57)."
+    },
+    {
+      "expectation_id": "expect.style_hot",
+      "check": "style_one_hot",
+      "path": "records.0",
+      "statement": "Classic-only style leaves both style one-hot inputs at 0/0."
+    },
+    {
+      "expectation_id": "expect.neighbor_presence",
+      "check": "neighbor_presence",
+      "path": "records.0",
+      "statement": "No neighbor is present; all four slots are absent and fully zeroed and masks.neighbor_slots is all zero."
+    },
+    {
+      "expectation_id": "expect.neighbor_order",
+      "check": "neighbor_ordering",
+      "path": "records.0",
+      "statement": "With no present neighbors the ascending-gap ordering is vacuous."
+    },
+    {
+      "expectation_id": "expect.traffic_age",
+      "check": "traffic_age_arithmetic",
+      "path": "records.0",
+      "statement": "traffic_age_ticks equals sampled_tick minus traffic_snapshot_tick (500 - 482 = 18)."
+    },
+    {
+      "expectation_id": "expect.difficulty_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Rookie difficulty uses the 18-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.history",
+      "check": "history_mask",
+      "path": "records.0",
+      "statement": "With history_valid 1 the discrete history fields stay in range and the magnitudes are non-negative."
+    },
+    {
+      "expectation_id": "expect.normalization",
+      "check": "normalization_consistency",
+      "path": "records.0",
+      "statement": "The raw_inputs probes normalize to the recorded values (speed/top-speed, surge cooldown/2 s, grade/0.12, forward distance/195 m)."
+    },
+    {
+      "expectation_id": "expect.fallback",
+      "check": "fallback_defaults",
+      "path": "records.0",
+      "statement": "No safe diagnostic fallback is active."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the standing observation-assembly and parity targets the Classic path shares from M4.2 onward.",
+    "metrics": [
+      {
+        "name": "tactical_update_budget_ms",
+        "description": "Provisional tactical-update budget including observation assembly, per 12-tick decision cycle.",
+        "comparator": "lte",
+        "value": 0.5,
+        "unit": "ms",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "actor_parity_max_abs_error",
+        "description": "Python/GDScript actor-output parity over the observation corpus.",
+        "comparator": "lte",
+        "value": 0.0001,
+        "unit": "max abs error",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements."
+  },
+  "unknowns": [
+    {
+      "path": "records.0.occupancy_encounter_gap_m",
+      "reason": "The 'planned encounter' distance for corridor occupancy is not fixed by OPPONENT_AI.md.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.observation_builder_revision",
+      "reason": "Placeholder only: no ObservationBuilder revision is ratified until M4.2 implements the shared interface.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.feature_vector",
+      "reason": "The current-vs-delayed split inside the history group is an interpretation of OPPONENT_AI.md and must be confirmed when demonstrations are collected.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:25506e6e11d2febaaa76c111bc7e818969bb5b26ba3d37a9b648f7f1f276d771",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
+    "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Authored M0.9 text contract; no implementation is exercised by this file."
+  }
+}

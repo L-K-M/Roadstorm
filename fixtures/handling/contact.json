@@ -1,0 +1,613 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.handling.contact",
+  "fixture_family": "contact",
+  "title": "Wall and car-contact response, squeeze, blocked reset and correction saturation",
+  "description": "Contact fixture from BENCHMARKS.md 'Handling fixtures' (Contact row): maximum-speed frontal and oblique walls, head-on/rear-end/side pairs, a four-car squeeze, a blocked reset and correction-limit saturation. Maximum-speed entries are declared null: the documented 205-235 km/h stock range is a target, not a measurement, so no entry speed is pretended here. Barrier positions/angles, pair offsets and the 500 m section are authored initial values. The initial contact solver limits (0.25 m single / 0.5 m total correction) come from TECHNICAL_DESIGN and are carried as documented targets.",
+  "revision": "1.0.1",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg",
+    "speed": "m/s"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "right": "+X"
+  },
+  "geometry": {
+    "start_reference": "World origin at the start of segment 0 on the centerline; forward -Z, right +X, up +Y.",
+    "closed_loop": false,
+    "segments": [
+      {
+        "type": "straight",
+        "length_m": 500,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Authored 500 m asphalt section and width for the contact runs."
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "surface_id": "asphalt",
+      "description": "Dry asphalt baseline surface."
+    }
+  ],
+  "barriers": [
+    {
+      "barrier_id": "wall_frontal",
+      "kind": "wall",
+      "segment_index": 0,
+      "arc_length_m": 480,
+      "lateral_offset_m": 0,
+      "angle_deg": 90,
+      "length_m": 12,
+      "height_m": null,
+      "thickness_m": 0.5,
+      "note": "Head-on wall across the road at the authored impact zone; face perpendicular to the centerline tangent. The 12 m span is an authored initial value covering the authored 12 m road width so the wall_contact expectation is reconstructable; the height is undetermined until M2 course barrier content."
+    },
+    {
+      "barrier_id": "wall_oblique",
+      "kind": "wall",
+      "segment_index": 0,
+      "arc_length_m": 480,
+      "lateral_offset_m": -6,
+      "angle_deg": 45,
+      "length_m": 12,
+      "height_m": null,
+      "thickness_m": 0.5,
+      "note": "Authored oblique wall at the right road edge; 45 degrees and the 12 m span are authored initial values, not measured ones, so the oblique wall_contact expectation is reconstructable; the height is undetermined until M2 course barrier content."
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "wall_frontal_max_speed",
+      "role": "primary",
+      "description": "Maximum-speed frontal impact into wall_frontal.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard",
+        "note": "Full throttle held to the wall."
+      }
+    },
+    {
+      "run_id": "wall_oblique_max_speed",
+      "role": "primary",
+      "description": "Maximum-speed oblique impact into wall_oblique.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard",
+        "note": "Full throttle held; the authored wall angle produces the oblique impact."
+      }
+    },
+    {
+      "run_id": "pair_head_on",
+      "role": "primary",
+      "description": "Head-on car pair at maximum speed.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "rival",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -120
+            ],
+            "heading_deg": 180
+          },
+          "velocity_m_s": null,
+          "note": "Rival approaches from ahead on the same line; 120 m separation is an authored initial value."
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "pair_rear_end",
+      "role": "primary",
+      "description": "Rear-end pair: follower at maximum speed reaches a slower leader.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "leader",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0,
+              0,
+              -25
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": null,
+          "note": "25 m initial gap is an authored initial value; the leader's speed is undetermined until M1."
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "pair_side",
+      "role": "primary",
+      "description": "Side-contact pair: cars alongside at roughly one car width of separation.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "rival",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              1.9,
+              0,
+              0
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": null,
+          "note": "1.9 m lateral separation is an authored initial value inside the 1.7-2.2 m car width envelope."
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    },
+    {
+      "run_id": "four_car_squeeze",
+      "role": "primary",
+      "description": "Four-car squeeze: ego plus three rivals converging on one line.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "rival_a",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              1.9,
+              0,
+              -3
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": null
+        },
+        {
+          "slot": "rival_b",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              -1.9,
+              0,
+              3
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": null
+        },
+        {
+          "slot": "rival_c",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0.9,
+              0,
+              -6
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": null
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard",
+        "note": "Converging positions are authored initial values; the resolver must prevent riding on top of one another or launching."
+      }
+    },
+    {
+      "run_id": "blocked_reset",
+      "role": "primary",
+      "description": "Reset with the safe route anchor occupied; the car must search farther backward or be held harmlessly until clear, never moved forward.",
+      "initial_state": {
+        "start_mode": "standing",
+        "velocity_m_s": 0,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          },
+          {
+            "t_s": 3,
+            "reset": true
+          }
+        ],
+        "assists": "standard",
+        "note": "Reset requested after an authored 3 s hold, satisfying the GAME_DESIGN one-second reset hold. Anchor occupancy itself is course data (M2); this fixture declares the expected behavior."
+      }
+    },
+    {
+      "run_id": "correction_limit_saturation",
+      "role": "primary",
+      "description": "Deep overlap that saturates the documented correction limits; the resolver must remove inward relative velocity, log saturation and recover safely instead of tunneling.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": null,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "other_participants": [
+        {
+          "slot": "rival",
+          "car_id": "car.balanced_starter",
+          "pose": {
+            "position_m": [
+              0.6,
+              0,
+              0
+            ],
+            "heading_deg": 0
+          },
+          "velocity_m_s": null,
+          "note": "0.6 m lateral offset is an authored deep-overlap starting condition, not a measured one."
+        }
+      ],
+      "driver": {
+        "kind": "scripted_commands",
+        "command_schedule": [
+          {
+            "t_s": 0,
+            "throttle": 1
+          }
+        ],
+        "assists": "standard"
+      }
+    }
+  ],
+  "timing_gates": [
+    {
+      "gate_id": "start",
+      "kind": "start",
+      "segment_index": 0,
+      "arc_length_m": 0,
+      "purpose": "Section start."
+    },
+    {
+      "gate_id": "impact_zone",
+      "kind": "intermediate",
+      "segment_index": 0,
+      "arc_length_m": 480,
+      "purpose": "Authored impact zone where the walls sit."
+    },
+    {
+      "gate_id": "finish",
+      "kind": "finish",
+      "segment_index": 0,
+      "arc_length_m": 500,
+      "purpose": "End of the section."
+    }
+  ],
+  "expected_events": [
+    {
+      "event": "wall_contact",
+      "required": true,
+      "applies_to_runs": [
+        "wall_frontal_max_speed",
+        "wall_oblique_max_speed"
+      ]
+    },
+    {
+      "event": "car_contact",
+      "required": true,
+      "applies_to_runs": [
+        "pair_head_on",
+        "pair_rear_end",
+        "pair_side",
+        "four_car_squeeze",
+        "correction_limit_saturation"
+      ]
+    },
+    {
+      "event": "overlap_correction",
+      "required": true,
+      "applies_to_runs": [
+        "four_car_squeeze",
+        "correction_limit_saturation"
+      ]
+    },
+    {
+      "event": "correction_limit_saturated",
+      "required": true,
+      "applies_to_runs": [
+        "correction_limit_saturation"
+      ],
+      "note": "Saturation must be logged and recovered safely, per TECHNICAL_DESIGN."
+    },
+    {
+      "event": "reset_requested",
+      "required": true,
+      "applies_to_runs": [
+        "blocked_reset"
+      ]
+    },
+    {
+      "event": "reset_blocked_anchor",
+      "required": true,
+      "applies_to_runs": [
+        "blocked_reset"
+      ],
+      "note": "The run declares the expected response when the safe-route anchor is occupied: a backward search or a harmless hold. The occupancy itself is course-level (M2) data that this fixture does not construct, so the precondition is documented as unknown here rather than asserted as built."
+    }
+  ],
+  "comparison": {
+    "purpose": "Verify bounded contact response across the three starters at stock and maximum upgrades: no tunneling, launching, riding on top of another car, or unbounded impulse.",
+    "paired_runs_required": 10,
+    "metrics": [
+      {
+        "name": "max_single_correction_m",
+        "description": "Initial solver budget from TECHNICAL_DESIGN: each positional correction is limited to 0.25 m.",
+        "comparator": "lte",
+        "value": 0.25,
+        "unit": "m",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "max_total_correction_m",
+        "description": "Initial solver budget from TECHNICAL_DESIGN: total correction per tick is limited to 0.5 m.",
+        "comparator": "lte",
+        "value": 0.5,
+        "unit": "m",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "contact_response_records",
+        "description": "Record contact severity and post-contact velocity per run for later cosmetic-damage thresholds; GAME_DESIGN cosmetic thresholds (2 m/s loosen, 5 m/s single / 8 m/s accumulated detach) are M5 validation items, not asserted here.",
+        "comparator": "report",
+        "unit": "m/s",
+        "status": "documented_initial_target"
+      }
+    ]
+  },
+  "cars": {
+    "car_ids": [
+      "car.balanced_starter",
+      "car.sparrow",
+      "car.slidewinder"
+    ],
+    "loadouts": [
+      "stock",
+      "max_upgrade"
+    ],
+    "handling_revision": null,
+    "note": "BENCHMARKS handling comparisons use all three starters at stock and maximum upgrades."
+  },
+  "unknowns": [
+    {
+      "path": "runs[0].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row. The documented 205-235 km/h stock range is a target, not a measurement; M1 records the measured top speed and this fixture is then revised with the concrete entry speed.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[1].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row; see runs[0].velocity_m_s.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[2].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row; see runs[0].velocity_m_s.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[3].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row; see runs[0].velocity_m_s.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[4].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row; see runs[0].velocity_m_s.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[5].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row; see runs[0].velocity_m_s.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[7].initial_state.velocity_m_s",
+      "reason": "Maximum-speed entry per the BENCHMARKS contact row; see runs[0].velocity_m_s.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[2].other_participants",
+      "reason": "Rival speed and controller for the head-on pair are undetermined until M1 assigns the paired-driver controllers; the maximum-speed entry convention applies.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[3].other_participants",
+      "reason": "Leader speed and controller for the rear-end pair are undetermined until M1 assigns the paired-driver controllers.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[4].other_participants",
+      "reason": "Rival speed and controller for the side pair are undetermined until M1 assigns the paired-driver controllers.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[5].other_participants",
+      "reason": "Rival speeds and controllers for the four-car squeeze are undetermined until M1 assigns the paired-driver controllers.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[7].other_participants",
+      "reason": "Rival speed and controller for the correction-saturation run are undetermined until M1 assigns the paired-driver controllers.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "cars.car_ids",
+      "reason": "car.balanced_starter is the fixed ID of the balanced starter (Comet) from BENCHMARKS; the Sparrow and Slidewinder IDs are working names until the M1 car registry assigns stable IDs.",
+      "blocking": false,
+      "until": "M1"
+    },
+    {
+      "path": "cars.handling_revision",
+      "reason": "The per-car handling resource (../handling_config.schema.json) is M1 work; the revision this fixture targets is undetermined until M1 assigns it. BENCHMARKS regenerates reference records when handling dependencies change, so the fixture records the target revision instead of duplicating coefficients.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "barriers[0].height_m",
+      "reason": "Barrier height is undetermined until M2 authors course barrier content; the authored span (length_m) keeps the wall_contact expectation reconstructable, and the flat-section impacts do not depend on the exact height.",
+      "blocking": false,
+      "until": "M2"
+    },
+    {
+      "path": "barriers[1].height_m",
+      "reason": "Barrier height is undetermined until M2 authors course barrier content; see barriers[0].height_m.",
+      "blocking": false,
+      "until": "M2"
+    }
+  ],
+  "content_hash": "sha256:726bb831d946dfae854b7e0ea374b2148487731679da7e8c1297573821899969",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md#handling-fixtures",
+    "author": "pi coding agent (job b20cb153-94a8-4997-be00-1f8335daa1a0)",
+    "model": "step-5-preview",
+    "provider": "stepfun-ai-step-plan",
+    "date_utc": "2026-11-26",
+    "note": "M0.9 authored initial fixture contract (job b20cb153-94a8-4997-be00-1f8335daa1a0). Numeric values are authored initial values or documented targets; nothing here is measured. Repaired 2026-11-27 by job 896f97f0-41d9-491a-8d44-1ef435adbaac (model step-5-preview, provider stepfun-ai-step-plan): wake-window contradiction, barrier extents, handling-revision dependency, unknowns pairing and documentation repairs."
+  }
+}

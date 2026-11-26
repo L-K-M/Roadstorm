@@ -1,0 +1,521 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm versioned handling benchmark fixture",
+  "description": "Machine-readable handling-fixture contract defined at M0.9 from docs/BENCHMARKS.md ('Handling fixtures') and docs/TECHNICAL_DESIGN.md ('Content contracts', ReferenceRun/Scenario). Every fixture declares immutable source geometry, initial pose/velocity, a command schedule or a controller revision, timing gates, surfaces, expected events and a content hash. Barriers declare their face span and height when authored, or null plus an unknowns entry when undetermined. Numeric values in these files are authored initial values or documented design targets; nothing here is a measurement. Values that are not yet determined are JSON null and MUST be listed in 'unknowns' with a reason; the validator enforces that pairing. Measured references are produced later by M1/M4 as separate reference-run records, not by editing this fixture contract. Companion vocabulary lives in ../common.schema.json; per-car handling coefficients live in ../handling_config.schema.json and are referenced by revision through cars.handling_revision, not duplicated here.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "fixture_family",
+    "title",
+    "description",
+    "revision",
+    "status",
+    "units",
+    "coordinate_frame",
+    "geometry",
+    "surfaces",
+    "runs",
+    "timing_gates",
+    "expected_events",
+    "comparison",
+    "cars",
+    "unknowns",
+    "content_hash",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision identifier. A fixture whose schema_version differs from this value is rejected, not silently migrated."
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^fixture\\.handling\\.[a-z][a-z0-9_]*$",
+      "description": "Stable semantic ID, e.g. fixture.handling.sweeper. Renaming a fixture requires a new ID and a recorded decision."
+    },
+    "fixture_family": {
+      "enum": ["straight", "sweeper", "hairpin", "esses", "gravel", "grounding", "contact", "draft", "regression"],
+      "description": "The BENCHMARKS handling-fixture table row this fixture instantiates; 'regression' is reserved for later regression fixtures added only for meaningful new concerns. The enum is exactly the BENCHMARKS table: cross-course aggregates such as the mixed-loop elapsed-time target and the stock-car spread are closed-loop M2 course-fixture content, so no handling-fixture family exists for them."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "Fixture content revision. Any semantic change to geometry, runs, gates, surfaces or expectations bumps this and recomputes content_hash."
+    },
+    "status": {
+      "enum": ["provisional", "measured", "frozen", "superseded", "example"],
+      "description": "provisional = authored initial contract, not yet executed; frozen = accepted after review. 'measured' is not valid in a fixture file: fixtures carry targets and requirements, never measured outcomes."
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "mass", "time", "angle", "speed"],
+      "properties": {
+        "length": { "const": "m" },
+        "mass": { "const": "kg" },
+        "time": { "const": "s" },
+        "angle": { "const": "deg" },
+        "speed": { "const": "m/s" }
+      }
+    },
+    "coordinate_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forward", "up", "right"],
+      "properties": {
+        "forward": { "const": "-Z" },
+        "up": { "const": "+Y" },
+        "right": { "const": "+X" }
+      },
+      "description": "Same frame as ../handling_config.schema.json; origin at the ground projection of the axle midpoint."
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_reference", "closed_loop", "segments"],
+      "properties": {
+        "start_reference": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Where the world origin sits, so the immutable source geometry can be rebuilt exactly. Required: validate_fixtures.py rejects a fixture without it."
+        },
+        "closed_loop": {
+          "const": false,
+          "description": "Handling fixtures are open sections; closed loops are course fixtures (M2), not handling fixtures. Required and must be false."
+        },
+        "segments": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/segment" },
+          "description": "Head-to-tail straight/arc sections laid from start_reference. Total authored length is the sum of segment lengths."
+        }
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/surface" },
+      "description": "Every surface_id referenced by geometry, barriers or run overrides must be declared here exactly once."
+    },
+    "barriers": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/barrier" },
+      "description": "Static contact geometry (walls/barriers) for contact fixtures. Omitted when the fixture has none."
+    },
+    "features": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/feature" },
+      "description": "Route features such as crests, compressions and jumps, anchored to a segment. Undetermined feature parameters are null and listed in unknowns."
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/run" },
+      "description": "One run per initial condition/control pairing. A 'control' run (e.g. the asphalt control for the gravel fixture) shares the fixture geometry and differs only where the run says so."
+    },
+    "timing_gates": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/timing_gate" },
+      "description": "Measurement gates for the fixture. The set must include exactly one start and one finish gate; intermediate gates are optional."
+    },
+    "expected_events": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/expected_event" },
+      "description": "Events a correct run must (or must not) produce. Expected events are behavioral requirements; they never encode a measured value."
+    },
+    "comparison": { "$ref": "#/$defs/comparison" },
+    "cars": { "$ref": "#/$defs/car_set" },
+    "unknowns": {
+      "type": "array",
+      "items": { "$ref": "../common.schema.json#/$defs/unknown_entry" },
+      "description": "Every JSON null in this file must have a matching entry here (dotted path, reason). A value must not appear determined while it is not."
+    },
+    "content_hash": {
+      "$ref": "../common.schema.json#/$defs/content_hash",
+      "description": "SHA-256 over canonical JSON (sorted keys, compact separators, UTF-8) of this file with the content_hash member removed. Recomputed by the validator on every check."
+    },
+    "provenance": { "$ref": "../common.schema.json#/$defs/provenance" }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "oneOf": [
+        {
+          "title": "straight",
+          "properties": { "type": { "const": "straight" } },
+          "required": ["type", "length_m", "width_m", "surface_id"]
+        },
+        {
+          "title": "arc",
+          "properties": { "type": { "const": "arc" } },
+          "required": ["type", "radius_m", "angle_deg", "direction", "width_m", "surface_id"]
+        }
+      ],
+      "properties": {
+        "type": { "enum": ["straight", "arc"] },
+        "length_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Straight length along the centerline."
+        },
+        "radius_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Arc centerline radius."
+        },
+        "angle_deg": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 360
+        },
+        "direction": {
+          "enum": ["left", "right"],
+          "description": "Turn direction for arcs; positive banking is toward the turn center."
+        },
+        "grade_percent": {
+          "type": "number",
+          "minimum": -12,
+          "maximum": 12,
+          "description": "Centerline grade; TECHNICAL_DESIGN constrains normal road grade to an initial 12% target."
+        },
+        "banking_deg": {
+          "type": "number",
+          "minimum": -12,
+          "maximum": 12,
+          "description": "Cross-slope; TECHNICAL_DESIGN constrains banking to approximately +/-12 degrees."
+        },
+        "width_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Road width. GAME_DESIGN course widths generally range 9-20 m; 8 m squeezes require the documented two-wide test."
+        },
+        "surface_id": { "type": "string", "minLength": 1 },
+        "note": {
+          "type": ["string", "null"],
+          "description": "Authoring provenance, e.g. 'authored initial value; BENCHMARKS specifies only the radius'."
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface_id", "description"],
+      "properties": {
+        "surface_id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "handling_modifiers": {
+          "type": ["object", "null"],
+          "description": "Surface handling modifiers, only when this fixture authors them. Null means the modifiers are deliberately not authored here: per-car lateral_grip_scale/drag_scale live in ../handling_config.schema.json and are tuned at M1, so a fixture must not invent surface coefficients. A null requires a matching unknowns entry."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "barrier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["barrier_id", "kind", "segment_index", "arc_length_m", "lateral_offset_m"],
+      "properties": {
+        "barrier_id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["wall", "barrier", "guardrail"] },
+        "segment_index": { "type": "integer", "minimum": 0 },
+        "arc_length_m": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Position along the segment centerline from the segment start."
+        },
+        "lateral_offset_m": {
+          "type": "number",
+          "description": "Signed offset from the centerline; positive is right of travel direction."
+        },
+        "angle_deg": {
+          "type": ["number", "null"],
+          "description": "Barrier face angle relative to the centerline tangent; null means parallel and undetermined otherwise."
+        },
+        "length_m": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Span of the barrier along its face, so a wall described as crossing the road is reconstructable. Null means the extent is undetermined (course barrier content is M2) and requires a matching unknowns entry."
+        },
+        "height_m": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Barrier height above the road surface. Null means undetermined and requires a matching unknowns entry."
+        },
+        "thickness_m": { "type": "number", "exclusiveMinimum": 0 },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "segment_index", "description"],
+      "properties": {
+        "type": { "enum": ["crest", "compression", "jump"] },
+        "segment_index": { "type": "integer", "minimum": 0 },
+        "arc_length_m": { "type": "number", "minimum": 0 },
+        "description": { "type": "string", "minLength": 1 },
+        "takeoff_grade_percent": {
+          "type": ["number", "null"],
+          "description": "Jump takeoff grade; null until M1 authors the ramp geometry."
+        },
+        "airborne_gap_m": {
+          "type": ["number", "null"],
+          "description": "Horizontal gap between takeoff and landing; null until M1 authors the ramp geometry."
+        },
+        "landing_run_m": {
+          "type": ["number", "null"],
+          "description": "Level landing run after touchdown; null until M1 authors the ramp geometry."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "initial_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_mode", "grounded"],
+      "properties": {
+        "start_mode": { "enum": ["standing", "rolling"] },
+        "velocity_m_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Forward speed at the start line. 0 for standing starts. null only when genuinely undetermined (e.g. maximum-speed contact entries); a null requires a matching unknowns entry."
+        },
+        "heading_deg": {
+          "type": "number",
+          "description": "Initial heading relative to the first segment tangent."
+        },
+        "position_m": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "World position of the origin (ground projection of the axle midpoint) in the fixture coordinate frame."
+        },
+        "grounded": { "type": "boolean" },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "car_id", "pose"],
+      "properties": {
+        "slot": { "type": "string", "minLength": 1 },
+        "car_id": { "$ref": "../common.schema.json#/$defs/stable_id" },
+        "pose": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["position_m", "heading_deg"],
+          "properties": {
+            "position_m": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 3,
+              "maxItems": 3
+            },
+            "heading_deg": { "type": "number" }
+          }
+        },
+        "velocity_m_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Forward speed; null requires a matching unknowns entry."
+        },
+        "driver": { "$ref": "#/$defs/driver" },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "oneOf": [
+        {
+          "title": "controller",
+          "properties": { "kind": { "const": "controller" } },
+          "required": ["kind", "controller_id", "controller_revision"]
+        },
+        {
+          "title": "scripted_commands",
+          "properties": { "kind": { "const": "scripted_commands" } },
+          "required": ["kind", "command_schedule"]
+        }
+      ],
+      "properties": {
+        "kind": { "enum": ["controller", "scripted_commands"] },
+        "controller_id": {
+          "enum": ["calibration_driver", "scripted_grip", "scripted_drift"],
+          "description": "calibration_driver is the BENCHMARKS reference path follower; scripted_grip/scripted_drift are the paired comparison controllers."
+        },
+        "controller_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Version of the controller code; a controller change is a fixture dependency change, recorded before rerunning. null while the controller implementation is unassigned (M1); a null requires a matching unknowns entry."
+        },
+        "command_schedule": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/command" },
+          "description": "Edge-triggered DriverCommand samples. Each entry holds until the next entry; the last entry holds to the end of the run."
+        },
+        "assists": {
+          "enum": ["standard"],
+          "description": "Assist set for the run; BENCHMARKS uses Standard drift/stability assists for reference and comparison drivers."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t_s"],
+      "properties": {
+        "t_s": { "type": "number", "minimum": 0 },
+        "steer": { "type": "number", "minimum": -1, "maximum": 1 },
+        "throttle": { "type": "number", "minimum": 0, "maximum": 1 },
+        "brake": { "type": "number", "minimum": 0, "maximum": 1 },
+        "handbrake": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reset": { "type": "boolean" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "role", "initial_state", "driver"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "role": {
+          "enum": ["primary", "control", "comparison"],
+          "description": "control = the matched comparison run (asphalt control, outside-cone control); comparison = the candidate variant (grip vs drift)."
+        },
+        "description": { "type": "string", "minLength": 1 },
+        "initial_state": { "$ref": "#/$defs/initial_state" },
+        "other_participants": {
+          "type": "array",
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/participant" },
+          "description": "Additional cars for pair/squeeze/draft runs, from the same tick-start snapshot convention as the motor's contact solver."
+        },
+        "surface_overrides": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["segment_index", "surface_id"],
+            "properties": {
+              "segment_index": { "type": "integer", "minimum": 0 },
+              "surface_id": { "type": "string", "minLength": 1 }
+            }
+          },
+          "description": "Per-run surface replacement for control runs, e.g. the asphalt control of the gravel fixture."
+        },
+        "driver": { "$ref": "#/$defs/driver" }
+      }
+    },
+    "timing_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gate_id", "kind", "segment_index", "arc_length_m", "purpose"],
+      "properties": {
+        "gate_id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["start", "intermediate", "finish"] },
+        "segment_index": { "type": "integer", "minimum": 0 },
+        "arc_length_m": { "type": "number", "minimum": 0 },
+        "purpose": { "type": "string", "minLength": 1 }
+      }
+    },
+    "expected_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "required"],
+      "properties": {
+        "event": {
+          "enum": [
+            "acceleration_phase_complete",
+            "braking_phase_complete",
+            "top_speed_reached",
+            "reverse_engaged",
+            "drift_entry",
+            "drift_sustained",
+            "drift_exit",
+            "drift_recovery",
+            "surge_granted",
+            "surface_transition",
+            "airborne_takeoff",
+            "airborne_landing",
+            "stable_landing",
+            "wall_contact",
+            "car_contact",
+            "reset_requested",
+            "reset_blocked_anchor",
+            "overlap_correction",
+            "correction_limit_saturated",
+            "drafting_eligible",
+            "drafting_fade"
+          ]
+        },
+        "required": { "type": "boolean" },
+        "applies_to_runs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Run IDs this expectation applies to. Absent means every run in the fixture. Referenced run IDs must exist."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "paired_runs_required", "metrics"],
+      "properties": {
+        "purpose": { "type": "string", "minLength": 1 },
+        "paired_runs_required": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Clean paired runs required before a comparison is reportable; BENCHMARKS asks for at least ten per relevant corner fixture. Required: validate_fixtures.py rejects a fixture without it."
+        },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "../common.schema.json#/$defs/acceptance_metric" },
+          "description": "Documented initial targets and reporting requirements. A metric with status 'measured' is invalid in a fixture file; measured values belong to reference-run records."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "car_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["car_ids", "loadouts"],
+      "properties": {
+        "car_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "../common.schema.json#/$defs/stable_id" }
+        },
+        "loadouts": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["stock", "max_upgrade"] },
+          "uniqueItems": true
+        },
+        "handling_revision": {
+          "type": ["string", "null"],
+          "description": "Revision of the per-car handling resource (../handling_config.schema.json) this fixture was authored against. BENCHMARKS regenerates reference records when handling dependencies change, so a fixture pins the handling revision it targets; null means the revision is undetermined (per-car coefficients are M1 work) and requires a matching unknowns entry."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

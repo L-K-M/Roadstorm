@@ -1,0 +1,14 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "comparison.metrics.0",
+      "check": "metric_shape"
+    },
+    {
+      "code": "semantic",
+      "path": "comparison.metrics.0.value",
+      "check": "metric_shape"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.protocol.history_warmup_s",
+      "check": "window_protocol"
+    }
+  ]
+}

@@ -1,0 +1,380 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm versioned benchmark reference record (reference run schema version 1)",
+  "description": "Machine-readable contract for a benchmark reference record, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'Handling fixtures', 'Numerical comparisons') and the ReferenceRun/Scenario row of docs/TECHNICAL_DESIGN.md 'Content contracts' (fixture and driver revisions, initial state/commands/history, seeds, car/loadout/assist/track/handling hashes, measured traces, eligibility and metric version). A reference record is the measured-evidence half of the benchmark contract: it names the CalibrationDriver and line revisions, the car/loadout/assist and course revisions, the engine/backend/handling revisions, the platform and the seeds it was captured against, fixes the capture protocol (five clean laps per kind after warm-up, rejecting runs with contacts, reset, missed gates, invalid progress or numerical errors), and retains the individual lap times, median, min/max, sector splits, speed samples and content hashes. Reference records are regenerated when those dependencies change. Recorded decision on the two cited documents: docs/TECHNICAL_DESIGN.md 'Content contracts' asks for 'car/loadout/assist/track/handling hashes' while docs/BENCHMARKS.md asks for 'engine/backend/handling/course revisions'; the two conflict, and this contract records the BENCHMARKS wording - car/loadout/assist hashes in results.hashes plus course and handling revisions - as the decision of record, flagged here for the documentation owner rather than silently picking one. Honesty rule: 'status' distinguishes a planned record (authored protocol and dependencies, no results) from a measured record (results captured by tooling) and a superseded one. At M0.9 no measurement exists, so only planned records are authored; the fixtures/scenario validator rejects measured or superseded records inside fixture files, and a planned record must carry no results. A JSON null means 'not yet determined' and MUST be paired with an entry in the enclosing fixture's 'unknowns' (see scenario_fixture.schema.json); an optional member that is absent means 'not applicable'. Provenance is recorded once by the enclosing fixture; a deployed measured record is a standalone evidence artifact that additionally carries its own capture-tool provenance. Companion vocabulary lives in ../common.schema.json; the authored-configuration half of this contract is scenario.schema.json.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "kind",
+    "status",
+    "title",
+    "description",
+    "revision",
+    "subject",
+    "course",
+    "driver",
+    "dependencies",
+    "capture_protocol",
+    "results",
+    "seeds",
+    "derived_thresholds",
+    "units"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision identifier. A record whose schema_version differs is rejected, not silently migrated."
+    },
+    "record_id": {
+      "type": "string",
+      "pattern": "^reference\\.[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$",
+      "description": "Stable semantic ID, e.g. reference.balanced_starter.riviera_flying."
+    },
+    "kind": {
+      "enum": ["flying_lap_set", "standing_start_lap_set"],
+      "description": "flying_lap_set: five clean flying laps per car/course revision; it feeds the stock medal thresholds. standing_start_lap_set: five clean standing-start single laps; it feeds Arcade Rush sector budgets (GAME_DESIGN)."
+    },
+    "status": {
+      "enum": ["planned", "measured", "superseded"],
+      "description": "planned = authored protocol and dependencies with no results (the only status authored at M0.9); measured = results captured by M1/M4 tooling against these dependencies; superseded = replaced by a newer record because a dependency changed. The fixtures/scenario validator rejects measured and superseded records inside fixture files: an authored file must not impersonate evidence."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "Record content revision. Scenarios match a reference by this revision; a dependency change produces a new revision rather than editing measured values."
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["car_id", "loadout", "assists"],
+      "properties": {
+        "car_id": {
+          "$ref": "../common.schema.json#/$defs/stable_id",
+          "description": "Car definition ID; the balanced starter is car.balanced_starter."
+        },
+        "car_display_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Current display name for readability; stable IDs survive name changes (BENCHMARKS)."
+        },
+        "loadout": {
+          "enum": ["stock", "max_upgrade"],
+          "description": "Loadout captured. The standard medal session uses the balanced starter at levels 0/0/0, i.e. stock; other combinations retain separate records."
+        },
+        "assists": { "enum": ["standard"] }
+      }
+    },
+    "course": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["course_id", "course_revision"],
+      "properties": {
+        "course_id": { "$ref": "../common.schema.json#/$defs/stable_id" },
+        "course_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Course content revision captured. null while course content is unratified (M2); a null requires a fixture unknowns entry."
+        }
+      }
+    },
+    "driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "traffic_free"],
+      "properties": {
+        "kind": {
+          "const": "calibration_driver",
+          "description": "BENCHMARKS: the reference driver is the fixed, versioned, traffic-free path follower with no tactical planner, learning, difficulty scaling or random mistakes. Using an evaluated AI difficulty as its own reference is not allowed."
+        },
+        "traffic_free": {
+          "const": true,
+          "description": "The reference capture runs with no traffic."
+        },
+        "driver_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the CalibrationDriver controller code. null until M1.7; a null requires a fixture unknowns entry."
+        },
+        "reference_line_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the authored line and conservative speed profile the driver follows. null until M1; a null requires a fixture unknowns entry."
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["engine_revision", "physics_backend", "handling_revision", "metric_version", "platform"],
+      "properties": {
+        "engine_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Pinned engine revision (Godot 4.7.2 Standard at M0.1). null requires a fixture unknowns entry."
+        },
+        "physics_backend": {
+          "enum": ["jolt"],
+          "description": "M0 pins the built-in Jolt 3D backend; a backend change is a handling revision."
+        },
+        "handling_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Motor/car/surface handling revision captured. null until M1 freezes handling; a null requires a fixture unknowns entry."
+        },
+        "metric_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revision of the metric definitions the record is evaluated under (docs/BENCHMARKS.md)."
+        },
+        "platform": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["os"],
+          "properties": {
+            "os": { "type": "string", "minLength": 1 },
+            "cpu": { "type": "string", "minLength": 1 },
+            "gpu": { "type": "string", "minLength": 1 },
+            "note": { "type": "string", "minLength": 1 }
+          },
+          "description": "Hardware/OS the capture ran on; BENCHMARKS requires retaining the platform with each record. null until the capture machine is recorded; a null requires a fixture unknowns entry."
+        }
+      }
+    },
+    "capture_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["warmup_laps", "required_clean_laps", "traffic_free", "rejection_criteria"],
+      "properties": {
+        "warmup_laps": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Warm-up laps before the recorded laps. BENCHMARKS says 'after warm-up' without fixing a count, so this is null until ratified; a null requires a fixture unknowns entry."
+        },
+        "required_clean_laps": {
+          "const": 5,
+          "description": "Five clean flying laps and five clean standing-start single laps per car/course revision (BENCHMARKS 'Reference driver and records')."
+        },
+        "traffic_free": { "const": true },
+        "rejection_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": ["contact", "reset", "missed_gate", "invalid_progress", "numerical_error"]
+          },
+          "description": "Run-rejection criteria: reject runs with contacts, reset, missed gates, invalid progress or numerical errors. The validator requires all five (see $defs.constants)."
+        }
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["laps", "statistics", "speed_samples", "hashes"],
+      "properties": {
+        "laps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/lap" },
+          "description": "Individual recorded laps, clean and rejected. Empty in a planned record: no lap has been captured yet."
+        },
+        "statistics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["median_s", "min_s", "max_s"],
+          "properties": {
+            "median_s": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "description": "Median over the clean lap times. null in a planned record; a null requires a fixture unknowns entry."
+            },
+            "min_s": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "description": "Fastest clean lap time. null in a planned record; a null requires a fixture unknowns entry."
+            },
+            "max_s": {
+              "type": ["number", "null"],
+              "minimum": 0,
+              "description": "Slowest clean lap time. null in a planned record; a null requires a fixture unknowns entry."
+            }
+          },
+          "description": "Retained summary statistics over the clean laps (BENCHMARKS)."
+        },
+        "speed_samples": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/speed_sample" },
+          "description": "Retained speed samples along the lap. Empty in a planned record."
+        },
+        "hashes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["car_hash", "loadout_hash", "assist_hash"],
+          "properties": {
+            "car_hash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "Hash of the car definition captured. null in a planned record; a null requires a fixture unknowns entry."
+            },
+            "loadout_hash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "Hash of the loadout captured. null in a planned record; a null requires a fixture unknowns entry."
+            },
+            "assist_hash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "Hash of the assist set captured. null in a planned record; a null requires a fixture unknowns entry."
+            }
+          },
+          "description": "Car/loadout/assist hashes retained with the record (BENCHMARKS)."
+        }
+      }
+    },
+    "seeds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["race_seed", "scenario_seed"],
+      "properties": {
+        "race_seed": { "type": "integer", "minimum": 0 },
+        "scenario_seed": { "type": "integer", "minimum": 0 }
+      },
+      "description": "Seeds the capture ran with, retained with the record (BENCHMARKS)."
+    },
+    "derived_thresholds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bronze_multiplier",
+        "silver_multiplier",
+        "gold_multiplier",
+        "bronze_s",
+        "silver_s",
+        "gold_s"
+      ],
+      "properties": {
+        "bronze_multiplier": {
+          "const": 1.25,
+          "description": "Initial Bronze threshold factor times the measured flying-lap median (BENCHMARKS)."
+        },
+        "silver_multiplier": { "const": 1.12 },
+        "gold_multiplier": { "const": 1.05 },
+        "bronze_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "1.25 x the measured flying-lap median. null until measured (or on a standing-start record, where medal thresholds do not apply); a null requires a fixture unknowns entry."
+        },
+        "silver_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "1.12 x the measured flying-lap median. null until measured; a null requires a fixture unknowns entry."
+        },
+        "gold_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "1.05 x the measured flying-lap median. null until measured; a null requires a fixture unknowns entry."
+        }
+      },
+      "description": "Initial stock-medal thresholds for the balanced starter, tuned after captured play with the final values recorded (BENCHMARKS). Medal thresholds derive from the flying-lap median; Arcade Rush budgets derive from the standing-start record's sector times (GAME_DESIGN)."
+    },
+    "superseded_by": {
+      "type": "string",
+      "pattern": "^reference\\.[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$",
+      "description": "Record ID that replaced this one because a dependency changed. Absent unless status is superseded."
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "speed", "time"],
+      "properties": {
+        "length": { "const": "m" },
+        "speed": { "const": "m/s" },
+        "time": { "const": "s" }
+      },
+      "description": "Car units are meters/seconds (TECHNICAL_DESIGN 'Content contracts')."
+    }
+  },
+  "$defs": {
+    "lap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lap_index", "time_s", "clean"],
+      "properties": {
+        "lap_index": { "type": "integer", "minimum": 0 },
+        "time_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Lap time in seconds; retained even for a rejected lap, which is excluded from the median/min/max. null only while the record is unmeasured."
+        },
+        "clean": {
+          "type": "boolean",
+          "description": "Whether the lap met the clean-run policy (no contact, reset, missed gate, invalid progress or numerical error)."
+        },
+        "invalid_reason": {
+          "enum": ["contact", "reset", "missed_gate", "invalid_progress", "numerical_error"],
+          "description": "Required when clean is false; must be one of the capture protocol's rejection criteria."
+        },
+        "sector_splits_s": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number", "minimum": 0 },
+          "description": "Four sector splits (GAME_DESIGN). Arcade Rush sector budgets are built from the standing-start record's sector times. Optional in this schema because a rejected lap may not retain them, but the fixtures/scenario validator requires exactly four splits on every clean lap of a measured record: BENCHMARKS 'Reference driver and records' retains sector splits with each record."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "speed_sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route_distance_m", "speed_m_s"],
+      "properties": {
+        "route_distance_m": { "type": "number", "minimum": 0 },
+        "speed_m_s": { "type": "number", "minimum": 0 }
+      }
+    },
+    "constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single source of truth for the numeric protocol of this contract, all from docs/BENCHMARKS.md (with the Arcade Rush factors from docs/GAME_DESIGN.md). The fixtures/scenario validator reads these instead of restating them.",
+      "required": [
+        "required_clean_laps",
+        "sector_count",
+        "medal_multipliers",
+        "rejection_criteria",
+        "arcade_rush_factors"
+      ],
+      "properties": {
+        "required_clean_laps": { "const": 5 },
+        "sector_count": { "const": 4 },
+        "medal_multipliers": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bronze", "silver", "gold"],
+          "properties": {
+            "bronze": { "const": 1.25 },
+            "silver": { "const": 1.12 },
+            "gold": { "const": 1.05 }
+          }
+        },
+        "rejection_criteria": {
+          "const": ["contact", "reset", "missed_gate", "invalid_progress", "numerical_error"],
+          "description": "BENCHMARKS: reject runs with contacts, reset, missed gates, invalid progress or numerical errors."
+        },
+        "arcade_rush_factors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rookie", "racer", "expert"],
+          "properties": {
+            "rookie": { "const": 1.2 },
+            "racer": { "const": 1.1 },
+            "expert": { "const": 1.02 }
+          },
+          "description": "Initial Arcade Rush budget factors per difficulty (GAME_DESIGN): b_i = factor * reference_sector_seconds + measured_mistake_margin_i, rounded to milliseconds."
+        }
+      }
+    }
+  }
+}

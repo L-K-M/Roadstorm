@@ -1,0 +1,255 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.handling.esses",
+  "fixture_family": "esses",
+  "title": "Opposite-arc esses transition and recovery",
+  "description": "Two opposite 60-degree arcs of 65 m radius with a 25 m/s entry from BENCHMARKS.md 'Handling fixtures' (Esses row), covering transition and recovery. The linking straight, approach/exit lengths and road width are authored initial values; BENCHMARKS specifies the arcs, radius and entry speed. A reporting metric is carried because BENCHMARKS asks for esses deltas to be reported.",
+  "revision": "1.0.1",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg",
+    "speed": "m/s"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "right": "+X"
+  },
+  "geometry": {
+    "start_reference": "World origin at the start of segment 0 on the centerline; forward -Z, right +X, up +Y.",
+    "closed_loop": false,
+    "segments": [
+      {
+        "type": "straight",
+        "length_m": 50,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Authored approach length."
+      },
+      {
+        "type": "arc",
+        "radius_m": 65,
+        "angle_deg": 60,
+        "direction": "left",
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Arc length r*theta = 68.0678 m."
+      },
+      {
+        "type": "straight",
+        "length_m": 20,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Authored linking straight between the opposite arcs."
+      },
+      {
+        "type": "arc",
+        "radius_m": 65,
+        "angle_deg": 60,
+        "direction": "right",
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Opposite direction to segment 1; arc length 68.0678 m."
+      },
+      {
+        "type": "straight",
+        "length_m": 50,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Authored exit length."
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "surface_id": "asphalt",
+      "description": "Dry asphalt baseline surface."
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "drift_entry",
+      "role": "primary",
+      "description": "25 m/s entry on the scripted drift controller through both arcs.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 25,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "controller",
+        "controller_id": "scripted_drift",
+        "controller_revision": null,
+        "assists": "standard",
+        "note": "Controller implementation is M1 work; the revision identifier is reserved, not yet assigned."
+      }
+    },
+    {
+      "run_id": "grip_entry",
+      "role": "comparison",
+      "description": "25 m/s entry on the scripted grip controller through both arcs; same entry conditions as the drift run.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 25,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "controller",
+        "controller_id": "scripted_grip",
+        "controller_revision": null,
+        "assists": "standard"
+      }
+    }
+  ],
+  "timing_gates": [
+    {
+      "gate_id": "start",
+      "kind": "start",
+      "segment_index": 0,
+      "arc_length_m": 0,
+      "purpose": "Approach start; entry speed is measured here."
+    },
+    {
+      "gate_id": "arc1_entry",
+      "kind": "intermediate",
+      "segment_index": 1,
+      "arc_length_m": 0,
+      "purpose": "Start of the first arc."
+    },
+    {
+      "gate_id": "arc1_exit",
+      "kind": "intermediate",
+      "segment_index": 1,
+      "arc_length_m": 68.0678,
+      "purpose": "End of the first arc; transition is measured here."
+    },
+    {
+      "gate_id": "arc2_entry",
+      "kind": "intermediate",
+      "segment_index": 3,
+      "arc_length_m": 0,
+      "purpose": "Start of the opposite arc."
+    },
+    {
+      "gate_id": "arc2_exit",
+      "kind": "intermediate",
+      "segment_index": 3,
+      "arc_length_m": 68.0678,
+      "purpose": "End of the second arc."
+    },
+    {
+      "gate_id": "finish",
+      "kind": "finish",
+      "segment_index": 4,
+      "arc_length_m": 50,
+      "purpose": "End of the exit straight."
+    }
+  ],
+  "expected_events": [
+    {
+      "event": "drift_entry",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ]
+    },
+    {
+      "event": "drift_sustained",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ]
+    },
+    {
+      "event": "drift_exit",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ]
+    },
+    {
+      "event": "drift_recovery",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ],
+      "note": "The esses row requires transition and recovery between opposite arcs."
+    }
+  ],
+  "comparison": {
+    "purpose": "Report the esses delta between the drift and grip lines for the three starters at stock and maximum upgrades.",
+    "paired_runs_required": 10,
+    "metrics": [
+      {
+        "name": "esses_elapsed_time_delta",
+        "description": "BENCHMARKS asks for esses deltas to be reported alongside the sweeper target; no percentage threshold is claimed for the esses.",
+        "comparator": "report",
+        "unit": "ratio",
+        "status": "documented_initial_target"
+      }
+    ]
+  },
+  "cars": {
+    "car_ids": [
+      "car.balanced_starter",
+      "car.sparrow",
+      "car.slidewinder"
+    ],
+    "loadouts": [
+      "stock",
+      "max_upgrade"
+    ],
+    "handling_revision": null,
+    "note": "BENCHMARKS handling comparisons use all three starters at stock and maximum upgrades."
+  },
+  "unknowns": [
+    {
+      "path": "runs[0].driver.controller_revision",
+      "reason": "The scripted drift controller is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[1].driver.controller_revision",
+      "reason": "The scripted grip controller is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "cars.car_ids",
+      "reason": "car.balanced_starter is the fixed ID of the balanced starter (Comet) from BENCHMARKS; the Sparrow and Slidewinder IDs are working names until the M1 car registry assigns stable IDs.",
+      "blocking": false,
+      "until": "M1"
+    },
+    {
+      "path": "cars.handling_revision",
+      "reason": "The per-car handling resource (../handling_config.schema.json) is M1 work; the revision this fixture targets is undetermined until M1 assigns it. BENCHMARKS regenerates reference records when handling dependencies change, so the fixture records the target revision instead of duplicating coefficients.",
+      "blocking": true,
+      "until": "M1"
+    }
+  ],
+  "content_hash": "sha256:2e2c250b6394c88e74f5f1d11fc0bcf3eed4a4ab8fa4990ba2ad4fa8fe31b2e0",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md#handling-fixtures",
+    "author": "pi coding agent (job b20cb153-94a8-4997-be00-1f8335daa1a0)",
+    "model": "step-5-preview",
+    "provider": "stepfun-ai-step-plan",
+    "date_utc": "2026-11-26",
+    "note": "M0.9 authored initial fixture contract (job b20cb153-94a8-4997-be00-1f8335daa1a0). Numeric values are authored initial values or documented targets; nothing here is measured. Repaired 2026-11-27 by job 896f97f0-41d9-491a-8d44-1ef435adbaac (model step-5-preview, provider stepfun-ai-step-plan): wake-window contradiction, barrier extents, handling-revision dependency, unknowns pairing and documentation repairs."
+  }
+}

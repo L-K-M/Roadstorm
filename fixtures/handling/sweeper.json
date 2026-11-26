@@ -1,0 +1,243 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.handling.sweeper",
+  "fixture_family": "sweeper",
+  "title": "90-degree sweeper grip versus drift comparison",
+  "description": "90-degree turn, 120 m centerline radius, 12 m width, 30 m/s entry, 50 m approach and exit from BENCHMARKS.md 'Handling fixtures' (Sweeper row). Paired scripted grip and drift controllers receive the same entry conditions. The initial tuning aim is a clean drift within 5% of the effective grip line's elapsed time; that is a documented target, not a measurement.",
+  "revision": "1.0.1",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg",
+    "speed": "m/s"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "right": "+X"
+  },
+  "geometry": {
+    "start_reference": "World origin at the start of segment 0 on the centerline; forward -Z, right +X, up +Y.",
+    "closed_loop": false,
+    "segments": [
+      {
+        "type": "straight",
+        "length_m": 50,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Approach straight from the BENCHMARKS sweeper row."
+      },
+      {
+        "type": "arc",
+        "radius_m": 120,
+        "angle_deg": 90,
+        "direction": "left",
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Arc length r*theta = 188.4956 m. Turn direction is an authored initial value; BENCHMARKS does not fix left or right."
+      },
+      {
+        "type": "straight",
+        "length_m": 50,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Exit straight from the BENCHMARKS sweeper row."
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "surface_id": "asphalt",
+      "description": "Dry asphalt baseline surface."
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "drift_entry",
+      "role": "primary",
+      "description": "30 m/s entry on the scripted drift controller; the drift line is the candidate under comparison.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "controller",
+        "controller_id": "scripted_drift",
+        "controller_revision": null,
+        "assists": "standard",
+        "note": "Controller implementation is M1 work; the revision identifier is reserved, not yet assigned."
+      }
+    },
+    {
+      "run_id": "grip_entry",
+      "role": "comparison",
+      "description": "30 m/s entry on the scripted grip controller; the matched grip line is the comparison baseline.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "controller",
+        "controller_id": "scripted_grip",
+        "controller_revision": null,
+        "assists": "standard",
+        "note": "Same entry conditions as the drift run, per BENCHMARKS."
+      }
+    }
+  ],
+  "timing_gates": [
+    {
+      "gate_id": "start",
+      "kind": "start",
+      "segment_index": 0,
+      "arc_length_m": 0,
+      "purpose": "Approach start; entry speed is measured here."
+    },
+    {
+      "gate_id": "corner_entry",
+      "kind": "intermediate",
+      "segment_index": 1,
+      "arc_length_m": 0,
+      "purpose": "Start of the 90-degree arc."
+    },
+    {
+      "gate_id": "corner_exit",
+      "kind": "intermediate",
+      "segment_index": 1,
+      "arc_length_m": 188.4956,
+      "purpose": "End of the arc; exit speed and surge samples are measured from here."
+    },
+    {
+      "gate_id": "finish",
+      "kind": "finish",
+      "segment_index": 2,
+      "arc_length_m": 50,
+      "purpose": "End of the exit straight."
+    }
+  ],
+  "expected_events": [
+    {
+      "event": "drift_entry",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ]
+    },
+    {
+      "event": "drift_sustained",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ],
+      "note": "Useful slip angle roughly 12-40 degrees per GAME_DESIGN; the slip band is a requirement, not a measured value."
+    },
+    {
+      "event": "drift_exit",
+      "required": true,
+      "applies_to_runs": [
+        "drift_entry"
+      ]
+    },
+    {
+      "event": "surge_granted",
+      "required": false,
+      "applies_to_runs": [
+        "drift_entry"
+      ],
+      "note": "A successful clean exit may grant one surge per turn ID per lap; the candidate delta is selected by M1 and is not claimed here."
+    }
+  ],
+  "comparison": {
+    "purpose": "Compare the scripted drift line against the matched grip line for the three starters at stock and maximum upgrades.",
+    "paired_runs_required": 10,
+    "metrics": [
+      {
+        "name": "drift_vs_grip_elapsed_time_ratio",
+        "description": "Initial sweeper target: a clean drift within 5% of the effective grip line's elapsed time (BENCHMARKS). A single sweeper cannot establish whole-game parity.",
+        "comparator": "ratio_range",
+        "value_min": 0.95,
+        "value_max": 1.05,
+        "unit": "ratio",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "exit_speed_and_next_100m_records",
+        "description": "Record surge-on/off exit speed at 0.5/1/2 seconds and elapsed time over the next 100 m (BENCHMARKS). Recording requirement; no threshold is claimed.",
+        "comparator": "report",
+        "unit": "m/s",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "exit_surge_delta_m_s",
+        "description": "M1 compares the 0.5/1/1.5 m/s candidates from GAME_DESIGN and retains the smallest useful result that preserves grip competitiveness. No candidate is validated here.",
+        "comparator": "report",
+        "unit": "m/s",
+        "status": "undecided"
+      }
+    ]
+  },
+  "cars": {
+    "car_ids": [
+      "car.balanced_starter",
+      "car.sparrow",
+      "car.slidewinder"
+    ],
+    "loadouts": [
+      "stock",
+      "max_upgrade"
+    ],
+    "handling_revision": null,
+    "note": "BENCHMARKS handling comparisons use all three starters at stock and maximum upgrades."
+  },
+  "unknowns": [
+    {
+      "path": "runs[0].driver.controller_revision",
+      "reason": "The scripted drift controller is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[1].driver.controller_revision",
+      "reason": "The scripted grip controller is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "cars.car_ids",
+      "reason": "car.balanced_starter is the fixed ID of the balanced starter (Comet) from BENCHMARKS; the Sparrow and Slidewinder IDs are working names until the M1 car registry assigns stable IDs.",
+      "blocking": false,
+      "until": "M1"
+    },
+    {
+      "path": "cars.handling_revision",
+      "reason": "The per-car handling resource (../handling_config.schema.json) is M1 work; the revision this fixture targets is undetermined until M1 assigns it. BENCHMARKS regenerates reference records when handling dependencies change, so the fixture records the target revision instead of duplicating coefficients.",
+      "blocking": true,
+      "until": "M1"
+    }
+  ],
+  "content_hash": "sha256:2f5a71ab735e9a411c837df9498978a442d93aee4f0f57a9bfada6edede9c0c4",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md#handling-fixtures",
+    "author": "pi coding agent (job b20cb153-94a8-4997-be00-1f8335daa1a0)",
+    "model": "step-5-preview",
+    "provider": "stepfun-ai-step-plan",
+    "date_utc": "2026-11-26",
+    "note": "M0.9 authored initial fixture contract (job b20cb153-94a8-4997-be00-1f8335daa1a0). Numeric values are authored initial values or documented targets; nothing here is measured. Repaired 2026-11-27 by job 896f97f0-41d9-491a-8d44-1ef435adbaac (model step-5-preview, provider stepfun-ai-step-plan): wake-window contradiction, barrier extents, handling-revision dependency, unknowns pairing and documentation repairs."
+  }
+}

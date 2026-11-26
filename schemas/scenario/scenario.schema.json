@@ -1,0 +1,542 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm versioned benchmark scenario configuration (scenario schema version 1)",
+  "description": "Machine-readable contract for a benchmark scenario configuration, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'AI metrics', 'Tactical comparison') and the ReferenceRun/Scenario row of docs/TECHNICAL_DESIGN.md 'Content contracts' (fixture and driver revisions, initial state/commands/history, seeds, car/loadout/assist/track/handling hashes, measured traces, eligibility and metric version). A scenario fixes the authored configuration of a measurement or a matched comparison: the course and its revision, every dependency revision, the participants and their drivers, the initial state, the capture/comparison protocol (60 Hz fixed tick, 2 s history warm-up, 3 s opportunity window, 0.10 m / 0.10 m/s handover tolerance), the seeds, the required telemetry and the documented initial targets. The initial state covers the per-participant poses and velocities, the initial commands (an authored schedule or a controller revision) and the shared pre-window history, so two scenarios that declare the same participants cannot silently differ in history (docs/TECHNICAL_DESIGN.md 'Content contracts': initial state/commands/history; docs/BENCHMARKS.md 'Tactical comparison': matched initial states and histories). A scenario is authored configuration, never measured evidence: lap times, medians, contact rates and completed-test outcomes belong to reference records and evaluation reports produced later by M1/M4/M8 tooling, never to a scenario file. A JSON null means 'not yet determined' and MUST be paired with an entry in the enclosing fixture's 'unknowns' (see scenario_fixture.schema.json); an optional member that is absent means 'not applicable'. Provenance is recorded once by the enclosing fixture. Companion vocabulary lives in ../common.schema.json; the measured-evidence half of this contract is reference_run.schema.json.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenario_id",
+    "scenario_family",
+    "title",
+    "description",
+    "revision",
+    "status",
+    "units",
+    "course",
+    "dependencies",
+    "participants",
+    "initial_state",
+    "protocol",
+    "seeds",
+    "required_telemetry"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision identifier. A scenario whose schema_version differs is rejected, not silently migrated; a contract change requires a new version and a recorded decision."
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^scenario\\.[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$",
+      "description": "Stable semantic ID, e.g. scenario.tactical.slower_lead_straight. Renaming a scenario requires a new ID and a recorded decision."
+    },
+    "scenario_family": {
+      "enum": [
+        "reference_lap_capture",
+        "slower_lead_straight_pass",
+        "open_two_lane_corner_entry",
+        "narrow_section_patience",
+        "legal_defended_line_cutback",
+        "multi_car_merge",
+        "noisy_human_proxy",
+        "regression"
+      ],
+      "description": "Which benchmark the scenario instantiates: reference_lap_capture produces the BENCHMARKS reference records; the next six are the 'Tactical comparison' families; 'regression' is reserved for later fixtures added only for meaningful new concerns."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "Scenario content revision. Any semantic change to dependencies, participants, initial state, protocol, seeds or telemetry bumps this; the enclosing fixture's content_hash is recomputed by the validator."
+    },
+    "status": {
+      "enum": ["provisional", "example", "frozen"],
+      "description": "provisional = authored initial contract, not yet executed against an implementation; frozen = accepted after review; example = contract illustration that deliberately instantiates unratified producers (e.g. learned_policy participants before M4B) without claiming they exist. 'measured' is not valid here: a scenario carries configuration and targets, never measured outcomes."
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "speed", "time"],
+      "properties": {
+        "length": { "const": "m" },
+        "speed": { "const": "m/s" },
+        "time": { "const": "s" }
+      },
+      "description": "Car units are meters/seconds (TECHNICAL_DESIGN 'Content contracts')."
+    },
+    "course": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["course_id", "course_revision"],
+      "properties": {
+        "course_id": {
+          "$ref": "../common.schema.json#/$defs/stable_id",
+          "description": "Stable semantic course ID; course content is authored at M2."
+        },
+        "course_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Course content revision this scenario runs on. null while course content is unratified (M2); a null requires a matching fixture unknowns entry."
+        }
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engine_revision",
+        "physics_backend",
+        "handling_revision",
+        "calibration_driver_revision",
+        "classic_planner_revision",
+        "learned_policy_revision",
+        "reference_line_revision",
+        "metric_version"
+      ],
+      "properties": {
+        "engine_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Pinned engine revision (TECHNICAL_DESIGN: Godot 4.7.2 Standard, pinned at M0.1). null requires a fixture unknowns entry."
+        },
+        "physics_backend": {
+          "enum": ["jolt"],
+          "description": "M0 pins the built-in Jolt 3D backend; a backend change is a handling revision (TECHNICAL_DESIGN 'Platform and rendering baseline')."
+        },
+        "handling_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Motor/car/surface handling revision; a handling change regenerates affected references. null while M1 has not frozen handling; a null requires a fixture unknowns entry."
+        },
+        "calibration_driver_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the CalibrationDriver controller code; a controller change is a dependency change recorded before reruns. null until M1.7 builds it; a null requires a fixture unknowns entry."
+        },
+        "classic_planner_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the Classic planner implementation. null until M4.2; a null requires a fixture unknowns entry."
+        },
+        "learned_policy_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the Roadstormer learned policy. null until M4B; a null requires a fixture unknowns entry."
+        },
+        "reference_line_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the authored reference line / speed profile the calibration driver follows. null until M1; a null requires a fixture unknowns entry."
+        },
+        "metric_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revision of the metric definitions this scenario is evaluated under (docs/BENCHMARKS.md). A threshold change requires a recorded decision before evaluating a candidate."
+        }
+      },
+      "description": "Every dependency revision a captured result would depend on. Reference records are regenerated when these change (BENCHMARKS 'Reference driver and records')."
+    },
+    "participants": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/participant" },
+      "description": "Cars taking part, at most the standard eight-car field."
+    },
+    "initial_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_mode", "description"],
+      "properties": {
+        "start_mode": { "enum": ["standing", "rolling"] },
+        "description": { "type": "string", "minLength": 1 },
+        "entry_speed_m_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Authored initial forward speed of the evaluated participant. Absent when not applicable (e.g. a standing-start capture); null means undetermined and requires a fixture unknowns entry. When per_participant_state is present it must agree with every matched_* participant entry."
+        },
+        "forward_gap_m": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Authored initial forward gap to the car ahead. Absent when not applicable. When per_participant_state is present it must agree with every matched_* participant entry."
+        },
+        "lateral_offset_m": {
+          "type": ["number", "null"],
+          "description": "Authored initial lateral offset from the centerline; positive is right. Absent when not applicable. When per_participant_state is present it must agree with every matched_* participant entry."
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Authoring provenance for values BENCHMARKS does not fix, e.g. 'authored initial value; BENCHMARKS specifies the warm-up and window, not the entry speed'."
+        },
+        "per_participant_state": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/participant_initial_state" },
+          "description": "Per-participant initial state. BENCHMARKS compares the evaluated drivers 'from matched initial states and histories', so a multi-participant scenario cannot be pinned by the single-participant members alone; the validator requires an entry for every matched_* participant of a tactical family and requires the single-participant members to agree with each matched entry. Absent when not applicable (e.g. a single-participant capture)."
+        },
+        "initial_commands": { "$ref": "#/$defs/initial_commands" },
+        "history": { "$ref": "#/$defs/scenario_history" }
+      },
+      "description": "Authored initial state, commands and history of the scenario (TECHNICAL_DESIGN 'Content contracts'). All values are authored configuration, never measurements."
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tick_rate_hz", "handover_max_position_m", "handover_max_speed_m_s"],
+      "properties": {
+        "tick_rate_hz": {
+          "const": 60,
+          "description": "Fixed simulation tick rate (TECHNICAL_DESIGN 'Fixed tick and movement ownership')."
+        },
+        "handover_max_position_m": {
+          "const": 0.1,
+          "description": "Matched comparisons allow at most 0.10 m initial-position handover differences (BENCHMARKS 'Tactical comparison')."
+        },
+        "handover_max_speed_m_s": {
+          "const": 0.1,
+          "description": "Matched comparisons allow at most 0.10 m/s initial-speed handover differences."
+        },
+        "history_warmup_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Fixed two-second history warm-up before an opportunity window begins (BENCHMARKS 'Tactical comparison'; see $defs.constants). Required for tactical families; absent for reference_lap_capture."
+        },
+        "opportunity_window_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Opportunity window length, up to three seconds or until the encounter ends (see $defs.constants). Required for tactical families; absent for reference_lap_capture."
+        }
+      }
+    },
+    "seeds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["race_seed", "scenario_seed"],
+      "properties": {
+        "race_seed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Whole-race seed; rates and intervals are reported by whole independent race/scenario seed (BENCHMARKS 'AI metrics')."
+        },
+        "scenario_seed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Scenario seed the opportunity window begins from (BENCHMARKS 'Tactical comparison')."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "description": "Authored seeds. Seeds are configuration, not evidence: recording them costs no measurement."
+    },
+    "required_telemetry": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "gate_crossings",
+          "lap_times",
+          "sector_splits",
+          "speed_samples",
+          "participant_poses",
+          "driver_commands",
+          "tactical_intents",
+          "safety_corrections",
+          "contacts",
+          "resets",
+          "progress_corrections",
+          "race_rng_state",
+          "finish_results",
+          "validity_flags"
+        ]
+      },
+      "description": "Telemetry channels the capture must record for this scenario to be evaluable. The per-family minimum is fixed in $defs.constants and enforced by the validator. Telemetry distinguishes accepted swept motion, positional correction, reset and route-local projection (BENCHMARKS 'Racing and progress fixtures'); only legal swept motion crosses gates."
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["record_id", "revision", "kind"],
+      "properties": {
+        "record_id": {
+          "type": "string",
+          "pattern": "^reference\\.[a-z][a-z0-9_]*(\\.[a-z0-9_]+)*$",
+          "description": "ID of the reference record this scenario is matched against; must resolve to a record embedded in the enclosing fixture."
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "description": "Reference revision. BENCHMARKS: match an evaluated Roadstormer and Classic by car, loadout, difficulty, assists, initial scenario and reference revision."
+        },
+        "kind": { "enum": ["flying_lap_set", "standing_start_lap_set"] }
+      },
+      "description": "Absent when the scenario itself captures the reference (reference_lap_capture) or when no reference record exists yet."
+    },
+    "exclusions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "reason", "count"],
+        "properties": {
+          "rule_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Documented reason a window may be excluded before counting results (BENCHMARKS 'Tactical comparison')."
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Windows excluded under this rule by the most recent evaluation; 0 in an authored configuration because no evaluation has run yet."
+          }
+        }
+      },
+      "description": "Invalid windows are excluded with a documented reason before counting results, and the excluded counts are reported."
+    }
+  },
+  "$defs": {
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "role", "car_id", "loadout", "assists", "driver"],
+      "properties": {
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Stable slot name inside the scenario, e.g. 'lead' or 'surge'."
+        },
+        "role": {
+          "enum": [
+            "reference_subject",
+            "slower_lead",
+            "matched_classic",
+            "matched_cloning_only",
+            "matched_surge",
+            "matched_switch",
+            "traffic",
+            "proxy"
+          ],
+          "description": "Role in the comparison. matched_* participants are the evaluated drivers compared from matched initial states and histories (BENCHMARKS 'Tactical comparison')."
+        },
+        "car_id": {
+          "$ref": "../common.schema.json#/$defs/stable_id",
+          "description": "Car definition ID; the balanced starter is car.balanced_starter (BENCHMARKS)."
+        },
+        "loadout": {
+          "enum": ["stock", "max_upgrade"],
+          "description": "Loadout under test. The standard medal session uses the balanced starter at levels 0/0/0, i.e. stock."
+        },
+        "assists": {
+          "enum": ["standard"],
+          "description": "Assist set; BENCHMARKS uses Standard drift/stability assists for reference and comparison drivers."
+        },
+        "driver": { "$ref": "#/$defs/driver" }
+      }
+    },
+    "driver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "calibration_driver",
+            "classic_planner",
+            "cloning_only_policy",
+            "learned_policy",
+            "human_proxy",
+            "scripted"
+          ],
+          "description": "calibration_driver is the BENCHMARKS fixed reference path follower; classic_planner is the Classic racer; cloning_only_policy and learned_policy are the behavioral-cloning-only and PPO-trained Roadstormer producers compared in 'Tactical comparison'; human_proxy is an original scripted noisy test driver, not evidence of real human interaction."
+        },
+        "difficulty": {
+          "enum": ["rookie", "racer", "expert"],
+          "description": "Explicit difficulty input. Absent when the driver has no difficulty input (calibration driver, proxies, scripted drivers)."
+        },
+        "style": {
+          "enum": ["surge", "switch", "none"],
+          "description": "Explicit style input. 'none' is the Classic-only style pair 0/0. Absent when the driver has no style input."
+        },
+        "producer_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the producer implementation behind this driver, so producers are pinned by an explicit revision rather than by an undocumented convention. Required for cloning_only_policy, which no dependencies member pins: BENCHMARKS/OPPONENT_AI evaluate the behavioral-cloning-only producer separately from the PPO-trained policy, and the two are distinguished only by this revision. learned_policy producers are pinned by dependencies.learned_policy_revision. null while the producer is unratified; a null requires a fixture unknowns entry."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "participant_initial_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot"],
+      "properties": {
+        "slot": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Participant slot this entry fixes; must name a participant of this scenario (the validator checks it)."
+        },
+        "forward_gap_m": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Authored initial forward gap to the car ahead. Absent when not applicable; null means undetermined and requires a fixture unknowns entry."
+        },
+        "lateral_offset_m": {
+          "type": ["number", "null"],
+          "description": "Authored initial lateral offset from the centerline; positive is right. Absent when not applicable."
+        },
+        "speed_m_s": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Authored initial forward speed. Absent when not applicable."
+        },
+        "heading_offset_deg": {
+          "type": ["number", "null"],
+          "description": "Authored initial heading offset from the road tangent. Absent when not applicable."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "description": "One participant's authored initial state. Matched participants of a tactical comparison carry the same values so the compared producers start from matched initial states (BENCHMARKS 'Tactical comparison')."
+    },
+    "initial_commands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "enum": ["authored_schedule", "controller_revision", "stored_snapshot", "none"],
+          "description": "How the initial commands are fixed. authored_schedule: the schedule member carries the authored command trace (the validator requires it to be non-empty). controller_revision: a controller revision produces the commands; controller_revision names it, and an absent controller_revision means the driving participant's own driver revision. stored_snapshot: a stored snapshot replays them. none: no authored initial commands apply."
+        },
+        "controller_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the controller that produces the initial commands. Absent means the driving participant's own driver revision (dependencies); null means undetermined and requires a fixture unknowns entry."
+        },
+        "schedule": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/command_step" },
+          "description": "Authored initial command schedule; required when source is 'authored_schedule' (the validator enforces it). A schedule is authored configuration, never evidence: it fixes inputs, not outcomes."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "description": "How the scenario's initial commands are fixed (TECHNICAL_DESIGN 'Content contracts': initial state/commands/history; BENCHMARKS 'Handling fixtures': a command schedule or controller revision)."
+    },
+    "command_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t_s"],
+      "properties": {
+        "t_s": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Time of the command relative to the scenario start, in seconds."
+        },
+        "throttle": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Authored throttle input in [0, 1]."
+        },
+        "brake": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Authored brake input in [0, 1]."
+        },
+        "steer": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Authored steering input in [-1, 1]; positive is right."
+        }
+      },
+      "description": "One authored command step of an initial command schedule. A full 60 Hz trace over the warm-up and window is expressible; a controller revision may replace it where the controller is the pinned dependency."
+    },
+    "scenario_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "enum": ["replay_from_seed", "stored_scenario_snapshot"],
+          "description": "How the shared pre-window history is established. replay_from_seed: the recorded scenario seed is replayed for the fixed warm-up (BENCHMARKS 'Tactical comparison'). stored_scenario_snapshot: a stored snapshot is replayed when measured repeatability needs it; snapshot_id and snapshot_revision are then required (the validator checks)."
+        },
+        "snapshot_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "ID of the stored scenario snapshot; required when source is 'stored_scenario_snapshot'. null means undetermined and requires a fixture unknowns entry."
+        },
+        "snapshot_revision": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "Revision of the stored scenario snapshot; required when source is 'stored_scenario_snapshot'. null means undetermined and requires a fixture unknowns entry."
+        },
+        "warmup_s": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0,
+          "description": "Length of the shared history before the window opens; absent means protocol.history_warmup_s, and a present value must equal it (the validator checks). null means undetermined and requires a fixture unknowns entry."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "description": "How the matched pre-window history of a tactical comparison is established, so two scenarios that declare the same participants cannot differ in history (BENCHMARKS 'Tactical comparison': matched initial states and histories; stored scenario snapshots if measured repeatability needs them)."
+    },
+    "constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single source of truth for the numeric protocol of this contract, all from docs/BENCHMARKS.md. The fixtures/scenario validator reads these instead of restating them.",
+      "required": [
+        "tick_rate_hz",
+        "history_warmup_s",
+        "opportunity_window_s",
+        "handover_max_position_m",
+        "handover_max_speed_m_s",
+        "required_telemetry_by_family"
+      ],
+      "properties": {
+        "tick_rate_hz": { "const": 60 },
+        "history_warmup_s": {
+          "const": 2.0,
+          "description": "An opportunity window begins from a recorded scenario seed after a fixed two-second history warm-up."
+        },
+        "opportunity_window_s": {
+          "const": 3.0,
+          "description": "The window lasts up to three seconds or until the encounter ends."
+        },
+        "handover_max_position_m": { "const": 0.1 },
+        "handover_max_speed_m_s": { "const": 0.1 },
+        "required_telemetry_by_family": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reference_lap_capture", "tactical_families"],
+          "properties": {
+            "reference_lap_capture": {
+              "const": [
+                "gate_crossings",
+                "lap_times",
+                "sector_splits",
+                "speed_samples",
+                "contacts",
+                "resets",
+                "progress_corrections",
+                "validity_flags"
+              ],
+              "description": "Minimum telemetry for a reference capture: what BENCHMARKS says must be retained per car/course revision (times, sector splits, speed samples, hashes, validity) plus the events whose presence invalidates a run (contacts, resets, missed gates, progress corrections)."
+            },
+            "tactical_families": {
+              "const": [
+                "driver_commands",
+                "tactical_intents",
+                "safety_corrections",
+                "contacts",
+                "participant_poses",
+                "gate_crossings",
+                "race_rng_state"
+              ],
+              "description": "Minimum telemetry for a tactical comparison window: the proposed intents, safety corrections, commands, poses, contacts, gates and race RNG state the labels and rates are computed from."
+            }
+          }
+        }
+      }
+    }
+  }
+}

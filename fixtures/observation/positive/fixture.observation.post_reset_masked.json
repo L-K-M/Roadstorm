@@ -1,0 +1,255 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.observation.post_reset_masked",
+  "fixture_family": "post_reset",
+  "title": "Post-reset observation with masked history (Expert)",
+  "description": "One 5 Hz observation assembled immediately after a participant reset at Expert difficulty. reset_generation has advanced to 2, masks.history_valid is 0 and every history feature (51-56) is masked to zero ('Preserve feature timestamps and reset history to zero/masked defaults'); post_reset_defaults_applied lists the reverted fields. Ego shows the post-reset state: low speed, grounded, respawn immunity active, and valid-progress flag 0 because the reset itself earns no progress. Neighbor traffic is still drawn from the delayed snapshot (one car 14 m ahead), because masking applies to own history, not to current race state. traffic_age_ticks is the Expert default 7 (sampled_tick 800, traffic_snapshot_tick 793). The exact masked default values are authored placeholders (zero), not specified values; see unknowns. Status 'provisional'.",
+  "revision": "1.0.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "participant_id": "ai.classic_4",
+    "difficulty": "expert",
+    "style": "none",
+    "top_speed_m_s": 65.0,
+    "usable_half_width_m": 5.0,
+    "observation_builder_revision": "pending_m4_2_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.0.0",
+      "observation_layout_revision": "ai_shared_v1",
+      "feature_count": 64,
+      "observation_id": "obs.t000800.ai_classic_4",
+      "participant_id": "ai.classic_4",
+      "difficulty": "expert",
+      "style": "none",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "sampled_tick": 800,
+      "traffic_snapshot_tick": 793,
+      "traffic_age_ticks": 7,
+      "feature_vector": [
+        0.1,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1,
+        0,
+        1,
+        0.0,
+        0.95,
+        0,
+        0.0,
+        0.0,
+        0.5,
+        0.0,
+        0.95,
+        0.15,
+        0.0,
+        0.5,
+        0.0,
+        0.95,
+        0.1,
+        0.0,
+        0.5,
+        0.0,
+        0.95,
+        0.2,
+        0.0,
+        0.1,
+        0.0,
+        0.6,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0.2,
+        0.2
+      ],
+      "raw_inputs": {
+        "0": 6.5,
+        "27": 14
+      },
+      "masks": {
+        "neighbor_slots": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "history_valid": 0
+      },
+      "reset": {
+        "reset_generation": 2,
+        "post_reset_defaults_applied": true,
+        "defaults_applied": [
+          "history_lane_target_0p2s",
+          "history_lane_target_0p6s",
+          "history_previous_pass_side",
+          "history_seconds_since_attempt",
+          "history_forward_distance_3s",
+          "history_recent_contact"
+        ]
+      },
+      "normalization": {
+        "clip_min": -1,
+        "clip_max": 1,
+        "coefficients_revision": "ai_shared_v1_norm"
+      },
+      "fallback": {
+        "active": false,
+        "reason": null,
+        "defaults_applied": []
+      },
+      "occupancy_encounter_gap_m": null
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style and participant_id match the fixture context."
+    },
+    {
+      "expectation_id": "expect.difficulty_hot",
+      "check": "difficulty_one_hot",
+      "path": "records.0",
+      "statement": "Exactly one difficulty one-hot is set and it is Expert (index 59)."
+    },
+    {
+      "expectation_id": "expect.style_hot",
+      "check": "style_one_hot",
+      "path": "records.0",
+      "statement": "Classic-only style leaves both style one-hot inputs at 0/0."
+    },
+    {
+      "expectation_id": "expect.neighbor_presence",
+      "check": "neighbor_presence",
+      "path": "records.0",
+      "statement": "One neighbor slot is present (index 32) and the rest are absent and zeroed; masks.neighbor_slots agrees."
+    },
+    {
+      "expectation_id": "expect.traffic_age",
+      "check": "traffic_age_arithmetic",
+      "path": "records.0",
+      "statement": "traffic_age_ticks equals sampled_tick minus traffic_snapshot_tick (800 - 793 = 7)."
+    },
+    {
+      "expectation_id": "expect.difficulty_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Expert difficulty uses the 7-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.history_mask",
+      "check": "history_mask",
+      "path": "records.0",
+      "statement": "post_reset_defaults_applied is true, so history_valid is 0, reset_generation is at least 1, and every history feature is masked to zero."
+    },
+    {
+      "expectation_id": "expect.normalization",
+      "check": "normalization_consistency",
+      "path": "records.0",
+      "statement": "The raw_inputs probes normalize to the recorded values (speed/top-speed, neighbor route gap/70 m)."
+    },
+    {
+      "expectation_id": "expect.fallback",
+      "check": "fallback_defaults",
+      "path": "records.0",
+      "statement": "No safe diagnostic fallback is active; masking is a reset, not a fallback."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the reset-related semantics a correct observation builder must preserve, plus the standing parity target.",
+    "metrics": [
+      {
+        "name": "actor_parity_max_abs_error",
+        "description": "Python/GDScript actor-output parity over the observation corpus, including masked/reset inputs.",
+        "comparator": "lte",
+        "value": 0.0001,
+        "unit": "max abs error",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements."
+  },
+  "unknowns": [
+    {
+      "path": "records.0.occupancy_encounter_gap_m",
+      "reason": "The 'planned encounter' distance for corridor occupancy is not fixed by OPPONENT_AI.md.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.observation_builder_revision",
+      "reason": "Placeholder only: no ObservationBuilder revision is ratified until M4.2 implements the shared interface.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0",
+      "reason": "The exact masked history default values (all zero here) and the post-reset ego defaults (low speed, immunity on, valid-progress 0) are authored placeholders; OPPONENT_AI.md specifies only zero/masked reset history defaults, not the surrounding ego defaults.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:987a04368b77b5078cbbb42b6ba2ef350f820e8867e2713d3ce7f09b00df7d2d",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
+    "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Authored M0.9 text contract; no implementation is exercised by this file."
+  }
+}

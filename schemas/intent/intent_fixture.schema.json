@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm versioned tactical-intent fixture (schema version 1)",
+  "description": "Fixture contract for the TacticalIntent record contract in tactical_intent.schema.json, defined at M0.9 from docs/OPPONENT_AI.md ('Architecture', 'Shared schema version 1', 'Implementation and acceptance') and docs/BENCHMARKS.md ('AI metrics'). A fixture fixes one scenario (participant, road/car geometry, difficulty, style, producer) and carries one or more intent records sampled at the 5 Hz tactical cadence, plus the behavioral expectations the fixtures/intent validator checks semantically (decode consistency, label thresholds, cadence, age arithmetic, difficulty age, reset masking, safety deferral, correction materiality) and the documented initial acceptance metrics. Like handling_fixture.schema.json, this is a text contract: numeric values are authored initial values or documented targets, never measurements. A value that is not yet determined is JSON null and MUST be listed in 'unknowns'; the validator enforces that pairing for the null-meaning-undetermined fields. Companion vocabulary lives in ../common.schema.json. This fixture defines no model, weights, export or training interface; the learned-policy producer kind exists so the shared contract can be exercised, not because a trained model exists.",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "fixture_family",
+    "title",
+    "description",
+    "revision",
+    "status",
+    "units",
+    "context",
+    "records",
+    "expectations",
+    "comparison",
+    "unknowns",
+    "content_hash",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision identifier. A fixture whose schema_version differs is rejected, not silently migrated."
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^fixture\\.intent\\.[a-z][a-z0-9_]*$",
+      "description": "Stable semantic ID, e.g. fixture.intent.surge_commit_pass."
+    },
+    "fixture_family": {
+      "enum": ["commit_pass", "wait_hold", "follow", "post_reset", "safety_correction", "regression"],
+      "description": "Which intent behavior the fixture exercises. 'regression' is reserved for fixtures added later for meaningful new concerns."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "revision": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+      "description": "Fixture content revision. Any semantic change to context, records, expectations or metrics bumps this and recomputes content_hash."
+    },
+    "status": {
+      "enum": ["provisional", "frozen", "example"],
+      "description": "provisional = authored initial contract, not yet executed against an implementation; frozen = accepted after review; example = contract illustration that deliberately instantiates an unratified producer (learned_policy or cloning_only_policy) without claiming it exists. 'measured' is not valid here: fixtures carry targets and requirements, never measured outcomes."
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["length", "speed", "time"],
+      "properties": {
+        "length": { "const": "m" },
+        "speed": { "const": "m/s" },
+        "time": { "const": "s" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tick_rate_hz",
+        "road_width_m",
+        "car_width_m",
+        "difficulty",
+        "style",
+        "producer_kind",
+        "producer_revision",
+        "traffic_age_is_difficulty_default"
+      ],
+      "properties": {
+        "tick_rate_hz": {
+          "const": 60,
+          "description": "Fixed simulation tick rate (TECHNICAL_DESIGN 'Fixed tick and movement ownership')."
+        },
+        "road_width_m": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Usable road width of the scenario section. GAME_DESIGN course widths generally range 9-20 m."
+        },
+        "car_width_m": {
+          "type": "number",
+          "minimum": 1.7,
+          "maximum": 2.2,
+          "description": "Car width, bounded by the initial TECHNICAL_DESIGN envelope 1.7-2.2 m."
+        },
+        "difficulty": { "enum": ["rookie", "racer", "expert"] },
+        "style": { "enum": ["surge", "switch", "none"] },
+        "producer_kind": { "enum": ["classic_planner", "cloning_only_policy", "learned_policy"] },
+        "producer_revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producer revision shared by every record in this fixture; records must agree with it."
+        },
+        "traffic_age_is_difficulty_default": {
+          "type": "boolean",
+          "description": "true when every record's traffic_age_ticks must equal the difficulty default (18/12/7). false lets a fixture exercise a non-default age, which then must be explained in the description."
+        }
+      }
+    },
+    "records": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "tactical_intent.schema.json" },
+      "description": "Intent records in ascending sampled_tick order. With two or more records, consecutive generated_tick values must be 12 ticks apart (5 Hz at 60 Hz)."
+    },
+    "expectations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/expectation" },
+      "description": "Behavioral expectations the validator checks. Each names a semantic check the validator implements and the record it applies to; a check id the validator does not implement is a fixture error, so expectations cannot drift from the executable checks."
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "metrics"],
+      "properties": {
+        "purpose": { "type": "string", "minLength": 1 },
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "../common.schema.json#/$defs/acceptance_metric" },
+          "description": "Documented initial targets from OPPONENT_AI.md 'Implementation and acceptance'. A metric with status 'measured' is invalid in a fixture file; measured values belong to evaluation records. The bound members each comparator may carry follow schemas/common.schema.json's acceptance_metric allOf rules (threshold comparators carry value, range/ratio_range carry value_min/value_max, report carries no bound); fixtures/intent/validate_intent_contract.py enforces both rules semantically because its JSON Schema subset does not evaluate if/then."
+        },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": { "$ref": "../common.schema.json#/$defs/unknown_entry" },
+      "description": "Every null in a record field whose null means 'not yet determined' (lateral.legal_corridor_half_width_m, lateral.decoded_offset_m, pace.speed_profile_interval_m_s, pace.target_speed_m_s, commitment.hold_window_s, interpolation.curve) must have a matching entry here, keyed by the dotted path including the record index, e.g. records.0.pace.target_speed_m_s. Entries may also record unratified decisions that have no null field."
+    },
+    "content_hash": {
+      "$ref": "../common.schema.json#/$defs/content_hash",
+      "description": "SHA-256 over canonical JSON (sorted keys, compact separators, UTF-8) of this file with the content_hash member removed. Recomputed by the validator on every check."
+    },
+    "provenance": { "$ref": "../common.schema.json#/$defs/provenance" }
+  },
+  "$defs": {
+    "expectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expectation_id", "check", "path", "statement"],
+      "properties": {
+        "expectation_id": {
+          "type": "string",
+          "pattern": "^expect\\.[a-z0-9_]+$"
+        },
+        "check": {
+          "enum": [
+            "decode_consistency",
+            "label_thresholds",
+            "sampling_cadence",
+            "age_arithmetic",
+            "difficulty_age",
+            "context_agreement",
+            "reset_mask",
+            "safety_deferral",
+            "correction_materiality",
+            "min_commitment",
+            "metric_status_honesty",
+            "metric_shape",
+            "unknown_pairing"
+          ],
+          "description": "Semantic check implemented by fixtures/intent/validate_intent_contract.py. The two metric checks apply to the fixture's comparison.metrics array (path 'comparison.metrics' or 'comparison.metrics.N'), not to a single record. Their ids match the metric checks of the scenario and handling slices so all three contracts check the shared acceptance_metric vocabulary identically."
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(records(\\.[0-9]+)?|comparison(\\.metrics(\\.[0-9]+)?)?)$",
+          "description": "What the expectation applies to: a record ('records.0'), the whole record sequence ('records', for cadence), or the fixture's metric array ('comparison.metrics', or one metric 'comparison.metrics.0')."
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable restatement of the specified behavior being checked."
+        }
+      }
+    }
+  }
+}

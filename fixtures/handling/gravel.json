@@ -1,0 +1,263 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.handling.gravel",
+  "fixture_family": "gravel",
+  "title": "Gravel sector sweeper with matched asphalt control",
+  "description": "Sweeper with an 80 m gravel sector and a matching asphalt control run from BENCHMARKS.md 'Handling fixtures' (Gravel row). The sweeper geometry matches fixture.handling.sweeper (120 m radius, 90 degrees, 12 m width, 30 m/s entry, 50 m approach/exit); the 80 m gravel sector is placed inside the arc and split into three arc segments so each surface boundary is explicit. BENCHMARKS asks for gravel deltas to be reported. Gravel surface modifiers live in the car handling resource and are undetermined until M1.",
+  "revision": "1.0.1",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg",
+    "speed": "m/s"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "right": "+X"
+  },
+  "geometry": {
+    "start_reference": "World origin at the start of segment 0 on the centerline; forward -Z, right +X, up +Y.",
+    "closed_loop": false,
+    "segments": [
+      {
+        "type": "straight",
+        "length_m": 50,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Approach straight, matching the sweeper row."
+      },
+      {
+        "type": "arc",
+        "radius_m": 120,
+        "angle_deg": 14.323945,
+        "direction": "left",
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Asphalt entry part of the arc; 30 m of arc length (angle = 30/120 rad)."
+      },
+      {
+        "type": "arc",
+        "radius_m": 120,
+        "angle_deg": 38.197186,
+        "direction": "left",
+        "width_m": 12,
+        "surface_id": "gravel",
+        "note": "The 80 m gravel sector (angle = 80/120 rad)."
+      },
+      {
+        "type": "arc",
+        "radius_m": 120,
+        "angle_deg": 37.478869,
+        "direction": "left",
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Asphalt remainder of the arc; 78.4956 m of arc length. The three arc angles sum to 90 degrees and the arc lengths sum to 188.4956 m, matching the sweeper row."
+      },
+      {
+        "type": "straight",
+        "length_m": 50,
+        "width_m": 12,
+        "surface_id": "asphalt",
+        "note": "Exit straight, matching the sweeper row."
+      }
+    ]
+  },
+  "surfaces": [
+    {
+      "surface_id": "asphalt",
+      "description": "Dry asphalt baseline surface."
+    },
+    {
+      "surface_id": "gravel",
+      "description": "Gravel sector surface. GAME_DESIGN: gravel gently reduces lateral grip and makes slides broader; it does not secretly punish drift.",
+      "handling_modifiers": null,
+      "note": "Numeric grip/drag modifiers are per-car values in the handling resource (../handling_config.schema.json surfaces[].lateral_grip_scale/drag_scale) and are null until M1 tuning."
+    }
+  ],
+  "runs": [
+    {
+      "run_id": "gravel_drift",
+      "role": "primary",
+      "description": "30 m/s entry through the gravel sector on the scripted drift controller.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "driver": {
+        "kind": "controller",
+        "controller_id": "scripted_drift",
+        "controller_revision": null,
+        "assists": "standard",
+        "note": "Controller implementation is M1 work; the revision identifier is reserved, not yet assigned."
+      }
+    },
+    {
+      "run_id": "asphalt_control",
+      "role": "control",
+      "description": "Matched control run: identical geometry and entry conditions with the gravel segment surfaced as asphalt, so the surface effect is isolated.",
+      "initial_state": {
+        "start_mode": "rolling",
+        "velocity_m_s": 30,
+        "heading_deg": 0,
+        "position_m": [
+          0,
+          0,
+          0
+        ],
+        "grounded": true
+      },
+      "surface_overrides": [
+        {
+          "segment_index": 2,
+          "surface_id": "asphalt"
+        }
+      ],
+      "driver": {
+        "kind": "controller",
+        "controller_id": "scripted_drift",
+        "controller_revision": null,
+        "assists": "standard",
+        "note": "Same controller and entry conditions as the gravel run."
+      }
+    }
+  ],
+  "timing_gates": [
+    {
+      "gate_id": "start",
+      "kind": "start",
+      "segment_index": 0,
+      "arc_length_m": 0,
+      "purpose": "Approach start; entry speed is measured here."
+    },
+    {
+      "gate_id": "gravel_entry",
+      "kind": "intermediate",
+      "segment_index": 2,
+      "arc_length_m": 0,
+      "purpose": "Asphalt-to-gravel transition."
+    },
+    {
+      "gate_id": "gravel_exit",
+      "kind": "intermediate",
+      "segment_index": 2,
+      "arc_length_m": 80,
+      "purpose": "Gravel-to-asphalt transition."
+    },
+    {
+      "gate_id": "finish",
+      "kind": "finish",
+      "segment_index": 4,
+      "arc_length_m": 50,
+      "purpose": "End of the exit straight."
+    }
+  ],
+  "expected_events": [
+    {
+      "event": "surface_transition",
+      "required": true,
+      "applies_to_runs": [
+        "gravel_drift"
+      ],
+      "note": "One transition on entering and one on leaving the gravel sector."
+    },
+    {
+      "event": "drift_entry",
+      "required": true,
+      "applies_to_runs": [
+        "gravel_drift"
+      ]
+    },
+    {
+      "event": "drift_sustained",
+      "required": true,
+      "applies_to_runs": [
+        "gravel_drift"
+      ],
+      "note": "Slides are broader on gravel; the useful slip band remains the GAME_DESIGN 12-40 degree requirement."
+    },
+    {
+      "event": "drift_exit",
+      "required": true,
+      "applies_to_runs": [
+        "gravel_drift"
+      ]
+    }
+  ],
+  "comparison": {
+    "purpose": "Compare the gravel sector against the matched asphalt control for the three starters at stock and maximum upgrades; short gravel sectors should remain competitive for every car.",
+    "paired_runs_required": 10,
+    "metrics": [
+      {
+        "name": "gravel_vs_asphalt_elapsed_time_delta",
+        "description": "BENCHMARKS asks for gravel deltas to be reported alongside the sweeper target; no percentage threshold is claimed.",
+        "comparator": "report",
+        "unit": "ratio",
+        "status": "documented_initial_target"
+      }
+    ]
+  },
+  "cars": {
+    "car_ids": [
+      "car.balanced_starter",
+      "car.sparrow",
+      "car.slidewinder"
+    ],
+    "loadouts": [
+      "stock",
+      "max_upgrade"
+    ],
+    "handling_revision": null,
+    "note": "BENCHMARKS handling comparisons use all three starters at stock and maximum upgrades."
+  },
+  "unknowns": [
+    {
+      "path": "runs[0].driver.controller_revision",
+      "reason": "The scripted drift controller is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "runs[1].driver.controller_revision",
+      "reason": "The scripted drift controller is M1 work; its revision identifier is reserved but not yet assigned.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "surfaces[1].handling_modifiers",
+      "reason": "Per-car gravel lateral_grip_scale and drag_scale are absent here by design: they belong to each car's handling resource and are null until M1 tuning. This fixture must not invent surface coefficients.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "cars.car_ids",
+      "reason": "car.balanced_starter is the fixed ID of the balanced starter (Comet) from BENCHMARKS; the Sparrow and Slidewinder IDs are working names until the M1 car registry assigns stable IDs.",
+      "blocking": false,
+      "until": "M1"
+    },
+    {
+      "path": "cars.handling_revision",
+      "reason": "The per-car handling resource (../handling_config.schema.json) is M1 work; the revision this fixture targets is undetermined until M1 assigns it. BENCHMARKS regenerates reference records when handling dependencies change, so the fixture records the target revision instead of duplicating coefficients.",
+      "blocking": true,
+      "until": "M1"
+    }
+  ],
+  "content_hash": "sha256:78cd1015f03a6f2f5729b8f4eb3fcd1dffa3c9c1807421749497fa874574ff89",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md#handling-fixtures",
+    "author": "pi coding agent (job b20cb153-94a8-4997-be00-1f8335daa1a0)",
+    "model": "step-5-preview",
+    "provider": "stepfun-ai-step-plan",
+    "date_utc": "2026-11-26",
+    "note": "M0.9 authored initial fixture contract (job b20cb153-94a8-4997-be00-1f8335daa1a0). Numeric values are authored initial values or documented targets; nothing here is measured. Repaired 2026-11-27 by job 896f97f0-41d9-491a-8d44-1ef435adbaac (model step-5-preview, provider stepfun-ai-step-plan): wake-window contradiction, barrier extents, handling-revision dependency, unknowns pairing and documentation repairs."
+  }
+}

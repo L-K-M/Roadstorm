@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "const",
+      "path": "records.0.intent_layout_revision"
+    }
+  ]
+}

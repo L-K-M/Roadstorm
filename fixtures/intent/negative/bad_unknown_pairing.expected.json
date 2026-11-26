@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.pace.target_speed_m_s",
+      "check": "unknown_pairing"
+    }
+  ]
+}

@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Roadstorm shared AI observation record (observation schema version 1)",
+  "description": "Machine-readable contract for one AIObservation assembled by the ObservationBuilder and consumed by a Classic planner or a Roadstormer learned policy through the shared observation/intent/follower hierarchy (docs/OPPONENT_AI.md 'Shared schema version 1', 'Architecture' step 1; the 'AIObservation/TacticalIntent' row of docs/TECHNICAL_DESIGN.md 'Content contracts': version, ordered shape/fields, road frame, masks, observation age, normalization, personality/difficulty and reset defaults, defined before M4.2). This is a text contract defined at M0.9. It requires no working AI implementation and defines no model, weights, export, training or inference interface; those are ratified separately at M4B and are deliberately absent here. Every field, index, mask, normalization coefficient, age rule and reset rule below restates semantics specified in docs/OPPONENT_AI.md. This slice is DISTINCT from the partial, unaccepted schemas/ai_observation.schema.json and from the other schema slices; that file is not superseded or edited here. Values that the documents leave undetermined are JSON null in instances and MUST be listed in the enclosing fixture's 'unknowns' (see observation_fixture.schema.json).",
+  "schema_version": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "observation_layout_revision",
+    "feature_count",
+    "observation_id",
+    "participant_id",
+    "difficulty",
+    "style",
+    "road_frame",
+    "sampling",
+    "sampled_tick",
+    "traffic_snapshot_tick",
+    "traffic_age_ticks",
+    "feature_vector",
+    "masks",
+    "reset",
+    "normalization",
+    "fallback"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0",
+      "description": "Contract revision. A record whose schema_version differs is rejected, not silently migrated; a contract change requires a new version and a recorded decision."
+    },
+    "observation_layout_revision": {
+      "const": "ai_shared_v1",
+      "description": "Feature-layout revision of the shared 64-element vector, parallel to intent_layout_revision in tactical_intent.schema.json. 'ai_shared_v1' names the OPPONENT_AI.md 'Shared schema version 1' layout; a layout change is a new revision and a recorded decision."
+    },
+    "feature_count": {
+      "const": 64,
+      "description": "The shared observation is a fixed 64-element float32 vector in a documented order."
+    },
+    "observation_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable ID of this observation record, e.g. obs.t000996.ai_surge_1."
+    },
+    "participant_id": {
+      "$ref": "../common.schema.json#/$defs/stable_id",
+      "description": "Participant the observation belongs to."
+    },
+    "difficulty": {
+      "enum": ["rookie", "racer", "expert"],
+      "description": "Explicit difficulty input to the policy. Selects the delayed traffic age (18/12/7 ticks at 60 Hz) encoded in indices 57-59."
+    },
+    "style": {
+      "enum": ["surge", "switch", "none"],
+      "description": "Explicit style input to the policy, encoded in indices 60-61. 'surge'/'switch' are the two learned styles; 'none' is the Classic-only style input pair 0/0 (OPPONENT_AI.md 'Shared schema version 1')."
+    },
+    "road_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forward", "right", "up"],
+      "properties": {
+        "forward": { "type": "string", "minLength": 1 },
+        "right": { "type": "string", "minLength": 1 },
+        "up": { "type": "string", "minLength": 1 }
+      },
+      "description": "Route frame is forward tangent, right lateral, up road normal; positive lane offset is right (same convention as tactical_intent.schema.json). The strings name the frame's axes; concrete vectors are runtime state, not frozen here."
+    },
+    "sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tactical_rate_hz", "period_ticks", "period_s"],
+      "properties": {
+        "tactical_rate_hz": {
+          "const": 5,
+          "description": "Tactical decision rate this observation feeds. OPPONENT_AI.md specifies 'initially' 5 Hz; changing it requires a new schema_version and a recorded decision."
+        },
+        "period_ticks": { "const": 12, "description": "Sampling period in 60 Hz ticks (5 Hz)." },
+        "period_s": { "const": 0.2, "description": "Sampling period in seconds." }
+      },
+      "description": "Observations feed the 5 Hz tactical decision. Ego and road-ahead features are current as of sampled_tick; neighbor traffic, corridor occupancy and traffic-derived history use the delayed snapshot at traffic_snapshot_tick; the immediate emergency guard remains current and is not part of this vector."
+    },
+    "sampled_tick": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "60 Hz simulation tick at which this observation was assembled. Ego (0-11) and road-ahead (12-26) features reflect committed state at this tick."
+    },
+    "traffic_snapshot_tick": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "60 Hz tick of the delayed traffic snapshot used for neighbor (27-50), occupancy (62-63) and traffic-derived history features. traffic_age_ticks = sampled_tick - traffic_snapshot_tick."
+    },
+    "traffic_age_ticks": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18,
+      "description": "Age of the delayed traffic snapshot: Rookie 18, Racer 12, Expert 7 ticks at 60 Hz (OPPONENT_AI.md 'Shared schema version 1'). Must equal sampled_tick - traffic_snapshot_tick, and must equal the declared difficulty default unless the enclosing fixture sets context.traffic_age_is_difficulty_default false, which marks a deliberate non-default age scenario that the fixture description must explain (the validator enforces the arithmetic and, when the flag is true, the difficulty default; it cannot machine-check the prose explanation)."
+    },
+    "feature_vector": {
+      "type": "array",
+      "minItems": 64,
+      "maxItems": 64,
+      "items": { "type": "number", "minimum": -1, "maximum": 1 },
+      "description": "The 64 normalized features in fixed index order (see feature_layout). All values are finite float32 clipped to [-1,1]; booleans/one-hots/flags are 0/1; corridor-occupancy fractions are clipped to [0,1]."
+    },
+    "raw_inputs": {
+      "type": "object",
+      "additionalProperties": { "type": "number" },
+      "description": "OPTIONAL. Pre-normalization physical values for a representative subset of ratio features, keyed by the decimal index string (e.g. \"0\", \"27\"). The validator recomputes clip(raw <op> scale) from $defs.constants and the fixture context and requires it to equal feature_vector[index] within tolerance. Absent when the record does not pin raw sensor values (e.g. a safe-fallback record)."
+    },
+    "masks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["neighbor_slots", "history_valid"],
+      "properties": {
+        "neighbor_slots": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number", "enum": [0, 1] },
+          "description": "Presence mask per neighbor slot, mirroring the in-vector presence-mask features at indices 32/38/44/50. Must agree with them exactly."
+        },
+        "history_valid": {
+          "type": "number",
+          "enum": [0, 1],
+          "description": "1 when the history features (51-56) carry valid data; 0 when they are masked to zero/default after a reset ('Preserve feature timestamps and reset history to zero/masked defaults'). The safe diagnostic fallback also masks history without a reset (reset_generation 0, post_reset_defaults_applied false), as in fixture.observation.fallback_zero_width; whether a fallback must additionally bump reset_generation is unratified and recorded in that fixture's unknowns, so 0 without a reset is accepted, not rejected."
+        }
+      }
+    },
+    "reset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reset_generation", "post_reset_defaults_applied", "defaults_applied"],
+      "properties": {
+        "reset_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Counts participant resets/recoveries. Reset restores timers, counters, history, contact/recovery state and queued events (OPPONENT_AI.md 'Training approach'; TECHNICAL_DESIGN fixed-tick reset), so the generation makes observation history comparable across resets."
+        },
+        "post_reset_defaults_applied": {
+          "type": "boolean",
+          "description": "true when this observation was assembled after a reset with masked history defaults substituted; then masks.history_valid must be 0, reset_generation must be at least 1, and defaults_applied must list the substituted defaults."
+        },
+        "defaults_applied": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Feature names or group names from feature_layout (e.g. 'history_lane_target_0p2s' or 'history') reverted to masked defaults after the reset; non-empty when post_reset_defaults_applied is true. Every entry must name a layout feature or group; the validator rejects unknown names."
+        }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clip_min", "clip_max", "coefficients_revision"],
+      "properties": {
+        "clip_min": { "const": -1 },
+        "clip_max": { "const": 1 },
+        "coefficients_revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Revision of the normalization coefficients (the /20, /pi, x100, /0.12, /70 ... divisors/multipliers in $defs.constants). Clipping/padding rules and every normalization coefficient ship with the model (OPPONENT_AI.md); a coefficient change is a new revision."
+        }
+      }
+    },
+    "fallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["active"],
+      "properties": {
+        "active": {
+          "type": "boolean",
+          "description": "true when the safe diagnostic fallback fired: unknown schema, zero usable width, or nonfinite input produces a safe diagnostic fallback (OPPONENT_AI.md 'Shared schema version 1')."
+        },
+        "reason": {
+          "type": ["string", "null"],
+          "description": "Why the fallback fired; non-empty when active."
+        },
+        "defaults_applied": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Which defaults the fallback substituted; non-empty when active."
+        }
+      }
+    },
+    "occupancy_encounter_gap_m": {
+      "type": ["number", "null"],
+      "exclusiveMinimum": 0,
+      "description": "Signed route gap (m, positive ahead) at which the delayed left/right corridor-occupancy fractions (indices 62-63) are evaluated - the 'planned encounter'. OPPONENT_AI.md specifies occupancy 'at the planned encounter' but does not fix the encounter distance, so this is null until ratified; a null requires a matching unknowns entry."
+    },
+    "provenance": { "$ref": "../common.schema.json#/$defs/provenance" }
+  },
+  "feature_layout": {
+    "layout_revision": "ai_shared_v1",
+    "feature_count": 64,
+    "description": "The ordered 64-feature specification as machine-readable DATA (not a schema). Order and normalization are from OPPONENT_AI.md 'Shared schema version 1'. The fixtures/observation validator reads this array to drive the normalization_consistency check, to enforce each entry's declared kind and range, and to confirm index/group spans; it is the single source of truth for the vector order. kind: ratio_divide=clip(raw/scale), ratio_multiply=clip(raw*scale), boolean/one_hot=0/1, fraction=clip[0,1], signed_enum=-1/0/1, already_normalized=value already in [-1,1]. scale_ref names a member of $defs.constants.normalization_scales, or a fixture-context member (top_speed_m_s, usable_half_width_m); null for non-ratio kinds. snapshot: current=committed state at sampled_tick; delayed=the delayed traffic snapshot at traffic_snapshot_tick. A present neighbor's route gap (indices 27/33/39/45) must lie inside $defs.constants' 70 m ahead / 35 m behind window, which the validator enforces.",
+    "groups": [
+      { "name": "ego", "first_index": 0, "count": 12, "snapshot": "current" },
+      { "name": "road_ahead", "first_index": 12, "count": 15, "snapshot": "current" },
+      { "name": "neighbor", "first_index": 27, "count": 24, "snapshot": "delayed" },
+      { "name": "history", "first_index": 51, "count": 6, "snapshot": "mixed" },
+      { "name": "difficulty_one_hot", "first_index": 57, "count": 3, "snapshot": "current" },
+      { "name": "style_one_hot", "first_index": 60, "count": 2, "snapshot": "current" },
+      { "name": "occupancy", "first_index": 62, "count": 2, "snapshot": "delayed" }
+    ],
+    "features": [
+      { "index": 0, "group": "ego", "name": "ego_speed_over_top_speed", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "top_speed_m_s", "normalization": "speed / top-speed", "range": [-1, 1] },
+      { "index": 1, "group": "ego", "name": "ego_lateral_speed", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "lateral_speed_scale_m_s", "normalization": "lateral speed / 20 m/s", "range": [-1, 1] },
+      { "index": 2, "group": "ego", "name": "ego_heading_error", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "heading_error_scale_rad", "normalization": "heading error / pi", "range": [-1, 1] },
+      { "index": 3, "group": "ego", "name": "ego_slip_angle", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "slip_angle_scale_rad", "normalization": "slip / pi", "range": [-1, 1] },
+      { "index": 4, "group": "ego", "name": "ego_lane_offset", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "usable_half_width_m", "normalization": "lane offset / usable half-width", "range": [-1, 1] },
+      { "index": 5, "group": "ego", "name": "ego_yaw_rate", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "yaw_rate_scale_rad_s", "normalization": "yaw rate / pi rad/s", "range": [-1, 1] },
+      { "index": 6, "group": "ego", "name": "ego_grounded", "kind": "boolean", "snapshot": "current", "scale_ref": null, "normalization": "grounded flag", "range": [0, 1] },
+      { "index": 7, "group": "ego", "name": "ego_drift_active", "kind": "boolean", "snapshot": "current", "scale_ref": null, "normalization": "drift active flag", "range": [0, 1] },
+      { "index": 8, "group": "ego", "name": "ego_immunity", "kind": "boolean", "snapshot": "current", "scale_ref": null, "normalization": "respawn immunity flag", "range": [0, 1] },
+      { "index": 9, "group": "ego", "name": "ego_surge_cooldown", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "surge_cooldown_scale_s", "normalization": "surge cooldown / 2 s", "range": [0, 1] },
+      { "index": 10, "group": "ego", "name": "ego_surface_grip", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "surface_grip_scale", "normalization": "surface grip / 2", "range": [0, 1] },
+      { "index": 11, "group": "ego", "name": "ego_valid_progress", "kind": "boolean", "snapshot": "current", "scale_ref": null, "normalization": "valid-progress flag", "range": [0, 1] },
+      { "index": 12, "group": "road_ahead", "name": "road_curvature_20m", "kind": "ratio_multiply", "snapshot": "current", "scale_ref": "road_curvature_scale_m", "normalization": "signed curvature x 100 m", "range": [-1, 1] },
+      { "index": 13, "group": "road_ahead", "name": "road_grade_20m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_grade_scale", "normalization": "grade / 0.12", "range": [-1, 1] },
+      { "index": 14, "group": "road_ahead", "name": "road_width_20m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_width_scale_m", "normalization": "road width / 20 m", "range": [0, 1] },
+      { "index": 15, "group": "road_ahead", "name": "road_bank_20m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_bank_scale_rad", "normalization": "bank / 0.21 rad", "range": [-1, 1] },
+      { "index": 16, "group": "road_ahead", "name": "road_surface_grip_20m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "surface_grip_scale", "normalization": "surface grip / 2", "range": [0, 1] },
+      { "index": 17, "group": "road_ahead", "name": "road_curvature_50m", "kind": "ratio_multiply", "snapshot": "current", "scale_ref": "road_curvature_scale_m", "normalization": "signed curvature x 100 m", "range": [-1, 1] },
+      { "index": 18, "group": "road_ahead", "name": "road_grade_50m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_grade_scale", "normalization": "grade / 0.12", "range": [-1, 1] },
+      { "index": 19, "group": "road_ahead", "name": "road_width_50m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_width_scale_m", "normalization": "road width / 20 m", "range": [0, 1] },
+      { "index": 20, "group": "road_ahead", "name": "road_bank_50m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_bank_scale_rad", "normalization": "bank / 0.21 rad", "range": [-1, 1] },
+      { "index": 21, "group": "road_ahead", "name": "road_surface_grip_50m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "surface_grip_scale", "normalization": "surface grip / 2", "range": [0, 1] },
+      { "index": 22, "group": "road_ahead", "name": "road_curvature_100m", "kind": "ratio_multiply", "snapshot": "current", "scale_ref": "road_curvature_scale_m", "normalization": "signed curvature x 100 m", "range": [-1, 1] },
+      { "index": 23, "group": "road_ahead", "name": "road_grade_100m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_grade_scale", "normalization": "grade / 0.12", "range": [-1, 1] },
+      { "index": 24, "group": "road_ahead", "name": "road_width_100m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_width_scale_m", "normalization": "road width / 20 m", "range": [0, 1] },
+      { "index": 25, "group": "road_ahead", "name": "road_bank_100m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "road_bank_scale_rad", "normalization": "bank / 0.21 rad", "range": [-1, 1] },
+      { "index": 26, "group": "road_ahead", "name": "road_surface_grip_100m", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "surface_grip_scale", "normalization": "surface grip / 2", "range": [0, 1] },
+      { "index": 27, "group": "neighbor", "name": "neighbor0_route_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_gap_scale_m", "normalization": "signed route gap / 70 m", "range": [-1, 1] },
+      { "index": 28, "group": "neighbor", "name": "neighbor0_lateral_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_lateral_gap_scale_m", "normalization": "lateral gap / 10 m", "range": [-1, 1] },
+      { "index": 29, "group": "neighbor", "name": "neighbor0_rel_forward_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_forward_speed_scale_m_s", "normalization": "relative forward speed / 40 m/s", "range": [-1, 1] },
+      { "index": 30, "group": "neighbor", "name": "neighbor0_rel_lateral_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_lateral_speed_scale_m_s", "normalization": "relative lateral speed / 20 m/s", "range": [-1, 1] },
+      { "index": 31, "group": "neighbor", "name": "neighbor0_width", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_width_scale_m", "normalization": "width / 3 m", "range": [0, 1] },
+      { "index": 32, "group": "neighbor", "name": "neighbor0_presence", "kind": "boolean", "snapshot": "delayed", "scale_ref": null, "normalization": "presence mask", "range": [0, 1] },
+      { "index": 33, "group": "neighbor", "name": "neighbor1_route_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_gap_scale_m", "normalization": "signed route gap / 70 m", "range": [-1, 1] },
+      { "index": 34, "group": "neighbor", "name": "neighbor1_lateral_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_lateral_gap_scale_m", "normalization": "lateral gap / 10 m", "range": [-1, 1] },
+      { "index": 35, "group": "neighbor", "name": "neighbor1_rel_forward_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_forward_speed_scale_m_s", "normalization": "relative forward speed / 40 m/s", "range": [-1, 1] },
+      { "index": 36, "group": "neighbor", "name": "neighbor1_rel_lateral_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_lateral_speed_scale_m_s", "normalization": "relative lateral speed / 20 m/s", "range": [-1, 1] },
+      { "index": 37, "group": "neighbor", "name": "neighbor1_width", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_width_scale_m", "normalization": "width / 3 m", "range": [0, 1] },
+      { "index": 38, "group": "neighbor", "name": "neighbor1_presence", "kind": "boolean", "snapshot": "delayed", "scale_ref": null, "normalization": "presence mask", "range": [0, 1] },
+      { "index": 39, "group": "neighbor", "name": "neighbor2_route_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_gap_scale_m", "normalization": "signed route gap / 70 m", "range": [-1, 1] },
+      { "index": 40, "group": "neighbor", "name": "neighbor2_lateral_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_lateral_gap_scale_m", "normalization": "lateral gap / 10 m", "range": [-1, 1] },
+      { "index": 41, "group": "neighbor", "name": "neighbor2_rel_forward_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_forward_speed_scale_m_s", "normalization": "relative forward speed / 40 m/s", "range": [-1, 1] },
+      { "index": 42, "group": "neighbor", "name": "neighbor2_rel_lateral_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_lateral_speed_scale_m_s", "normalization": "relative lateral speed / 20 m/s", "range": [-1, 1] },
+      { "index": 43, "group": "neighbor", "name": "neighbor2_width", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_width_scale_m", "normalization": "width / 3 m", "range": [0, 1] },
+      { "index": 44, "group": "neighbor", "name": "neighbor2_presence", "kind": "boolean", "snapshot": "delayed", "scale_ref": null, "normalization": "presence mask", "range": [0, 1] },
+      { "index": 45, "group": "neighbor", "name": "neighbor3_route_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_gap_scale_m", "normalization": "signed route gap / 70 m", "range": [-1, 1] },
+      { "index": 46, "group": "neighbor", "name": "neighbor3_lateral_gap", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_lateral_gap_scale_m", "normalization": "lateral gap / 10 m", "range": [-1, 1] },
+      { "index": 47, "group": "neighbor", "name": "neighbor3_rel_forward_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_forward_speed_scale_m_s", "normalization": "relative forward speed / 40 m/s", "range": [-1, 1] },
+      { "index": 48, "group": "neighbor", "name": "neighbor3_rel_lateral_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_lateral_speed_scale_m_s", "normalization": "relative lateral speed / 20 m/s", "range": [-1, 1] },
+      { "index": 49, "group": "neighbor", "name": "neighbor3_width", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_width_scale_m", "normalization": "width / 3 m", "range": [0, 1] },
+      { "index": 50, "group": "neighbor", "name": "neighbor3_presence", "kind": "boolean", "snapshot": "delayed", "scale_ref": null, "normalization": "presence mask", "range": [0, 1] },
+      { "index": 51, "group": "history", "name": "history_lane_target_0p2s", "kind": "already_normalized", "snapshot": "current", "scale_ref": null, "normalization": "own executed normalized lane target at 0.2 s ago (recorded normalized value)", "range": [-1, 1] },
+      { "index": 52, "group": "history", "name": "history_lane_target_0p6s", "kind": "already_normalized", "snapshot": "current", "scale_ref": null, "normalization": "own executed normalized lane target at 0.6 s ago (recorded normalized value)", "range": [-1, 1] },
+      { "index": 53, "group": "history", "name": "history_previous_pass_side", "kind": "signed_enum", "snapshot": "delayed", "scale_ref": null, "normalization": "previous pass side (-1/0/1)", "range": [-1, 1] },
+      { "index": 54, "group": "history", "name": "history_seconds_since_attempt", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "history_attempt_age_scale_s", "normalization": "seconds since last attempt / 3", "range": [0, 1] },
+      { "index": 55, "group": "history", "name": "history_forward_distance_3s", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "history_forward_distance_scale_m", "normalization": "valid forward distance over last 3 s / 195 m", "range": [0, 1] },
+      { "index": 56, "group": "history", "name": "history_recent_contact", "kind": "boolean", "snapshot": "delayed", "scale_ref": null, "normalization": "recent contact flag (prior 2 s ending at delayed traffic timestamp)", "range": [0, 1] },
+      { "index": 57, "group": "difficulty_one_hot", "name": "difficulty_rookie", "kind": "one_hot", "snapshot": "current", "scale_ref": null, "normalization": "Rookie one-hot", "range": [0, 1] },
+      { "index": 58, "group": "difficulty_one_hot", "name": "difficulty_racer", "kind": "one_hot", "snapshot": "current", "scale_ref": null, "normalization": "Racer one-hot", "range": [0, 1] },
+      { "index": 59, "group": "difficulty_one_hot", "name": "difficulty_expert", "kind": "one_hot", "snapshot": "current", "scale_ref": null, "normalization": "Expert one-hot", "range": [0, 1] },
+      { "index": 60, "group": "style_one_hot", "name": "style_surge", "kind": "one_hot", "snapshot": "current", "scale_ref": null, "normalization": "Surge one-hot", "range": [0, 1] },
+      { "index": 61, "group": "style_one_hot", "name": "style_switch", "kind": "one_hot", "snapshot": "current", "scale_ref": null, "normalization": "Switch one-hot", "range": [0, 1] },
+      { "index": 62, "group": "occupancy", "name": "occupancy_left_fraction", "kind": "fraction", "snapshot": "delayed", "scale_ref": null, "normalization": "delayed left corridor occupancy fraction at the planned encounter, clipped 0-1", "range": [0, 1] },
+      { "index": 63, "group": "occupancy", "name": "occupancy_right_fraction", "kind": "fraction", "snapshot": "delayed", "scale_ref": null, "normalization": "delayed right corridor occupancy fraction at the planned encounter, clipped 0-1", "range": [0, 1] }
+    ]
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "group", "name", "kind", "snapshot"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0, "maximum": 63 },
+        "group": {
+          "enum": ["ego", "road_ahead", "neighbor", "history", "difficulty_one_hot", "style_one_hot", "occupancy"]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": ["ratio_divide", "ratio_multiply", "boolean", "one_hot", "fraction", "signed_enum", "already_normalized"]
+        },
+        "snapshot": { "enum": ["current", "delayed"] },
+        "scale_ref": { "type": ["string", "null"] },
+        "normalization": { "type": "string", "minLength": 1 },
+        "range": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "constants": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Single source of truth for the numeric semantics of this contract, all from docs/OPPONENT_AI.md. The fixtures/observation validator reads these instead of restating them.",
+      "required": [
+        "clip_min",
+        "clip_max",
+        "feature_count",
+        "tactical_rate_hz",
+        "sampling_period_ticks",
+        "sampling_period_s",
+        "neighbor_ahead_m",
+        "neighbor_behind_m",
+        "neighbor_slot_count",
+        "history_recent_window_s",
+        "traffic_age_ticks_by_difficulty",
+        "normalization_scales"
+      ],
+      "properties": {
+        "clip_min": { "const": -1 },
+        "clip_max": { "const": 1 },
+        "feature_count": { "const": 64 },
+        "tactical_rate_hz": { "const": 5 },
+        "sampling_period_ticks": { "const": 12 },
+        "sampling_period_s": { "const": 0.2 },
+        "neighbor_ahead_m": {
+          "const": 70,
+          "description": "Neighbor candidates are within 70 m ahead on the valid route neighborhood."
+        },
+        "neighbor_behind_m": {
+          "const": 35,
+          "description": "Neighbor candidates are within 35 m behind on the valid route neighborhood."
+        },
+        "neighbor_slot_count": { "const": 4 },
+        "history_recent_window_s": {
+          "const": 2.0,
+          "description": "The recent contact flag and traffic-derived pass/occupancy history cover the prior two seconds ending at the delayed traffic timestamp."
+        },
+        "traffic_age_ticks_by_difficulty": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rookie", "racer", "expert"],
+          "properties": {
+            "rookie": { "const": 18 },
+            "racer": { "const": 12 },
+            "expert": { "const": 7 }
+          }
+        },
+        "normalization_scales": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Fixed normalization divisors/multipliers from the OPPONENT_AI.md feature table. top_speed_m_s (index 0) and usable_half_width_m (index 4) are per-car/per-section and are supplied by the fixture context, not fixed here.",
+          "required": [
+            "lateral_speed_scale_m_s",
+            "heading_error_scale_rad",
+            "slip_angle_scale_rad",
+            "yaw_rate_scale_rad_s",
+            "surge_cooldown_scale_s",
+            "surface_grip_scale",
+            "road_curvature_scale_m",
+            "road_grade_scale",
+            "road_width_scale_m",
+            "road_bank_scale_rad",
+            "neighbor_gap_scale_m",
+            "neighbor_lateral_gap_scale_m",
+            "neighbor_rel_forward_speed_scale_m_s",
+            "neighbor_rel_lateral_speed_scale_m_s",
+            "neighbor_width_scale_m",
+            "history_attempt_age_scale_s",
+            "history_forward_distance_scale_m"
+          ],
+          "properties": {
+            "lateral_speed_scale_m_s": { "const": 20 },
+            "heading_error_scale_rad": { "const": 3.141592653589793 },
+            "slip_angle_scale_rad": { "const": 3.141592653589793 },
+            "yaw_rate_scale_rad_s": { "const": 3.141592653589793 },
+            "surge_cooldown_scale_s": { "const": 2 },
+            "surface_grip_scale": { "const": 2 },
+            "road_curvature_scale_m": { "const": 100 },
+            "road_grade_scale": { "const": 0.12 },
+            "road_width_scale_m": { "const": 20 },
+            "road_bank_scale_rad": { "const": 0.21 },
+            "neighbor_gap_scale_m": { "const": 70 },
+            "neighbor_lateral_gap_scale_m": { "const": 10 },
+            "neighbor_rel_forward_speed_scale_m_s": { "const": 40 },
+            "neighbor_rel_lateral_speed_scale_m_s": { "const": 20 },
+            "neighbor_width_scale_m": { "const": 3 },
+            "history_attempt_age_scale_s": { "const": 3 },
+            "history_forward_distance_scale_m": { "const": 195 }
+          }
+        }
+      }
+    }
+  }
+}

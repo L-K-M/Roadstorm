@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.masks.neighbor_slots",
+      "check": "neighbor_presence"
+    }
+  ]
+}

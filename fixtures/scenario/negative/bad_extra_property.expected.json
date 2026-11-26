@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "additionalProperties",
+      "path": "review_notes"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "expected_failures": [
+    {
+      "code": "maximum",
+      "path": "records.0.lateral.lateral_target_norm"
+    }
+  ]
+}

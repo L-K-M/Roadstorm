@@ -1,0 +1,405 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.scenario.arcade_rush_standing_start",
+  "fixture_family": "reference_lap_capture",
+  "title": "Planned standing-start reference capture for Arcade Rush sector budgets",
+  "description": "M0.9 planned capture for the second BENCHMARKS reference kind: five clean standing-start single laps by the CalibrationDriver on the balanced starter at stock loadout with Standard assists, traffic-free, on the planned slice course. Arcade Rush uses the selected stock car's standing-start reference splits (docs/GAME_DESIGN.md): three intermediate timing gates plus the finish over four sectors, with initial budget factors 1.20/1.10/1.02 for Rookie/Racer/Expert and b_i = factor * reference_sector_seconds + measured_mistake_margin_i, rounded to milliseconds. The embedded record is planned and carries no results; the medal thresholds stay null because they derive from the flying-lap median, which is a different record. Rookie's margin must permit one brief mistake and Expert's must account for observed run variance; the margins themselves are measured values that do not exist yet.",
+  "revision": "1.1.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "scenario": {
+    "schema_version": "1.0.0",
+    "scenario_id": "scenario.reference_capture.riviera_standing_start",
+    "scenario_family": "reference_lap_capture",
+    "title": "Standing-start reference capture, balanced starter, Riviera Run",
+    "description": "One calibration-driver run capturing the standing-start single-lap reference whose sector splits feed Arcade Rush budgets. Arcade Rush has one standing-start slot and is stock-only (docs/GAME_DESIGN.md). The tactical opportunity-window protocol does not apply and is omitted. The initial commands come from the pinned CalibrationDriver revision recorded in initial_state.initial_commands.",
+    "revision": "1.1.0",
+    "status": "provisional",
+    "units": {
+      "length": "m",
+      "speed": "m/s",
+      "time": "s"
+    },
+    "course": {
+      "course_id": "course.riviera_run",
+      "course_revision": null
+    },
+    "dependencies": {
+      "engine_revision": "4.7.2.stable.official.ed1daf0bf",
+      "physics_backend": "jolt",
+      "handling_revision": null,
+      "calibration_driver_revision": null,
+      "classic_planner_revision": null,
+      "learned_policy_revision": null,
+      "reference_line_revision": null,
+      "metric_version": "benchmarks_metrics_v1"
+    },
+    "participants": [
+      {
+        "slot": "subject",
+        "role": "reference_subject",
+        "car_id": "car.balanced_starter",
+        "loadout": "stock",
+        "assists": "standard",
+        "driver": {
+          "kind": "calibration_driver",
+          "note": "Standing-start capture from the grid slot; acceleration takes effect at GO without a false-start penalty (docs/GAME_DESIGN.md)."
+        }
+      }
+    ],
+    "initial_state": {
+      "start_mode": "standing",
+      "description": "Standing start from the Arcade Rush slot: zero speed at GO, matching the single standing-start slot in docs/GAME_DESIGN.md.",
+      "initial_commands": {
+        "source": "controller_revision",
+        "note": "The CalibrationDriver controller revision in dependencies produces the initial commands; acceleration takes effect at GO without a false-start penalty (docs/GAME_DESIGN.md)."
+      }
+    },
+    "protocol": {
+      "tick_rate_hz": 60,
+      "handover_max_position_m": 0.1,
+      "handover_max_speed_m_s": 0.1
+    },
+    "seeds": {
+      "race_seed": 4201,
+      "scenario_seed": 4202,
+      "note": "Authored seeds; distinct from the flying-lap capture so the two reference kinds never share a seed."
+    },
+    "required_telemetry": [
+      "gate_crossings",
+      "lap_times",
+      "sector_splits",
+      "speed_samples",
+      "contacts",
+      "resets",
+      "progress_corrections",
+      "validity_flags"
+    ]
+  },
+  "reference_records": [
+    {
+      "schema_version": "1.0.0",
+      "record_id": "reference.balanced_starter.riviera_standing_start",
+      "kind": "standing_start_lap_set",
+      "status": "planned",
+      "title": "Planned standing-start reference record, balanced starter, Riviera Run",
+      "description": "Capture plan for the five clean standing-start single laps whose sector splits establish the Arcade Rush checkpoint budgets for the selected stock car. Results are deliberately absent until capture tooling measures them. Medal thresholds do not apply to this record: they derive from the flying-lap median of reference.balanced_starter.riviera_flying.",
+      "revision": "1.0.0",
+      "subject": {
+        "car_id": "car.balanced_starter",
+        "car_display_name": "Comet",
+        "loadout": "stock",
+        "assists": "standard"
+      },
+      "course": {
+        "course_id": "course.riviera_run",
+        "course_revision": null
+      },
+      "driver": {
+        "kind": "calibration_driver",
+        "traffic_free": true,
+        "driver_revision": null,
+        "reference_line_revision": null
+      },
+      "dependencies": {
+        "engine_revision": "4.7.2.stable.official.ed1daf0bf",
+        "physics_backend": "jolt",
+        "handling_revision": null,
+        "metric_version": "benchmarks_metrics_v1",
+        "platform": null
+      },
+      "capture_protocol": {
+        "warmup_laps": null,
+        "required_clean_laps": 5,
+        "traffic_free": true,
+        "rejection_criteria": [
+          "contact",
+          "reset",
+          "missed_gate",
+          "invalid_progress",
+          "numerical_error"
+        ]
+      },
+      "results": {
+        "laps": [],
+        "statistics": {
+          "median_s": null,
+          "min_s": null,
+          "max_s": null
+        },
+        "speed_samples": [],
+        "hashes": {
+          "car_hash": null,
+          "loadout_hash": null,
+          "assist_hash": null
+        }
+      },
+      "seeds": {
+        "race_seed": 4201,
+        "scenario_seed": 4202
+      },
+      "derived_thresholds": {
+        "bronze_multiplier": 1.25,
+        "silver_multiplier": 1.12,
+        "gold_multiplier": 1.05,
+        "bronze_s": null,
+        "silver_s": null,
+        "gold_s": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.family",
+      "check": "family_agreement",
+      "path": "",
+      "statement": "The fixture family equals the enclosed scenario's family."
+    },
+    {
+      "expectation_id": "expect.capture_has_no_window",
+      "check": "window_protocol",
+      "path": "scenario",
+      "statement": "A standing-start capture omits the tactical opportunity-window members."
+    },
+    {
+      "expectation_id": "expect.telemetry",
+      "check": "telemetry_required",
+      "path": "scenario",
+      "statement": "The scenario declares the full reference-capture telemetry minimum, including the sector splits Arcade Rush budgets are built from."
+    },
+    {
+      "expectation_id": "expect.planned_no_results",
+      "check": "evidence_status",
+      "path": "reference_records.0",
+      "statement": "The embedded standing-start record is planned and carries no laps, statistics, hashes or thresholds."
+    },
+    {
+      "expectation_id": "expect.rejection_criteria",
+      "check": "rejection_criteria_complete",
+      "path": "reference_records.0",
+      "statement": "The capture protocol rejects runs with contacts, reset, missed gates, invalid progress or numerical errors."
+    },
+    {
+      "expectation_id": "expect.nulls",
+      "check": "null_unknown_pairing",
+      "path": "",
+      "statement": "Every null has a matching unknowns entry; the medal thresholds are null on a standing-start record because they derive from the flying-lap median."
+    },
+    {
+      "expectation_id": "expect.metrics",
+      "check": "metric_status_honesty",
+      "path": "",
+      "statement": "The Arcade Rush factors are documented initial targets, not measurements."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "",
+      "statement": "Every comparison metric uses the documented comparator vocabulary: threshold comparators carry a numeric value and no bounds."
+    },
+    {
+      "expectation_id": "expect.measured_evidence",
+      "check": "measured_evidence_completeness",
+      "path": "reference_records.0",
+      "statement": "Once capture tooling measures this standing-start record it must retain speed samples, the car/loadout/assist hashes and four sector splits per clean lap, because Arcade Rush budgets are built from those sector times."
+    },
+    {
+      "expectation_id": "expect.hash",
+      "check": "content_hash",
+      "path": "",
+      "statement": "The content hash recomputes over canonical JSON with the content_hash member removed."
+    }
+  ],
+  "comparison": {
+    "purpose": "Record the standing-start capture protocol and the documented initial Arcade Rush budget factors; the measured sector times are produced later by capture tooling.",
+    "metrics": [
+      {
+        "name": "clean_standing_start_laps_recorded",
+        "description": "Five clean standing-start single laps per car/course revision after warm-up (BENCHMARKS 'Reference driver and records').",
+        "comparator": "gte",
+        "value": 5,
+        "unit": "laps",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "arcade_rush_rookie_factor",
+        "description": "Initial Rookie Arcade Rush budget factor applied to the standing-start reference sector seconds (docs/GAME_DESIGN.md).",
+        "comparator": "eq",
+        "value": 1.2,
+        "unit": "factor",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "arcade_rush_racer_factor",
+        "description": "Initial Racer Arcade Rush budget factor.",
+        "comparator": "eq",
+        "value": 1.1,
+        "unit": "factor",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "arcade_rush_expert_factor",
+        "description": "Initial Expert Arcade Rush budget factor.",
+        "comparator": "eq",
+        "value": 1.02,
+        "unit": "factor",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "sector_count",
+        "description": "Four sectors per Arcade Rush lap; three intermediate timing gates plus the finish (docs/GAME_DESIGN.md).",
+        "comparator": "eq",
+        "value": 4,
+        "unit": "sectors",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements. The per-sector mistake margins are measured values recorded after captured play; Rookie's margin must permit one brief mistake and Expert's must account for observed run variance."
+  },
+  "unknowns": [
+    {
+      "path": "scenario.course.course_revision",
+      "reason": "Course content is authored at M2; no course revision exists yet.",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "scenario.dependencies.handling_revision",
+      "reason": "Motor/car/surface handling is implemented and frozen at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "scenario.dependencies.calibration_driver_revision",
+      "reason": "The CalibrationDriver is built at M1.7.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "scenario.dependencies.classic_planner_revision",
+      "reason": "No Classic planner implementation exists before M4.2.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "scenario.dependencies.learned_policy_revision",
+      "reason": "No learned policy exists before M4B.",
+      "blocking": false,
+      "until": "M4B"
+    },
+    {
+      "path": "scenario.dependencies.reference_line_revision",
+      "reason": "The authored line and conservative speed profile are calibrated at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.course.course_revision",
+      "reason": "Same unratified course revision as the scenario.",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.driver.driver_revision",
+      "reason": "The CalibrationDriver revision is assigned at M1.7.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.driver.reference_line_revision",
+      "reason": "The reference line and speed profile revision is assigned at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.dependencies.handling_revision",
+      "reason": "Handling is frozen at M1; the captured revision is recorded then.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.dependencies.platform",
+      "reason": "The capture host/OS is recorded by the capture tooling when the first measured record is produced.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.capture_protocol.warmup_laps",
+      "reason": "BENCHMARKS requires warm-up before the recorded laps but does not fix a count.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.median_s",
+      "reason": "No standing-start lap has been measured; the median is produced by capture tooling.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.min_s",
+      "reason": "No standing-start lap has been measured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.max_s",
+      "reason": "No standing-start lap has been measured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.car_hash",
+      "reason": "The car definition hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.loadout_hash",
+      "reason": "The loadout hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.assist_hash",
+      "reason": "The assist set hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.bronze_s",
+      "reason": "Medal thresholds derive from the flying-lap median; this is a standing-start record, so they do not apply.",
+      "blocking": false,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.silver_s",
+      "reason": "Medal thresholds derive from the flying-lap median; this is a standing-start record, so they do not apply.",
+      "blocking": false,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.gold_s",
+      "reason": "Medal thresholds derive from the flying-lap median; this is a standing-start record, so they do not apply.",
+      "blocking": false,
+      "until": "M1.7"
+    }
+  ],
+  "content_hash": "sha256:099478518f4f8c7da03e13377d153165d4b435ab9ae0b0a0842192faf4d4aa09",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md; docs/GAME_DESIGN.md; docs/TECHNICAL_DESIGN.md",
+    "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Authored M0.9 text contract; no implementation is exercised by this file."
+  }
+}
