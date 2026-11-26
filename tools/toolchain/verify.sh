@@ -8,26 +8,36 @@
 #   1. a Godot editor binary exists and runs;
 #   2. its `--version` string matches the pinned 4.7.2 official build;
 #   3. the editor binary's sha256 matches the digest recorded from this
-#      machine (a local observation, never an upstream verification);
+#      machine (a local observation);
 #   4. matching export templates are installed (version.txt + the three
 #      target-platform files) and their sha256 values match the record;
 #   5. with --deep: the macOS template's internal release binary really is the
 #      pinned build (executed), and the editor binary carries the built-in
 #      Jolt 3D physics module.
 #
-# What it deliberately does NOT claim:
-#   * that the local digests match the official release assets (no download);
-#   * that any other platform's template binary runs (only macOS does here).
+# Scope and honesty:
+#   * Every comparison above is LOCAL: installed files vs the digests recorded
+#     in pin/. This script downloads nothing and verifies nothing upstream.
+#   * The pin's upstream_verified=yes refers to a SEPARATE, coordinator-run
+#     comparison of SELECTED files only -- the editor binary, version.txt and
+#     the three target templates -- against publisher-checksummed archives;
+#     see docs/evidence/godot-4.7.2-archive-verification.md. Other bundle
+#     files and non-target templates were NOT compared: the full bundle is
+#     not verified, and no target platform was launched.
 #
 # Usage:
 #   tools/toolchain/verify.sh                 verify the local toolchain
 #   tools/toolchain/verify.sh --godot <path>  use a specific editor binary
 #   tools/toolchain/verify.sh --templates <dir>
+#   tools/toolchain/verify.sh --no-templates  skip the template checks
+#                                             (they are required by default)
 #   tools/toolchain/verify.sh --deep          also run the in-template checks
 #   tools/toolchain/verify.sh --record <file> write observed digests to <file>
 #   tools/toolchain/verify.sh --quiet         failures and summary only
 #
-# Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run.
+# Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run
+# (missing pin or digest file, no sha256 utility on PATH, --deep combined
+# with --no-templates, or a bad option).
 # Original project code under the Unlicense.
 
 set -u
@@ -43,6 +53,7 @@ USAGE=2
 
 GODOT_BIN="${GODOT_BIN:-}"
 TEMPLATES_DIR="${GODOT_TEMPLATES_DIR:-}"
+NO_TEMPLATES=0
 DEEP=0
 QUIET=0
 RECORD_FILE=""
@@ -68,7 +79,7 @@ bad()  { printf '%s[fail]%s %s\n' "$C_RED" "$C_RESET" "$*"; RC="$FAIL"; }
 die()  { printf '%s[error]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit "$USAGE"; }
 
 usage() {
-	sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,/^# Original project code/p' "$0" | sed 's/^# \{0,1\}//'
 	exit "$OK"
 }
 
@@ -97,6 +108,15 @@ sha256_of() {
 	else
 		return 1
 	fi
+}
+
+# Every digest check depends on a sha256 utility. Without one the verifier
+# cannot check anything, so that is a hard failure (exit 2), never a pass.
+require_sha256_tool() {
+	if command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1; then
+		return 0
+	fi
+	die "no sha256 utility found (need shasum or sha256sum on PATH); no digest could be checked"
 }
 
 # tc_list_dirs <dir> : space-separated names of the immediate subdirectories.
@@ -209,7 +229,10 @@ check_version() {
 
 check_editor_digest() {
 	_expected="$(digest_get editor_sha256)"
-	_observed="$(sha256_of "$GODOT_BIN")" || { warn "no sha256 tool available; cannot check the editor digest"; return 0; }
+	if ! _observed="$(sha256_of "$GODOT_BIN")"; then
+		bad "cannot compute the sha256 of $GODOT_BIN (file unreadable or no sha256 utility?)"
+		return 1
+	fi
 	if [ -z "$_expected" ]; then
 		warn "editor sha256 NOT RECORDED in $DIGEST_FILE (not a failure; nothing is invented)"
 		info "observed sha256: $_observed"
@@ -224,9 +247,14 @@ check_editor_digest() {
 }
 
 check_templates() {
-	if ! find_templates_dir; then
-		warn "no export templates directory found (only needed by 'ci.sh export')"
+	if [ "$NO_TEMPLATES" -eq 1 ]; then
+		warn "export template checks skipped on request (--no-templates)"
 		return 0
+	fi
+	if ! find_templates_dir; then
+		bad "no export templates directory found; the $PIN_TEMPLATES_VERSION templates are part of the pin (install them, or pass --no-templates to skip this check)"
+		info "looked in: \$HOME/Library/Application Support/Godot/export_templates, \$HOME/.local/share/godot/export_templates, \$HOME/.var/app/org.godotengine.Godot/data/godot/export_templates, \$APPDATA/Godot/export_templates"
+		return 1
 	fi
 	info "templates directory: $TEMPLATES_DIR"
 
@@ -262,7 +290,10 @@ check_templates() {
 check_template_digest() {
 	_dir="$1"; _file="$2"; _key="$3"
 	_expected="$(digest_get "$_key")"
-	_observed="$(sha256_of "$_dir/$_file")" || { warn "cannot digest $_file"; return 0; }
+	if ! _observed="$(sha256_of "$_dir/$_file")"; then
+		bad "cannot digest $_file (file missing or no sha256 utility?)"
+		return 1
+	fi
 	if [ -z "$_expected" ]; then
 		warn "$_key NOT RECORDED in $DIGEST_FILE"
 		info "observed sha256 ($_file): $_observed"
@@ -279,7 +310,7 @@ check_template_digest() {
 check_deep() {
 	[ "$DEEP" -eq 1 ] || return 0
 	_tdir="$TEMPLATES_DIR/$PIN_TEMPLATES_VERSION"
-	[ -d "$_tdir" ] || { warn "--deep: no template directory to inspect"; return 0; }
+	[ -d "$_tdir" ] || { bad "--deep: no template directory to inspect"; return 1; }
 
 	case "$(uname -s)" in
 		Darwin) ;;
@@ -302,8 +333,9 @@ check_deep() {
 			bad "macOS template release binary reports '$_ver', pinned '$PIN_VERSION_STRING'"
 		fi
 		_expected="$(digest_get macos_template_release_sha256)"
-		_observed="$(sha256_of "$_bin")"
-		if [ -n "$_expected" ] && [ "$_observed" = "$_expected" ]; then
+		if ! _observed="$(sha256_of "$_bin")"; then
+			bad "cannot digest the macOS template release binary (file missing or no sha256 utility?)"
+		elif [ -n "$_expected" ] && [ "$_observed" = "$_expected" ]; then
 			ok "macOS template release binary sha256 matches the recorded local digest"
 		elif [ -n "$_expected" ]; then
 			bad "macOS template release binary sha256 changed: observed $_observed, recorded $_expected"
@@ -355,9 +387,13 @@ record_digests() {
 
 print_upstream_status() {
 	info ""
-	info "upstream checksum verification: ${PIN_UPSTREAM_VERIFIED:-no}"
+	info "upstream checksum verification (recorded in the pin): ${PIN_UPSTREAM_VERIFIED:-no}"
 	if [ "${PIN_UPSTREAM_VERIFIED:-no}" = "yes" ]; then
-		info "  selected files matched members of publisher-checksummed archives; see docs/evidence."
+		info "  SELECTED FILES ONLY: the editor binary, version.txt and the three target"
+		info "  templates matched members of publisher-checksummed archives; see"
+		info "  docs/evidence/godot-4.7.2-archive-verification.md. Other bundle files and"
+		info "  non-target templates were NOT compared, no target platform was launched:"
+		info "  the full bundle is not verified."
 	else
 		info "  NOT PERFORMED. The digests above are local observations; no official"
 		info "  release asset was downloaded to compare them against. See"
@@ -374,6 +410,7 @@ while [ $# -gt 0 ]; do
 		--godot=*) GODOT_BIN="${1#--godot=}"; shift ;;
 		--templates) [ $# -ge 2 ] || die "--templates needs a directory"; TEMPLATES_DIR="$2"; shift 2 ;;
 		--templates=*) TEMPLATES_DIR="${1#--templates=}"; shift ;;
+		--no-templates) NO_TEMPLATES=1; shift ;;
 		--deep) DEEP=1; shift ;;
 		--quiet) QUIET=1; shift ;;
 		--record) [ $# -ge 2 ] || die "--record needs a file path"; RECORD_FILE="$2"; shift 2 ;;
@@ -386,6 +423,8 @@ done
 RC=0
 load_pin
 find_godot
+require_sha256_tool
+[ "$DEEP" -eq 1 ] && [ "$NO_TEMPLATES" -eq 1 ] && die "--deep inspects the installed templates; drop --no-templates"
 
 printf '%sRoadstorm toolchain verification (pin %s, release tag %s)%s\n' "$C_BOLD" "$PIN_VERSION" "$PIN_TAG" "$C_RESET"
 info "host: $(hostname) / $(uname -s) $(uname -r) $(uname -m)"
@@ -400,7 +439,7 @@ print_upstream_status
 
 info ""
 if [ "$RC" -eq 0 ]; then
-	printf '%s[ok]%s   toolchain verification: PASS (local observations; upstream verification %s)\n' \
+	printf '%s[ok]%s   toolchain verification: PASS (local digest observations; selected-file upstream verification: %s)\n' \
 		"$C_GREEN" "$C_RESET" "${PIN_UPSTREAM_VERIFIED:-no}"
 else
 	printf '%s[fail]%s toolchain verification: FAIL\n' "$C_RED" "$C_RESET"

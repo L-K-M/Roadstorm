@@ -13,8 +13,18 @@ Active isolated jobs against the baseline (private sessions and logs under `work
 | 00b1219c-b656-45e1-b2ad-84f26776eb36 | longcat/LongCat-2.5 | licenses/, provenance/ | completed; pending independent review and terms/authority evidence |
 | 93555487-a479-4ecb-ac23-9e95067144cf | stepfun/step-5-preview | tools/ci/, .github/workflows/ | running; CI and commands |
 | 9724e895-7e6d-41a6-bc27-1bfd805167f3 | stepfun/step-5-preview | docs/TOOLCHAIN.md, tools/toolchain/ | completed; selected archives and installed files independently verified, see evidence |
-| 9370f30f-fbd7-42cb-b401-a69ff4d7a2b5 | stepfun/step-5-preview | docs/MACHINE_INVENTORY.md | running; hardware inventory |
+| 9370f30f-fbd7-42cb-b401-a69ff4d7a2b5 | stepfun/step-5-preview | docs/MACHINE_INVENTORY.md | completed; pending review; reports no physical controller/audio review and two CI defects |
 | 6058a51e-ae48-4329-8fb0-52c3c36eddad | stepfun/step-5-preview | assets/manifest.json, tools/asset_manifest/ | completed; independent 35-test suite and empty-manifest check passed; real assets and rights validation remain open |
-| ec6b876f-cdad-40f3-a154-ff99473a0c54 | longcat/LongCat-2.5 | tools/tick_probe/ | running; tick/query feasibility |
+| ec6b876f-cdad-40f3-a154-ff99473a0c54 | longcat/LongCat-2.5 | tools/tick_probe/ | completed; independent structural and pacing reruns passed, but project does not explicitly select Jolt despite claim; gate remains open |
 
 Next: collect and independently verify each job, integrate coherent owned paths, establish tooling/checksum and CI, run acceptance against a frozen candidate, then request separate Opus 5.5 and GPT-6.2 Sol reviews. All review, platform, audio, controls, model training and release gates remain open. Do not infer completion from worker reports or auth readiness.
+
+## Five-job checkpoint
+
+Candidate `6b571835837dff8e9a25d1696f5622ecf9fa451b`, base `0ea596a4fa85ade19375e130313f020ed6010619`: Opus 5.5 via Venice job `0bbb2f75-c3eb-47f5-9d89-771bce087012` and GPT-6.2 Sol native agent `/root/checkpoint_sol` completed independent reports under `review/implementation/`; both verdicts are changes required. Pi openai-codex route failed with invalidated OAuth token; pi opencode and openrouter routes returned insufficient balance/credits. These attempts produced no reviews. Both reviews must complete and findings be resolved before checkpoint closure.
+
+Remediation in progress: `3845159a-f14b-4572-ac8d-25bf5f43d841` (StepFun, `tools/asset_manifest/`, Sol findings) and `79b88744-0e83-4ab7-9564-98fc3483d9f3` (StepFun, `tools/smoke/`, Opus smoke findings). Opus also found rights/approval gate, manifest schema, Jolt, toolchain missing-template and other defects; assign separate fixes after paths are free. Both reviewers must recheck corrected candidate. Hardware inventory found CI doctor parse and capture resolution defects, pending CI integration.
+
+Additional active job: `d18bba32-2127-4136-98d6-c7e09c7f3d01` (StepFun, `tools/toolchain/` remediation). Tick probe must explicitly select/verify the intended backend and repeat fidelity measurements.
+
+The GPT-6.2 Sol manifest fixes (`3845159a-f14b-4572-ac8d-25bf5f43d841`) and Opus smoke remediation (`79b88744-0e83-4ab7-9564-98fc3483d9f3`) completed; smoke fault injection was independently rerun (6/6 expected outcomes). Follow-on `ed8c1319-fabb-47d5-8b27-266cc1348576` owns manifest remediation for remaining Opus findings. `9725ba2c-802a-4115-9aeb-337b1dca99c8` owns `project.godot` and `tools/tick_probe/` to select and verify Jolt and repeat probe checks. Reviews remain open pending fixes and rechecks.

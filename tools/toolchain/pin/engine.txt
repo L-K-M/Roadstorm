@@ -7,7 +7,8 @@
 # Rules that this file must never break:
 #   * A digest recorded here is a LOCAL observation. It is not upstream
 #     verification. Upstream verification requires comparing against the
-#     publisher's checksum file; selected artifacts were verified as recorded in docs/evidence.
+#     publisher's checksum file; selected artifacts (the editor binary and
+#     the three target templates) were verified as recorded in docs/evidence.
 #   * Never invent, guess or copy a digest from an unofficial mirror. If a
 #     digest is unknown, leave the field empty and let the verifier report
 #     NOT RECORDED.
@@ -26,16 +27,28 @@ commit=ed1daf0bf
 version_string=4.7.2.stable.official.ed1daf0bf
 
 # --- Official sources (version authority: godotengine.org/download/archive) -
-# URL liveness was confirmed with HTTP HEAD requests only (no content was
-# downloaded). See docs/TOOLCHAIN.md "Upstream verification".
+# URL liveness was first confirmed with HTTP HEAD requests only (no content was
+# downloaded). The archive verification below then DID download content: the
+# publisher's SHA512-SUMS.txt and the release archives themselves. See
+# docs/TOOLCHAIN.md "Upstream verification" and
+# docs/evidence/godot-4.7.2-archive-verification.md.
 editor_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_macos.universal.zip
 templates_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz
 checksums_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/SHA512-SUMS.txt
 archive_url=https://godotengine.org/download/archive/
 
-# Upstream checksum comparison (local sha256 vs the publisher's SHA512-SUMS.txt)
-# performed? Values: no | yes. `no` means the local digests below have NOT been
-# confirmed against the official release assets.
+# Upstream verification performed? Values: no | yes. `no` means the local
+# digests below have NOT been confirmed against the official release assets.
+# What the `yes` means (2026-11-26; method and scope per
+# docs/evidence/godot-4.7.2-archive-verification.md): the publisher's
+# SHA512-SUMS.txt and the release's macOS editor ZIP and export-template TPZ
+# were downloaded and their SHA-512 digests matched the publisher's file; the
+# installed editor binary, version.txt and the three target templates
+# (macos.zip, windows_release_x86_64.exe, linux_release.x86_64) were then
+# compared by SHA-256 against those verified archive members. SELECTED FILES
+# ONLY: other bundle files and non-target templates were not compared, no
+# target platform was launched, and this is not verification of the full
+# bundle.
 upstream_verified=yes
 
 # --- Export templates -------------------------------------------------------

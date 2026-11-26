@@ -1,11 +1,6 @@
 # Toolchain inventory (PLAN.md M0.1)
 
-Status: recorded 2026-11-26 on the project's development Mac. Milestone M0.1
-is **partially** satisfied: the engine, its matching export templates and the
-built-in Jolt backend are pinned and locally verified, but the digests have
-**not** been confirmed against the official release assets, because this task
-forbids installs and downloads. That distinction is the point of this document:
-a local digest pins an artifact, it does not authenticate it.
+Status: recorded 2026-11-26 on the development Mac. M0.1 remains open: the installed editor binary and three release template files match publisher-checksummed archives as described below, but Python pinning, the effective Jolt backend and its settings, full bundle verification, export and platform launch remain unverified.
 
 Ownership: `docs/TOOLCHAIN.md` and `tools/toolchain/**`. Nothing else in the
 checkout was touched. Machine/OS/controller inventory for M0.6 is a separate
@@ -119,7 +114,7 @@ repository. Subsequent archive content verification is recorded above.
 * **Selected archive members were compared**, but other editor bundle files and non-target templates have not been checked against the verified archives.
 * **Windows and Linux template binaries were not executed** — no compatible
   host here. Their embedded version strings were read instead.
-* **Only macOS was exercised end to end.** Windows x86-64 and Linux x86-64 are
+* **The macOS template version probe executed.** No exported game package was tested. Windows x86-64 and Linux x86-64 are
   recorded as present and version-consistent, not as verified targets
   (PLAN.md M0.6/M3: an untested platform does not become verified).
 * **The Homebrew cask was the delivery mechanism.** Any future reinstall must
