@@ -1,0 +1,509 @@
+Docs
+
+Terms of Use
+
+Terms of Use
+
+Privacy Policy
+
+Privacy Policy
+
+Enterprise Verification
+
+Enterprise Verification
+
+简体中文API Platform ↗
+
+Docs
+
+Search docs⌘K
+
+English
+English 简体中文
+
+API Platform
+
+Terms of UsePrivacy PolicyEnterprise Verification
+
+Terms of Use
+
+Copy
+
+LongCat AI Platform Terms of Use ​
+
+Welcome to the LongCat AI Platform!
+
+The LongCat AI Platform ("Platform" or "LongCat") is owned and operated by Beijing Kuxun Interactive Technology Co., Ltd. and its affiliates (collectively, "we," "us," or "LongCat"). We provide generative artificial intelligence technology services to developers. This LongCat AI Platform Terms of Service ("Agreement") constitutes a part of the LongCat AI User Service Agreement and applies specifically to you as an individual or enterprise developer ("you" or "Developer") who uses the Platform's Application Programming Interfaces (APIs) or other developer tools to develop applications, services, or tools for internal organizational use or for end users.
+
+This Agreement, together with the LongCat AI User Service Agreement and other applicable agreements, governs your use of our services. In the event of any conflict between this Agreement and other agreements, the provisions of this Agreement shall prevail. Please pay particular attention to the bolded clauses regarding liability allocation, rights limitations, and obligations. We recommend that you read all agreement texts in full to fully understand the service rules.
+
+This service is primarily intended for adults with full legal capacity, enterprises, and other legally recognized organizations. If you are under 18 years of age or do not have full legal capacity, you must read this Agreement together with your legal guardian and obtain their consent before using the service. Additionally, you warrant that you are not subject to any trade restrictions, sanctions, or other legal restrictions imposed by any country, international organization, or region, otherwise you may not be able to use the service normally.
+
+By clicking "I Agree," checking the agreement box, or otherwise accessing or using the service, you acknowledge that you have read, understood, and accepted all terms of this Agreement and agree to be bound by them. If you do not agree to any provision, please do not use the service.
+
+1. Account Registration and Use ​
+
+1.1 Account System ​
+
+LongCat AI Platform uses a unified account system. You shall register, log in, and use your account in accordance with the requirements of the LongCat AI User Service Agreement and applicable laws and regulations.
+
+1.2 Account Types and Verification ​
+
+When using the Platform services, you may authenticate as either an Individual Account or an Enterprise Account. You should select the appropriate account type based on your actual usage and complete real-name authentication as required by the product interface.
+
+Individual Account: If the account is used by an individual, you must ensure that the authenticated entity is an adult with full legal capacity. If the user is a minor or lacks legal capacity, registration and authentication must be completed by a legal guardian, who will be responsible for all account activities.
+
+Enterprise Account: If the account is used for enterprise purposes, you must ensure that you have been duly authorized by the enterprise to register and use the service on its behalf. All account operations shall be deemed as acts of the authenticated enterprise. The enterprise shall assume full legal responsibility for all account activities. If enterprise account administrators change, you must promptly update the account binding. Any losses caused by failure to update binding in a timely manner shall be borne by the authenticated enterprise.
+
+1.3 Account Security ​
+
+You are solely responsible for the lawful use of your account and for all activities conducted under your account. You must safeguard your account credentials and must not transfer, lend, rent, or otherwise provide access to your account to any third party. Any losses resulting from your failure to properly safeguard your account, including but not limited to account theft or unauthorized use that you fail to address promptly, shall be borne solely by you.
+
+1.4 API Key Security ​
+
+The API keys you create through your LongCat AI account are the core credentials for accessing the Platform services. You must implement strict confidentiality measures to prevent unauthorized disclosure. Do not embed keys in browser/client-side code, share them through public channels, or display them in unnecessary contexts. If you detect any suspicious account activity or key leakage, you must immediately revoke the key through the console and contact us at longcat-team@meituan.com or customer service at 86-10-1010-7888. All consequences arising from delayed response to leaks, inadequate key management, or improper use of keys—including unauthorized API calls and financial losses—shall be borne solely by the authenticated account holder.
+
+We reserve the right to take protective measures, including account suspension or temporary service interruption, when security risks are detected to safeguard your account and the Platform's system security.
+
+2. Service Description ​
+
+2.1 Service Overview ​
+
+The LongCat AI Platform provides large language model API calling services and derivative features that enable developers to integrate AI generation capabilities into various application scenarios. When you use our service, the model generates output content (including text, tables, and code) as a response based on the information you and your end users input (collectively, "Input").
+
+2.2 Service Types ​
+
+Free Services: We may provide certain services to you free of charge through test credits, vouchers, or similar mechanisms. Such free credits are non-transferable, non-refundable, and non-invoiceable. We reserve the right to decide whether to continue providing or discontinue free services at our sole discretion. You acknowledge and accept this nature of free services before using them.
+
+Paid Services: After completing identity verification, you may purchase and use our paid services through pre-funding. Before adding funds, please read and understand this Agreement, the Recharge Agreement, and all documentation published on our website. Pricing, product types, and financial compliance requirements are subject to the information displayed on the official website/order page at the time. We may adjust pricing and related terms from time to time. If any such adjustments materially affect your rights, we will notify you through prominent means (in-platform notifications, website announcements, email, or SMS). Your continued use of the service after such adjustments constitutes your acceptance of the revised terms.
+
+2.3 Service Maintenance and Changes ​
+
+We may perform routine maintenance of the service, which may cause partial or full unavailability. We may also add, upgrade, modify, suspend, or terminate services or adjust technical aspects, features, or performance in response to technological development, model iteration, legal and regulatory changes, or operational needs.
+
+2.4 Billing Disputes ​
+
+If you believe there is an error in your billing statement, you must notify us in writing within thirty (30) days of the date the disputed amount was charged. Failure to notify us within this period constitutes acceptance of the billing.
+
+3. Developer Conduct and Obligations ​
+
+3.1 General Compliance ​
+
+You must comply with all applicable laws and regulations, the LongCat AI User Service Agreement, this Agreement, and all other rules and policies published on the Platform. You must act in accordance with principles of voluntary participation, equality, fairness, and good faith. You must not use the service for illegal, unlawful, or other activities that may harm national security, public interests, the legitimate rights of others, or the Platform's operations.
+
+3.2 Downstream Responsibility ​
+
+The LongCat AI Platform provides neutral, foundational model technology services that constitute only a part of the downstream systems, applications, or functions. You, as the provider or operator of these downstream systems, applications, or functions, are solely responsible for the legal obligations and liabilities arising from applications developed using LongCat technology. You must obtain all necessary business qualifications and government approvals in accordance with applicable laws and regulations, and you must enter into agreements with end users regarding their rights and obligations and manage their usage behavior.
+
+3.3 AI Content Labeling Obligations ​
+
+You must comply with all applicable laws and regulations regarding AI-generated content, including but not limited to:
+
+Implementing appropriate labeling of AI-generated content when distributing or disseminating it externally;
+
+Not altering, removing, erasing, or covering any explicit or implicit identifiers (including metadata identifiers and digital watermarks) embedded in AI-generated content by the Platform;
+
+Requiring your end users not to alter or conceal labeling information.
+
+If you fail to properly label AI-generated content resulting in user complaints or regulatory penalties, you shall bear all related liabilities independently. If such failure causes any loss to the Platform, you shall indemnify the Platform for all economic losses incurred. If the Platform is subject to third-party complaints or litigation arising from your actions, you must cooperate fully by providing necessary evidence, testimony, or other assistance, and reimburse the Platform for all reasonable costs incurred.
+
+3.4 Content Safety and Moderation ​
+
+As a content producer using AI technology, you must fulfill network information security obligations by establishing content safety review and filtering mechanisms. You must review both end-user inputs and model outputs using keyword filtering, illegal content databases, risk identification models, and other appropriate tools. You must continuously improve your content security review mechanisms and exercise effective management and control over the safety, accuracy, and reliability of all generated content.
+
+3.5 Data Protection and Privacy ​
+
+You must comply with all applicable data protection and privacy laws (including but not limited to GDPR, CCPA, and other applicable regulations) as a data controller or data processor. Specifically:
+
+Before collecting or processing personal information, you must inform end users of your data processing policies and obtain their consent or establish another lawful basis;
+
+Respond promptly to end users' requests regarding access, correction, deletion, and data portability of their personal information.
+
+How we collect and process your personal data, and for further detailed privacy policies, please refer to the LongCat AI Platform Privacy Policy.
+
+3.6 Disclaimers on Output Accuracy ​
+
+You must read the risk disclosures in the User Service Agreement carefully. We emphasize again that due to technical limitations, we make no warranties regarding the accuracy, validity, completeness, or reliability of output content. You must not:
+
+Use output content as the sole factual source or as absolutely true information for external services;
+
+Use output directly as professional advice in medical, legal, financial, educational, or other specialized fields;
+
+Use generated content to make decisions that may have significant legal or personal impacts on individuals;
+
+Represent output content as the views of the Platform or its affiliates.
+
+3.7 Third-Party Information from Web Search ​
+
+If you use the web search feature, service outputs may be substantively based on third-party information published online. As such information is not published or controlled by us, you must independently verify its accuracy, completeness, timeliness, reliability, legality, and potential infringement of third-party rights, and you are solely responsible for subsequent use of such information.
+
+3.8 System Security ​
+
+You must maintain system security, eliminate security vulnerabilities in integration points, and implement monitoring, auditing, and emergency response measures. All losses resulting from security deficiencies shall be borne entirely by you. If end users' use of your services causes data security incidents, public opinion risks, or any abuse, dissemination, or improper use of products or services, all related risks and liabilities shall be borne solely by you. If such incidents cause losses to us, you shall indemnify us accordingly, and we reserve the right to terminate this Agreement without liability.
+
+3.9 Input Data Responsibility ​
+
+You acknowledge and agree that the knowledge documents, data, text, files, materials, links, and other content you input into our service will be used within the scope of this Agreement (including but not limited to service provision). Before inputting any content that may contain personal information or trade secrets, please exercise caution. By submitting any content, you represent and warrant that you have all necessary rights, licenses, and permissions to do so, and that such content does not infringe any third party's intellectual property rights, personality rights, privacy rights, or other legitimate interests. All liabilities arising from your input or improper use of outputs shall be borne solely by you.
+
+3.10 Prohibited Uses ​
+
+You must NOT use the service for any of the following purposes:
+
+Illegal, fraudulent, or deceptive activities;
+
+Infringement of third-party intellectual property, privacy, or publicity rights;
+
+Generating content that is harmful, defamatory, discriminatory, obscene, or otherwise illegal;
+
+Training or fine-tuning competing AI models using our service outputs;
+
+Reverse engineering the Platform's technology, algorithms, or models;
+
+Using the service for automated decision-making in healthcare, education, credit scoring, or critical infrastructure without appropriate human oversight;
+
+Generating content that misleads others into believing it was created by a human rather than by AI;
+
+Deep linking, scraping, or crawling the Platform's systems without authorization;
+
+Traffic hijacking or other methods to redirect users from the Platform;
+
+Use by or on behalf of any person or entity subject to international sanctions (UN, US SDN List, Entity List, EU sanctions, China's unreliable entities list) or located in prohibited jurisdictions (Iran, North Korea, Cuba, Crimea, Donetsk, Zaporizhzhia, and other sanctioned regions);
+
+Any activity that violates export control laws (including ITAR, EAR, HIPAA, GLBA, COPPA) or international trade restrictions;
+
+Activities targeting minors without proper age verification and parental consent;
+
+Using the service to provide professional advice (medical, legal, financial, educational, journalistic) without appropriate disclaimers and human oversight.
+
+4. Intellectual Property and Other Rights ​
+
+4.1 Platform Ownership ​
+
+Except for rights that applicable law entitles to relevant right holders, we retain all rights in the service, including but not limited to software, technology, programs, code, model weights, user interfaces, web pages, text, graphics, layout design, trademarks, and electronic documents. For the avoidance of doubt, all ownership and intellectual property rights in the LongCat model belong to us, including but not limited to model parameters, algorithms, code, and framework structure.
+
+4.2 User Rights in Input and Output ​
+
+Subject to applicable law and compliance with this Agreement, you retain all intellectual property and other rights in your Input and Output content. Due to technical limitations, we cannot guarantee that content generated for other users will be entirely distinct from your content. Accordingly, your rights in Output content do not extend to content generated for other users.
+
+You represent and warrant that (i) you and your end users have all necessary rights, licenses, and permissions to submit the Input to our service; (ii) the Input and corresponding Output do not infringe any third party's intellectual property, personality, reputation, privacy, personal information, or other lawful rights; and (iii) the Input and Output do not involve state secrets, trade secrets, or data that could adversely affect national security or public interests.
+
+4.3 License Grant to Platform ​
+
+To enhance your experience and continuously improve our service quality, you grant us and our affiliates a free, worldwide, transferable, sublicensable, and royalty-free license to use your Input, Output, and optimization suggestions for purposes including but not limited to services optimization, brand promotion, and marketing, to the extent permitted by applicable law. Users who require restrictions on the use of Input, Output, and optimization suggestions for training or improving LongCat AI models may contact us to discuss available enterprise arrangements or separate written agreements. Unless otherwise expressly agreed in writing, Input, Output, and optimization suggestions may be used for the foregoing purposes.
+
+4.4 Brand Protection ​
+
+Without our prior written consent, you must not display or use any trademarks, service marks, trade names, domain names, website names, or other distinctive brand features ("Marks") of us or our affiliates, either alone or in combination with other materials. You must not represent us or our affiliates as your case study, partner, or collaborator in any public communications, including but not limited to websites, applications, media, or capital markets disclosures.
+
+4.5 Moral Rights Waiver ​
+
+To the fullest extent permitted by applicable law, you waive any moral rights under copyright law in any content you submit to the Platform that may arise in favor of you or any other person.
+
+4.6 Feedback ​
+
+Any feedback, suggestions, or recommendations you provide to us regarding the service are provided voluntarily and grant us an unrestricted, perpetual, irrevocable, royalty-free, worldwide, non-exclusive right to use, reproduce, modify, and incorporate such feedback into the service.
+
+4.7 Privacy Policy ​
+
+We collect, process, and protect your personal information as described in the LongCat AI Platform Privacy Policy when you use the Platform services. The privacy policies governing end users' personal information collected through your downstream applications are outside the scope of our Privacy Policy, and you, as the data controller in that context, must disclose your own privacy policies to end users.
+
+5. Paid Services and Recharge ​
+
+5.1 Pre-funding ​
+
+When using paid services, you must pre-fund your account. You may use the service normally when your balance is sufficient. We reserve the right to suspend service when your balance is insufficient. You are responsible for any consequences resulting from your failure to recharge in a timely manner.
+
+5.2 Pricing and Billing ​
+
+Pricing, recharge methods, billing models, and free credits are subject to the information displayed on our product pages and official website. If any billing adjustments materially affect your rights, we will notify you through prominent means. Your continued use of the service after such adjustments constitutes acceptance of the revised terms.
+
+5.3 Recharge Confirmation ​
+
+When recharging your account, you must carefully verify your account, payment method, and other information. Any losses resulting from user error, misunderstanding of recharge terms, or insufficient understanding of billing mechanisms shall be borne solely by you. You should recharge according to your actual usage needs.
+
+5.4 Refunds ​
+
+Refund requests must be submitted through the Platform's "Billing" > "Refund" section in accordance with the published procedures, conditions, and requirements. For eligible refunds, we will return the remaining unconsumed balance after deducting necessary fees. Consumed amounts and invoiced amounts are non-refundable. For users with foreign currency cards, the actual refund amount may vary due to exchange rate fluctuations and will be determined by the amount received.
+
+5.5 Funding Source ​
+
+You warrant that the funds used for account recharge are sourced lawfully. We reserve the right to cooperate with judicial or government authorities to verify identity information and take appropriate actions on account balances, including but not limited to account locking, suspension, or restriction of use.
+
+6. Indemnification ​
+
+6.1 Developer Indemnity ​
+
+You agree to indemnify, defend, and hold harmless the Platform and its affiliates, officers, directors, employees, and agents from and against any and all claims, demands, losses, damages, liabilities, costs, and expenses (including but not limited to reasonable attorneys' fees, arbitration fees, court costs, investigation expenses, and compensation payments) arising out of or related to:
+
+Your breach of this Agreement or applicable laws;
+
+Your violation of any third party's intellectual property, privacy, or other rights through Input or Output;
+
+Any unauthorized use of the service;
+
+Any claims by end users or third parties arising from your use of the service;
+
+Your failure to properly label AI-generated content.
+
+The foregoing indemnification obligation does not apply to losses caused by the Platform's material breach, gross negligence, or willful misconduct.
+
+6.2 Automatic Deduction ​
+
+You authorize us to deduct any amounts owed to us from your account balance (including balances across associated accounts under the same entity) or to offset such amounts by canceling corresponding services.
+
+7. Limitation of Liability and Disclaimers ​
+
+7.1 Force Majeure and Service Interruptions ​
+
+You acknowledge and agree that the service may be interrupted or terminated due to force majeure events. Force majeure includes objective events that are unforeseeable, unavoidable, and insurmountable, including but not limited to:
+
+Network equipment maintenance and network connection failures;
+
+Computer, communication, or system failures;
+
+Power outages;
+
+Strikes, labor disputes, riots, insurrections, civil unrest;
+
+Inadequate production capacity or materials;
+
+Fire, flood, storm, explosion, war;
+
+Government actions, legal or regulatory changes, judicial or administrative orders;
+
+Other force majeure events or third-party inactions.
+
+In such circumstances, we will use commercially reasonable efforts to restore service. However, we disclaim all liability for any losses incurred during such interruptions to the fullest extent permitted by law.
+
+7.2 Additional Disclaimers ​
+
+We do not accept liability for the following causes of service interruption or termination, provided they are in accordance with applicable law:
+
+Damage caused by computer viruses, Trojan horses, or other malicious programs;
+
+Failures of user or Platform software, systems, hardware, or communication lines;
+
+User operational errors;
+
+Use of the service through unauthorized means;
+
+Other circumstances beyond our reasonable control or anticipation.
+
+7.3 AS IS and AS AVAILABLE ​
+
+The service is provided on an "AS IS" and "AS AVAILABLE" basis. We make no warranties of any kind, whether express, implied, or statutory, including but not limited to:
+
+Fitness for a particular purpose;
+
+Accuracy, reliability, availability, timeliness, error-free operation, uninterrupted service, or freedom from defects;
+
+That the service will be free from bias, infringement, or unreasonableness;
+
+That the service's code, programs, or referenced content will be accurate, stable, or complete;
+
+That outputs generated through prompt engineering or other Agreement-compliant uses will reflect the views of the Platform.
+
+7.4 Limitation of Liability ​
+
+We shall not be liable for any indirect, incidental, consequential, or punitive damages arising from your use of the service, regardless of the theory of liability, including but not limited to:
+
+Loss of profits, business goodwill, or reputation;
+
+Loss of data or information;
+
+Business interruption;
+
+Loss of anticipated savings, business opportunities, or commercial advantages;
+
+Any other intangible or tangible losses.
+
+Our total aggregate liability to you for all direct damages, whether in contract, tort, or otherwise, shall not exceed the greater of the total amount you paid for the service in the twelve (12) months immediately preceding the claim.
+
+The foregoing limitation shall not apply to liability arising from:
+
+Gross negligence or willful misconduct by the Platform;
+
+Breach of payment obligations by the Platform;
+
+Breach of indemnification obligations by the Platform;
+
+Breach of confidentiality obligations by the Platform;
+
+Violation of applicable data protection laws by the Platform;
+
+Death or personal injury caused by the Platform's negligence.
+
+7.5 Service Changes and Termination ​
+
+We reserve the right to determine service settings, scope, modifications, interruptions, suspensions, or terminations at our discretion for operational needs. We reserve the right to process illegal or non-compliant content, but this right does not constitute an obligation or commitment.
+
+7.6 Assignment ​
+
+We reserve the right to assign any rights or obligations under this Agreement to any affiliate, subsidiary, or any successor in interest to the business related to this service.
+
+8. Account Termination ​
+
+8.1 Voluntary Termination by User ​
+
+You may terminate this Agreement at any time by deleting your account through our contact email or customer service. Before terminating, please note that your account data, API keys, and recharge balance will be permanently deleted upon termination. These cannot be restored even if you re-register under the same entity. Please exercise caution.
+
+8.2 Termination by Platform ​
+
+We may terminate this Agreement and your account immediately without prior notice if you:
+
+Breach this Agreement or applicable laws;
+
+Provide false or misleading information;
+
+Fail to respond to our communications for an extended period;
+
+Refuse to accept material updates to this Agreement;
+
+Engage in illegal activities;
+
+Repeatedly violate Platform rules;
+
+Otherwise give us a valid reason to believe termination is warranted.
+
+After termination, your account balance will be permanently deleted and cannot be restored.
+
+8.3 Termination Procedure ​
+
+Upon receiving your termination request, we may temporarily suspend your account during the review period. If you wish to withdraw your request during this period, please contact us promptly.
+
+8.4 Post-Termination Obligations ​
+
+After account termination:
+
+We may retain registration data and activity records as required by applicable laws;
+
+Any legal or contractual violations occurring before termination remain subject to the remedies under this Agreement;
+
+Termination does not affect any accrued rights and obligations, including outstanding payment obligations;
+
+Intellectual property, confidentiality, indemnification, and other surviving obligations shall continue in full force and effect after termination.
+
+8.5 Re-registration Restriction ​
+
+After account termination, you may not re-register or create a new account for the purpose of evading obligations under this Agreement.
+
+9. Confidentiality ​
+
+9.1 Definition ​
+
+"Confidential Information" means all non-public, proprietary, or confidential information disclosed by either party, including but not limited to technical information, business information, financial information, pricing, algorithms, source code, API documentation, and any other information marked as confidential or that a reasonable person would understand to be confidential.
+
+9.2 Obligations ​
+
+Each party shall:
+
+Use Confidential Information solely for the purposes of this Agreement;
+
+Protect Confidential Information using at least the same degree of care as it uses for its own confidential information (and in no event less than reasonable care);
+
+Not disclose Confidential Information to any third party without prior written consent.
+
+9.3 Exceptions ​
+
+The confidentiality obligations do not apply to information that:
+
+Is or becomes publicly available through no fault of the receiving party;
+
+Was lawfully known to the receiving party prior to disclosure;
+
+Is independently developed by the receiving party without reference to the disclosing party's Confidential Information;
+
+Is required to be disclosed by applicable law, regulation, or court order (provided that the disclosing party gives reasonable prior notice where permitted).
+
+9.4 Survival ​
+
+Confidentiality obligations shall survive the termination of this Agreement for a period of five (5) years.
+
+10. Notices and Communication ​
+
+10.1 Contact Information ​
+
+You must provide accurate and valid contact information to us. You must promptly update any changes to your contact information. Any consequences resulting from inaccurate, invalid, or outdated contact information (including your inability to receive service notifications, customer support, or dispute resolution communications) shall be borne solely by you.
+
+10.2 Notification Methods ​
+
+We may send you service-related notifications through website announcements, email, SMS, instant messaging, or other communication channels. These may include updated service rules, service upgrades, security alerts, verification messages, and marketing information. Notifications are deemed delivered:
+
+Website announcements: Effective upon publication (unless otherwise specified);
+
+Electronic communications (system notifications, emails, SMS, instant messages): Effective upon successful transmission;
+
+Physical mail: Effective on the third (3rd) business day after mailing.
+
+10.3 Marketing Communications ​
+
+We may send you commercial information about services, features, or activities you may be interested in. You may opt out of marketing communications at any time through the unsubscribe mechanism in SMS messages or by contacting us directly.
+
+11. Governing Law and Dispute Resolution ​
+
+11.1 Governing Law ​
+
+This Agreement shall be governed by and construed in accordance with the laws of Singapore, without regard to its conflict of laws principles.
+
+11.2 Dispute Resolution ​
+
+Any dispute arising out of or in connection with this Agreement shall be resolved as follows:
+
+1. Negotiation: The parties shall first attempt to resolve the dispute through good-faith negotiations within thirty (30) days of written notice of the dispute.
+
+2. Arbitration: If the dispute is not resolved through negotiation, it shall be finally settled by binding arbitration administered by the Singapore International Arbitration Centre (SIAC) in accordance with the SIAC Arbitration Rules in force at the time of filing. The arbitration shall be conducted in English by a panel of one (1) arbitrator appointed in accordance with the SIAC Rules. The seat of arbitration shall be Singapore. The arbitral award shall be final and binding on both parties.
+
+The foregoing arbitration agreement shall survive the termination of this Agreement.
+
+11.3 Interim Measures ​
+
+Nothing in this Agreement shall prevent either party from seeking urgent interim or conservatory measures from a court of competent jurisdiction.
+
+12. Miscellaneous ​
+
+12.1 Severability ​
+
+If any provision of this Agreement is held to be invalid, illegal, or unenforceable, such provision shall be deemed severable, and the remaining provisions shall remain in full force and effect. The delay or failure by either party to exercise any right under this Agreement shall not constitute a waiver of that right.
+
+12.2 Agreement Updates ​
+
+To continuously optimize the service and adapt to changes in laws, regulations, policies, technology, and product features, we may update this Agreement from time to time. Updated content will be notified through website announcements, in-platform prompts, or push notifications. Your continued use of the service constitutes acceptance of the updated Agreement. If you disagree with the updated terms, you may stop using the service.
+
+12.3 Export Compliance ​
+
+You acknowledge and agree that the service is subject to applicable export control laws and regulations. You shall not use, export, re-export, or transfer the service or any related technology or data to any country, territory, or person subject to trade embargoes, sanctions, or restrictions imposed by the United Nations, the United States (including ITAR and EAR), the European Union, the People's Republic of China, or any other applicable jurisdiction.
+
+12.4 Minors ​
+
+This service is not intended for use by individuals under the age of 18. We do not knowingly collect personal information from minors. If you are under 18, you must not use this service.
+
+12.5 Entire Agreement ​
+
+This Agreement, together with the LongCat AI User Service Agreement, the LongCat AI Platform Privacy Policy, and any referenced supplementary agreements, constitutes the entire agreement between you and us regarding the service and supersedes all prior or contemporaneous understandings.
+
+12.6 Section Headings ​
+
+Section headings are for convenience only and shall not be used to interpret or construe any provision of this Agreement.
+
+13. Contact Us ​
+
+13.1 General Inquiries ​
+
+If you have any questions about using the service, please contact us at:
+
+Email: longcat-team@meituan.com
+
+Customer Service: 86-01-1010-7888
+
+13.2 Complaints and Reports ​
+
+If you discover any illegal activities, harmful content, or violations of your legitimate rights (including but not limited to intellectual property, personal information, portrait rights, or reputation rights) generated through the service, please report them to us. When filing a complaint, you should provide your true identity information and preliminary evidence of the infringement.
+
+Email: tousujubao@meituan.com
+
+Customer Service: 86-01-1010-7888
+
+We will process your requests in accordance with applicable laws.
+
+On this page
+1. Account Registration and Use1.1 Account System1.2 Account Types and Verification1.3 Account Security1.4 API Key Security2. Service Description2.1 Service Overview2.2 Service Types2.3 Service Maintenance and Changes2.4 Billing Disputes3. Developer Conduct and Obligations3.1 General Compliance3.2 Downstream Responsibility3.3 AI Content Labeling Obligations3.4 Content Safety and Moderation3.5 Data Protection and Privacy3.6 Disclaimers on Output Accuracy3.7 Third-Party Information from Web Search3.8 System Security3.9 Input Data Responsibility3.10 Prohibited Uses4. Intellectual Property and Other Rights4.1 Platform Ownership4.2 User Rights in Input and Output4.3 License Grant to Platform4.4 Brand Protection4.5 Moral Rights Waiver4.6 Feedback4.7 Privacy Policy5. Paid Services and Recharge5.1 Pre-funding5.2 Pricing and Billing5.3 Recharge Confirmation5.4 Refunds5.5 Funding Source6. Indemnification6.1 Developer Indemnity6.2 Automatic Deduction7. Limitation of Liability and Disclaimers7.1 Force Majeure and Service Interruptions7.2 Additional Disclaimers7.3 AS IS and AS AVAILABLE7.4 Limitation of Liability7.5 Service Changes and Termination7.6 Assignment8. Account Termination8.1 Voluntary Termination by User8.2 Termination by Platform8.3 Termination Procedure8.4 Post-Termination Obligations8.5 Re-registration Restriction9. Confidentiality9.1 Definition9.2 Obligations9.3 Exceptions9.4 Survival10. Notices and Communication10.1 Contact Information10.2 Notification Methods10.3 Marketing Communications11. Governing Law and Dispute Resolution11.1 Governing Law11.2 Dispute Resolution11.3 Interim Measures12. Miscellaneous12.1 Severability12.2 Agreement Updates12.3 Export Compliance12.4 Minors12.5 Entire Agreement12.6 Section Headings13. Contact Us13.1 General Inquiries13.2 Complaints and Reports

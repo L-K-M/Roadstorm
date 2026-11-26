@@ -36,3 +36,9 @@ The GPT-6.2 Sol manifest fixes (`3845159a-f14b-4572-ac8d-25bf5f43d841`) and Opus
 `93555487-a479-4ecb-ac23-9e95067144cf` completed CI tooling, uncommitted and not accepted: its Linux workflow extracts a download without verifying the publisher checksum first, and the machine inventory identified doctor/capture issues. Follow-on `6848aca2-16e6-42f1-abfd-4e493b125af5` owns `tools/ci/` and `.github/workflows/` for targeted fixes. Its claim of a missing nested tick coordinator conflicts with the present file and requires isolated reproduction. Do not call M0 CI complete until independently checked.
 
 Jolt correction `9725ba2c-802a-4115-9aeb-337b1dca99c8` completed: independent isolated rerun passed 58 structural checks and matched accelerated/realtime 600-tick endpoints; inferred backend identity and full simulator gate remain subject to review. The recursively nested scratch copy it made was removed.
+
+Schema slices `b20cb153-94a8-4997-be00-1f8335daa1a0` (handling) and `8cfeb70f-e5b3-4cac-8b4c-83a933d0970b` (tactical intent) completed; their independent runs passed 36 and 12 tests respectively. Contracts and fixtures remain provisional/unreviewed and are not evidence of a car, AI, or measured gameplay. `847d8664-1028-4233-a67c-39f1465b4964` (StepFun) owns `schemas/scenario/` and `fixtures/scenario/`; `b2377a10-187a-40e6-94ae-8b239bc7a93e` owns `docs/PYTHON_TOOLCHAIN.md` and `tools/python_pin/`.
+
+`a67680d9-2923-4992-a350-5804f0fcc193` (StepFun) owns the authority/open-items subset of provenance for an accuracy correction: retain the plan's standing-record requirement while removing invented signature or approval requirements. It does not own provider-term snapshots.
+
+Provenance authority correction `a67680d9-2923-4992-a350-5804f0fcc193` completed; account terms remain open. The StepFun route notation identified in its report has been corrected.
