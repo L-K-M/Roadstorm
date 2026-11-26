@@ -16,7 +16,8 @@ lets a reviewer answer:
   the exact regeneration command;
 * what it is made of - lineage: upstream inputs with their licenses and
   evidence, dependency references, superseded outputs;
-* who may ship it - license/SPDX identifier, rights record, service terms;
+* who may ship it - license/SPDX identifier, rights record, service terms
+  (both resolving to a record that exists in the checkout);
 * whether it was reviewed and is approved for release inclusion.
 
 Across entries it also enforces the two rules that make the registry usable as
@@ -106,6 +107,27 @@ REVIEW_STATUSES = ("pending", "approved", "rejected")
 # claiming Unlicense is claiming the wrong dedication for a creative asset.
 FIRST_PARTY_LICENSES = ("CC0-1.0",)
 EXTERNAL_LICENSES = ("CC0-1.0",)
+
+# Records that rights references must resolve to (provenance/MANIFEST_CONTRACT.md,
+# "Storage conventions" and "Rights records link to OWNER_AUTHORITY.md and the
+# applicable entry in PROVIDER_TERMS.md").
+PROVIDER_TERMS_REGISTER = "provenance/PROVIDER_TERMS.md"
+PROVIDER_TERMS_SNAPSHOT_DIR = "provenance/provider_terms/"
+RIGHTS_RECORD_DIR = "provenance/"
+
+# Placeholder strings that name no terms document. First-party entries record
+# "not_applicable" in rights.service_terms_ref because no service produced
+# them; a service_generated entry that copies that sentinel - or any other
+# placeholder - is claiming terms it does not have.
+PLACEHOLDER_TERMS_REFS = (
+    "not_applicable",
+    "not-applicable",
+    "n/a",
+    "na",
+    "none",
+    "tbd",
+    "-",
+)
 
 # Findings that mean the manifest could not be read (or the command line was
 # wrong) rather than that its contents failed validation. The CLI maps these
@@ -401,15 +423,45 @@ def _path_spelling_error(value: Any) -> str | None:
     return None
 
 
+def _reference_target(reference: str) -> str:
+    """Strip an optional ``#anchor`` so a reference may address a register row.
+
+    ``provenance/PROVIDER_TERMS.md`` holds one row per authoring route, so a
+    terms reference may name the register and the route row it means. The
+    anchor is not part of the path and is not resolved here.
+    """
+    return reference.split("#", 1)[0].strip()
+
+
+def _symlinked_component(root: Path, relative: str) -> str | None:
+    """Return the first component of ``relative`` (under ``root``) that is a symlink.
+
+    ``is_symlink()`` on the final component alone is not enough: with
+    ``assets/generated/fixture/etcdir`` a symlink to a directory outside the
+    checkout, the reference ``assets/generated/fixture/etcdir/hosts`` resolves
+    to a regular file whose existence and hash the entry does not govern. A
+    reference is only inside the root when every component below the root is
+    a real directory and the leaf is a real regular file, so each component
+    is checked - for existence checks and for hashing alike.
+    """
+    prefix = Path()
+    for part in Path(relative).parts:
+        prefix = prefix / part
+        if (root / prefix).is_symlink():
+            return prefix.as_posix()
+    return None
+
+
 class PathChecker:
     """Resolves manifest-relative paths against a project root.
 
     Manifest paths must be POSIX-style, project-relative, and free of ``..``
     so that a manifest cannot point outside the checkout or hide an absolute
     machine path in the record. Referenced files must additionally be regular
-    files: a symlink can name a file outside the checkout that the entry does
-    not govern, so its existence and hash would vouch for content the record
-    never accounted for.
+    files reached through real directories: a symlink at *any* component -
+    the leaf or a parent directory - can name a file outside the checkout
+    that the entry does not govern, so its existence and hash would vouch for
+    content the record never accounted for.
     """
 
     def __init__(self, root: Path | None, file_checks: bool = True, check_hashes: bool = False):
@@ -434,14 +486,16 @@ class PathChecker:
         target = self.resolve(path)
         if target is None:
             return
-        if target.is_symlink():
+        linked = _symlinked_component(self.root, path)
+        if linked is not None:
             findings.error(
                 "symlinked-path",
                 location,
-                "{} is a symlink ({}); a manifest reference must be a regular file inside the "
-                "checkout, because a symlink can point at a file outside the root that the "
-                "entry does not govern, and its existence and hash would vouch for content the "
-                "record never accounted for".format(what, path),
+                "{} '{}' resolves through the symlink '{}'; a manifest reference must be a "
+                "regular file inside the checkout, reached through real directories, because a "
+                "symlink at any component can point at a file outside the root that the entry "
+                "does not govern, and its existence and hash would vouch for content the record "
+                "never accounted for".format(what, path, linked),
             )
             return
         if not target.exists():
@@ -467,7 +521,14 @@ class PathChecker:
             # absolute key such as /etc/hosts would otherwise be hashed.
             return None
         target = self.resolve(relative)
-        if target is None or target.is_symlink() or not target.is_file():
+        if (
+            target is None
+            or _symlinked_component(self.root, relative) is not None
+            or not target.is_file()
+        ):
+            # Re-checked here rather than trusted from an earlier existence
+            # check: the file can become a symlink between the two steps, and
+            # hashing must never follow one.
             return None
         hasher = hashlib.sha256()
         with open(target, "rb") as handle:
@@ -561,6 +622,138 @@ def _report_duplicate_members(
         elif _is_sequence(value):
             for index in reversed(range(len(value))):
                 stack.append(("{}[{}]".format(location, index), value[index]))
+
+
+# ---------------------------------------------------------------------------
+# Record reference resolution
+# ---------------------------------------------------------------------------
+
+
+def _check_reference_resolves(
+    findings: Findings,
+    location: str,
+    target: str,
+    what: str,
+    checker: PathChecker,
+) -> None:
+    """Report when a reference to a repository record does not resolve.
+
+    Distinct from the asset-path checks: the reference names a record the
+    entry relies on (the authority instrument, the provider terms), not an
+    output the entry governs. A missing, non-file or symlinked record is
+    reported as ``unresolved-reference`` so the gate is greppable, and it is
+    skipped under ``--no-file-checks`` like every other existence check.
+    """
+    if not checker.file_checks:
+        return
+    resolved = checker.resolve(target)
+    if resolved is None:
+        return
+    linked = _symlinked_component(checker.root, target)
+    if linked is not None:
+        findings.error(
+            "unresolved-reference",
+            location,
+            "{} '{}' resolves through the symlink '{}'; a record reference must name a real "
+            "file inside the checkout, because a symlink can point at a record the entry does "
+            "not govern".format(what, target, linked),
+        )
+        return
+    if not resolved.exists():
+        findings.error(
+            "unresolved-reference",
+            location,
+            "{} '{}' does not exist (resolved against {}); the reference must resolve to a "
+            "record that is actually in the checkout, not to a path that was never "
+            "written".format(what, target, checker.root),
+        )
+    elif not resolved.is_file():
+        findings.error(
+            "unresolved-reference",
+            location,
+            "{} '{}' is not a file; the reference must resolve to a record file".format(
+                what, target
+            ),
+        )
+
+
+def _check_terms_reference(
+    findings: Findings,
+    location: str,
+    reference: str,
+    checker: PathChecker,
+) -> None:
+    """A ``service_terms_ref`` must resolve to the terms register or a snapshot.
+
+    The legal origin of a service-generated asset *is* its provider terms, so
+    the reference has to name a real record: the register itself
+    (``provenance/PROVIDER_TERMS.md``, optionally with a ``#route-id`` anchor)
+    or a bounded snapshot under ``provenance/provider_terms/<route-id>/``. A
+    string that resolves to nothing lets the asset ship without terms, which
+    is exactly what the release rights gate blocks.
+    """
+    target = _reference_target(reference)
+    problem = _path_spelling_error(target)
+    if problem is not None:
+        findings.error(
+            "invalid-path",
+            location,
+            "rights.service_terms_ref {}".format(problem),
+        )
+        return
+    if target != PROVIDER_TERMS_REGISTER and not target.startswith(PROVIDER_TERMS_SNAPSHOT_DIR):
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.service_terms_ref '{}' does not point at the provider-terms register "
+            "({}, optionally with a '#route-id' anchor) or a bounded route snapshot under "
+            "{}<route-id>/; the reference must resolve to the record that holds the applicable "
+            "terms".format(
+                reference, PROVIDER_TERMS_REGISTER, PROVIDER_TERMS_SNAPSHOT_DIR
+            ),
+        )
+        return
+    _check_reference_resolves(
+        findings, location, target, "rights.service_terms_ref", checker
+    )
+
+
+def _check_rights_record_reference(
+    findings: Findings,
+    location: str,
+    reference: str,
+    checker: PathChecker,
+) -> None:
+    """A ``rights_holder_record`` must resolve to a record under ``provenance/``.
+
+    The contract requires rights records to link to ``OWNER_AUTHORITY.md``
+    (or a recorded contributor entry) and the applicable
+    ``PROVIDER_TERMS.md`` entry, so the reference has to name a real file in
+    the provenance register. A path to a file that does not exist is not a
+    link to an instrument.
+    """
+    target = _reference_target(reference)
+    problem = _path_spelling_error(target)
+    if problem is not None:
+        findings.error(
+            "invalid-path",
+            location,
+            "rights.rights_holder_record {}".format(problem),
+        )
+        return
+    if not target.startswith(RIGHTS_RECORD_DIR):
+        findings.error(
+            "unresolved-reference",
+            location,
+            "rights.rights_holder_record '{}' does not point at a record under {}; the "
+            "contract requires rights records to link to provenance/OWNER_AUTHORITY.md (or a "
+            "recorded contributor entry) and the applicable provenance/PROVIDER_TERMS.md "
+            "entry".format(reference, RIGHTS_RECORD_DIR),
+        )
+        return
+    _check_reference_resolves(
+        findings, location, target, "rights.rights_holder_record", checker
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1054,7 +1247,14 @@ def _validate_entry(
         )
 
     if "rights" in entry:
-        _validate_rights(findings, _join(location, "rights"), entry["rights"], origin, allow_unknown_keys)
+        _validate_rights(
+            findings,
+            _join(location, "rights"),
+            entry["rights"],
+            origin,
+            checker,
+            allow_unknown_keys,
+        )
 
     if "review" in entry:
         _validate_review(findings, _join(location, "review"), entry["review"], allow_unknown_keys)
@@ -1320,7 +1520,12 @@ def _validate_generation(
 
 
 def _validate_rights(
-    findings: Findings, location: str, value: Any, origin: str | None, allow_unknown_keys: bool
+    findings: Findings,
+    location: str,
+    value: Any,
+    origin: str | None,
+    checker: PathChecker,
+    allow_unknown_keys: bool,
 ) -> None:
     rights = _require_mapping(findings, location, value, "rights")
     if rights is None:
@@ -1383,6 +1588,10 @@ def _validate_rights(
                 "owner/contributor authority instrument or a recorded contributor entry "
                 "(open item OI-01)",
             )
+        elif holder is not None:
+            _check_rights_record_reference(
+                findings, _join(location, "rights_holder_record"), holder, checker
+            )
 
     if "rights_basis" in rights:
         _require_string(
@@ -1396,14 +1605,28 @@ def _validate_rights(
             rights["service_terms_ref"],
             "rights.service_terms_ref",
         )
-        if origin == "service_generated" and (terms is None or _is_unknown(terms)):
-            findings.error(
-                "unknown-legal-origin",
-                _join(location, "service_terms_ref"),
-                "a service-generated asset must reference the applicable provider/service terms "
-                "entry in provenance/PROVIDER_TERMS.md; unknown or incompatible terms block "
-                "inclusion",
-            )
+        if origin == "service_generated" and terms is not None:
+            if _is_unknown(terms):
+                findings.error(
+                    "unknown-legal-origin",
+                    _join(location, "service_terms_ref"),
+                    "a service-generated asset must reference the applicable provider/service terms "
+                    "entry in provenance/PROVIDER_TERMS.md; unknown or incompatible terms block "
+                    "inclusion",
+                )
+            elif terms.strip().lower() in PLACEHOLDER_TERMS_REFS:
+                findings.error(
+                    "unknown-legal-origin",
+                    _join(location, "service_terms_ref"),
+                    "rights.service_terms_ref is the placeholder '{}'; a service-generated asset's "
+                    "legal origin *is* its provider terms, so the reference must name the "
+                    "applicable terms record, not a placeholder (the first-party 'not_applicable' "
+                    "sentinel is only valid for entries no service produced)".format(terms),
+                )
+            else:
+                _check_terms_reference(
+                    findings, _join(location, "service_terms_ref"), terms, checker
+                )
     if origin == "service_generated" and (
         "service_terms_ref" not in rights or rights["service_terms_ref"] is None
     ):
@@ -1568,6 +1791,28 @@ def _validate_review(
                     "review.{} is 'unknown' on an approved or release-included entry; record {}, "
                     "or keep the entry pending".format(key, what),
                 )
+
+        # The contract's Review group requires the visual/audio/model review
+        # alongside the technical check. An approval or release claim whose
+        # perceptual review is missing or 'unknown' is not a complete review
+        # record; a pending entry may still carry the unknown while its
+        # review is open.
+        if "perceptual_review" not in review or review["perceptual_review"] is None:
+            findings.error(
+                "missing-required-field",
+                _join(location, "perceptual_review"),
+                "an approved or release-included entry must record review.perceptual_review "
+                "(the contract's Review group requires the visual/audio/model review); record "
+                "the result, or 'not applicable' with the reason, or keep the entry pending",
+            )
+        elif _is_unknown(review.get("perceptual_review")):
+            findings.error(
+                "unknown-value",
+                _join(location, "perceptual_review"),
+                "review.perceptual_review is 'unknown' on an approved or release-included entry; "
+                "record the visual/audio/model review result (or 'not applicable' with the "
+                "reason), or keep the entry pending",
+            )
 
 
 def _validate_lineage(

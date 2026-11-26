@@ -25,20 +25,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _TOOL_DIR = Path(__file__).resolve().parents[1]  # tools/asset_manifest
 _REPO_ROOT = _TOOL_DIR.parents[1]  # the project checkout
 if str(_TOOL_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOL_DIR))
 
+import manifest_validator  # noqa: E402  (path set up above)
 from manifest_validator import (  # noqa: E402  (path set up above)
     MANIFEST_ID,
     SCHEMA_VERSION,
     Findings,
+    _reference_target,
     main,
     validate_manifest,
 )
@@ -114,6 +118,14 @@ def digest_of(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def service_entry(root: Path, entry_id: str = "texture.service.sky") -> dict:
+    """A structurally valid service-generated entry, with its files created."""
+    entry = materialize(root, complete_entry(entry_id))
+    entry["origin"] = "service_generated"
+    entry["reproducibility_class"] = "frozen_service_output"
+    return entry
+
+
 def materialize(root: Path, entry: dict) -> dict:
     """Create the files an entry references and record their real hashes."""
     for relative in entry["identity"]["source_paths"]:
@@ -122,6 +134,11 @@ def materialize(root: Path, entry: dict) -> dict:
         touch(root, relative)
     if entry["generation"].get("recipe_path"):
         touch(root, entry["generation"]["recipe_path"])
+    # The rights record the entry links to must exist for the reference to
+    # resolve (the fixtures point at the project authority instrument).
+    holder = entry.get("rights", {}).get("rights_holder_record")
+    if isinstance(holder, str) and holder.strip():
+        touch(root, _reference_target(holder))
     entry["hashes"] = {
         relative: digest_of(root / relative) for relative in entry["identity"]["output_paths"]
     }
@@ -359,6 +376,136 @@ class ManifestValidatorTestCase(unittest.TestCase):
         findings = validate(self.root, manifest, check_hashes=True)
         self.assertIn("symlinked-path", error_codes(findings))
 
+    def test_symlinked_parent_directory_is_rejected(self):
+        """Independent failure: a symlinked intermediate directory escapes the root.
+
+        The leaf is a regular file, so a final-component-only symlink check
+        lets the reference through, and --check-hashes then vouches for a file
+        outside the checkout that the entry does not govern.
+        """
+        entry = materialize(self.root, complete_entry())
+        outside = self.root.parent / ("roadstorm-fixture-dir-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "body.res").write_text("outside the checkout\n", encoding="utf-8")
+        link = self.root / "assets" / "generated" / "fixture" / "etcdir"
+        link.symlink_to(outside)
+        entry["identity"]["output_paths"] = ["assets/generated/fixture/etcdir/body.res"]
+        entry["hashes"] = {
+            "assets/generated/fixture/etcdir/body.res": digest_of(outside / "body.res")
+        }
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("symlinked-path", codes)
+        self.assertIn("etcdir", messages(findings))
+        # A hash-mismatch here would prove the file outside the root was read.
+        self.assertNotIn("hash-mismatch", codes)
+
+    def test_symlinked_parent_directory_is_rejected_for_every_reference(self):
+        """Source paths and recipe paths are gated by the same rule."""
+        entry = materialize(self.root, complete_entry())
+        outside = self.root.parent / ("roadstorm-fixture-dir-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "recipe.json").write_text("outside the checkout\n", encoding="utf-8")
+        link = self.root / "assets" / "source" / "fixture" / "etcdir"
+        link.symlink_to(outside)
+        entry["identity"]["source_paths"] = ["assets/source/fixture/etcdir/recipe.json"]
+        entry["generation"]["recipe_path"] = "assets/source/fixture/etcdir/recipe.json"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(error_codes(findings).count("symlinked-path"), 2, messages(findings))
+        self.assertNotIn("hash-mismatch", error_codes(findings))
+
+    def test_cli_symlinked_parent_directory_exits_1(self):
+        """End to end: the CLI must not PASS a manifest that escapes through a parent."""
+        entry = materialize(self.root, complete_entry())
+        outside = self.root.parent / ("roadstorm-fixture-dir-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "body.res").write_text("outside the checkout\n", encoding="utf-8")
+        link = self.root / "assets" / "generated" / "fixture" / "etcdir"
+        link.symlink_to(outside)
+        entry["identity"]["output_paths"] = ["assets/generated/fixture/etcdir/body.res"]
+        entry["hashes"] = {
+            "assets/generated/fixture/etcdir/body.res": digest_of(outside / "body.res")
+        }
+        manifest = write_manifest(self.root, [entry])
+        self.assertEqual(
+            main([str(manifest), "--root", str(self.root), "--check-hashes", "--quiet"]), 1
+        )
+
+    def test_digest_refuses_a_path_through_a_symlinked_parent(self):
+        """The hash access itself refuses, not only the existence check."""
+        entry = materialize(self.root, complete_entry())
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+        self.assertEqual(
+            checker.digest(entry["identity"]["output_paths"][0]),
+            hashlib.sha256((self.root / entry["identity"]["output_paths"][0]).read_bytes()).hexdigest(),
+        )
+        outside = self.root.parent / ("roadstorm-fixture-dir-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "body.res").write_text("outside the checkout\n", encoding="utf-8")
+        link = self.root / "assets" / "generated" / "fixture" / "etcdir"
+        link.symlink_to(outside)
+        self.assertIsNone(checker.digest("assets/generated/fixture/etcdir/body.res"))
+
+    def test_hash_step_rejects_a_symlink_swapped_in_after_the_existence_check(self):
+        """Race-aware: the file can become a symlink between check and hash.
+
+        The existence check accepts the real file; the swap happens inside the
+        hash step, exactly as a TOCTOU race would. Hashing must re-validate
+        the path instead of trusting the earlier check.
+        """
+        entry = materialize(self.root, complete_entry())
+        manifest = write_manifest(self.root, [entry])
+        outside = self.root.parent / ("roadstorm-fixture-swap-" + self.root.name)
+        outside.write_text("swapped in after the check\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        original_digest = manifest_validator.PathChecker.digest
+
+        def racing_digest(checker, relative):
+            target = checker.root / relative
+            if target.is_file() and not target.is_symlink():
+                target.unlink()
+                target.symlink_to(outside)
+            return original_digest(checker, relative)
+
+        with mock.patch.object(manifest_validator.PathChecker, "digest", racing_digest):
+            findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("missing-file", codes)
+        self.assertNotIn("hash-mismatch", codes)
+
+    def test_hash_step_rejects_a_parent_swapped_for_a_symlink_after_the_check(self):
+        """Race-aware: a parent directory can be replaced by a symlink mid-pass."""
+        entry = materialize(self.root, complete_entry())
+        manifest = write_manifest(self.root, [entry])
+        outside = self.root.parent / ("roadstorm-fixture-parent-swap-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        fixture_dir = self.root / "assets" / "generated" / "fixture"
+        original_digest = manifest_validator.PathChecker.digest
+        swapped: list[bool] = []
+
+        def racing_digest(checker, relative):
+            if not swapped:
+                swapped.append(True)
+                (fixture_dir / "body.res").rename(outside / "body.res")
+                fixture_dir.rmdir()
+                fixture_dir.symlink_to(outside)
+            return original_digest(checker, relative)
+
+        with mock.patch.object(manifest_validator.PathChecker, "digest", racing_digest):
+            findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("missing-file", codes)
+        self.assertNotIn("hash-mismatch", codes)
+
     def test_check_hashes_does_not_hash_paths_outside_the_root(self):
         """Independent failure: malformed output_paths must not make /etc/hosts hashed."""
         entry = complete_entry()
@@ -373,6 +520,28 @@ class ManifestValidatorTestCase(unittest.TestCase):
         # A hash-mismatch here would prove the file outside the root was read.
         self.assertNotIn("hash-mismatch", codes)
         self.assertIn("/etc/hosts", messages(findings))
+
+    def test_check_hashes_does_not_hash_through_a_symlinked_parent(self):
+        """Independent failure: a malformed output_paths leaves the key to the hash step."""
+        entry = materialize(self.root, complete_entry())
+        outside = self.root.parent / ("roadstorm-fixture-dir-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / "body.res").write_text("outside the checkout\n", encoding="utf-8")
+        link = self.root / "assets" / "generated" / "fixture" / "etcdir"
+        link.symlink_to(outside)
+        # output_paths is not an array, so identity never validates the key.
+        entry["identity"]["output_paths"] = "assets/generated/fixture/etcdir/body.res"
+        entry["hashes"] = {
+            "assets/generated/fixture/etcdir/body.res": digest_of(outside / "body.res")
+        }
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("not-an-array", codes)
+        # The hash step refused the key instead of hashing through the link.
+        self.assertIn("missing-file", codes)
+        self.assertNotIn("hash-mismatch", codes)
 
     def test_malformed_hash_spelling_is_an_error(self):
         entry = materialize(self.root, complete_entry())
@@ -464,6 +633,112 @@ class ManifestValidatorTestCase(unittest.TestCase):
         manifest = write_manifest(self.root, [entry])
         findings = validate(self.root, manifest)
         self.assertIn("missing-required-field", error_codes(findings))
+
+    def test_service_generated_rejects_the_first_party_placeholder(self):
+        """Independent failure: 'not_applicable' is the first-party sentinel, not terms."""
+        entry = service_entry(self.root)
+        entry["rights"]["service_terms_ref"] = "not_applicable"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("unknown-legal-origin", codes)
+        self.assertIn("not_applicable", messages(findings))
+
+    def test_service_generated_rejects_an_arbitrary_terms_string(self):
+        """Independent failure: a string that names no terms record is not terms."""
+        entry = service_entry(self.root)
+        entry["rights"]["service_terms_ref"] = "x"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("service_terms_ref", messages(findings))
+
+    def test_service_generated_rejects_a_nonexistent_terms_record(self):
+        entry = service_entry(self.root)
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/pi-stepfun/INTAKE.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("unresolved-reference", codes)
+        self.assertIn("pi-stepfun", messages(findings))
+
+    def test_service_generated_rejects_a_terms_reference_outside_provenance(self):
+        entry = service_entry(self.root)
+        entry["rights"]["service_terms_ref"] = "docs/someone-elses-terms.md"
+        touch(self.root, "docs/someone-elses-terms.md")
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+
+    def test_service_generated_accepts_the_terms_register_with_a_route_anchor(self):
+        """Positive control: the register row is the applicable terms entry."""
+        entry = service_entry(self.root)
+        touch(self.root, "provenance/PROVIDER_TERMS.md")
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-stepfun"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_service_generated_accepts_a_route_snapshot(self):
+        """Positive control: a bounded snapshot under provenance/provider_terms/."""
+        entry = service_entry(self.root)
+        touch(self.root, "provenance/provider_terms/pi-stepfun/INTAKE.md")
+        entry["rights"]["service_terms_ref"] = "provenance/provider_terms/pi-stepfun/INTAKE.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_first_party_entry_may_record_the_not_applicable_sentinel(self):
+        """The sentinel stays valid where no service produced the asset."""
+        entry = materialize(self.root, complete_entry())
+        entry["rights"]["service_terms_ref"] = "not_applicable"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_rights_holder_record_must_resolve_to_an_existing_record(self):
+        """Independent failure: a rights record that does not exist is no link to an instrument."""
+        entry = materialize(self.root, complete_entry())
+        entry["rights"]["rights_holder_record"] = "provenance/NOPE.md"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("unresolved-reference", codes)
+        self.assertIn("provenance/NOPE.md", messages(findings))
+
+    def test_rights_holder_record_must_point_into_provenance(self):
+        entry = materialize(self.root, complete_entry())
+        entry["rights"]["rights_holder_record"] = "docs/OWNER.md"
+        touch(self.root, "docs/OWNER.md")
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+
+    def test_symlinked_rights_record_is_rejected(self):
+        entry = materialize(self.root, complete_entry())
+        outside = self.root.parent / ("roadstorm-fixture-authority-" + self.root.name)
+        outside.write_text("authority elsewhere\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        record = self.root / "provenance" / "OWNER_AUTHORITY.md"
+        record.unlink()
+        record.symlink_to(outside)
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+
+    def test_rights_holder_record_may_use_an_anchor(self):
+        entry = materialize(self.root, complete_entry())
+        entry["rights"]["rights_holder_record"] = "provenance/OWNER_AUTHORITY.md#owner"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_reference_resolution_is_skipped_without_file_checks(self):
+        """--no-file-checks validates structure only, like every existence check."""
+        entry = complete_entry()
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest, file_checks=False)
+        self.assertNotIn("unresolved-reference", error_codes(findings))
 
     def test_external_cc0_upstream_record_cannot_be_omitted(self):
         """Independent failure: no rights.upstream and no upstream inputs."""
@@ -635,6 +910,50 @@ class ManifestValidatorTestCase(unittest.TestCase):
         codes = error_codes(findings)
         self.assertIn("unapproved-release", codes)
         self.assertIn("unknown-value", codes)
+
+    def test_approved_entry_requires_perceptual_review(self):
+        """Independent failure: the contract's Review group lists visual/audio/model review."""
+        entry = materialize(self.root, complete_entry())
+        del entry["review"]["perceptual_review"]
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("missing-required-field", codes)
+        self.assertIn("perceptual_review", messages(findings))
+
+    def test_approved_entry_rejects_unknown_perceptual_review(self):
+        entry = materialize(self.root, complete_entry())
+        entry["review"]["perceptual_review"] = "unknown"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("unknown-value", codes)
+        self.assertIn("perceptual_review", messages(findings))
+
+    def test_release_inclusion_with_unknown_perceptual_review_is_an_error(self):
+        """The gate keys on the shipping claim, not only on status."""
+        entry = materialize(self.root, complete_entry())
+        entry["review"]["status"] = "pending"
+        entry["review"]["release_inclusion"] = True
+        entry["review"]["perceptual_review"] = "unknown"
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        codes = error_codes(findings)
+        self.assertIn("unapproved-release", codes)
+        self.assertIn("unknown-value", codes)
+
+    def test_pending_entry_may_omit_perceptual_review(self):
+        """A review that has not happened yet may still record the unknown."""
+        entry = materialize(self.root, complete_entry())
+        entry["review"] = {
+            "status": "pending",
+            "reviewer": "unknown",
+            "limitations": ["review not started"],
+            "release_inclusion": False,
+        }
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertEqual(findings.errors, [], messages(findings))
 
     # -- lineage and references ---------------------------------------------
 
