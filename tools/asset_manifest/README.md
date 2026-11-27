@@ -107,7 +107,7 @@ Cross-entry, once the whole registry is known:
 | Check | Rule |
 | --- | --- |
 | Output ownership | Each `identity.output_paths` entry has exactly one owning entry, and is listed once inside it (`duplicate-output-path`). Two entries claiming one output path make the provenance, lineage and hash of that file ambiguous. Sharing a *source* path is ordinary lineage and stays allowed. |
-| Path safety | Referenced paths must be regular files inside the root reached through real directories: a symlink is rejected (`symlinked-path`) - at the leaf *and* at any parent directory, because a parent symlink resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for symlinks before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. |
+| Path safety | Referenced paths must be regular files inside the root reached through real directories: a symlink is rejected (`symlinked-path`) - at the leaf *and* at any parent directory, because a parent symlink resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for symlinks before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. A record the checker *reads* (the provider-terms register, whose rows a `#route-id` anchor is resolved against) is read only after the reference itself resolved to a real, readable, non-symlinked regular file inside the root, and the read re-validates the path and the open descriptor - a rejected register path is never opened. |
 | Dependency order | `lineage.depends_on` is acyclic (`dependency-cycle`): direct (A↔B), self (A→A) and indirect (A→B→C→A) loops are all rejected, because an asset can only be built once the entries it depends on exist. The search is iterative, so a long chain cannot exhaust the stack. |
 
 Document level:
@@ -186,6 +186,21 @@ Document level:
   `rights_holder_record` that does not resolve to an existing record under
   `provenance/` (including a symlinked one) is an error; resolution is
   skipped under `--no-file-checks` like every other existence check.
+- **a rejected register path is never read** (the 2026-11-27 Sol recheck,
+  finding 3): the fragment checker no longer reads the register after the
+  path check has refused it. Each of a symlinked register, a register
+  reached through a symlinked `provenance/`, a missing register, a directory
+  in its place, a FIFO in its place, an unreadable register and a register
+  that is not UTF-8 is reported as `unresolved-reference` and produces no
+  read at all - the tests instrument the read itself (the module's read
+  path plus `os.open`, `builtins.open`, `Path.read_text` and
+  `Path.read_bytes`) and require zero open attempts, and a FIFO is required
+  to finish instead of hanging, which is what the previous code did. The
+  positive controls are kept: an accepted `#route-id` is still read exactly
+  once, and a register reference with no anchor is not read at all. Two
+  time-of-check/time-of-use tests swap the register for a symlink and for a
+  FIFO inside the reference check and require the read to refuse; that
+  narrows the window but is explicitly *not* race-free resolution.
 - **provider-terms route resolution** (the M0 checkpoint recheck): a
   `#route-id` anchor on the register must name a row that exists in
   `provenance/PROVIDER_TERMS.md` - an invented fragment
@@ -342,3 +357,34 @@ nesting), unknown and wrongly-cased register fragments, snapshot fragments,
 a route path that is a file, a symlinked route directory, valid routes
 against the real register and real snapshot layout, and CLI end-to-end runs
 (valid route exits 0, invented route exits 1).
+
+## Disposition of the M0 checkpoint recheck (Sol, 2026-11-27)
+
+Recorded from
+`review/implementation/m0-checkpoint-sol-recheck-49dd9c5.md` (candidate
+`49dd9c5b2b5f321be9550e2336c6495d04395208`). Only finding 3 is in scope for
+this tool; findings 1, 2, 4 and 5 concern `.github/workflows/**` and
+`tools/ci/**`, which are owned elsewhere and are not addressed here. The
+previous register-row resolution (`bd94d17`) and the path/symlink hardening
+(`b28d5bf`) are preserved untouched.
+
+| Finding | Disposition |
+| --- | --- |
+| 3 (Medium) - fragment validation still reads a rejected register path | Fixed. `_check_terms_register_reference` now uses the verdict of the reference check instead of discarding it: `_check_reference_resolves` returns whether the reference resolved, and the register is read only when it did. The register reference is additionally required to be *readable* (`require_readable=True`), because an unreadable register resolves no row. The read itself goes through the new `_read_record_text`, which re-validates spelling, every path component and the open descriptor and opens with `O_NOFOLLOW | O_NONBLOCK`, so a rejected path - unreadable, symlinked (leaf or parent), outside the root, missing, or a non-file such as a directory, FIFO or device node - is refused before anything is opened. The read and the check remain two steps, so this is not race-free resolution and is not claimed as such; the descriptor check and `O_NOFOLLOW` only narrow the window, and the two time-of-check/time-of-use tests say so. |
+
+Tests added: an instrumented read spy (the module's read path plus
+`os.open`, `builtins.open`, `Path.read_text`, `Path.read_bytes`) that requires
+zero open attempts for each rejected register shape, a FIFO that must not hang
+the validator (the previous code blocked on it), a directory, a missing, an
+unreadable and a non-UTF-8 register, both time-of-check/time-of-use swaps
+(symlink and FIFO), and the positive controls that an accepted `#route-id` is
+still read exactly once and that an anchor-free register reference is not read
+at all. `RegisterReadGuardTestCase` tests the guard directly, including the
+spellings that would leave the root.
+
+One pre-existing test defect was repaired in passing: the real-register test
+named `#pi-mistral` as an unregistered route, but `provenance/PROVIDER_TERMS.md`
+gained that row in a later provenance commit (outside this tool's ownership),
+so the test asserted nothing. It now derives a fragment that is provably
+absent from the rows the register records, which keeps it meaningful as rows
+are added.

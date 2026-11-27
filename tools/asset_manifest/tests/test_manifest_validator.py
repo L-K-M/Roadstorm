@@ -22,12 +22,15 @@ Original project code under the Unlicense.
 
 from __future__ import annotations
 
+import builtins
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -216,6 +219,90 @@ def error_codes(findings: Findings) -> list[str]:
 
 def messages(findings: Findings) -> str:
     return "\n".join(f.render() for f in findings)
+
+
+REGISTER_BASENAME = "PROVIDER_TERMS.md"
+
+
+class ReadAttempts:
+    """What a validation run actually did to the provider-terms register.
+
+    ``entered`` records calls into the module's read path
+    (``manifest_validator._read_record_text``); ``opened`` records real open
+    attempts at the OS level (``os.open``, ``builtins.open``,
+    ``Path.read_text``, ``Path.read_bytes``). A rejected register path must
+    appear in neither, and an accepted one in both exactly once.
+    """
+
+    def __init__(self) -> None:
+        self.entered: list[str] = []
+        self.opened: list[str] = []
+
+    def note_entered(self, target) -> None:
+        self.entered.append(str(target))
+
+    def note_opened(self, target) -> None:
+        self.opened.append(str(target))
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return "ReadAttempts(entered={!r}, opened={!r})".format(self.entered, self.opened)
+
+
+@contextlib.contextmanager
+def spy_on_register_reads():
+    """Instrument every way the register could be read, and yield the record.
+
+    Both the documented read path and the raw calls that could bypass it are
+    wrapped, so a regression that reads the register some other way is seen as
+    an open attempt instead of passing silently. Only paths naming the register
+    are recorded; the wrappers delegate to the real functions unchanged.
+    """
+    attempts = ReadAttempts()
+    stack = contextlib.ExitStack()
+    real_os_open = os.open
+    real_builtin_open = builtins.open
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+    real_read_record_text = getattr(manifest_validator, "_read_record_text", None)
+
+    def spy_os_open(path, *args, **kwargs):
+        if REGISTER_BASENAME in str(path):
+            attempts.note_opened(path)
+        return real_os_open(path, *args, **kwargs)
+
+    def spy_builtin_open(file, *args, **kwargs):
+        if REGISTER_BASENAME in str(file):
+            attempts.note_opened(file)
+        return real_builtin_open(file, *args, **kwargs)
+
+    def spy_read_text(self, *args, **kwargs):
+        if REGISTER_BASENAME in str(self):
+            attempts.note_opened(self)
+        return real_read_text(self, *args, **kwargs)
+
+    def spy_read_bytes(self):
+        if REGISTER_BASENAME in str(self):
+            attempts.note_opened(self)
+        return real_read_bytes(self)
+
+    def spy_read_record_text(root, relative):
+        attempts.note_entered(root / relative)
+        return real_read_record_text(root, relative)
+
+    try:
+        stack.enter_context(mock.patch.object(os, "open", spy_os_open))
+        stack.enter_context(mock.patch.object(builtins, "open", spy_builtin_open))
+        stack.enter_context(mock.patch.object(Path, "read_text", spy_read_text))
+        stack.enter_context(mock.patch.object(Path, "read_bytes", spy_read_bytes))
+        if real_read_record_text is not None:
+            stack.enter_context(
+                mock.patch.object(
+                    manifest_validator, "_read_record_text", spy_read_record_text
+                )
+            )
+        yield attempts
+    finally:
+        stack.close()
 
 
 class ManifestValidatorTestCase(unittest.TestCase):
@@ -758,14 +845,31 @@ class ManifestValidatorTestCase(unittest.TestCase):
         self.assertEqual(findings.errors, [], messages(findings))
 
     def test_service_generated_rejects_an_unregistered_route_against_the_real_register(self):
-        """The real register holds two rows; anything else is an invented fragment."""
+        """The real register's rows resolve; anything else is an invented fragment.
+
+        The register is a living record - rows are added as routes are observed -
+        so the fragment may not hard-code a route that happens to be absent
+        today. It is therefore chosen against the rows the register currently
+        records and asserted absent, which keeps the check meaningful whichever
+        rows the checkout holds. (This test previously named ``pi-mistral``,
+        which the register gained in a later provenance commit, so it stopped
+        testing anything.)
+        """
         entry = service_entry(self.root)
         copy_real_terms_register(self.root)
-        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-mistral"
+        recorded = manifest_validator._terms_register_route_ids(self.root)
+        self.assertIsNotNone(recorded, "the real register must be readable")
+        self.assertTrue(recorded, "the real register must record at least one route")
+        invented = "pi-no-such-route"
+        while invented in recorded:
+            invented += "-x"
+        entry["rights"]["service_terms_ref"] = (
+            "provenance/PROVIDER_TERMS.md#" + invented
+        )
         manifest = write_manifest(self.root, [entry])
         findings = validate(self.root, manifest)
         self.assertIn("unresolved-reference", error_codes(findings))
-        self.assertIn("pi-mistral", messages(findings))
+        self.assertIn(invented, messages(findings))
 
     def test_route_row_resolution_is_skipped_without_file_checks(self):
         """Reading the register is resolution: --no-file-checks stays structural."""
@@ -775,6 +879,234 @@ class ManifestValidatorTestCase(unittest.TestCase):
         manifest = write_manifest(self.root, [entry])
         findings = validate(self.root, manifest, file_checks=False)
         self.assertNotIn("unresolved-reference", error_codes(findings))
+
+    # -- a rejected register path is refused, never read --------------------
+    # (M0 checkpoint recheck, Sol 2026-11-27, finding 3: the fragment checker
+    # read the register after the path validator had rejected it.)
+
+    def register_reference_manifest(self, reference: str) -> Path:
+        """A service entry whose terms reference is ``reference``."""
+        entry = service_entry(self.root)
+        entry["rights"]["service_terms_ref"] = reference
+        return write_manifest(self.root, [entry])
+
+    def outside_register(self, rows=("pi-outside",)) -> Path:
+        """A register-shaped file outside the checkout, with the given rows."""
+        outside = self.root.parent / ("roadstorm-fixture-register-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        path = outside / REGISTER_BASENAME
+        path.write_text(
+            "# register elsewhere\n\n"
+            "| Route ID | Service / API route | Model(s) observed | Terms | Basis | Output | "
+            "Verification |\n| --- | --- | --- | --- | --- | --- | --- |\n"
+            + "".join("| `{}` | s | m | t | b | c | V |\n".format(row) for row in rows),
+            encoding="utf-8",
+        )
+        return path
+
+    def validate_within(self, timeout: float, root: Path, manifest: Path, **kwargs) -> Findings:
+        """Validate in a worker thread and fail if it does not return.
+
+        A read that blocks - a FIFO with no writer, a device node - would
+        otherwise hang the suite instead of failing it, so the deadline is part
+        of the assertion.
+        """
+        outcome: dict = {}
+
+        def run() -> None:
+            outcome["findings"] = validate_manifest(manifest, root=root, **kwargs)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(timeout)
+        self.assertFalse(
+            worker.is_alive(),
+            "validation did not finish within {}s; a rejected register path was "
+            "opened for reading".format(timeout),
+        )
+        return outcome["findings"]
+
+    def test_symlinked_register_is_reported_and_never_read(self):
+        """A symlinked register is refused once; its rows are not read at all."""
+        entry = service_entry(self.root)
+        target = self.outside_register()
+        register = self.root / "provenance" / REGISTER_BASENAME
+        register.symlink_to(target)
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-outside"
+        manifest = write_manifest(self.root, [entry])
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("symlink", messages(findings))
+        self.assertEqual(reads.entered, [], "a rejected register must not be read")
+        self.assertEqual(reads.opened, [], "a rejected register must not be opened")
+        # The row in the file outside the root must not resolve the anchor, and
+        # the reference error must be the only one about the terms record.
+        self.assertNotIn("no row for that route", messages(findings))
+
+    def test_register_through_a_symlinked_parent_is_reported_and_never_read(self):
+        """A symlinked provenance/ directory escapes the root the same way."""
+        entry = service_entry(self.root)
+        target = self.outside_register()
+        (target.parent / "OWNER_AUTHORITY.md").write_text(
+            "authority elsewhere\n", encoding="utf-8"
+        )
+        provenance = self.root / "provenance"
+        shutil.move(str(provenance / "OWNER_AUTHORITY.md"), target.parent / "OWNER_AUTHORITY.md")
+        provenance.rmdir()
+        provenance.symlink_to(target.parent)
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-outside"
+        manifest = write_manifest(self.root, [entry])
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("symlink", messages(findings))
+        self.assertEqual(reads.entered, [], "a rejected register must not be read")
+        self.assertEqual(reads.opened, [], "a rejected register must not be opened")
+
+    def test_missing_register_is_reported_and_never_read(self):
+        """A register that was never written is reported, not opened."""
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("does not exist", messages(findings))
+        self.assertEqual(reads.entered, [], "a missing register must not be read")
+        self.assertEqual(reads.opened, [], "a missing register must not be opened")
+        self.assertNotIn("no row for that route", messages(findings))
+
+    def test_register_that_is_a_directory_is_reported_and_never_read(self):
+        """A directory in place of the register is not a file, and is not read."""
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        (self.root / "provenance" / REGISTER_BASENAME).mkdir()
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("is not a file", messages(findings))
+        self.assertEqual(reads.entered, [], "a directory must not be read as a register")
+        self.assertEqual(reads.opened, [], "a directory must not be opened as a register")
+
+    def test_register_that_is_a_fifo_is_refused_without_being_opened(self):
+        """A special file exists but is not a readable record: it is not opened."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("this platform has no FIFOs")
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        fifo = self.root / "provenance" / REGISTER_BASENAME
+        os.mkfifo(fifo)
+        with spy_on_register_reads() as reads:
+            findings = self.validate_within(30, self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("is not a file", messages(findings))
+        self.assertEqual(reads.entered, [], "a special file must not be read")
+        self.assertEqual(reads.opened, [], "a special file must not be opened")
+
+    def test_unreadable_register_is_rejected_before_any_read(self):
+        """A register this process cannot read is not read, and is an error."""
+        if os.geteuid() == 0:
+            self.skipTest("running as root: permission bits do not block reads")
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        register = write_terms_register(self.root, ["pi-stepfun"])
+        register.chmod(0)
+        self.addCleanup(register.chmod, 0o644)
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("cannot be read", messages(findings))
+        self.assertEqual(reads.entered, [], "an unreadable register must not be read")
+        self.assertEqual(reads.opened, [], "an unreadable register must not be opened")
+
+    def test_binary_register_is_reported_and_never_trusted(self):
+        """A register that is not UTF-8 text resolves no row, and is an error."""
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        register = self.root / "provenance" / REGISTER_BASENAME
+        register.write_bytes(b"\xff\xfe| `pi-stepfun` | s | m | t | b | c | V |\n")
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("could not be read", messages(findings))
+        # A binary register is a real, readable regular file: the guard lets it
+        # through and the decode fails, which resolves no row.
+        self.assertEqual(len(reads.entered), 1, reads)
+        self.assertEqual(len(reads.opened), 1, reads)
+        self.assertNotIn("no row for that route", messages(findings))
+
+    def test_accepted_register_reference_is_read_exactly_once(self):
+        """The guard must not disable normal route resolution."""
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        write_terms_register(self.root, ["pi-stepfun", "pi-longcat"])
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+        self.assertEqual(len(reads.entered), 1, reads)
+        self.assertEqual(len(reads.opened), 1, reads)
+
+    def test_register_reference_without_an_anchor_is_not_read(self):
+        """No anchor means no row to resolve, so the register text is not read."""
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md")
+        write_terms_register(self.root, ["pi-stepfun"])
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest, check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+        self.assertEqual(reads.entered, [], "no anchor, no row check, no read")
+        self.assertEqual(reads.opened, [], "no anchor, no row check, no read")
+
+    def test_register_swapped_for_a_symlink_after_the_check_is_not_followed(self):
+        """Race-aware: the read re-validates the path instead of trusting the check.
+
+        The check accepts the real register; the swap happens inside the
+        reference check, exactly as a time-of-check/time-of-use race would. The
+        read must refuse the path rather than follow it to the rows outside the
+        root. This narrows the window; it does not close it - nothing here is
+        race-free resolution.
+        """
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        write_terms_register(self.root, ["pi-stepfun"])
+        target = self.outside_register(["pi-stepfun"])
+        register = self.root / "provenance" / REGISTER_BASENAME
+        original = manifest_validator._check_reference_resolves
+
+        def racing_check(findings, location, target, what, checker, require_readable=False):
+            resolved = original(findings, location, target, what, checker, require_readable)
+            if resolved and target == manifest_validator.PROVIDER_TERMS_REGISTER:
+                register.unlink()
+                register.symlink_to(target)
+            return resolved
+
+        with mock.patch.object(manifest_validator, "_check_reference_resolves", racing_check):
+            with spy_on_register_reads() as reads:
+                findings = validate(self.root, manifest)
+        self.assertFalse(findings.ok)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("could not be read", messages(findings))
+        # The row in the file outside the root must not resolve the anchor.
+        self.assertNotIn("no row for that route", messages(findings))
+        self.assertEqual(len(reads.entered), 1, reads)
+        self.assertEqual(reads.opened, [], "the swapped-in symlink must not be opened")
+
+    def test_register_swapped_for_a_fifo_after_the_check_does_not_block(self):
+        """Race-aware: a special file swapped in after the check is closed unread."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("this platform has no FIFOs")
+        manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
+        write_terms_register(self.root, ["pi-stepfun"])
+        register = self.root / "provenance" / REGISTER_BASENAME
+        original = manifest_validator._check_reference_resolves
+
+        def racing_check(findings, location, target, what, checker, require_readable=False):
+            resolved = original(findings, location, target, what, checker, require_readable)
+            if resolved and target == manifest_validator.PROVIDER_TERMS_REGISTER:
+                register.unlink()
+                os.mkfifo(register)
+            return resolved
+
+        with mock.patch.object(manifest_validator, "_check_reference_resolves", racing_check):
+            with spy_on_register_reads() as reads:
+                findings = self.validate_within(30, self.root, manifest)
+        self.assertFalse(findings.ok)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertEqual(len(reads.entered), 1, reads)
+        self.assertEqual(reads.opened, [], "a FIFO swapped in after the check must not be opened")
 
     def test_service_generated_accepts_a_route_snapshot(self):
         """Positive control: a bounded snapshot under provenance/provider_terms/."""
@@ -1609,6 +1941,135 @@ class ManifestValidatorTestCase(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("invalid-encoding", buffer.getvalue())
         self.assertIn("FAIL", buffer.getvalue())
+
+
+class RegisterReadGuardTestCase(unittest.TestCase):
+    """Unit tests for the guard that decides whether the register may be read.
+
+    These test the guard directly, independently of the manifest plumbing: a
+    rejected path must yield ``None`` from ``_read_record_text`` (no text, so no
+    rows) and ``False`` from ``_record_file_is_readable``, without anything
+    being opened.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def register_path(self) -> Path:
+        path = self.root / manifest_validator.PROVIDER_TERMS_REGISTER
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def read_register(self, spelling=None):
+        return manifest_validator._read_record_text(
+            self.root,
+            spelling if spelling is not None else manifest_validator.PROVIDER_TERMS_REGISTER,
+        )
+
+    def register_is_readable(self, spelling=None):
+        return manifest_validator._record_file_is_readable(
+            self.root,
+            spelling if spelling is not None else manifest_validator.PROVIDER_TERMS_REGISTER,
+        )
+
+    def test_reads_a_real_register(self):
+        register = self.register_path()
+        register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
+        text = self.read_register()
+        self.assertIsNotNone(text)
+        self.assertIn("pi-stepfun", text)
+        self.assertTrue(self.register_is_readable())
+
+    def test_refuses_a_symlinked_register(self):
+        register = self.register_path()
+        outside = self.root.parent / ("roadstorm-fixture-guard-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        target = outside / REGISTER_BASENAME
+        target.write_text("| `pi-outside` | s | m | t | b | c | V |\n", encoding="utf-8")
+        register.symlink_to(target)
+        self.assertIsNone(self.read_register())
+        self.assertFalse(self.register_is_readable())
+
+    def test_refuses_a_symlinked_parent_directory(self):
+        outside = self.root.parent / ("roadstorm-fixture-guard-parent-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        (outside / REGISTER_BASENAME).write_text(
+            "| `pi-outside` | s | m | t | b | c | V |\n", encoding="utf-8"
+        )
+        (self.root / "provenance").symlink_to(outside)
+        self.assertIsNone(self.read_register())
+        self.assertFalse(self.register_is_readable())
+
+    def test_refuses_a_missing_register(self):
+        self.assertIsNone(self.read_register())
+        self.assertFalse(self.register_is_readable())
+
+    def test_refuses_a_directory_in_place_of_the_register(self):
+        self.register_path().mkdir()
+        self.assertIsNone(self.read_register())
+        self.assertFalse(self.register_is_readable())
+
+    def test_refuses_a_fifo_in_place_of_the_register(self):
+        """A FIFO exists, but opening it for reading would block."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("this platform has no FIFOs")
+        os.mkfifo(self.register_path())
+        outcome: dict = {}
+
+        def run() -> None:
+            outcome["text"] = self.read_register()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(30)
+        self.assertFalse(
+            worker.is_alive(),
+            "reading a FIFO blocks: the guard must refuse it before any open",
+        )
+        self.assertIsNone(outcome["text"])
+        self.assertFalse(self.register_is_readable())
+
+    def test_refuses_an_unreadable_register(self):
+        if os.geteuid() == 0:
+            self.skipTest("running as root: permission bits do not block reads")
+        register = self.register_path()
+        register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
+        register.chmod(0)
+        self.addCleanup(register.chmod, 0o644)
+        self.assertIsNone(self.read_register())
+        self.assertFalse(self.register_is_readable())
+
+    def test_refuses_a_register_that_is_not_utf8_text(self):
+        self.register_path().write_bytes(b"\xff\xfe\x00")
+        self.assertIsNone(self.read_register())
+        # A binary file is still a readable regular file: the guard lets it
+        # through and the decode fails.
+        self.assertTrue(self.register_is_readable())
+
+    def test_refuses_a_spelling_that_leaves_the_root(self):
+        """The guard re-checks spelling: it is the last gate before an open."""
+        outside = self.root.parent / ("roadstorm-fixture-guard-escape-" + self.root.name)
+        outside.write_text("| `pi-outside` | s | m | t | b | c | V |\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        for spelling in (
+            str(outside),
+            "../" + outside.name,
+            "provenance/../" + outside.name,
+            "/etc/" + REGISTER_BASENAME,
+            "provenance/" + REGISTER_BASENAME + "/",
+        ):
+            self.assertIsNone(
+                self.read_register(spelling),
+                "{} must not be read".format(spelling),
+            )
+            self.assertFalse(
+                self.register_is_readable(spelling),
+                "{} must not be readable".format(spelling),
+            )
 
 
 if __name__ == "__main__":

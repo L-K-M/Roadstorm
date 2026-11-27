@@ -62,7 +62,9 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -446,13 +448,16 @@ TERMS_REGISTER_ROW_RE = re.compile(r"^\|\s*`([^`]+)`\s*\|")
 def _terms_register_route_ids(root: Path) -> set[str] | None:
     """Route IDs recorded as rows in the provider-terms register.
 
-    Returns ``None`` when the register cannot be read as text, so a fragment
-    cannot be resolved against it. The caller reports that like any other
-    unresolved record rather than accepting the fragment as metadata.
+    Returns ``None`` when the register cannot be read as text - missing,
+    unreadable, not a regular file, or reached through a symlinked component -
+    so a fragment cannot be resolved against it. The caller reports that like
+    any other unresolved record rather than accepting the fragment as
+    metadata. The register is only ever read through ``_read_record_text``,
+    which validates the path before opening it; a rejected register path is
+    never read, here or by the caller.
     """
-    try:
-        text = (root / PROVIDER_TERMS_REGISTER).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    text = _read_record_text(root, PROVIDER_TERMS_REGISTER)
+    if text is None:
         return None
     routes: set[str] = set()
     for line in text.splitlines():
@@ -479,6 +484,78 @@ def _symlinked_component(root: Path, relative: str) -> str | None:
         if (root / prefix).is_symlink():
             return prefix.as_posix()
     return None
+
+
+def _record_file_is_readable(root: Path, relative: str) -> bool:
+    """Whether ``root/relative`` can be opened as a real record file.
+
+    A record the checker is going to *read* (the provider-terms register, whose
+    rows a ``#route-id`` anchor is resolved against) must be a regular file
+    inside the checkout, reached through real directories, that this process
+    may open for reading. This predicate answers that before anything is
+    opened, so a symlinked, missing, special-file, unreadable or
+    outside-the-root path is refused rather than read: ``Path.exists`` is True
+    for a FIFO and a device node, and opening a FIFO for reading blocks until
+    a writer appears, so "it exists" is not "it can be read".
+
+    Spelling is re-checked here because this is the last gate before a path is
+    resolved against the root by name.
+    """
+    if _path_spelling_error(relative) is not None:
+        return False
+    if _symlinked_component(root, relative) is not None:
+        return False
+    target = root / relative
+    try:
+        if not target.is_file():
+            return False
+        return os.access(target, os.R_OK)
+    except OSError:
+        return False
+
+
+def _read_record_text(root: Path, relative: str) -> str | None:
+    """Read a record file as UTF-8 text, or ``None`` when it cannot be read.
+
+    The path is validated immediately before it is opened
+    (``_record_file_is_readable``) and the *descriptor* is validated again
+    after it: it must describe a regular file, so a path swapped for a special
+    file between the two steps is closed unread. The open itself uses
+    ``O_NOFOLLOW`` (a leaf swapped for a symlink is refused instead of
+    followed) and ``O_NONBLOCK`` (a FIFO or device node swapped in its place is
+    opened without blocking, then rejected by ``fstat``).
+
+    This narrows the window between check and read; it does not close it. The
+    path is still resolved by name more than once, so nothing here is
+    race-free: a swap that lands between the last check and the ``open`` is
+    only caught by the descriptor check, and a swap that lands after the open
+    is not caught at all. What is guaranteed is that a path rejected by the
+    checks is never opened in the first place.
+    """
+    if not _record_file_is_readable(root, relative):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        descriptor = os.open(root / relative, flags)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 class PathChecker:
@@ -664,7 +741,8 @@ def _check_reference_resolves(
     target: str,
     what: str,
     checker: PathChecker,
-) -> None:
+    require_readable: bool = False,
+) -> bool:
     """Report when a reference to a repository record does not resolve.
 
     Distinct from the asset-path checks: the reference names a record the
@@ -672,12 +750,20 @@ def _check_reference_resolves(
     output the entry governs. A missing, non-file or symlinked record is
     reported as ``unresolved-reference`` so the gate is greppable, and it is
     skipped under ``--no-file-checks`` like every other existence check.
+
+    Returns ``True`` when the reference names a real regular file inside the
+    root (or when no file checks are run, so nothing was decided here), and
+    ``False`` when it was rejected. A caller that *reads* the record - the
+    terms register, whose rows a ``#route-id`` anchor is resolved against -
+    must use that answer: a rejected path must not be opened after it has
+    been refused, and ``require_readable=True`` extends the rejection to a
+    record this process cannot read.
     """
     if not checker.file_checks:
-        return
+        return True
     resolved = checker.resolve(target)
     if resolved is None:
-        return
+        return True
     linked = _symlinked_component(checker.root, target)
     if linked is not None:
         findings.error(
@@ -687,7 +773,7 @@ def _check_reference_resolves(
             "file inside the checkout, because a symlink can point at a record the entry does "
             "not govern".format(what, target, linked),
         )
-        return
+        return False
     if not resolved.exists():
         findings.error(
             "unresolved-reference",
@@ -696,7 +782,8 @@ def _check_reference_resolves(
             "record that is actually in the checkout, not to a path that was never "
             "written".format(what, target, checker.root),
         )
-    elif not resolved.is_file():
+        return False
+    if not resolved.is_file():
         findings.error(
             "unresolved-reference",
             location,
@@ -704,6 +791,18 @@ def _check_reference_resolves(
                 what, target
             ),
         )
+        return False
+    if require_readable and not _record_file_is_readable(checker.root, target):
+        findings.error(
+            "unresolved-reference",
+            location,
+            "{} '{}' exists but cannot be read (resolved against {}); a record the checker "
+            "cannot read does not resolve, because a '#route-id' anchor is resolved against "
+            "the register's rows, so an unreadable register names no verifiable "
+            "terms".format(what, target, checker.root),
+        )
+        return False
+    return True
 
 
 def _check_terms_reference(
@@ -784,6 +883,12 @@ def _check_terms_register_reference(
     names nothing are all rejected. Reading the register is part of
     resolving the reference, so it is skipped under ``--no-file-checks``
     like every other existence check.
+
+    The register is read only after the reference itself resolved to a real,
+    readable, non-symlinked regular file inside the root, so a rejected
+    register path is refused once and never opened. The check and the read
+    remain two steps, so this is not race-free resolution; see
+    ``_read_record_text`` for what the read still re-validates.
     """
     if fragment is not None and not fragment:
         findings.error(
@@ -796,10 +901,22 @@ def _check_terms_register_reference(
             ),
         )
         return
-    _check_reference_resolves(
-        findings, location, target, "rights.service_terms_ref", checker
+    register_resolves = _check_reference_resolves(
+        findings,
+        location,
+        target,
+        "rights.service_terms_ref",
+        checker,
+        require_readable=True,
     )
     if fragment is None or not checker.file_checks or checker.root is None:
+        return
+    if not register_resolves:
+        # The register reference was rejected above, so its rows are not read.
+        # Reading it anyway would follow the symlink, open the special file or
+        # read a record outside the root that the check just refused: a
+        # fragment cannot be resolved against a register that does not
+        # resolve, and the reference error is already reported.
         return
     routes = _terms_register_route_ids(checker.root)
     if routes is None:
