@@ -29,6 +29,14 @@ extends RefCounted
 ##     velocity and applies the configured bounded tangential retention. Any
 ##     further contact response (deflection shaping, restitution tuning,
 ##     depenetration, multi-car response) is M1.4 work.
+##   * the translation sweep uses the tick-start basis; before the tick is
+##     committed, a bounded nonmutating world check probes the installed hull
+##     at the proposed yaw, using the body's actual collision mask and
+##     excluding the body RID. A yaw that would leave the hull across a wall
+##     is constrained to a probe-clear fraction of the proposed yaw, or the
+##     tick is refused. The probe deliberately allows configured contact
+##     penetration and solver slop; it does not prove zero overlap of the
+##     full hull or sweep every intermediate rotation.
 ##
 ## This is one-car flat-ground laboratory work. It does not implement ground
 ## adhesion, jumps, drift, reset, controls, surfaces or multi-car contacts, and
@@ -58,14 +66,29 @@ const ABSOLUTE_MAX_SUBSTEP_LENGTH_M := 1.0
 const MAX_ENVELOPE_EPSILON_FRACTION := 1e-3
 const MAX_ENVELOPE_EPSILON_M := 1e-3
 const MAX_CONTACT_STOP_EPSILON_FRACTION := 1e-3
+## Contact allowance for the installed-orientation query, metres. This
+## matches the pinned Jolt build's measured `penetration_slop = 0.02` m, so
+## ordinary grounded contact and solver slop do not read as a wall overlap.
+## The measured probe boundary is about 5 mm past nominal, inside the
+## laboratory's 3 cm no-tunnel gate. It stays far below the hull envelope and
+## the laboratory wall.
+const ORIENTATION_CONTACT_TOLERANCE_M := 0.02
+## Absolute cap for `Config.orientation_contact_tolerance_m`.
+const MAX_ORIENTATION_CONTACT_TOLERANCE_M := 0.1
+## Fixed probe count when a proposed yaw is blocked. Two full-pose probes plus
+## this bounded bisection is the entire orientation work for one tick.
+const MAX_HEADING_CONSTRAINT_PROBES := 12
 
 ## Step outcome. `COMMITTED` means the body was moved and a committed state was
 ## produced. The other statuses are refusals that leave the body at its
 ## tick-start pose and leave every input object unchanged.
+## `REFUSED_ORIENTATION` refuses a tick whose swept translation cannot be paired
+## with a final hull orientation that clears wall-like geometry.
 enum Status {
 	COMMITTED,
 	REJECTED_INVALID_INPUT,
 	REFUSED_MOTION_BOUND,
+	REFUSED_ORIENTATION,
 }
 
 ## Explicit, caller-supplied envelope and contact-response values.
@@ -103,6 +126,13 @@ class Config extends RefCounted:
 	## epsilon did not stop the motion, so the sweep continues. Must be at most
 	## `MAX_CONTACT_STOP_EPSILON_FRACTION` of one substep.
 	var contact_stop_epsilon_m := 1e-6
+	## Contact allowance for the installed-orientation query, metres. The
+	## query uses a real box hull reduced by twice this value in every
+	## dimension, so touching contact and the pinned solver's penetration slop
+	## do not count as a wall overlap. Must be in
+	## [0, `MAX_ORIENTATION_CONTACT_TOLERANCE_M`] and smaller than half the
+	## smallest hull extent, so the reduced probe stays a positive box.
+	var orientation_contact_tolerance_m := ORIENTATION_CONTACT_TOLERANCE_M
 	## A contact is treated as a wall when the absolute alignment of its normal
 	## with the support up axis is at most this value. Floor/ceiling contacts
 	## are reported but receive no wall velocity response.
@@ -169,6 +199,20 @@ class Config extends RefCounted:
 		if contact_stop_epsilon_m > substep_max_length_m * MAX_CONTACT_STOP_EPSILON_FRACTION:
 			return false
 		if (
+			not MotorBodyAdapter._finite(orientation_contact_tolerance_m)
+			or orientation_contact_tolerance_m < 0.0
+			or orientation_contact_tolerance_m > MAX_ORIENTATION_CONTACT_TOLERANCE_M
+		):
+			return false
+		# The orientation probe is a real box reduced by twice the tolerance in
+		# every dimension; it must remain a positive box.
+		var smallest_hull_extent_m := minf(
+			minf(hull_size_m.x, hull_size_m.y),
+			hull_size_m.z
+		)
+		if orientation_contact_tolerance_m >= 0.5 * smallest_hull_extent_m:
+			return false
+		if (
 			not MotorBodyAdapter._finite(wall_normal_max_up_alignment)
 			or wall_normal_max_up_alignment < 0.0
 			or wall_normal_max_up_alignment > 1.0
@@ -214,6 +258,10 @@ class Result extends RefCounted:
 	var prediction_commit_discrepancy_m := 0.0
 	## Worst per-substep distance between the `test_move` and committed endpoints.
 	var test_move_commit_discrepancy_m := 0.0
+	## True when the proposed yaw was reduced so the installed hull would clear
+	## wall-like geometry. The body basis and `committed_state.heading_rad`
+	## always use the applied heading.
+	var heading_constrained := false
 	## True when any collision stopped a substep.
 	var contact := false
 	## True when a collision normal was classified as wall-like.
@@ -368,9 +416,70 @@ static func step(
 		result.remainder_m = remaining.length()
 		return result
 
+	# ---- Constrain the proposed yaw to the installed hull pose. -----------
+	# The sweep above uses the tick-start basis, so a committed yaw can rotate
+	# a long hull corner across a wall the translation never touched. Probe the
+	# installed pose in the world with the body's own collision mask, excluding
+	# the body RID. The probe is a real box hull reduced by twice the contact
+	# tolerance, so touching contact and the pinned solver's penetration slop
+	# do not count as an overlap.
+	var final_origin := start.origin + accepted
+	var proposed_heading := proposal.state.heading_rad
+	var yaw_delta := proposed_heading - state_in.heading_rad
+	var applied_heading := proposed_heading
+	var heading_constrained := false
+	# A vertex at most half the hull diagonal from the centre moves by at most
+	# that radius times the yaw delta. Below the contact tolerance the rotation
+	# cannot newly cross geometry, so the query is skipped.
+	var max_yaw_support_shift_m := 0.5 * hull_shape.size.length() * absf(yaw_delta)
+	if max_yaw_support_shift_m > config.orientation_contact_tolerance_m:
+		var probe_shape := BoxShape3D.new()
+		probe_shape.size = (
+			hull_shape.size - Vector3.ONE * (2.0 * config.orientation_contact_tolerance_m)
+		)
+		if _hull_overlaps_at(
+			body, probe_shape, final_origin, proposed_heading
+		):
+			if _hull_overlaps_at(
+				body, probe_shape, final_origin, state_in.heading_rad
+			):
+				# Even the unrotated installed pose is across wall-like geometry;
+				# no yaw fraction can fix that. Fail closed without moving inputs.
+				body.global_transform = start
+				result.status = Status.REFUSED_ORIENTATION
+				result.rejection_reason = (
+					"installed hull overlaps wall-like geometry at tick-start heading"
+				)
+				result.committed_state = null
+				result.remainder_m = remaining.length()
+				return result
+			# Bounded bisection for the largest safe fraction of the proposed yaw.
+			# A fixed probe count keeps the work independent of geometry.
+			var safe_fraction := 0.0
+			var blocked_fraction := 1.0
+			for _index in range(MAX_HEADING_CONSTRAINT_PROBES):
+				var mid := 0.5 * (safe_fraction + blocked_fraction)
+				var candidate_heading := state_in.heading_rad + mid * yaw_delta
+				if _hull_overlaps_at(
+					body, probe_shape, final_origin, candidate_heading
+				):
+					blocked_fraction = mid
+				else:
+					safe_fraction = mid
+			var constrained_heading := state_in.heading_rad + safe_fraction * yaw_delta
+			if _hull_overlaps_at(
+				body, probe_shape, final_origin, constrained_heading
+			):
+				# Contact is not monotonic in yaw; fall back to the verified
+				# tick-start orientation rather than install a probe-overlapping hull.
+				constrained_heading = state_in.heading_rad
+			applied_heading = constrained_heading
+			heading_constrained = constrained_heading != proposed_heading
+
 	# ---- Commit the logical state from the accepted motion. ----------------
 	var committed := proposal.state.copy()
 	committed.position_m = state_in.position_m + world_vector_to_road(accepted)
+	committed.heading_rad = applied_heading
 
 	var velocity_world := road_vector_to_world(proposal.state.velocity_m_s)
 	if wall_hit:
@@ -393,6 +502,7 @@ static func step(
 	result.test_move_predicted_motion_m = test_predicted
 	result.prediction_commit_discrepancy_m = worst_prediction_error
 	result.test_move_commit_discrepancy_m = worst_test_move_error
+	result.heading_constrained = heading_constrained
 	result.contact = hit
 	result.wall_contact = wall_hit
 	result.contact_normal = hit_normal
@@ -453,6 +563,28 @@ static func _cast_safe_fraction(
 		return 1.0
 	return clampf(float(fractions[0]), 0.0, 1.0)
 
+
+## Nonmutating world check for one installed hull pose. Uses the body's
+## actual collision mask, excludes the body RID, and tests a real box hull
+## reduced by the configured contact tolerance, so ordinary grounded contact
+## and the pinned solver's penetration slop do not read as a wall overlap.
+## Returns true when geometry still intersects the reduced hull.
+static func _hull_overlaps_at(
+	body: CharacterBody3D,
+	probe_shape: BoxShape3D,
+	origin: Vector3,
+	heading_rad: float
+) -> bool:
+	var space := body.get_world_3d().direct_space_state
+	var query := PhysicsShapeQueryParameters3D.new()
+	query.shape = probe_shape
+	query.transform = Transform3D(basis_from_heading(heading_rad), origin)
+	query.margin = 0.0
+	query.collision_mask = body.collision_mask
+	query.collide_with_bodies = true
+	query.collide_with_areas = false
+	query.exclude = [body.get_rid()]
+	return not space.intersect_shape(query).is_empty()
 
 ## Secondary nonmutating prediction using the named CharacterBody3D query.
 ## Returns the travel vector it reports (the full segment when it reports no

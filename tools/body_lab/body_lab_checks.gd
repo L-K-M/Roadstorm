@@ -125,6 +125,7 @@ func make_config() -> MotorBodyAdapter.Config:
 	config.commit_safe_margin_m = 0.0
 	config.envelope_epsilon_m = 1e-6
 	config.contact_stop_epsilon_m = 1e-6
+	config.orientation_contact_tolerance_m = AdapterScript.ORIENTATION_CONTACT_TOLERANCE_M
 	config.wall_normal_max_up_alignment = 0.5
 	config.wall_restitution = 0.0
 	config.wall_tangential_keep = 1.0

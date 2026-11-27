@@ -16,6 +16,9 @@ This proves one 60 Hz integration tick at a time:
   points the nose toward +X;
 - a frontal or oblique thick static wall produces no tunneling at 65 m/s and
   leaves no inward normal velocity in the committed state;
+- an unchecked yaw that would install the hull across a parallel wall is
+  constrained to the largest safe fraction of the proposed yaw, or refused;
+  clear open-ground steering still rotates freely;
 - repeated fixed-60 Hz callbacks reproduce bit-identical traces.
 
 It does not implement ground adhesion, jumps, drift, reset, surfaces,
@@ -80,3 +83,15 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
 - Wall response: remove the inward normal component (restitution 0) and retain
   the configured tangential fraction (1.0). Deflection shaping, restitution
   tuning, depenetration and multi-car response remain M1.4 work.
+- Installed orientation: after the translation sweep, the adapter probes the
+  final hull pose with a nonmutating `intersect_shape` query using the body's
+  collision mask and excluding its RID. The probe is a real box hull reduced
+  by twice the contact tolerance in every dimension, so touching contact and
+  the pinned solver's penetration slop (0.02 m) do not count as overlap;
+  this also keeps ordinary grounded floor contact from being rejected. A
+  blocked yaw is reduced by a fixed 12-probe bisection; if even the
+  tick-start heading overlaps, the tick is refused (`REFUSED_ORIENTATION`)
+  with the body and inputs untouched. `orientation_contact_tolerance_m`
+  defaults to 0.02 m (the pinned solver's penetration slop), is capped at
+  0.1 m, and must stay below half the smallest hull extent so the reduced
+  probe remains a positive box.

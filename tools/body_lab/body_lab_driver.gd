@@ -36,6 +36,9 @@ const PREDICTION_TOLERANCE_M := 1e-4
 ## CharacterBody3D.test_move carries a recovery offset near contacts; this is a
 ## diagnostic bound, not the authoritative prediction gate.
 const TEST_MOVE_DIAGNOSTIC_TOLERANCE_M := 0.02
+## The rotated-hull regression asserts against the laboratory's existing
+## no-tunnel gate (3 cm); the reduced-box probe boundary sits about 5 mm past
+## its nominal shrink, well inside that gate.
 
 const CASE_IDS := [
 	"config_and_invalid_atomicity",
@@ -44,6 +47,7 @@ const CASE_IDS := [
 	"prediction_commit_consistency",
 	"wall_approach_no_tunnel",
 	"oblique_wall_response",
+	"rotated_hull_wall_orientation",
 	"envelope_refusal",
 	"work_cap_and_truncation",
 	"fixed_60hz_repeatability",
@@ -135,6 +139,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_wall_approach()
 		"oblique_wall_response":
 			await _case_oblique_wall()
+		"rotated_hull_wall_orientation":
+			await _case_rotated_hull_wall_orientation()
 		"envelope_refusal":
 			await _case_envelope_refusal()
 		"work_cap_and_truncation":
@@ -754,6 +760,118 @@ func _case_oblique_wall() -> void:
 	await _destroy_world(world)
 
 
+func _case_rotated_hull_wall_orientation() -> void:
+	# Regression for the HIGH interim finding: the translation sweep uses the
+	# tick-start basis, so an unchecked yaw can install a long hull across a
+	# wall. Hull 1.8 x 3.8 m, right side 5 cm from a parallel wall.
+	var config := d.make_config()
+	# Nominal 1.5 cm shrink: tight enough to prove the constraint, loose enough
+	# that the measured probe boundary stays well inside the 3 cm lab gate.
+	config.orientation_contact_tolerance_m = 0.015
+	# Explicit reviewer-scenario yaw: about 3 degrees per 60 Hz tick, the angle
+	# whose 3.8 m hull corner extends roughly 9.8 cm sideways. The shared lab
+	# tuning caps yaw at 1.6 rad/s, which cannot reach it in one tick.
+	var tuning := d.make_tuning()
+	tuning.yaw_gain_grip = 2.0
+	tuning.max_yaw_rate_rad_s = PI
+	var wall_spec := {
+		"point": Vector3(0.95, 2.0, 0.0),
+		"yaw_deg": -90.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(Vector2.ZERO, Vector2(0.0, 2.0), 0.0)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var commands: Array = []
+	for _index in range(6):
+		commands.append(d.make_steer_command(1.0, 0.0))
+	var records := await _drive(world, state, commands, tuning, config)
+	d.check(records.size() == 6, "rotated: 6 ticks driven")
+
+	var allowance := PENETRATION_TOLERANCE_M
+	var saw_constraint := false
+	var worst_signed := 0.0
+	for index in range(records.size()):
+		var result = records[index]["result"]
+		var label := "rotated tick %d" % (index + 1)
+		if result.committed_state == null:
+			d.check(
+				result.status != AdapterScript.Status.COMMITTED,
+				"%s: refusal exposes no committed state" % label
+			)
+		var pose: Transform3D = records[index]["pose"]
+		var support := d.box_support_point(pose, world.hull_shape.size, -world.wall_normal)
+		var signed: float = (support - world.wall_point).dot(world.wall_normal)
+		worst_signed = minf(worst_signed, signed)
+		d.check(
+			signed >= -allowance,
+			"%s: final hull overlaps the wall by %.6f m" % [label, -signed]
+		)
+		if result.committed_state == null:
+			continue
+		var committed = result.committed_state
+		d.check(committed.is_finite(), "%s: finite committed state" % label)
+		d.check_close(pose.origin.x, committed.position_m.x, 1e-5, "%s: body x mapping" % label)
+		d.check_close(pose.origin.z, -committed.position_m.y, 1e-5, "%s: body z mapping" % label)
+		d.check(
+			pose.basis.is_equal_approx(AdapterScript.basis_from_heading(committed.heading_rad)),
+			"%s: body basis matches the committed heading" % label
+		)
+		if not is_equal_approx(committed.heading_rad, result.proposed_state.heading_rad):
+			saw_constraint = true
+		if index == 0:
+			var unchecked_pose := Transform3D(
+				AdapterScript.basis_from_heading(result.proposed_state.heading_rad), pose.origin
+			)
+			var unchecked_support := d.box_support_point(
+				unchecked_pose, world.hull_shape.size, -world.wall_normal
+			)
+			var unchecked_signed: float = (
+				(unchecked_support - world.wall_point).dot(world.wall_normal)
+			)
+			d.check(
+				unchecked_signed < -allowance,
+				"rotated tick 1: the unchecked yaw would penetrate by %.6f m"
+				% [-unchecked_signed]
+			)
+	d.check(saw_constraint, "rotated: steering toward the wall constrained the yaw")
+	measurements["worst_hull_plane_distance_m"] = worst_signed
+	measurements["orientation_allowance_m"] = allowance
+
+	await _destroy_world(world)
+
+	# Clean open-ground control: identical steering must rotate without a wall.
+	var open_world := await _build_world(config, {})
+	var open_state := d.make_state(Vector2.ZERO, Vector2(0.0, 2.0), 0.0)
+	await _place_body(open_world, open_state, d.BODY_SUPPORT_Y)
+	var open_records := await _drive(open_world, open_state, commands, tuning, config)
+	var previous_heading := open_state.heading_rad
+	for index in range(open_records.size()):
+		var result = open_records[index]["result"]
+		var label := "open-ground tick %d" % (index + 1)
+		d.check(result.status == AdapterScript.Status.COMMITTED, "%s: committed" % label)
+		if result.committed_state == null:
+			continue
+		d.check(
+			is_equal_approx(result.committed_state.heading_rad, result.proposed_state.heading_rad),
+			"%s: clear ground preserves the proposed yaw" % label
+		)
+		d.check(
+			result.committed_state.heading_rad > previous_heading,
+			"%s: steering still rotates the nose" % label
+		)
+		var pose: Transform3D = open_records[index]["pose"]
+		d.check(
+			pose.basis.is_equal_approx(
+				AdapterScript.basis_from_heading(result.committed_state.heading_rad)
+			),
+			"%s: body basis matches the committed heading" % label
+		)
+		previous_heading = result.committed_state.heading_rad
+	await _destroy_world(open_world)
+
+
 func _case_envelope_refusal() -> void:
 	# Constrained work cap: 4 * 0.25 m = 1.0 m per tick, below the 1.083 m a
 	# 65 m/s tick demands. Travel above the cap must be refused, not truncated.
@@ -902,6 +1020,20 @@ func _case_work_cap_and_truncation() -> void:
 	d.check(
 		not large_commit_margin.is_valid(),
 		"workcap: commit margin above one substep rejected"
+	)
+	var large_orientation_tolerance := d.make_config()
+	large_orientation_tolerance.orientation_contact_tolerance_m = (
+		AdapterScript.MAX_ORIENTATION_CONTACT_TOLERANCE_M + 0.01
+	)
+	d.check(
+		not large_orientation_tolerance.is_valid(),
+		"workcap: orientation tolerance above absolute cap rejected"
+	)
+	var collapsed_orientation_probe := d.make_config()
+	collapsed_orientation_probe.orientation_contact_tolerance_m = 0.5
+	d.check(
+		not collapsed_orientation_probe.is_valid(),
+		"workcap: orientation tolerance collapsing the hull probe rejected"
 	)
 
 	# A config exactly at the epsilon ceiling remains valid; twice it does not.
