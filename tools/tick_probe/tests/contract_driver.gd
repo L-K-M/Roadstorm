@@ -71,32 +71,45 @@ func _on_step_finished(result: Dictionary) -> void:
 	}
 
 
-## Ordinary later- and earlier-in-tree nodes both receive exactly the requested
-## logical callbacks: completion pauses in the final tick's own callback, so no
-## extra pause iteration exists.
+## The coordinator runs before ordinary default-priority observers. Both an
+## earlier- and a later-in-tree observer must see the actual consecutive
+## logical sequence 1..n at their unpaused callbacks, with no tick-0 phantom
+## and no extra publication-iteration callback.
 func _test_callback_ordering() -> void:
 	await _configure(10.0)
 	coord.reset()
 	var root := get_tree().root
 	var before := CallbackObserver.new()
+	before.coord_ref = coord
 	root.add_child(before)
 	root.move_child(before, 0)
 	var after := CallbackObserver.new()
+	after.coord_ref = coord
 	root.add_child(after)
 	await _step(12)
-	_check(before.physics_callbacks == 12,
-		"ordering: node before the coordinator sees all logical tick callbacks",
-		"before=%d" % before.physics_callbacks)
-	_check(after.physics_callbacks == 12,
-		"ordering: later-in-tree node receives every logical tick callback",
-		"after=%d" % after.physics_callbacks)
+	_check(coord.process_physics_priority < before.process_physics_priority,
+		"ordering: coordinator process_physics_priority is below default observers",
+		"coordinator=%d observer=%d" % [coord.process_physics_priority, before.process_physics_priority])
+	var expected: Array[int] = []
+	for t in range(1, 13):
+		expected.append(t)
+	_check(before.tick_sequence == expected,
+		"ordering: node before the coordinator sees consecutive ticks 1..12",
+		"sequence=%s" % str(before.tick_sequence))
+	_check(after.tick_sequence == expected,
+		"ordering: later-in-tree node sees consecutive ticks 1..12",
+		"sequence=%s" % str(after.tick_sequence))
+	_check(before.unpaused_physics_callbacks == 12 and after.unpaused_physics_callbacks == 12,
+		"ordering: no phantom or extra publication iteration reached either observer",
+		"before=%d after=%d" % [before.unpaused_physics_callbacks, after.unpaused_physics_callbacks])
 	before.queue_free()
 	after.queue_free()
 
 
 ## F1: a positive request made from a later-ordered physics callback must not
-## unpause the already-unaccounted iteration. The deferred unpause applies on
-## the next physics frame, so the counted server steps equal the logical ticks.
+## unpause the already-unaccounted iteration. begin_step arms; the coordinator's
+## next callback unpauses and executes tick 1 in that same iteration, so the
+## counted server steps pair with logical ticks 1..n.
 func _test_physics_callback_begin_step() -> void:
 	await _configure(10.0)
 	coord.reset()

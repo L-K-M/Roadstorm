@@ -54,10 +54,10 @@ const MAX_SUPPORTED_SPEED_MPS := MAX_TICK_TRAVEL_M / DT
 const MOTION_BOUND_EPSILON_M := 1e-6
 const SEED := 20261126
 const MAX_TICK_LOG := 20000
-## Requests complete by pausing synchronously in the final tick's physics
-## callback. That final callback also carries the last accounted tick, and
-## pausing there stops the next iteration's server step (warm-body traces show
-## exactly one counted integration per requested tick).
+## The coordinator runs before ordinary default-priority physics observers.
+## This is a low value for this scene, not a global ordering guarantee: nodes
+## with an even lower process_physics_priority can still run first.
+const PHYSICS_CALLBACK_PRIORITY := -1000
 
 # Scenario configuration, set by the driver before reset().
 var speed_mps := 10.0
@@ -123,6 +123,7 @@ var _last_grounded := true
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	process_physics_priority = PHYSICS_CALLBACK_PRIORITY
 	rng.seed = SEED
 	_build_world()
 	initial_transform = body.transform
@@ -592,12 +593,20 @@ func _emit_result(requested_ticks: int, elapsed_ticks: int, terminal: String) ->
 	_emit_finished(_result)
 
 
+## True while a normal request has committed its final tick but publication is
+## waiting for the post-server-step callback. begin_step()/take_result() are
+## refused and reset()/configure() cancel the pending publication.
+func is_publication_pending() -> bool:
+	return _pending_publish
+
+
 ## Dispatch step_finished under the completion-callback guard so a listener
 ## cannot reenter begin_step()/reset() into a half-published completion.
 func _emit_finished(result: Dictionary) -> void:
-	# Refresh the observation at the final-tick boundary. The probe car pose is
-	# committed by explicit move_and_collide already; server-stepped dynamic
-	# state may flush one iteration later (documented limitation).
+	# Publication happens in the callback after the final tick's server step;
+	# rebuild the observation from the now-integrated state. Probe-car pose was
+	# already committed explicitly; dynamic body transform/velocity are read
+	# here and the hard gate checks them against the latest integration sample.
 	result["observation"] = observe()
 	_completion_callbacks += 1
 	step_finished.emit(result)

@@ -63,21 +63,21 @@ godot --headless --max-fps 60 --path tools/tick_probe \
 
 # Independent focused contract tests (isolated copy, XDG/TMPDIR redirected, <=30 s).
 # Run them under every pacing mode: --pacing fixed|default|max.
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 133
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 133
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 133
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 135
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 135
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 135
 
 # Runner must fail closed when a well-formed report says checks failed but the
 # child exits 0 (must exit 1):
-FAKE_CHECKS=85 FAKE_FAILED=1 python3 tools/tick_probe/tests/run_contract_tests.py \
+FAKE_CHECKS=133 FAKE_FAILED=1 python3 tools/tick_probe/tests/run_contract_tests.py \
     --godot tools/tick_probe/tests/inject_failure_fake_godot.sh \
-    --pacing fixed --expect-checks 133; echo $?   # 1
+    --pacing fixed --expect-checks 135; echo $?   # 1
 
 # Dynamic server-step regression (strict isolated runner)
 python3 tools/tick_probe/tests/run_n1_tests.py --pacing fixed --expect-checks 76
 
 # Hard same-world 12+12+1 gate for idle/callback/mixed origins (committed driver)
-python3 tools/tick_probe/tests/run_repeat_tests.py --pacing fixed --expect-checks 54
+python3 tools/tick_probe/tests/run_repeat_tests.py --pacing fixed --expect-checks 70
 
 # Deterministic per-tick trace for the cross-pacing digest comparison
 godot --headless --fixed-fps 60 --path tools/tick_probe \
@@ -99,7 +99,7 @@ Exit code `0` means every check passed, `1` means at least one failed.
 `TICK_PROBE_DEBUG=1` additionally prints per-substep query/commit diagnostics.
 
 The broad structural suite currently has **108 checks**; the independent
-contract suite has **133 checks** and passes under `--fixed-fps 60`, default
+contract suite has **135 checks** and passes under `--fixed-fps 60`, default
 and `--max-fps 60` pacing. Recorded totals and outputs live under `evidence/`.
 
 ## Coordinator contract
@@ -290,14 +290,31 @@ publication iteration; this is callback delivery only and adds no server step.
 **Observation freshness.** `step_finished` is published only from the
 post-final-server-step callback; the observation is rebuilt there, so the
 counting body's last recorded server-owned transform/velocity equal the live
-body values at publication. The hard gate asserts this equality and a changing
-dynamic value for a one-tick terminal request.
+body values at publication. The hard gate asserts this equality and that the
+dynamic body's y/velocity actually changed across each request and the
+one-tick terminal (not tautological equality alone).
 
 **Engine-frame overhead.** Every request spans `n + 1` engine frames: n tick
 iterations plus one activation/publication boundary iteration. No extra server
 step is added. `compare_modes.py` records this overhead and its realtime
 ceiling (`sim / (sim + requests/60)`, about 0.923× for 50 requests); the
 documented 0.5–2.0 acceptance band is unchanged.
+
+**Callback priority and the remaining idle window.** The coordinator uses
+`process_physics_priority = -1000`, below ordinary default-priority observers,
+for this scene. This is not a global guarantee: a node with an even lower
+priority (or the same priority ordered earlier) still runs first. Committed
+ordering tests place default-priority observers both earlier and later in the
+tree and require the actual consecutive sequence `1..n` at their unpaused
+callbacks.
+
+During waiting the tree is paused, so pausable `_process`, timers, tweens and
+animations do not advance. The publication iteration pauses in the coordinator
+physics callback before idle processing, so pausable nodes never observe an
+unpaused simulation step without a logical tick. The remaining window belongs
+to `PROCESS_MODE_ALWAYS` nodes: they can run in the publication iteration with
+`SceneTree.paused == true`, outside coordinator authority. Simulation state
+itself stays inside the coordinator; such nodes must not mutate it.
 
 **Completion-callback safety.** Publication state is armed before any
 completion observer runs, `begin_step()` refuses reentry while a completion
@@ -401,7 +418,14 @@ frozen trailing callback never advanced `tick_count`.
 
 ## Evidence
 
-- `evidence/2026-11-27-apple-m4-max-jolt-phase-alignment/` — **current**:
+- `evidence/2026-11-27-apple-m4-max-jolt-phase-followup/` — **current**:
+  follow-up hardening against both `8b7146b` pass reviews: scene-local
+  `process_physics_priority=-1000` plus committed consecutive-tick sequence
+  assertions, deterministic physics-ordered motion-bound injection, returned
+  `requested_ticks` and dynamic-change hard-gate checks, inter-callback
+  `_pending_publish` regression, precise errata, refreshed 135-check contract /
+  76-check N1 / 70-check repeat evidence.
+- `evidence/2026-11-27-apple-m4-max-jolt-phase-alignment/` — historical:
   measured pre-fix phase shift (integrations 0..11 for a 12-tick request,
   L12 never integrated), corrected per-tick pairing (1..n) and
   post-final-step publication, committed callback/mixed hard gate, targeted
@@ -561,9 +585,17 @@ The phase-alignment correction responds to both `b56d902` reviews: every tick
 is paired with its own server step (integration slice 1..n), publication is
 delayed past the final server step with a fresh observation, and the callback/
 mixed-origin 12+12+1 gate plus two targeted mutations are hash-bound in
-`evidence/2026-11-27-apple-m4-max-jolt-phase-alignment/manifest.sha256`. Engine:
+`evidence/2026-11-27-apple-m4-max-jolt-phase-alignment/manifest.sha256`.
+
+The phase-followup slice adds the priority/sequence assertion, deterministic
+injection, stronger hard gate and publication-window regression requested by
+both `8b7146b` reviews; new outputs and errata are hash-bound in
+`evidence/2026-11-27-apple-m4-max-jolt-phase-followup/manifest.sha256`. The prior
+phase-alignment directory remains byte-identical historical candidate evidence.
+Engine:
 Godot 4.7.2-stable (official). No third-party assets or network services.
 
 The cold-start evidence manifest records the tested files at commit `8a5615c`.
-This later README correction updates the example count from 76 to 77; the
-probe source and test inputs are unchanged by that documentation-only update.
+Later documentation-only corrections changed example counts; the current
+pinned examples are contract 135, strict N1 76 and repeat hard gate 70. Old
+evidence directories retain their original recorded counts unchanged.

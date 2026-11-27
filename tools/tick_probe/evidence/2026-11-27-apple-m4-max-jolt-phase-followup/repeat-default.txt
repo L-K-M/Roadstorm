@@ -1,0 +1,75 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+PASS repeat idle req1: requested/elapsed/tick deltas exact
+PASS repeat idle req1: dynamic body actually fell faster
+PASS repeat idle req1: n server steps paired with ticks 1..12
+PASS repeat idle req1: published server-owned dynamic state matches
+PASS repeat idle req1: frozen nonterminal publication
+PASS repeat idle req1: committed kinematic progress exact
+PASS repeat idle req2: requested/elapsed/tick deltas exact
+PASS repeat idle req2: dynamic body actually fell faster
+PASS repeat idle req2: n server steps paired with ticks 13..24
+PASS repeat idle req2: published server-owned dynamic state matches
+PASS repeat idle req2: frozen nonterminal publication
+PASS repeat idle req2: committed kinematic progress exact
+PASS repeat idle req3: requested/elapsed/tick deltas exact
+PASS repeat idle req3: dynamic body actually fell faster
+PASS repeat idle req3: n server steps paired with ticks 25..25
+PASS repeat idle req3: published server-owned dynamic state matches
+PASS repeat idle req3: frozen nonterminal publication
+PASS repeat idle req3: committed kinematic progress exact
+PASS repeat idle: frozen wait adds no server step or dynamic motion
+PASS repeat callback req1: requested/elapsed/tick deltas exact
+PASS repeat callback req1: dynamic body actually fell faster
+PASS repeat callback req1: n server steps paired with ticks 1..12
+PASS repeat callback req1: published server-owned dynamic state matches
+PASS repeat callback req1: frozen nonterminal publication
+PASS repeat callback req1: committed kinematic progress exact
+PASS repeat callback req2: requested/elapsed/tick deltas exact
+PASS repeat callback req2: dynamic body actually fell faster
+PASS repeat callback req2: n server steps paired with ticks 13..24
+PASS repeat callback req2: published server-owned dynamic state matches
+PASS repeat callback req2: frozen nonterminal publication
+PASS repeat callback req2: committed kinematic progress exact
+PASS repeat callback req3: requested/elapsed/tick deltas exact
+PASS repeat callback req3: dynamic body actually fell faster
+PASS repeat callback req3: n server steps paired with ticks 25..25
+PASS repeat callback req3: published server-owned dynamic state matches
+PASS repeat callback req3: frozen nonterminal publication
+PASS repeat callback req3: committed kinematic progress exact
+PASS repeat callback: frozen wait adds no server step or dynamic motion
+PASS repeat mixed req1: requested/elapsed/tick deltas exact
+PASS repeat mixed req1: dynamic body actually fell faster
+PASS repeat mixed req1: n server steps paired with ticks 1..12
+PASS repeat mixed req1: published server-owned dynamic state matches
+PASS repeat mixed req1: frozen nonterminal publication
+PASS repeat mixed req1: committed kinematic progress exact
+PASS repeat mixed req2: requested/elapsed/tick deltas exact
+PASS repeat mixed req2: dynamic body actually fell faster
+PASS repeat mixed req2: n server steps paired with ticks 13..24
+PASS repeat mixed req2: published server-owned dynamic state matches
+PASS repeat mixed req2: frozen nonterminal publication
+PASS repeat mixed req2: committed kinematic progress exact
+PASS repeat mixed req3: requested/elapsed/tick deltas exact
+PASS repeat mixed req3: dynamic body actually fell faster
+PASS repeat mixed req3: n server steps paired with ticks 25..25
+PASS repeat mixed req3: published server-owned dynamic state matches
+PASS repeat mixed req3: frozen nonterminal publication
+PASS repeat mixed req3: committed kinematic progress exact
+PASS repeat mixed: frozen wait adds no server step or dynamic motion
+PASS motion-bound-mid: refusal keeps exactly k=3 elapsed ticks
+PASS motion-bound-mid: exactly k=3 server steps paired with ticks 1..3
+PASS motion-bound-mid: refusal publishes frozen fresh state
+PASS terminal-one-tick: terminal elapsed is exactly one tick
+PASS terminal-one-tick: dynamic body actually changed across the request
+PASS terminal-one-tick: final tick integrated exactly once before publication
+PASS terminal-one-tick: publication observes post-step dynamic state while frozen
+PASS publication-window: observer entered the inter-callback pending window
+PASS publication-window: overlapping begin_step refused
+PASS publication-window: take_result is empty
+PASS publication-window: reset cancelled publication and froze the world
+PASS publication-window: cancelled publication emitted no step_finished
+PASS publication-window: no extra server step after cancellation
+REPEAT_RESULT {"checks_failed":0,"checks_total":70,"failures":[],"schema":"roadstorm.tick_probe.repeat_sequence.v1"}
+REPEAT_TOTAL=70 REPEAT_FAILED=0
+PACING=default REPEAT_TESTS_TOTAL=70 REPEAT_TESTS_FAILED=0

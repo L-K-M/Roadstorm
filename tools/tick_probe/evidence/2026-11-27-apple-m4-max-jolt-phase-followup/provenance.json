@@ -1,0 +1,174 @@
+{
+  "candidate_identity": {
+    "changed_since_reported_candidate": [
+      "README.md",
+      "src/tick_coordinator.gd",
+      "tests/contract_driver.gd",
+      "tests/run_n1_tests.py",
+      "tests/callback_observer.gd",
+      "tests/repeat_sequence_driver.gd"
+    ],
+    "new_since_reported_candidate": [
+      "tests/motion_injector.gd",
+      "tests/publication_probe.gd"
+    ]
+  },
+  "changes": {
+    "deterministic_injection": "motion_injector fires at tick_count>=3 from a default-priority physics callback; mutation deferred-refusal still fails",
+    "docs": "stale comments corrected; FAKE_CHECKS=135; N1 example 76; errata records failed old launches without rewriting raw evidence",
+    "hard_gate": "requested_ticks checked; dynamic body y/velocity change checked across requests and one-tick terminal",
+    "priority": "process_physics_priority=-1000 scene-local; committed before/after observers assert consecutive tick sequence 1..n",
+    "publication_window": "publication_probe (test-only priority -2000) exercises refused begin_step, empty take_result and reset cancellation during _pending_publish"
+  },
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "evidence_sha256": {
+    "README.md": "f8dfa0e6267d0fee632d23dad4741f3bf5e19f4e22e755c95e5dcad115ed3def",
+    "compare-modes.txt": "a05eeb8f4c068d534e6ba8f56da54f71c7213a741ce60a7773022ae5d38f0b58",
+    "contract-default/contract-tests.json": "53b8578eb73941c9a3f4a6ff65bdf2d93732077501847d942848ead7e744d0e8",
+    "contract-default/contract-tests.txt": "398213ea5d2b767e96aa07decd8217358e66de5f943dbcdb17137b9550496fd4",
+    "contract-default/run.txt": "4c1e7ef76d6d357de953993c96a34534f5ae9dc079d5af0f8e6d57ebd7551be1",
+    "contract-fixed/contract-tests.json": "53b8578eb73941c9a3f4a6ff65bdf2d93732077501847d942848ead7e744d0e8",
+    "contract-fixed/contract-tests.txt": "398213ea5d2b767e96aa07decd8217358e66de5f943dbcdb17137b9550496fd4",
+    "contract-fixed/run.txt": "894f92934516edc46269a95569c29d3cb5dc7b93435f49098e7dc212c63fe5a2",
+    "contract-max/contract-tests.json": "53b8578eb73941c9a3f4a6ff65bdf2d93732077501847d942848ead7e744d0e8",
+    "contract-max/contract-tests.txt": "398213ea5d2b767e96aa07decd8217358e66de5f943dbcdb17137b9550496fd4",
+    "contract-max/run.txt": "fe0e7c65de01c2c6c10ac1074b4e7178458a7f68eb2e5742e429f3265e9dc7b6",
+    "errata.md": "b83b6d51fb15d8c28ea85385f05c38f478f46b4c7fd8640de627d18e19bf3438",
+    "exit-code-selftest.txt": "099212d50ba41fab9a6ccde6e3c884db74a253a9b07951952b9eb78f389624e6",
+    "mutation-pubguard.txt": "c7dfba271f1354f3c6e96e99c6f4117343fb34e7d89187be3d4ec00ebdd2ac9c",
+    "mutation-publish.txt": "d0bf56e772fe18691d2227cc4255bd55347db362b8954a8f18f20d1208c13e36",
+    "mutation-refusaldelay.txt": "18ae06ecd90d7b1340c8739dbe48fcddd305a9d2e4bdefd3a3cd8de0c708478c",
+    "n1-default.txt": "8beb6d6c7bd3247094ce6b3f0512a16538295820e4c96567258657d80c70efc8",
+    "n1-fixed.txt": "8455d5d4644cc0ad36338cb2256ebc361dde6470e7ed89674d409afaa7018aa3",
+    "n1-max.txt": "7134a1105373daaf1810ebb95047c5428c3e018e02b5225420071a5ae99c32eb",
+    "repeat-default.txt": "e0367a0dbc1ff69d428e656368362e369bbe8a825f500e02a62fce6d6f0b9994",
+    "repeat-fixed.txt": "931a6794aa27fa2c0149758abb14dc2562ddd6b53177f8a14ea4eae4ec9a7ff4",
+    "repeat-max.txt": "402cd3ebf6db87d81736d56a8cbf21ba2b231bd75175af75a975581ae5b0fe5c",
+    "structural-default.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-default.json": "90ff486c6b3f5d87d8b49f4af489e24fbeb67a4f445d64a4763e4859c1a17556",
+    "structural-default.raw.txt": "6c211390020578247da7151593af4212e6647e98a323f1fb3149431df55907a2",
+    "structural-fixed.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-fixed.json": "a05e22018f65c33fd8ddf320a845b3990cd0107b03a02c598aca91df3a2c0b63",
+    "structural-fixed.raw.txt": "0ccbf92df65b3d058467a73d7ea00c1d4dc19e46a3e3c26b974a448333879be5",
+    "structural-max.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-max.json": "a262b135b99ba94d68fc345fb9e9d808ad936ae6210515ec833a3a815bf596bf",
+    "structural-max.raw.txt": "51fb34903dd8321c99483a6db713c40637cbec6771370a93560053e07d4e2fe3"
+  },
+  "file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "1d8abe3744b8c8d49fdbca9f6977f82e0d9756ada7d4d0e4ffb7903d6089afdf",
+    "compare_modes.py": "57779210372d4336a17d45af8772a86758cbcfc7c2873f007416bbc61ac94ac5",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "2e7a945e624c01f987c99ddc2803f44a8f4b3d73f7c1ae6b30f7cfd6191cc58c",
+    "src/tick_coordinator.gd": "381f4ede690c5cc005010bb4f7bcfce61042b9abc85efc79122136421938731f",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/callback_observer.gd": "1b014b660680eb57ba3c40d813d80acfec7ff57f2ba4de3ec793d4fefca020ff",
+    "tests/contract_driver.gd": "b7b2ec64b77d700d225c0a515eaa1384c7e48f07595377a3f5cd99fa96ad41d4",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/counting_body.gd": "49c5b117bb75a841eae795265c78d4a0f38348d0d42b9481d9d06c7fa9df2a3b",
+    "tests/inject_failure_fake_godot.sh": "4e89810081302242278a507f4526015de31798638575039c6bde19928d1c9b23",
+    "tests/motion_injector.gd": "11553e46075414b5fa9657cd2619c00170c9fdd5c565bc53354f9814561ec256",
+    "tests/n1_regression_driver.gd": "dc667c156933dcb94ffcf363c589c38f9cfad7e09284eb46685132ca633d9a01",
+    "tests/n1_regression_entry.gd": "ccabe1fc6396106f2c3f33e75566bc1df349d0d7bc1b96d3b6421ded640fc8fc",
+    "tests/physics_caller.gd": "e0e67da2e3e51bcbccd8ae2306c04a30b0e76fa0d1cad656e7e85a06218eda43",
+    "tests/publication_probe.gd": "1b185d5fa6a298f1990dd0085916dcfce1e1fba0e6d9769ecb40679ff63b9e12",
+    "tests/repeat_sequence_driver.gd": "1dd18ec8e71102c3a631da8ea541ca10985119ff40577fd91c617af11180031c",
+    "tests/repeat_sequence_entry.gd": "36a35857d090acd81f294c649790eec01472975977ee79a2a6dc62ff6adfbf46",
+    "tests/run_contract_tests.py": "bc4098286b17cba8943732c18ba45c5d9f7d57e3a56946d8ec47396287922117",
+    "tests/run_n1_tests.py": "7f99768ea257b98439aff7de44ff9651947b58cef0943b59546725be9a0246e6",
+    "tests/run_repeat_tests.py": "bfab4360288a1ffe777d8903687b9e8ae1d5e0ae493835360095fcd8434d7cff",
+    "tests/warm_step_probe_driver.gd": "d02153d67b675a03fd12b8646006ab8ad8479f9a97a381f099e901701c9b2f7a",
+    "tests/warm_step_probe_entry.gd": "683f8e524feb47ead34a562c0d563e40bbacbec3aee237c2730d4b34e5897249"
+  },
+  "integration_notes": [
+    "Coordinator corrected contract priority assertion to compare the observer physics priority; pinned private Godot 4.7.2 contract fixed/default/max reran 135/135 each, exit 0, and contract report bytes matched the captured evidence."
+  ],
+  "limits": [
+    "Godot 4.7.2/Jolt one host.",
+    "Prior phase-alignment directory preserved byte-identical as historical candidate evidence.",
+    "No M0.8/M0 signoff; no M1 motor."
+  ],
+  "machine": "arm64",
+  "mutations": {
+    "deferred_refusal_pause": {
+      "failures": 1
+    },
+    "immediate_publish": {
+      "failures": 17
+    },
+    "publication_guard_removed": {
+      "failures": 1
+    }
+  },
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "python": "3.15.2",
+  "reported_candidate_commit": "8b7146b7ae81b326a638ab283c42bbbb91841e94",
+  "reported_reviews": [
+    "review/implementation/m0-tick-opus-5-5-8b7146b.md",
+    "review/implementation/m0-tick-gpt-6-2-sol-8b7146b.md"
+  ],
+  "residuals": [
+    "Contacts/Area visibility not separately gated.",
+    "Priority is scene-local, not globally unbeatable.",
+    "Runner defaults/reconciliation gaps remain."
+  ],
+  "run_policy": "private copies; private XDG/TMPDIR on PaseoData; pinned Godot 4.7.2; bounded runs; no HOME/shared/installed writes; no Git mutation",
+  "runs": [
+    {
+      "checks_failed": 0,
+      "checks_total": 135,
+      "exit": 0,
+      "name": "contract-fixed/default/max"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 76,
+      "exit": 0,
+      "name": "n1-fixed/default/max"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 70,
+      "exit": 0,
+      "name": "repeat-fixed/default/max"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "exit": 0,
+      "name": "structural-fixed/default/max"
+    },
+    {
+      "ceiling": 0.923,
+      "exit": 0,
+      "name": "compare-modes",
+      "realtime_speedup": 0.923,
+      "result": "COMPARISON PASS"
+    },
+    {
+      "checks_failed": 17,
+      "checks_total": 70,
+      "exit": 1,
+      "name": "mutation-immediate-publish"
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 70,
+      "exit": 1,
+      "name": "mutation-deferred-refusal"
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 70,
+      "exit": 1,
+      "name": "mutation-publication-guard"
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 5,
+      "exit": 1,
+      "name": "exit-code-selftest"
+    }
+  ],
+  "schema": "roadstorm.tick_probe.phase_followup_evidence.v1"
+}
