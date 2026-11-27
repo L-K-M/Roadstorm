@@ -37,6 +37,14 @@ extends Node3D
 ## race progress are explicitly out of scope. No M1 acceptance result is
 ## claimed.
 ##
+## Spawn heading: `HandlingLabBuilder` headings grow toward local left
+## (`_forward()` is `(-sin h, 0, -cos h)`), while `CarState` and
+## `MotorBodyAdapter` headings grow toward local right (`nose_forward_world()`
+## is `(sin h, 0, -cos h)`). The authored bay yaw is therefore converted once at
+## each spawn input (marker metadata, then manifest fallback) so the committed
+## state and the installed body basis both point along the authored bay forward.
+## An authored zero yaw stays exactly positive zero.
+##
 ## Headless scripted mode never reads GUI input. Keyboard mode is a separate
 ## convenience path for interactive use.
 
@@ -535,12 +543,16 @@ func _apply_start_pose() -> void:
 		var marker := _lab.get_node_or_null("Spawn_straight") as Marker3D
 		if marker != null:
 			spawn = marker.global_position
-			heading = deg_to_rad(float(marker.get_meta("heading_deg")))
+			heading = builder_heading_to_state(
+				deg_to_rad(float(marker.get_meta("heading_deg")))
+			)
 		elif not lab_manifest.is_empty():
 			for bay in lab_manifest.get("bays", []):
 				if String(bay.get("bay_id", "")) == "straight":
 					spawn = bay.get("origin", spawn)
-					heading = deg_to_rad(float(bay.get("yaw_deg", 0.0)))
+					heading = builder_heading_to_state(
+						deg_to_rad(float(bay.get("yaw_deg", 0.0)))
+				)
 					break
 	state = CarStateScript.new()
 	state.position_m = AdapterScript.world_vector_to_road(spawn)
@@ -755,6 +767,18 @@ func _complete(reason: String) -> void:
 func _show_failure_visual() -> void:
 	if _material != null:
 		_material.albedo_color = FAILURE_COLOR
+
+
+## Converts an authored handling-lab bay heading into the road-plane
+## `CarState` heading convention. The builder's heading grows toward local
+## left; `CarState`/`MotorBodyAdapter` grow toward local right. Negating once
+## keeps the state nose and the installed body basis on the authored bay
+## forward. A zero input returns positive zero, so zero-yaw behaviour is
+## bit-for-bit unchanged.
+static func builder_heading_to_state(builder_heading_rad: float) -> float:
+	if builder_heading_rad == 0.0:
+		return 0.0
+	return -builder_heading_rad
 
 
 static func _finite_positive_vec3(value: Vector3) -> bool:

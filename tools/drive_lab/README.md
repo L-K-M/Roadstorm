@@ -22,7 +22,8 @@ bounded isolated runner.
 
 ## What the validator proves
 
-Cases, in order: `scene_and_manifest`, `movement_from_rest`, `braking`,
+Cases, in order: `scene_and_manifest`, `rotated_spawn_heading`,
+`movement_from_rest`, `braking`,
 `displacement_accounting`, `repeatability`, `finite_state`, `hull_road_overlap`,
 `one_call_per_tick`, `refusal_halts`, `presentation_integration`,
 `keyboard_focus_lifecycle`, `reconfigure_presentation_counters`.
@@ -72,10 +73,24 @@ schedule and requires every presentation and simulation counter to describe
 only the new configuration, followed by an independent run of that schedule.
 The pre-fix source carries the counters over and fails three assertions.
 
-A deliberate negative control inside that case feeds a scratch collector a
-wrong expectation about a real measurement and requires it to record exactly one
-failure while the live collector stays untouched, so the case's assertions are
-demonstrably capable of failing.
+`rotated_spawn_heading` covers the F6 heading-convention fix. The handling-lab
+builder's heading grows toward local left while `CarState`/`MotorBodyAdapter`
+grow toward local right, so a rotated authored spawn must be converted once at
+each input. The case builds the real builder geometry with a synthetic
+`Spawn_straight` marker authored at 30 degrees, then repeats it through the
+manifest fallback (no marker, straight-bay `yaw_deg` set to 30). Both variants
+require the committed `CarState` heading to equal `-yaw`, its nose and the
+installed body basis -Z to match `HandlingLabBuilder._forward(yaw)`, the spawn
+position mapping to stay unchanged, and 30 bounded throttle ticks to displace
+and move along the authored forward. A zero-yaw control requires exactly
+positive-zero heading and the unchanged -Z forward. The pre-fix source copies
+the builder yaw straight into `CarState`, so both rotated variants fail on the
+heading and body-forward assertions and on the drive direction.
+
+A deliberate negative control inside the presentation case feeds a scratch
+collector a wrong expectation about a real measurement and requires it to
+record exactly one failure while the live collector stays untouched, so the
+case's assertions are demonstrably capable of failing.
 
 Scope: one car, one flat straight, structural and behavioural headless checks.
 The validator does not prove rendering, visual readability, HUD contrast or

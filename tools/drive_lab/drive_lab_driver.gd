@@ -15,6 +15,7 @@ const ChecksScript := preload("res://tools/drive_lab/drive_lab_checks.gd")
 const AdapterScript := preload("res://src/simulation/motor_body_adapter.gd")
 const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
 const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
+const HandlingLabBuilderScript := preload("res://src/laboratory/handling_lab_builder.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -35,9 +36,15 @@ const INPUT_WAIT_FRAMES := 20
 const FOCUS_HOLD_TICKS := 20
 const FOCUS_COAST_TICKS := 20
 const FOCUS_FRESH_TICKS := 20
+## Authored bay yaw for the rotated-spawn heading-convention case.
+const ROTATED_SPAWN_YAW_DEG := 30.0
+const ROTATED_SPAWN_ORIGIN := Vector3(-360.0, 0.0, 60.0)
+## Bounded throttle ticks proving the rotated car tracks its authored forward.
+const ROTATED_SPAWN_TICKS := 30
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
+	"rotated_spawn_heading",
 	"movement_from_rest",
 	"braking",
 	"displacement_accounting",
@@ -113,6 +120,8 @@ func _run_case(case_id: String) -> Dictionary:
 	match case_id:
 		"scene_and_manifest":
 			await _case_scene_and_manifest()
+		"rotated_spawn_heading":
+			await _case_rotated_spawn_heading()
 		"movement_from_rest":
 			await _case_movement_from_rest()
 		"braking":
@@ -357,6 +366,136 @@ func _case_scene_and_manifest() -> void:
 		if not hit.is_empty():
 			d.check(_hit_surface(hit) == "asphalt", "road.surface_asphalt")
 			d.check_close(float(hit["position"].y), 0.0, RAY_TOLERANCE_M, "road.top_at_origin")
+	await _teardown_lab(lab)
+
+
+# --- Rotated spawn heading convention --------------------------------------
+
+
+## The handling-lab builder's heading grows toward local left while
+## `CarState`/`MotorBodyAdapter` headings grow toward local right. A rotated
+## authored spawn must be converted exactly once, so the committed state and
+## the installed body basis both point along the builder's forward vector.
+## Both real spawn inputs are exercised: the marker-metadata path and the
+## manifest fallback. The zero-yaw control pins the unchanged baseline.
+func _case_rotated_spawn_heading() -> void:
+	await _rotated_spawn_variant("marker", true)
+	await _rotated_spawn_variant("manifest_fallback", false)
+	await _rotated_spawn_zero_control()
+
+
+func _rotated_spawn_variant(label: String, use_marker: bool) -> void:
+	var commands: Array = []
+	for _index in range(ROTATED_SPAWN_TICKS):
+		commands.append(d.throttle_command(1.0))
+	var lab = _make_real_geometry_lab(ROTATED_SPAWN_YAW_DEG, use_marker, commands)
+	if lab == null:
+		return
+	await _settle()
+	var authored_heading := deg_to_rad(ROTATED_SPAWN_YAW_DEG)
+	var builder_forward := HandlingLabBuilderScript._forward(authored_heading)
+	var expected_state_heading := 0.0 - authored_heading
+
+	d.check_close(
+		lab.state.heading_rad, expected_state_heading, 1e-12,
+		label + ".state_heading_converted_to_car_state_convention"
+	)
+	d.check_vector_close(
+		AdapterScript.nose_forward_world(lab.state.heading_rad), builder_forward, 1e-6,
+		label + ".state_nose_matches_builder_forward"
+	)
+	d.check_vector_close(
+		d.node_forward(lab.body), builder_forward, 1e-6,
+		label + ".installed_body_forward_matches_builder_forward"
+	)
+	d.check_vector_close(
+		-AdapterScript.basis_from_heading(lab.state.heading_rad).z,
+		builder_forward, 1e-6,
+		label + ".installed_basis_comes_from_converted_heading"
+	)
+	d.check(
+		lab.start_position_m == AdapterScript.world_vector_to_road(ROTATED_SPAWN_ORIGIN),
+		label + ".spawn_position_mapping_unchanged"
+	)
+
+	var run := await _run_auto(lab, ROTATED_SPAWN_TICKS)
+	d.check(not lab.failed, label + ".run_not_failed: " + str(lab.failure_reason))
+	d.check(int(run["committed"]) == ROTATED_SPAWN_TICKS, label + ".all_ticks_committed")
+	if lab.state == null:
+		d.check(false, label + ".final_state_present")
+		await _teardown_lab(lab)
+		return
+	var velocity: Vector2 = lab.state.velocity_m_s
+	var start: Vector2 = lab.start_position_m
+	var end: Vector2 = lab.state.position_m
+	var displacement_world := Vector3(end.x - start.x, 0.0, -(end.y - start.y))
+	if displacement_world.length_squared() <= 1e-9:
+		d.check(false, label + ".car_displaced_along_authored_forward")
+	else:
+		d.check(
+			displacement_world.normalized().dot(builder_forward) > 0.995,
+			label + ".drives_along_authored_bay_forward"
+		)
+	if velocity.length_squared() > 1e-9:
+		var velocity_world := Vector3(velocity.x, 0.0, -velocity.y).normalized()
+		d.check(
+			velocity_world.dot(builder_forward) > 0.995,
+			label + ".velocity_tracks_authored_bay_forward"
+		)
+	else:
+		d.check(false, label + ".velocity_nonzero_after_throttle")
+	measurements[label + "_state_heading_rad"] = lab.state.heading_rad
+	measurements[label + "_builder_forward"] = str(builder_forward)
+	await _teardown_lab(lab)
+
+
+## Builds a DriveLab whose HandlingLab child is the real builder output, with
+## the authored straight spawn at `yaw_deg`. With `use_marker` a direct-child
+## `Spawn_straight` marker carries the yaw (the marker-metadata input); without
+## it, the manifest straight-bay yaw is rewritten so the manifest fallback is
+## the only spawn source. The real asphalt straight geometry is present in both.
+func _make_real_geometry_lab(yaw_deg: float, use_marker: bool, commands: Array):
+	var lab = DriveLabScript.new()
+	lab.name = "DriveLab"
+	var handling := Node3D.new()
+	handling.name = "HandlingLab"
+	var manifest: Dictionary = HandlingLabBuilderScript.build(handling)
+	if use_marker:
+		handling.set_meta("lab_manifest", manifest)
+		var marker := Marker3D.new()
+		marker.name = "Spawn_straight"
+		marker.transform = Transform3D(
+			Basis(Quaternion(Vector3.UP, deg_to_rad(yaw_deg))), ROTATED_SPAWN_ORIGIN
+		)
+		marker.set_meta("heading_deg", yaw_deg)
+		handling.add_child(marker)
+	else:
+		for bay in manifest.get("bays", []):
+			if String(bay.get("bay_id", "")) == "straight":
+				bay["yaw_deg"] = yaw_deg
+		handling.set_meta("lab_manifest", manifest)
+	var configured: bool = lab.configure(d.make_tuning(), d.make_config(), commands)
+	d.check(configured, "rotated.configure_accepted")
+	lab.add_child(handling)
+	_holder.add_child(lab)
+	return lab
+
+
+func _rotated_spawn_zero_control() -> void:
+	var lab = _make_real_geometry_lab(0.0, true, [])
+	if lab == null:
+		return
+	await _settle()
+	d.check_exact_float(lab.state.heading_rad, 0.0, "rotated.zero_yaw_heading_is_positive_zero")
+	d.check_vector_close(
+		d.node_forward(lab.body), Vector3(0.0, 0.0, -1.0), 1e-9,
+		"rotated.zero_yaw_body_forward_is_minus_z"
+	)
+	d.check_vector_close(
+		AdapterScript.nose_forward_world(lab.state.heading_rad),
+		HandlingLabBuilderScript._forward(0.0), 1e-9,
+		"rotated.zero_yaw_conventions_agree"
+	)
 	await _teardown_lab(lab)
 
 
