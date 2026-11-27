@@ -219,13 +219,16 @@ These are different claims and the pin keeps them apart:
   2026-11-27; layer (a) ties the bytes to a published value, layer (b) ties
   the publication to the release manager.
 * **Installed interpreter** — any local build (Homebrew 3.15.2 on this host).
-  `verify.sh` checks its version string and, for the build at the path recorded
-  in `pin/checksums.txt`, compares its local digest; that detects version drift
-  and local file change for that recorded build. Any other interpreter that
-  merely reports the pinned version is left `NOT RECORDED` for its own path and
-  is not failed against another host's digest. Interpreter probes use `-I`, so
-  a module in the working directory cannot spoof the result. None of this says
-  anything about python.org bytes and none of it is reported as verification.
+  `verify.sh` checks its version string and compares its local digest only when
+  its resolved canonical path equals the path recorded in
+  `pin/checksums.txt`; that baseline is per exact path, not per host, so the
+  same path on another machine is still compared and fails closed on mismatch.
+  An interpreter at a different path is reported as a version match but left
+  `NOT RECORDED`; no host identity is consulted. A candidate whose version
+  cannot be read is skipped with a warning, and the run still fails if no
+  pinned-version interpreter is found. Interpreter probes use `-I`, so a module
+  in the working directory cannot spoof the result. None of this says anything
+  about python.org bytes and none of it is reported as verification.
 
 `verify.sh` prints this distinction on every run under "verification scope",
 and its summary line separates "publisher artifact evidence" from "installed
@@ -238,10 +241,16 @@ path is refused with exit 2, so recording cannot clobber an archive it just
 checked, the pin metadata, or a local interpreter. Recording reuses only the
 observations made by the checks themselves, so `--no-interpreter` also keeps
 recording from running an interpreter; a failed run may still write a record,
-clearly headed as diagnostic observations rather than a passing result. Record
-entries use the same `local_interpreter_<major><minor>_{sha256,path}` keys as
-`pin/checksums.txt` and store the resolved interpreter path. Unreadable pin or
-digest files fail closed; deliberately empty fields stay `NOT RECORDED`.
+clearly headed as diagnostic observations rather than a passing result. The
+summary always states the drift-gate outcome (`local digest: compared`,
+`not compared (...)` or `skipped (--no-interpreter)`), and a skipped comparison
+also emits a `[warn]`, so `--quiet` cannot hide it. Record entries use
+`local_interpreter_<major><minor>_{sha256,path}`, the convention the drift
+lookup itself uses; `pin/checksums.txt` keeps one legacy `local_interpreter_396_*`
+entry under an older name. The stored path is realpath-resolved for symbolic
+links; a real launcher such as macOS `/usr/bin/python3` remains the launcher.
+Unreadable pin or digest files fail closed; deliberately empty fields stay
+`NOT RECORDED`.
 Validation plus exclusive creation narrows the window against a concurrent
 writer but are not a formal race-free guarantee; the precise contract and
 limitation are in `tools/python_pin/README.md`. An `--archive` file whose digest
@@ -296,10 +305,14 @@ or Sigstore success is claimed for a mismatching input.
 
 Commands ran from the repository root on 2026-11-27 for this integration, in
 isolated temporary directories, with no installed tool or global state
-modified. Tests create no symlinks or hardlinks: external evidence artifacts
-are read directly, negative fixtures are fresh regular files in separate
-directories, and the external directory is hashed before and after. Full logs
-and the rerunnable `final-checks.sh` are in this job's
+modified. These integration tests create no symlinks or hardlinks: external
+evidence artifacts are read directly, negative fixtures are fresh regular files
+in separate directories, and the external directory is hashed before and
+after. (The separate bundled unit suite `tools/python_pin/tests/test_verify.sh`
+deliberately creates ephemeral symlink and hard-link alias fixtures, but only
+inside its private temporary directory, which it removes; it never links into
+the repository or shared inputs.) Full logs and the rerunnable
+`final-checks.sh` are in this job's
 `work/agents/9a09e936-ab0c-4b9b-a85f-e4982025696b/integration-tests/`.
 
 | Command | Result |
@@ -310,6 +323,7 @@ and the rerunnable `final-checks.sh` are in this job's
 | `tools/python_pin/verify.sh --no-interpreter` | PASS (exit 0) with the skip warning. |
 | `tools/python_pin/verify.sh --help` / `--bogus` | exit 0 / exit 2. |
 | `sh -n tools/python_pin/verify.sh` | syntax OK. |
+| `sh`, `bash` and `dash tools/python_pin/tests/test_verify.sh` (base candidate `ab3ac754ce58f3ca9693064bf5888d51ee2813b0`, this verifier repair applied) | **PASS** (exit 0), **88 assertions, 0 failures** in each shell. Covers record-target refusals and ephemeral aliases, spaces/globs, `--no-interpreter`, `-I` probes, per-path digest scope (different path NOT compared with a visible quiet warning; changed same path fails closed), checksums-convention record keys, mismatch evidence wording, empty options, unreadable metadata, a skipped Python-2-style candidate, and odd-name hashing. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <direct paths to the four independently verified artifacts>` | **PASS** (exit 0). Each file's role (`source archive` / `target installer`), observed and published digests, and the recorded digest+Sigstore evidence note are printed. External artifacts were hashed before and after and were unchanged. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <fresh regular file named Python-3.15.2.tgz>` | **FAIL** (exit 1): sha256 mismatch against the published digest. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <some-other-file.exe>` | **FAIL** (exit 1): not a pinned artifact. |

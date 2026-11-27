@@ -68,20 +68,25 @@ collected during checks, so `--no-interpreter` also keeps recording from
 running an interpreter. If checks fail, the record is still written (with
 parent directories created as needed) but carries an explicit `# NOTE:
 verification FAILED ... diagnostic observations` header; nothing is invented.
-Record entries use the same `local_interpreter_<major><minor>_{sha256,path}`
-keys as `pin/checksums.txt`, and the path is the resolved real binary when
-`realpath` is available (not a launcher), so a record can be compared with or
-refresh that file deliberately.
+Record entries use `local_interpreter_<major><minor>_{sha256,path}`, the key
+convention `verify.sh` itself uses for its drift lookup (for this pin,
+`local_interpreter_315_*`). `pin/checksums.txt` retains one legacy entry under
+an older name (`local_interpreter_396_*` for 3.9.6); a record does not rewrite
+historical lines. The stored path is resolved with `realpath` when the selected
+file is a symbolic link; a real launcher such as macOS `/usr/bin/python3`
+stays that launcher (its re-exec target is not followed), so in that case the
+digest describes the launcher.
 
 Unreadable pin or digest files are hard failures (exit `2`), never treated as
 "not recorded". Deliberately empty fields remain `NOT RECORDED`, as before.
 
 Residual limitation: validation and creation are separate steps. A hostile
 process that controls the parent directory could race the check and put a path
-at the destination first. On the shells tested here (bash 3.2 as `/bin/sh`
-and dash on macOS) the final exclusive creation then fails instead of
-truncating, even for a symlink; this narrows the window but is **not** a
-formal, race-free guarantee on every POSIX shell.
+at the destination first. By shell semantics (noclobber opens exclusively in
+bash 3.2 as `/bin/sh` and dash on macOS), the final creation then fails
+instead of truncating, even for a symlink; the bundled suite exercises the
+deterministic existence refusals, not this race. This narrows the window but
+is **not** a formal, race-free guarantee on every POSIX shell.
 
 ## Rules this directory must not break
 
@@ -119,13 +124,22 @@ formal, race-free guarantee on every POSIX shell.
    refused, not truncated, and protected inputs/pin paths are refused by
    identity as well as by existence. Empty option values (`--archive ''`,
    `--record=`, ...) are usage errors, never silently ignored.
-8. **The local digest gate is per-path.** Only the interpreter at the path
-   recorded in `pin/checksums.txt` is compared with its recorded digest. Any
-   other build reporting the pinned version is reported as a version match but
-   left `NOT RECORDED` for that path — it is never failed against another
-   host's digest, and a version match is not authentication.
+8. **The local digest baseline is scoped to an exact canonical path, not to
+   a host.** Only an interpreter whose resolved path equals
+   `local_interpreter_315_path` in `pin/checksums.txt` is compared with the
+   recorded digest. A build at that same path on **any** machine is compared
+   and fails closed on mismatch; an interpreter at a different path is
+   reported as a version match but left `NOT RECORDED`, never silently
+   assumed to match. No host identity is consulted.
 9. **Probes are isolated.** Interpreters are invoked with `-I`; modules in
    the caller's working directory or `PYTHONPATH` cannot affect the result.
+   A candidate whose version cannot be read (for example a bare Python 2
+   `python`) is skipped with a warning; the run still fails if no
+   pinned-version interpreter is found.
+10. **The summary reports the drift-gate outcome.** It states
+    `local digest: compared`, `not compared (...)` or `skipped
+    (--no-interpreter)`, and a skipped comparison also emits a visible
+    `[warn]`, so `--quiet` cannot hide that no local digest was checked.
 
 ## Regression tests
 
@@ -137,10 +151,13 @@ unrelated targets and directories, quoted paths with spaces and glob
 characters, multiple `--archive` forms, `--no-interpreter` executing nothing
 (and recording no interpreter lines), normal-mode observation without
 re-probing, a failing fake interpreter marked as diagnostic, `-I` in probes,
-a second matching-version build not compared against another host's digest,
-checksums-format record keys, mismatch getting no Sigstore success claim,
-rejected empty options, unreadable pin/digest metadata failing closed, and a
-failing sha256 command failing closed. All test fixtures are regular files
+a second matching-version build at a different path being NOT compared (with a
+visible `--quiet` warning), a changed same-path build failing closed,
+checksums-convention record keys, mismatch getting no Sigstore success claim,
+rejected empty options, unreadable pin/digest metadata failing closed, a
+Python-2-style candidate being skipped without failing the run, odd-name
+hashing on stdin, and a failing sha256 command failing closed. All test
+fixtures are regular files
 created in a private temporary directory; symlink/hard-link fixtures live only
 there and are removed with it.
 

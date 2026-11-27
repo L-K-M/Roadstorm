@@ -4,9 +4,10 @@
 # Every fixture is a private copy of the pin data plus a fresh synthetic
 # regular file named like a pinned artifact; the copy's expected digest is
 # overridden to that file's sha256. Nothing here writes to the repository,
-# the real pin, installed interpreters, or another job's files. Symlinks and
-# hard links appear only as throwaway alias fixtures inside the temporary
-# directory, because refusing them is part of the contract.
+# the real pin, installed interpreters, or another job's files. Ephemeral
+# symlink/hard-link alias fixtures exist only inside the private temporary
+# directory, because refusing them is part of the contract; they are removed
+# with it and never link into shared inputs.
 #
 # Run: sh tools/python_pin/tests/test_verify.sh
 # Exit: 0 = all assertions passed, 1 = at least one failed.
@@ -76,13 +77,15 @@ real_path() {
 
 sha256_file() {
 	if command -v shasum >/dev/null 2>&1; then
-		_out="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
+		_out="$(shasum -a 256 - < "$1" 2>/dev/null)" || return 1
 	elif command -v sha256sum >/dev/null 2>&1; then
-		_out="$(sha256sum "$1" 2>/dev/null)" || return 1
+		_out="$(sha256sum - < "$1" 2>/dev/null)" || return 1
 	else
 		return 1
 	fi
-	printf '%s\n' "${_out%% *}"
+	_hash="${_out%% *}"
+	[ "${#_hash}" -eq 64 ] || return 1
+	printf '%s\n' "$_hash"
 }
 
 # Create an isolated fixture: a copy of verify.sh and pin/, plus one synthetic
@@ -334,6 +337,8 @@ assert_contains "record uses the pin/checksums key scheme" "$rec" \
 	"local_interpreter_315_sha256="
 assert_contains "record stores the resolved binary path" "$rec" \
 	"local_interpreter_315_path="
+assert_contains "summary says the local digest was compared" "$out" \
+	"local digest: compared"
 
 # --- failing interpreter: checks fail closed, diagnostics marked -----------
 fx="$(new_fixture failing-interpreter)"
@@ -343,7 +348,9 @@ out="$(cd "$fx" && NO_COLOR=1 sh ./verify.sh \
 	--archive "$fx/python-3.15.2-macos11.pkg" \
 	--record "$fx/observed.txt" 2>&1)"
 rc=$?
-assert_eq "failing interpreter makes the run fail (exit 1)" 1 "$rc"
+assert_eq "failing interpreter still fails the run (exit 1)" 1 "$rc"
+assert_contains "unprobeable candidate is skipped with a warning, not a false failure" \
+	"$out" "skipping this candidate"
 assert_eq "failing interpreter was probed exactly once before failing" 1 \
 	"$(invocation_count "$fx/marker")"
 rec="$(cat "$fx/observed.txt" 2>/dev/null)"
@@ -364,7 +371,7 @@ assert_eq "isolated-probe interpreter passes" 0 "$rc"
 assert_eq "probe invocation includes -I" "yes" \
 	"$(grep -Fq -- '-I' "$fx/args.log" && printf yes || printf no)"
 
-# --- a different matching-version build is not judged against another host's digest
+# --- digest baseline is per exact canonical path, not per host --------------
 fx="$(new_fixture other-build)"
 make_counting_fake "$fx/fake-a" "$fx/marker-a"
 make_counting_fake "$fx/fake-b" "$fx/marker-b"
@@ -376,9 +383,11 @@ out="$(cd "$fx" && NO_COLOR=1 sh ./verify.sh \
 	--archive "$fx/python-3.15.2-macos11.pkg" \
 	--record "$fx/observed.txt" 2>&1)"
 rc=$?
-assert_eq "different matching-version build still exits 0" 0 "$rc"
-assert_contains "different build is reported as not compared" "$out" "different local build"
-assert_not_contains "different build does not produce a mismatch failure" "$out" \
+assert_eq "build at a different path still exits 0" 0 "$rc"
+assert_contains "different path is warned as not compared" "$out" "NOT compared"
+assert_contains "summary names the different path as the reason" "$out" \
+	"local digest: not compared (different path)"
+assert_not_contains "different path does not produce a mismatch failure" "$out" \
 	"interpreter sha256 changed"
 rec="$(cat "$fx/observed.txt" 2>/dev/null)"
 assert_contains "record carries the observed second build digest" "$rec" \
@@ -386,6 +395,82 @@ assert_contains "record carries the observed second build digest" "$rec" \
 _expected_real="$(real_path "$fx/fake-b")"
 assert_contains "record carries the observed second build path" "$rec" \
 	"local_interpreter_315_path=$_expected_real"
+qout="$(cd "$fx" && NO_COLOR=1 sh ./verify.sh --python "$fx/fake-b" \
+	--archive "$fx/python-3.15.2-macos11.pkg" --quiet 2>&1)"
+qrc=$?
+assert_eq "quiet run with a different-path build exits 0" 0 "$qrc"
+assert_contains "quiet mode cannot hide the skip warning" "$qout" "NOT compared"
+assert_contains "quiet summary still states the drift-gate outcome" "$qout" \
+	"local digest: not compared"
+
+# --- changed bytes at the recorded path still fail closed -------------------
+fx="$(new_fixture same-path-changed)"
+make_counting_fake "$fx/build" "$fx/marker"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$fx/build")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$fx/build")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && NO_COLOR=1 sh ./verify.sh --python "$fx/build" --quiet 2>&1)"
+rc=$?
+assert_eq "same recorded path and unchanged bytes exit 0" 0 "$rc"
+assert_contains "summary reports a comparison for the same path" "$out" \
+	"local digest: compared"
+# Restore the original bytes, then pretend to be a different host: the
+# baseline is path-scoped, so the same path must still be compared.
+make_counting_fake "$fx/build" "$fx/marker"
+mkdir -p "$fx/bin"
+printf '#!/bin/sh\necho some-other-host\n' > "$fx/bin/hostname"
+chmod +x "$fx/bin/hostname"
+out="$(cd "$fx" && PATH="$fx/bin:$PATH" NO_COLOR=1 sh ./verify.sh \
+	--python "$fx/build" --quiet 2>&1)"
+rc=$?
+assert_eq "same path is compared even when hostname differs" 0 "$rc"
+assert_contains "cross-host summary still reports compared" "$out" \
+	"local digest: compared"
+printf '# bytes changed without changing stdout\n' >> "$fx/build"
+out="$(cd "$fx" && NO_COLOR=1 sh ./verify.sh --python "$fx/build" --quiet 2>&1)"
+rc=$?
+assert_eq "changed bytes at the recorded path fail (exit 1)" 1 "$rc"
+assert_contains "mismatch is reported" "$out" "interpreter sha256 changed"
+assert_contains "FAIL summary reports compared" "$out" \
+	"local digest: compared"
+
+# --- a bare Python-2-style candidate is skipped, not fatal -----------------
+fx="$(new_fixture py2-candidate)"
+mkdir -p "$fx/bin"
+make_counting_fake "$fx/bin/python3.15" "$fx/marker"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$fx/bin/python3.15")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$fx/bin/python3.15")" >> "$fx/pin/checksums.txt"
+printf '#!/bin/sh\ncase "$1" in -I) echo "python: unknown option: -I" >&2; exit 64;; esac\nprintf "3.15.2\\n"\n' > "$fx/bin/python"
+chmod +x "$fx/bin/python"
+out="$(cd "$fx" && PATH="$fx/bin:$PATH" NO_COLOR=1 sh ./verify.sh \
+	--archive "$fx/python-3.15.2-macos11.pkg" \
+	--record "$fx/observed.txt" 2>&1)"
+rc=$?
+assert_eq "Python-2-like bare python does not fail a run that finds the pin" 0 "$rc"
+assert_contains "unprobeable candidate is visible" "$out" "skipping this candidate"
+assert_contains "valid pinned candidate is compared" "$out" \
+	"local digest: compared"
+
+# --- hashing feeds content on stdin, tolerating odd path names (Unix) -------
+case "$(uname -s)" in
+	MINGW* | MSYS* | CYGWIN*)
+		assert_eq "odd-name hashing test skipped on Windows" yes yes ;;
+	*)
+		fx="$(new_fixture backslash-name)"
+		_bs="$fx/back\\slash"
+		make_counting_fake "$_bs" "$fx/marker"
+		printf 'local_interpreter_315_path=%s\n' "$(real_path "$_bs")" >> "$fx/pin/checksums.txt"
+		printf 'local_interpreter_315_sha256=%s\n' \
+			"$(sha256_file "$_bs")" >> "$fx/pin/checksums.txt"
+		out="$(cd "$fx" && NO_COLOR=1 sh ./verify.sh --python "$_bs" --record "$fx/observed.txt" --quiet 2>&1)"
+		rc=$?
+		assert_eq "path containing a backslash hashes correctly" 0 "$rc"
+		rec="$(cat "$fx/observed.txt" 2>/dev/null)"
+		assert_contains "record carries the backslash-name digest" "$rec" \
+			"local_interpreter_315_sha256=$(sha256_file "$_bs")"
+		;;
+esac
 
 # --- a mismatching archive gets no successful Sigstore claim -----------------
 fx="$(new_fixture archive-mismatch)"

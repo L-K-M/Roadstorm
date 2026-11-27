@@ -52,11 +52,13 @@
 # a symlink or hard link, is refused), so recording cannot overwrite it. That
 # check and the exclusive creation narrow the race with a concurrent writer,
 # but are not an absolute race-free guarantee; see the README. Record entries
-# use the pin/checksums.txt key scheme (local_interpreter_<major><minor>_*) and
-# store the resolved interpreter path. The local-digest drift comparison is
-# scoped to the path recorded there: any other interpreter reporting the pinned
-# version is NOT RECORDED for that path, never failed against another host's
-# digest. --archive compares with the published digest RECORDED in
+# use the drift-lookup key convention (local_interpreter_<major><minor>_*;
+# pin/checksums.txt retains one older local_interpreter_396_* entry) and store
+# the realpath-resolved path when the selected file is a symlink. A real
+# launcher such as macOS /usr/bin/python3 stays the launcher. The local-digest drift comparison is
+# scoped to the exact canonical path recorded there (not to a host): a build
+# at that same path on ANY machine is compared and may fail closed, while an
+# interpreter at a different path is NOT RECORDED and not compared. --archive compares with the published digest RECORDED in
 # pin/python.txt, and a mismatch produces no publisher/Sigstore success claim.
 #
 # Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run
@@ -147,13 +149,17 @@ digest_get() {
 # Print the lowercase hex sha256 of a regular file, or fail. A failing or
 # missing sha256 utility is returned as failure, not as an empty "success":
 # every caller treats failure as a failed check and nothing is invented.
+# The content is fed on stdin ("-") rather than passed as an argument: that
+# avoids option parsing for names beginning with "-" and Perl/GNU filename
+# escaping for names containing backslashes, both of which would otherwise
+# turn into a false "cannot compute" failure.
 sha256_of() {
 	_file="$1"
 	[ -f "$_file" ] || return 1
 	if command -v shasum >/dev/null 2>&1; then
-		_out="$(shasum -a 256 "$_file" 2>/dev/null)" || return 1
+		_out="$(shasum -a 256 - < "$_file" 2>/dev/null)" || return 1
 	elif command -v sha256sum >/dev/null 2>&1; then
-		_out="$(sha256sum "$_file" 2>/dev/null)" || return 1
+		_out="$(sha256sum - < "$_file" 2>/dev/null)" || return 1
 	else
 		return 1
 	fi
@@ -278,6 +284,7 @@ SEEN=""
 FOUND_PINNED=0
 OBSERVED_SHA=""
 _FOUND_ANY=0
+LOCAL_DIGEST_STATE="not compared"
 
 check_interpreter() {
 	_py="$1"
@@ -286,8 +293,15 @@ check_interpreter() {
 	if command -v realpath >/dev/null 2>&1; then
 		_real="$(realpath "$_py" 2>/dev/null || printf '%s' "$_py")"
 	elif command -v readlink >/dev/null 2>&1; then
+		# Fallback: make a relative link target absolute before the baseline
+		# path comparison, so it is not silently treated as a different build.
 		_link="$(readlink "$_py" 2>/dev/null)"
-		[ -n "$_link" ] && _real="$_link"
+		if [ -n "$_link" ]; then
+			case "$_link" in
+				/*) _real="$_link" ;;
+				*) _real="$(cd "$(dirname "$_py")" && pwd)/$_link" ;;
+			esac
+		fi
 	fi
 	case "$SEEN" in
 		*"|$_real|"*) return 0 ;; # already inspected this file
@@ -296,7 +310,11 @@ check_interpreter() {
 
 	_ver="$(read_version "$_py")"
 	if [ -z "$_ver" ]; then
-		bad "cannot read a Python version from $_py"
+		# An unprobeable candidate (for example a bare `python` that is
+		# Python 2 and rejects -I) must not fail a run that does find the
+		# pinned interpreter. If no pinned interpreter is found, the final
+		# check below still fails the run closed.
+		warn "cannot read a Python version from $_py (skipping this candidate; the run fails if no pinned interpreter is found)"
 		return 1
 	fi
 	_build="$(read_build "$_py")"
@@ -331,22 +349,24 @@ check_interpreter_digest() {
 	_obs_key="local_interpreter_${PIN_MAJOR}${PIN_MINOR}"
 	_expected="$(digest_get "${_obs_key}_sha256")"
 	if [ -z "$_expected" ]; then
+		[ "$LOCAL_DIGEST_STATE" = "compared" ] || LOCAL_DIGEST_STATE="not compared (no recorded digest)"
 		warn "no recorded local digest for a $PIN_VERSION interpreter in $DIGEST_FILE (NOT RECORDED; nothing is invented)"
 		info "observed sha256: $_observed"
 		return 0
 	fi
 	_expected_path="$(digest_get "${_obs_key}_path")"
 	if [ -n "$_expected_path" ] && [ "$_real" != "$_expected_path" ]; then
-		# The recorded digest is an observation of ONE local build at ONE path.
-		# Another 3.15.2 build (another host, brew revision, uv build, official
-		# install) must not be judged against it; treat it as unverified here.
-		info "interpreter is a different local build from the recorded one"
-		info "  (recorded path: $_expected_path); version match is not authentication,"
-		info "  so its digest is NOT compared and remains NOT RECORDED for this path."
+		# The baseline is one observed build at one canonical path, not a
+		# per-host value. A different path means no recorded observation
+		# applies; say so even under --quiet.
+		[ "$LOCAL_DIGEST_STATE" = "compared" ] || LOCAL_DIGEST_STATE="not compared (different path)"
+		warn "different local build: $_real is not the recorded path $_expected_path; local digest NOT compared (NOT RECORDED for this path)."
+		info "  version match is not authentication; the baseline applies only to its own path."
 		info "observed sha256: $_observed"
 		info "  provenance: LOCAL observation only; not publisher-authenticated"
 		return 0
 	fi
+	LOCAL_DIGEST_STATE="compared"
 	if [ "$_observed" = "$_expected" ]; then
 		ok "interpreter sha256 matches the recorded LOCAL observation"
 	else
@@ -530,10 +550,11 @@ record_digests() {
 			IFS= read -r _sha &&
 			IFS= read -r _real; do
 			[ -n "$_ver" ] || continue
-			# Emit the same key scheme as pin/checksums.txt
-			# (local_interpreter_<major><minor>_{sha256,path}), so a record
-			# can refresh that file directly. The path is the resolved real
-			# binary, not a launcher, whenever realpath is available.
+			# Emit the drift-lookup key convention
+			# (local_interpreter_<major><minor>_{sha256,path}); the shared file
+			# keeps one older local_interpreter_396_* entry. Store the
+			# realpath-resolved path when the selected file is a symlink; a real
+			# launcher such as macOS /usr/bin/python3 stays the launcher.
 			_maj="${_ver%%.*}"
 			_rest="${_ver#*.}"
 			_min="${_rest%%.*}"
@@ -608,13 +629,16 @@ info "release page: $PIN_RELEASE_PAGE"
 info ""
 
 if [ "$NO_INTERPRETER" -eq 1 ]; then
+	LOCAL_DIGEST_STATE="skipped (--no-interpreter)"
 	warn "interpreter checks skipped on request (--no-interpreter)"
 else
 	_FOUND_ANY=0
 	for_each_python_candidate consider_candidate
 	if [ "$_FOUND_ANY" -eq 0 ]; then
+		LOCAL_DIGEST_STATE="no local interpreter found"
 		bad "no Python interpreter found (set PYTHON_BIN=/path/to/python or pass --python)"
 	elif [ "$FOUND_PINNED" -eq 0 ]; then
+		LOCAL_DIGEST_STATE="no pinned-version interpreter"
 		bad "no local interpreter reports the pinned version $PIN_VERSION (install it, point --python at it, or pass --no-interpreter to skip this check explicitly)"
 	fi
 fi
@@ -649,12 +673,14 @@ INSTALLED_SCOPE="local build, not publisher-authenticated"
 
 info ""
 if [ "$RC" -eq 0 ]; then
-	printf '%s[ok]%s   python pin verification: PASS (local interpreter observations; official-artifact checks: %s; publisher artifact evidence: %s; installed binary: %s)\n' \
+	printf '%s[ok]%s   python pin verification: PASS (local interpreter observations; local digest: %s; official-artifact checks: %s; publisher artifact evidence: %s; installed binary: %s)\n' \
 		"$C_GREEN" "$C_RESET" \
+		"$LOCAL_DIGEST_STATE" \
 		"$ARCHIVE_SUMMARY" \
 		"$PUB_EVIDENCE" \
 		"$INSTALLED_SCOPE"
 else
-	printf '%s[fail]%s python pin verification: FAIL\n' "$C_RED" "$C_RESET"
+	printf '%s[fail]%s python pin verification: FAIL (local digest: %s)\n' \
+		"$C_RED" "$C_RESET" "$LOCAL_DIGEST_STATE"
 fi
 exit "$RC"
