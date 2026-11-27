@@ -26,14 +26,32 @@ Helper scripts live only under `tools/drift_lab/`; nothing here is placed in
   the caller's prior `State` and `Tuning` untouched.
 - Phases: `GRIP`, `ENTRY`, `SUSTAINED`, `RECOVERY`, `AIRBORNE`. Entry requires
   forward speed strictly above the design floor of 12 m/s, `|steer|` at/above
-  `entry_steer_min`, and a true rising-edge handbrake tap. With
-  `AssistMode.STANDARD`, a brake rising edge while steering is the documented
-  alternative; `AssistMode.OFF` refuses it. Handbrake always works.
+  `entry_steer_min`, and a true rising-edge handbrake tap. Handbrake and assisted
+  brake tap thresholds must be positive (zero could never be crossed from a
+  valid command). With `AssistMode.STANDARD`, a brake rising edge while
+  steering is the documented alternative; `AssistMode.OFF` refuses it. Handbrake
+  always works.
 - `drift_blend` is finite and in `[0, 1]`: smoothstep over
   `entry_blend_time_s` (provisional 0.2 s), 1 in sustain, smooth decay over
-  `recovery_blend_time_s` (provisional 0.35 s), 0 in grip/airborne.
+  `recovery_blend_time_s` (provisional 0.35 s), and 0 in grip. Airborne carries
+  a bounded copy of the outgoing influence and drains it smoothly to zero over
+  `airborne_drain_time_s` (provisional 0.5 s).
 - Sustain tolerates ordinary countersteer and exits on steering unwind, low
-  speed, major impact or loss of ground. Hold timers prevent one-frame chatter.
+  speed, major impact or loss of ground. Each condition accumulates
+  independently, so alternating inputs cannot mask a mature exit; if several
+  mature on one tick the design-table order decides (steering unwind before low
+  speed). A hold time of zero transitions immediately, but only while that
+  condition itself is true. Brief clears reset only their own timer.
+- The low-speed exit compares road-plane ground-speed magnitude, not the
+  forward projection: a fast high-slip drift whose forward component is small
+  does not exit at 8 m/s while its ground speed is 16 m/s. Entry still requires
+  more than 12 m/s of forward travel.
+- Ground-state hysteresis belongs to the future adhesion layer. This model
+  follows the committed `grounded` flag immediately and deliberately does not
+  debounce it. Consequently a one-tick ground loss keeps almost all influence,
+  and landing starts recovery from the remaining airborne blend instead of
+  snapping to zero. `Proposal.rewards_suppressed` is true while airborne for the
+  later style/surge seam; this model grants no rewards itself.
 - `stability_factor` is finite and in `[stability_floor_factor, 1]`: 1 up to
   `stability_start_deg` (~50 degrees absolute slip), linearly down to the floor
   at `stability_full_deg`. Assist off or airborne gives 1. The integrator owns
@@ -41,7 +59,9 @@ Helper scripts live only under `tools/drift_lab/`; nothing here is placed in
 
 Every physical/timing value is a field on `DriftPhaseModel.Tuning` with
 provisional defaults. Only `min_entry_forward_speed_m_s` has a validation floor
-(12 m/s); lowering it requires a recorded design decision.
+(12 m/s); lowering it requires a recorded design decision. Tap thresholds are
+required to be positive; airborne drain time must be positive; hold times may be
+zero for an immediate transition.
 
 ### Deliberately out of scope
 

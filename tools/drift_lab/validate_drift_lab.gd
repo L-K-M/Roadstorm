@@ -28,6 +28,8 @@ const CASE_IDS := [
 	"steering_unwind_recovery",
 	"major_impact_recovery",
 	"low_speed_recovery",
+	"high_slip_ground_speed",
+	"zero_hold_guards",
 	"airborne_transition_and_landing",
 	"stability_assist_factor",
 	"tuning_validation",
@@ -108,6 +110,10 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_major_impact_recovery(driver)
 		"low_speed_recovery":
 			_case_low_speed_recovery(driver)
+		"high_slip_ground_speed":
+			_case_high_slip_ground_speed(driver)
+		"zero_hold_guards":
+			_case_zero_hold_guards(driver)
 		"airborne_transition_and_landing":
 			_case_airborne_transition_and_landing(driver)
 		"stability_assist_factor":
@@ -652,6 +658,223 @@ func _case_low_speed_recovery(driver) -> void:
 		)
 	driver.check(not chatter, "brief low-speed dip does not recover")
 
+	# Continuous low speed with alternating steering must still mature the
+	# low-speed hold; neither condition may reset the other's timer.
+	var oscillating = _reach_sustained(driver, fast_car, tuning)
+	if oscillating == null:
+		driver.check(false, "could not reach sustained drift for oscillating steer")
+		return
+	var saw_low_speed := false
+	var saw_unwind := false
+	var oscillating_state = oscillating
+	for index in range(30):
+		var steer := 0.0 if index % 2 == 0 else 0.8
+		oscillating_state = driver.advance(
+			slow_car, driver.command(steer, 0.0, 0.0, 0.0), oscillating_state.state, tuning
+		)
+		if oscillating_state.event == DriftModel.Event.LOW_SPEED_RECOVERY:
+			saw_low_speed = true
+		if oscillating_state.event == DriftModel.Event.STEERING_UNWIND_RECOVERY:
+			saw_unwind = true
+	driver.check(saw_low_speed, "alternating steer does not mask the low-speed exit")
+	driver.check(not saw_unwind, "intermittent unwind never matures")
+
+	# When both conditions mature on the same tick the design-table order is
+	# deterministic: steering unwind is reported before low speed.
+	var both = driver.default_tuning()
+	both.unwind_hold_s = 0.2
+	both.low_speed_hold_s = 0.2
+	var both_run = _reach_sustained(driver, fast_car, both)
+	if both_run == null:
+		driver.check(false, "could not reach sustained drift for priority case")
+		return
+	var both_state = both_run
+	var priority_event := -1
+	for _index in range(30):
+		both_state = driver.advance(
+			slow_car, driver.command(0.0, 0.0, 0.0, 0.0), both_state.state, both
+		)
+		if both_state.event != DriftModel.Event.NONE:
+			priority_event = int(both_state.event)
+			break
+	driver.check_eq(
+		priority_event,
+		int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
+		"simultaneous maturity reports steering unwind first"
+	)
+
+
+func _case_high_slip_ground_speed(driver) -> void:
+	var tuning = driver.default_tuning()
+	var fast_car = driver.make_car(20.0)
+	var sustained = _reach_sustained(driver, fast_car, tuning)
+	if sustained == null:
+		driver.check(false, "could not reach sustained drift for high-slip case")
+		return
+
+	# 60 degrees of slip at 16 m/s ground speed leaves only 8 m/s of forward
+	# projection while the car is still travelling quickly.
+	var slip_car = driver.make_car_with_slip(60.0, 16.0)
+	driver.check_close(
+		slip_car.forward_speed_m_s(), 8.0, 1e-6, "fixture forward component is 8 m/s"
+	)
+	driver.check_close(slip_car.speed_m_s(), 16.0, 1e-6, "fixture ground speed is 16 m/s")
+
+	var current = sustained
+	var exited := false
+	for _index in range(30):
+		current = driver.advance(
+			slip_car, driver.command(0.8, 0.0, 0.0, 0.0), current.state, tuning
+		)
+		if current.phase != DriftModel.Phase.SUSTAINED:
+			exited = true
+	driver.check(not exited, "fast high-slip drift stays sustained by ground speed")
+	driver.check_eq(int(current.event), int(DriftModel.Event.NONE), "high-slip drift reports no exit")
+
+	# A car genuinely at the 8 m/s ground-speed threshold still exits.
+	var boundary_car = driver.make_car(8.0)
+	var boundary = _reach_sustained(driver, fast_car, tuning)
+	if boundary == null:
+		driver.check(false, "could not reach sustained drift for boundary case")
+		return
+	var boundary_state = boundary
+	var saw_low_speed := false
+	for _index in range(20):
+		boundary_state = driver.advance(
+			boundary_car, driver.command(0.8, 0.0, 0.0, 0.0), boundary_state.state, tuning
+		)
+		if boundary_state.event == DriftModel.Event.LOW_SPEED_RECOVERY:
+			saw_low_speed = true
+			break
+	driver.check(saw_low_speed, "exact ground-speed threshold exits low speed")
+
+	# Entry still requires more than 12 m/s of forward travel.
+	var refused = driver.advance(
+		slip_car, driver.command(0.8, 0.0, 0.0, 1.0), driver.fresh_drift_state(), tuning
+	)
+	driver.check_eq(
+		int(refused.phase), int(DriftModel.Phase.GRIP),
+		"entry refuses forward speed below 12 m/s"
+	)
+
+
+func _case_zero_hold_guards(driver) -> void:
+	var fast_car = driver.make_car(20.0)
+	var slow_car = driver.make_car(5.0)
+
+	# ENTRY with zero holds: held steering at speed must complete to SUSTAINED.
+	var tuning = driver.default_tuning()
+	tuning.unwind_hold_s = 0.0
+	tuning.low_speed_hold_s = 0.0
+	var proposal = driver.advance(
+		fast_car, driver.command(0.8, 0.0, 0.0, 1.0),
+		driver.fresh_drift_state(), tuning
+	)
+	if proposal == null:
+		driver.check(false, "zero-hold entry proposal is null")
+		return
+	driver.check_eq(
+		int(proposal.phase), int(DriftModel.Phase.ENTRY), "zero-hold entry starts in entry"
+	)
+	var false_events := 0
+	for _index in range(20):
+		proposal = driver.advance(
+			fast_car, driver.command(0.8, 0.0, 0.0, 1.0), proposal.state, tuning
+		)
+		if (
+			proposal.event == DriftModel.Event.STEERING_UNWIND_RECOVERY
+			or proposal.event == DriftModel.Event.LOW_SPEED_RECOVERY
+		):
+			false_events += 1
+	driver.check_eq(
+		false_events, 0, "held steering at speed never matures a zero-hold timer"
+	)
+	driver.check_eq(
+		int(proposal.phase), int(DriftModel.Phase.SUSTAINED),
+		"entry completes despite zero holds"
+	)
+
+	# ENTRY + true unwind condition: immediate unwind recovery on that tick.
+	var unwind_tuning = driver.default_tuning()
+	unwind_tuning.unwind_hold_s = 0.0
+	unwind_tuning.entry_steer_min = 0.1
+	unwind_tuning.unwind_steer_max = 0.2
+	var unwind_entry = driver.advance(
+		fast_car, driver.command(0.8, 0.0, 0.0, 1.0),
+		driver.fresh_drift_state(), unwind_tuning
+	)
+	var unwind_exit = driver.advance(
+		fast_car, driver.command(0.15, 0.0, 0.0, 1.0), unwind_entry.state, unwind_tuning
+	)
+	driver.check_eq(
+		int(unwind_exit.event), int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
+		"ENTRY zero-hold unwind fires immediately when unwinding"
+	)
+	driver.check_eq(
+		int(unwind_exit.phase), int(DriftModel.Phase.RECOVERY),
+		"ENTRY unwind exits to recovery"
+	)
+
+	# ENTRY + true low-speed condition: immediate low-speed recovery on that tick.
+	var low_tuning = driver.default_tuning()
+	low_tuning.low_speed_hold_s = 0.0
+	var low_entry = driver.advance(
+		fast_car, driver.command(0.8, 0.0, 0.0, 1.0),
+		driver.fresh_drift_state(), low_tuning
+	)
+	var low_exit = driver.advance(
+		slow_car, driver.command(0.8, 0.0, 0.0, 0.0), low_entry.state, low_tuning
+	)
+	driver.check_eq(
+		int(low_exit.event), int(DriftModel.Event.LOW_SPEED_RECOVERY),
+		"ENTRY zero-hold low speed fires immediately when slow"
+	)
+
+	# SUSTAINED: false conditions produce no transition.
+	var sustained = _reach_sustained(driver, fast_car, tuning)
+	if sustained == null:
+		driver.check(false, "could not reach sustained drift for zero-hold guards")
+		return
+	var held = sustained
+	for _index in range(10):
+		held = driver.advance(
+			fast_car, driver.command(0.8, 0.0, 0.0, 0.0), held.state, tuning
+		)
+		if held.event != DriftModel.Event.NONE:
+			driver.check(false, "SUSTAINED emitted an event without its condition")
+	driver.check_eq(
+		int(held.phase), int(DriftModel.Phase.SUSTAINED),
+		"SUSTAINED stays sustained under false conditions"
+	)
+
+	# SUSTAINED: each true condition transitions immediately.
+	var unwind_now = driver.advance(
+		fast_car, driver.command(0.0, 0.0, 0.0, 0.0), held.state, tuning
+	)
+	driver.check_eq(
+		int(unwind_now.event), int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
+		"SUSTAINED zero-hold unwind fires immediately when unwinding"
+	)
+
+	var sustained_low = _reach_sustained(driver, fast_car, tuning)
+	var low_now = driver.advance(
+		slow_car, driver.command(0.8, 0.0, 0.0, 0.0), sustained_low.state, tuning
+	)
+	driver.check_eq(
+		int(low_now.event), int(DriftModel.Event.LOW_SPEED_RECOVERY),
+		"SUSTAINED zero-hold low speed fires immediately when slow"
+	)
+
+	# Both true: deterministic precedence is steering unwind.
+	var sustained_both = _reach_sustained(driver, fast_car, tuning)
+	var both_now = driver.advance(
+		slow_car, driver.command(0.0, 0.0, 0.0, 0.0), sustained_both.state, tuning
+	)
+	driver.check_eq(
+		int(both_now.event), int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
+		"SUSTAINED simultaneous zero-hold maturity reports unwind first"
+	)
+
 
 func _case_airborne_transition_and_landing(driver) -> void:
 	var tuning = driver.default_tuning()
@@ -663,74 +886,127 @@ func _case_airborne_transition_and_landing(driver) -> void:
 	var air_car = driver.make_car(20.0, 0.0, 0.0, false)
 	var ground_car = driver.make_car(20.0, 0.0, 0.0, true)
 
-	var current = driver.advance(
+	# --- One-tick ground loss: keep a bounded outgoing influence, then land
+	# --- into recovery from the actual remaining blend (no snap to zero).
+	var pre_loss_blend: float = sustained.drift_blend
+	var lost = driver.advance(
 		air_car, driver.command(0.8, 0.0, 0.0, 0.0), sustained.state, tuning
 	)
-	driver.check_eq(int(current.phase), int(DriftModel.Phase.AIRBORNE), "lost ground enters airborne")
-	driver.check_eq(int(current.event), int(DriftModel.Event.AIRBORNE), "airborne transition is reported")
-	driver.check_close(current.drift_blend, 0.0, 1e-9, "airborne suppresses drift influence")
+	driver.check_eq(int(lost.phase), int(DriftModel.Phase.AIRBORNE), "lost ground enters airborne")
+	driver.check_eq(int(lost.event), int(DriftModel.Event.AIRBORNE), "airborne transition is reported")
+	driver.check(lost.rewards_suppressed, "airborne marks rewards suppressed")
+	driver.check_between(lost.drift_blend, 0.0, 1.0, "one-tick airtime blend bounded")
+	driver.check(
+		lost.drift_blend <= pre_loss_blend + 1e-9,
+		"airborne influence never exceeds the outgoing blend"
+	)
+	driver.check(
+		lost.drift_blend > 0.9,
+		"a one-tick ground loss retains almost all influence (no snap)"
+	)
 
 	var ignored = driver.advance(
-		air_car, driver.command(0.8, 0.0, 0.0, 1.0), current.state, tuning
+		air_car, driver.command(0.8, 0.0, 0.0, 1.0), lost.state, tuning
 	)
 	driver.check_eq(int(ignored.event), int(DriftModel.Event.NONE), "entry taps are ignored airborne")
 	driver.check_eq(int(ignored.phase), int(DriftModel.Phase.AIRBORNE), "airborne phase persists")
+	driver.check(ignored.rewards_suppressed, "airborne suppression follows the phase")
 
-	for _index in range(6):
-		current = driver.advance(
-			air_car, driver.command(0.8, 0.0, 0.0, 0.0), current.state, tuning
-		)
-	driver.check_eq(int(current.phase), int(DriftModel.Phase.AIRBORNE), "airborne persists while ungrounded")
-
-	# A single grounded frame followed by another airborne frame must not land.
-	current = driver.advance(
-		ground_car, driver.command(0.8, 0.0, 0.0, 0.0), current.state, tuning
+	var landed = driver.advance(
+		ground_car, driver.command(0.8, 0.0, 0.0, 0.0), ignored.state, tuning
 	)
-	driver.check_eq(int(current.phase), int(DriftModel.Phase.AIRBORNE), "one grounded frame does not land")
-	current = driver.advance(
-		air_car, driver.command(0.8, 0.0, 0.0, 0.0), current.state, tuning
+	driver.check_eq(
+		int(landed.event), int(DriftModel.Event.LANDED_RECOVERY),
+		"landing starts recovery immediately"
 	)
-	driver.check_eq(int(current.phase), int(DriftModel.Phase.AIRBORNE), "airborne resumes after a flicker")
-
-	var landing_ticks := 0
-	var landed := false
-	for _index in range(10):
+	driver.check_eq(int(landed.phase), int(DriftModel.Phase.RECOVERY), "landing enters recovery")
+	driver.check_close(
+		landed.state.recovery_start_blend, ignored.drift_blend, 0.05,
+		"landing recovery starts from the remaining airborne blend"
+	)
+	driver.check(landed.drift_blend > 0.9, "landing does not snap influence to zero")
+	driver.check(not landed.rewards_suppressed, "rewards resume after landing")
+	var restore_index := -1
+	var current = landed
+	for index in range(30):
 		current = driver.advance(
 			ground_car, driver.command(0.8, 0.0, 0.0, 0.0), current.state, tuning
 		)
-		landing_ticks += 1
-		if current.event == DriftModel.Event.LANDED_RECOVERY:
-			landed = true
+		if current.event == DriftModel.Event.GRIP_RESTORED:
+			restore_index = index
 			break
-	driver.check(landed, "confirmed landing enters recovery")
-	if landed:
+	driver.check(restore_index >= 0, "one-tick-loss landing recovery completes")
+	if restore_index >= 0:
 		driver.check_close(
-			float(landing_ticks) * DriftModel.DT,
-			tuning.landing_confirm_s,
+			float(restore_index + 1) * DriftModel.DT,
+			tuning.recovery_blend_time_s,
 			DriftModel.DT,
-			"landing confirmation matches tuning"
+			"landing recovery blend matches tuning"
 		)
-		var restore_index := -1
-		for index in range(30):
-			current = driver.advance(
-				ground_car, driver.command(0.8, 0.0, 0.0, 0.0), current.state, tuning
-			)
-			if current.event == DriftModel.Event.GRIP_RESTORED:
-				restore_index = index
-				break
-		driver.check(restore_index >= 0, "landing recovery completes")
-		if restore_index >= 0:
-			driver.check_close(
-				float(restore_index + 1) * DriftModel.DT,
-				tuning.recovery_blend_time_s,
-				DriftModel.DT,
-				"landing recovery blend matches tuning"
-			)
+
+	# --- Short airtime keeps a bounded, partially drained remainder.
+	var short = _reach_sustained(driver, car, tuning)
+	if short == null:
+		driver.check(false, "could not reach sustained drift for short airtime")
+		return
+	var short_state = short
+	for _index in range(3):
+		short_state = driver.advance(
+			air_car, driver.command(0.8, 0.0, 0.0, 0.0), short_state.state, tuning
+		)
+	driver.check_eq(int(short_state.phase), int(DriftModel.Phase.AIRBORNE), "short airtime stays airborne")
+	driver.check(
+		short_state.drift_blend > 0.9 and short_state.drift_blend < 1.0,
+		"short airtime retains most but not all influence"
+	)
+	var short_land = driver.advance(
+		ground_car, driver.command(0.8, 0.0, 0.0, 0.0), short_state.state, tuning
+	)
+	driver.check_close(
+		short_land.state.recovery_start_blend, short_state.drift_blend, 0.05,
+		"short-airtime landing continuity"
+	)
+	driver.check(short_land.drift_blend > 0.9, "short-airtime landing keeps influence")
+
+	# --- Long airtime drains influence to zero; landing still blends back.
+	var long_run = _reach_sustained(driver, car, tuning)
+	if long_run == null:
+		driver.check(false, "could not reach sustained drift for long airtime")
+		return
+	var long_state = long_run
+	for _index in range(40):
+		long_state = driver.advance(
+			air_car, driver.command(0.8, 0.0, 0.0, 0.0), long_state.state, tuning
+		)
+	driver.check_eq(int(long_state.phase), int(DriftModel.Phase.AIRBORNE), "long airtime stays airborne")
+	driver.check_close(long_state.drift_blend, 0.0, 1e-9, "long airtime drains influence")
+	var long_land = driver.advance(
+		ground_car, driver.command(0.8, 0.0, 0.0, 0.0), long_state.state, tuning
+	)
+	driver.check_eq(
+		int(long_land.event), int(DriftModel.Event.LANDED_RECOVERY),
+		"long-airtime landing reported"
+	)
+	driver.check_close(
+		long_land.state.recovery_start_blend, 0.0, 1e-9, "drained airtime lands from zero"
+	)
+	var long_grip_index := -1
+	var long_cursor = long_land
+	for index in range(30):
+		long_cursor = driver.advance(
+			ground_car, driver.command(0.8, 0.0, 0.0, 0.0), long_cursor.state, tuning
+		)
+		if long_cursor.event == DriftModel.Event.GRIP_RESTORED:
+			long_grip_index = index
+			break
+	driver.check(long_grip_index >= 0, "long-airtime recovery completes")
 
 	var plain_air = driver.advance(
 		air_car, driver.command(0.8), driver.fresh_drift_state(), tuning
 	)
 	driver.check_eq(int(plain_air.event), int(DriftModel.Event.AIRBORNE), "grip airtime enters airborne")
+	driver.check_close(plain_air.drift_blend, 0.0, 1e-9, "grip airtime has no drift influence")
+	driver.check(plain_air.rewards_suppressed, "grip airtime suppresses rewards")
 
 
 func _case_stability_assist_factor(driver) -> void:
@@ -801,6 +1077,11 @@ func _case_tuning_validation(driver) -> void:
 	var good = driver.default_tuning()
 	driver.check(good.is_valid(), "default provisional tuning is valid")
 
+	var zero_holds = driver.default_tuning()
+	zero_holds.unwind_hold_s = 0.0
+	zero_holds.low_speed_hold_s = 0.0
+	driver.check(zero_holds.is_valid(), "zero hold times are valid and mature on their own condition")
+
 	var too_fast_entry = driver.default_tuning()
 	too_fast_entry.min_entry_forward_speed_m_s = 11.999
 	driver.check(not too_fast_entry.is_valid(), "entry speed below the design floor is refused")
@@ -829,8 +1110,10 @@ func _case_tuning_validation(driver) -> void:
 		{"field": "stability_full_deg", "value": 50.0},
 		{"field": "stability_floor_factor", "value": -0.1},
 		{"field": "stability_floor_factor", "value": 1.1},
-		{"field": "airborne_min_time_s", "value": -0.1},
-		{"field": "landing_confirm_s", "value": -0.1},
+		{"field": "handbrake_tap_min", "value": 0.0},
+		{"field": "assist_brake_tap_min", "value": 0.0},
+		{"field": "airborne_drain_time_s", "value": 0.0},
+		{"field": "airborne_drain_time_s", "value": -0.5},
 	]
 	for spec in bad_values:
 		var tuning = driver.default_tuning()
@@ -850,6 +1133,35 @@ func _case_tuning_validation(driver) -> void:
 		var tuning = driver.default_tuning()
 		tuning.set(String(field), NAN)
 		driver.check(not tuning.is_valid(), "nonfinite %s refused" % String(field))
+
+	# Positive-but-small tap thresholds are valid; zero would make a rising
+	# edge unreachable, so both must be refused.
+	var small_tap = driver.default_tuning()
+	small_tap.handbrake_tap_min = 0.01
+	small_tap.assist_brake_tap_min = 0.01
+	driver.check(small_tap.is_valid(), "positive tap thresholds are valid")
+	var zero_handbrake_tap = driver.default_tuning()
+	zero_handbrake_tap.handbrake_tap_min = 0.0
+	driver.check(
+		DriftModel.propose(
+			driver.make_car(20.0),
+			driver.command(0.8, 0.0, 0.0, 1.0),
+			driver.fresh_drift_state(),
+			zero_handbrake_tap
+		) == null,
+		"zero handbrake tap threshold is refused by propose"
+	)
+	var zero_assist_tap = driver.default_tuning()
+	zero_assist_tap.assist_brake_tap_min = 0.0
+	driver.check(
+		DriftModel.propose(
+			driver.make_car(20.0),
+			driver.command(0.8, 0.0, 1.0, 0.0),
+			driver.fresh_drift_state(),
+			zero_assist_tap
+		) == null,
+		"zero assisted-brake tap threshold is refused by propose"
+	)
 
 
 func _case_invalid_input_atomicity(driver) -> void:
@@ -1039,7 +1351,9 @@ func _run_intentional_failure() -> Dictionary:
 const LIMITATIONS := [
 	"Pure-kernel checks only: no Godot body, scene, physics query, clock, rendering, audio or input device is exercised.",
 	"Car states are explicit scripted values, not integrated motor or contact physics; the drift model consumes committed road-plane records only.",
-	"The drift blend and stability factor are advisory integration seams. No yaw, lateral damping, slip enforcement, style points, surge, course-zone qualification or surface response is implemented here.",
+	"Grounded-state hysteresis belongs to the future adhesion layer. This model follows the committed grounded flag immediately and does not debounce it, so probe noise must be filtered upstream.",
+	"Airborne carries and drains a bounded copy of the outgoing influence and starts landing recovery from the remaining blend. Rewards are marked suppressed, but the style/surge seam itself remains unimplemented, as do slip enforcement, surface response and course-zone qualification.",
+	"The drift blend and stability factor are advisory integration seams. No yaw, lateral damping or actual rotation is changed here.",
 	"A drift-phase exit alone is not a clean or qualifying exit; qualification rules are explicitly out of scope.",
 	"Default tuning values are provisional M1.3 laboratory choices. Only the 12 m/s entry speed has a validation floor from docs/GAME_DESIGN.md:24.",
 	"Headless engine dummy display/audio drivers; no platform, controller or gameplay claim and no M1.3/M1 acceptance claim.",

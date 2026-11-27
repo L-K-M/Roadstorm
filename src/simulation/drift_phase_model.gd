@@ -19,8 +19,19 @@ extends RefCounted
 ## `entry_blend_time_s` (provisional 0.2 s) and recovery restores grip over
 ## `recovery_blend_time_s` (provisional 0.35 s). Sustained drift tolerates
 ## ordinary countersteer and exits on steering unwind, low speed, major impact
-## or loss of ground; every exit uses a hold timer so one anomalous tick cannot
-## chatter between phases.
+## or loss of ground. Each exit condition accumulates independently, so
+## alternating steering and low-speed ticks cannot mask a mature exit; when
+## several mature on the same tick the design-table order decides (steering
+## unwind before low speed). A zero hold time matures immediately, but only
+## while its own condition is true: a reset timer never counts as matured.
+## Grounded-state hysteresis belongs to the future
+## adhesion layer: this model follows the committed `grounded` flag immediately
+## and deliberately does not debounce it.
+##
+## Airborne carries a bounded copy of the outgoing influence and drains it over
+## `airborne_drain_time_s`; landing recovery starts from that remaining blend
+## instead of snapping to zero. `rewards_suppressed` marks the airborne phase
+## for the later style/surge seam, which remains out of scope here.
 ##
 ## `drift_blend` is the proposed influence in [0, 1] that the motor integration
 ## maps onto its own grip/drift yaw and lateral-damping parameters. This model
@@ -80,9 +91,11 @@ class Tuning extends RefCounted:
 	var min_entry_forward_speed_m_s := ENTRY_SPEED_DESIGN_MIN_M_S
 	## Minimum |steer| for a valid entry initiation.
 	var entry_steer_min := 0.5
-	## Handbrake value at/above which a rising edge counts as a tap.
+	## Handbrake value at/above which a rising edge counts as a tap. Must be
+	## positive: a zero threshold could never be crossed from a valid command.
 	var handbrake_tap_min := 0.5
-	## Brake value at/above which a rising edge counts as an assisted tap.
+	## Brake value at/above which a rising edge counts as an assisted tap. Must
+	## be positive for the same reason as the handbrake threshold.
 	var assist_brake_tap_min := 0.5
 	## Influence blend time from grip into sustained drift, seconds (~0.2 s).
 	var entry_blend_time_s := 0.2
@@ -92,7 +105,9 @@ class Tuning extends RefCounted:
 	var unwind_steer_max := 0.2
 	## Hold time for steering unwind before recovery, seconds.
 	var unwind_hold_s := 0.15
-	## Forward speed at/below which sustain begins the low-speed hold.
+	## Road-plane ground-speed magnitude at/below which sustain begins the
+	## low-speed hold. A fast high-slip drift therefore does not exit merely
+	## because its forward component is small.
 	var sustain_exit_speed_m_s := 8.0
 	## Hold time for low speed before recovery, seconds.
 	var low_speed_hold_s := 0.2
@@ -109,10 +124,11 @@ class Tuning extends RefCounted:
 	var stability_full_deg := 90.0
 	## Lowest stability factor at/above `stability_full_deg`, in [0, 1].
 	var stability_floor_factor := 0.2
-	## Minimum time in the air before a landing can end the airborne phase.
-	var airborne_min_time_s := 0.1
-	## Continuous grounded time required to confirm a landing, seconds.
-	var landing_confirm_s := 0.05
+	## Time over which airborne drift influence drains to zero, seconds. A
+	## one-tick ground loss keeps almost all of the outgoing influence and a
+	## long jump loses it gradually. Grounded-state hysteresis itself belongs
+	## to the future adhesion layer, not to this phase model.
+	var airborne_drain_time_s := 0.5
 	## Assistance mode: STANDARD enables brake-tap entry and stability factor.
 	var assist_mode: AssistMode = AssistMode.STANDARD
 
@@ -124,9 +140,9 @@ class Tuning extends RefCounted:
 			return false
 		if not _unit_interval(entry_steer_min):
 			return false
-		if not _unit_interval(handbrake_tap_min):
+		if not _positive_unit_interval(handbrake_tap_min):
 			return false
-		if not _unit_interval(assist_brake_tap_min):
+		if not _positive_unit_interval(assist_brake_tap_min):
 			return false
 		if not _positive_finite(entry_blend_time_s):
 			return false
@@ -160,9 +176,7 @@ class Tuning extends RefCounted:
 			return false
 		if not _unit_interval(stability_floor_factor):
 			return false
-		if not _non_negative_finite(airborne_min_time_s):
-			return false
-		if not _non_negative_finite(landing_confirm_s):
+		if not _positive_finite(airborne_drain_time_s):
 			return false
 		return true
 
@@ -183,6 +197,10 @@ class Tuning extends RefCounted:
 		return _finite(value) and value >= 0.0 and value <= 1.0
 
 
+	static func _positive_unit_interval(value: float) -> bool:
+		return _finite(value) and value > 0.0 and value <= 1.0
+
+
 ## Copyable drift-phase state. All timers are seconds; hold timers accumulate
 ## only while their condition is true, which prevents one-frame chatter.
 class State extends RefCounted:
@@ -201,10 +219,10 @@ class State extends RefCounted:
 	var unwind_hold_s := 0.0
 	## Low-speed hold accumulator.
 	var low_speed_hold_s := 0.0
-	## Continuous grounded-time accumulator while airborne.
-	var landing_hold_s := 0.0
 	## Total time in the airborne phase.
 	var airborne_time_s := 0.0
+	## Influence captured when the airborne phase began; drains during airtime.
+	var airborne_start_blend := 0.0
 	## Blend captured when recovery began, so grip restoration starts from the
 	## actual outgoing influence instead of a fixed value.
 	var recovery_start_blend := 0.0
@@ -220,8 +238,8 @@ class State extends RefCounted:
 		state.previous_brake = previous_brake
 		state.unwind_hold_s = unwind_hold_s
 		state.low_speed_hold_s = low_speed_hold_s
-		state.landing_hold_s = landing_hold_s
 		state.airborne_time_s = airborne_time_s
+		state.airborne_start_blend = airborne_start_blend
 		state.recovery_start_blend = recovery_start_blend
 		return state
 
@@ -234,8 +252,8 @@ class State extends RefCounted:
 			previous_brake,
 			unwind_hold_s,
 			low_speed_hold_s,
-			landing_hold_s,
 			airborne_time_s,
+			airborne_start_blend,
 			recovery_start_blend,
 		]
 		for value in scalars:
@@ -259,7 +277,9 @@ class State extends RefCounted:
 			return false
 		if phase_time_s < 0.0 or unwind_hold_s < 0.0 or low_speed_hold_s < 0.0:
 			return false
-		if landing_hold_s < 0.0 or airborne_time_s < 0.0:
+		if airborne_time_s < 0.0:
+			return false
+		if airborne_start_blend < 0.0 or airborne_start_blend > 1.0:
 			return false
 		if recovery_start_blend < 0.0 or recovery_start_blend > 1.0:
 			return false
@@ -283,6 +303,9 @@ class Proposal extends RefCounted:
 	var slip_deg := 0.0
 	## Telemetry only: slip inside `target_slip_deg_min..max`. Gates nothing.
 	var useful_slip := false
+	## True in the airborne phase. The later style/surge seam must suppress new
+	## rewards while this is set; this model grants no rewards itself.
+	var rewards_suppressed := false
 
 
 ## Evaluate one fixed 60 Hz drift-phase step. Returns `null` for invalid input:
@@ -333,7 +356,8 @@ static func propose(
 		impact_speed_loss_m_s > 0.0
 		and impact_speed_loss_m_s >= tuning.impact_exit_speed_loss_m_s
 	)
-	var low_speed := forward_speed <= tuning.sustain_exit_speed_m_s
+	var ground_speed := car_state.speed_m_s()
+	var low_speed := ground_speed <= tuning.sustain_exit_speed_m_s
 	var unwind := steer_abs < tuning.unwind_steer_max
 	var event: Event = Event.NONE
 
@@ -342,7 +366,7 @@ static func propose(
 			proposed.unwind_hold_s = 0.0
 			proposed.low_speed_hold_s = 0.0
 			if not grounded:
-				_begin_phase(proposed, Phase.AIRBORNE)
+				_begin_phase(proposed, Phase.AIRBORNE, outgoing_blend)
 				event = Event.AIRBORNE
 			elif major_impact:
 				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
@@ -356,57 +380,41 @@ static func propose(
 					proposed.drift_sign = steer_sign
 					event = entry_event
 		Phase.ENTRY:
+			_advance_holds(proposed, drift_state, unwind, low_speed, dt)
 			if not grounded:
-				_begin_phase(proposed, Phase.AIRBORNE)
+				_begin_phase(proposed, Phase.AIRBORNE, outgoing_blend)
 				event = Event.AIRBORNE
 			elif major_impact:
 				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
 				event = Event.MAJOR_IMPACT_RECOVERY
-			elif unwind:
-				proposed.unwind_hold_s = drift_state.unwind_hold_s + dt
-				proposed.low_speed_hold_s = 0.0
-				if proposed.unwind_hold_s >= tuning.unwind_hold_s - TIMER_EPSILON_S:
-					_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
-					event = Event.STEERING_UNWIND_RECOVERY
-			elif low_speed:
-				proposed.low_speed_hold_s = drift_state.low_speed_hold_s + dt
-				proposed.unwind_hold_s = 0.0
-				if proposed.low_speed_hold_s >= tuning.low_speed_hold_s - TIMER_EPSILON_S:
-					_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
-					event = Event.LOW_SPEED_RECOVERY
-			else:
-				proposed.unwind_hold_s = 0.0
-				proposed.low_speed_hold_s = 0.0
-				if proposed.phase_time_s >= tuning.entry_blend_time_s - TIMER_EPSILON_S:
-					_begin_phase(proposed, Phase.SUSTAINED)
-					event = Event.DRIFT_SUSTAINED
+			elif unwind and proposed.unwind_hold_s >= tuning.unwind_hold_s - TIMER_EPSILON_S:
+				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
+				event = Event.STEERING_UNWIND_RECOVERY
+			elif low_speed and proposed.low_speed_hold_s >= tuning.low_speed_hold_s - TIMER_EPSILON_S:
+				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
+				event = Event.LOW_SPEED_RECOVERY
+			elif proposed.phase_time_s >= tuning.entry_blend_time_s - TIMER_EPSILON_S:
+				_begin_phase(proposed, Phase.SUSTAINED)
+				event = Event.DRIFT_SUSTAINED
 		Phase.SUSTAINED:
+			_advance_holds(proposed, drift_state, unwind, low_speed, dt)
 			if not grounded:
-				_begin_phase(proposed, Phase.AIRBORNE)
+				_begin_phase(proposed, Phase.AIRBORNE, outgoing_blend)
 				event = Event.AIRBORNE
 			elif major_impact:
 				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
 				event = Event.MAJOR_IMPACT_RECOVERY
-			elif unwind:
-				proposed.unwind_hold_s = drift_state.unwind_hold_s + dt
-				proposed.low_speed_hold_s = 0.0
-				if proposed.unwind_hold_s >= tuning.unwind_hold_s - TIMER_EPSILON_S:
-					_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
-					event = Event.STEERING_UNWIND_RECOVERY
-			elif low_speed:
-				proposed.low_speed_hold_s = drift_state.low_speed_hold_s + dt
-				proposed.unwind_hold_s = 0.0
-				if proposed.low_speed_hold_s >= tuning.low_speed_hold_s - TIMER_EPSILON_S:
-					_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
-					event = Event.LOW_SPEED_RECOVERY
-			else:
-				proposed.unwind_hold_s = 0.0
-				proposed.low_speed_hold_s = 0.0
+			elif unwind and proposed.unwind_hold_s >= tuning.unwind_hold_s - TIMER_EPSILON_S:
+				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
+				event = Event.STEERING_UNWIND_RECOVERY
+			elif low_speed and proposed.low_speed_hold_s >= tuning.low_speed_hold_s - TIMER_EPSILON_S:
+				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
+				event = Event.LOW_SPEED_RECOVERY
 		Phase.RECOVERY:
 			proposed.unwind_hold_s = 0.0
 			proposed.low_speed_hold_s = 0.0
 			if not grounded:
-				_begin_phase(proposed, Phase.AIRBORNE)
+				_begin_phase(proposed, Phase.AIRBORNE, outgoing_blend)
 				event = Event.AIRBORNE
 			elif major_impact:
 				# A fresh major impact restarts the bounded restoration window
@@ -424,15 +432,12 @@ static func propose(
 			proposed.low_speed_hold_s = 0.0
 			proposed.airborne_time_s = drift_state.airborne_time_s + dt
 			if grounded:
-				proposed.landing_hold_s = drift_state.landing_hold_s + dt
-				if (
-					proposed.landing_hold_s >= tuning.landing_confirm_s - TIMER_EPSILON_S
-					and proposed.airborne_time_s >= tuning.airborne_min_time_s - TIMER_EPSILON_S
-				):
-					_begin_phase(proposed, Phase.RECOVERY, 0.0)
-					event = Event.LANDED_RECOVERY
-			else:
-				proposed.landing_hold_s = 0.0
+				# Hysteresis is the adhesion layer's job; react to the committed
+				# grounded flag immediately and keep continuity from the blend
+				# actually remaining after airborne drain.
+				var remaining := clampf(_blend_for_phase(proposed, tuning), 0.0, 1.0)
+				_begin_phase(proposed, Phase.RECOVERY, remaining)
+				event = Event.LANDED_RECOVERY
 
 	proposed.drift_blend = clampf(_blend_for_phase(proposed, tuning), 0.0, 1.0)
 	# True rising-edge taps require the previous normalized values in the copy
@@ -452,6 +457,7 @@ static func propose(
 	proposal.useful_slip = (
 		slip_abs >= tuning.target_slip_deg_min and slip_abs <= tuning.target_slip_deg_max
 	)
+	proposal.rewards_suppressed = proposed.phase == Phase.AIRBORNE
 
 	if not _proposal_is_finite(proposal):
 		return null
@@ -459,18 +465,40 @@ static func propose(
 
 
 ## Reset `state` to `phase` and clear phase-scoped accumulators. When entering
-## recovery, `recovery_start_blend` preserves the outgoing influence.
-static func _begin_phase(state: State, phase: Phase, recovery_start_blend := 0.0) -> void:
+## recovery or airborne, `carry_blend` preserves the outgoing influence so
+## neither transition snaps.
+static func _begin_phase(state: State, phase: Phase, carry_blend := 0.0) -> void:
 	state.phase = phase
 	state.phase_time_s = 0.0
 	state.unwind_hold_s = 0.0
 	state.low_speed_hold_s = 0.0
-	state.landing_hold_s = 0.0
 	state.airborne_time_s = 0.0
+	state.recovery_start_blend = 0.0
+	state.airborne_start_blend = 0.0
 	if phase == Phase.RECOVERY:
-		state.recovery_start_blend = clampf(recovery_start_blend, 0.0, 1.0)
+		state.recovery_start_blend = clampf(carry_blend, 0.0, 1.0)
+	elif phase == Phase.AIRBORNE:
+		state.airborne_start_blend = clampf(carry_blend, 0.0, 1.0)
+
+
+## Accumulate each continuous exit condition independently. Alternating inputs
+## reset only their own timer; a mature condition can no longer be masked by
+## repeatedly clearing the other one.
+static func _advance_holds(
+	state: State,
+	previous: State,
+	unwind: bool,
+	low_speed: bool,
+	dt: float
+) -> void:
+	if unwind:
+		state.unwind_hold_s = previous.unwind_hold_s + dt
 	else:
-		state.recovery_start_blend = 0.0
+		state.unwind_hold_s = 0.0
+	if low_speed:
+		state.low_speed_hold_s = previous.low_speed_hold_s + dt
+	else:
+		state.low_speed_hold_s = 0.0
 
 
 static func _entry_event(
@@ -506,6 +534,10 @@ static func _blend_for_phase(state: State, tuning: Tuning) -> float:
 		Phase.RECOVERY:
 			return state.recovery_start_blend * (
 				1.0 - _smooth01(state.phase_time_s / tuning.recovery_blend_time_s)
+			)
+		Phase.AIRBORNE:
+			return state.airborne_start_blend * (
+				1.0 - _smooth01(state.airborne_time_s / tuning.airborne_drain_time_s)
 			)
 		_:
 			return 0.0

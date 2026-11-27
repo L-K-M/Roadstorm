@@ -127,8 +127,8 @@ func snapshot_state(state) -> Dictionary:
 		"previous_brake": state.previous_brake,
 		"unwind_hold_s": state.unwind_hold_s,
 		"low_speed_hold_s": state.low_speed_hold_s,
-		"landing_hold_s": state.landing_hold_s,
 		"airborne_time_s": state.airborne_time_s,
+		"airborne_start_blend": state.airborne_start_blend,
 		"recovery_start_blend": state.recovery_start_blend,
 	}
 
@@ -153,8 +153,7 @@ func snapshot_tuning(tuning) -> Dictionary:
 		"stability_start_deg": tuning.stability_start_deg,
 		"stability_full_deg": tuning.stability_full_deg,
 		"stability_floor_factor": tuning.stability_floor_factor,
-		"airborne_min_time_s": tuning.airborne_min_time_s,
-		"landing_confirm_s": tuning.landing_confirm_s,
+		"airborne_drain_time_s": tuning.airborne_drain_time_s,
 		"assist_mode": int(tuning.assist_mode),
 	}
 
@@ -181,6 +180,7 @@ func snapshot_proposal(proposal) -> Dictionary:
 		"drift_sign": proposal.drift_sign,
 		"slip_deg": proposal.slip_deg,
 		"useful_slip": proposal.useful_slip,
+		"rewards_suppressed": proposal.rewards_suppressed,
 		"state": snapshot_state(proposal.state),
 	}
 
