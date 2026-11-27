@@ -374,8 +374,9 @@ Not verified / not possible here:
    `hugo@python.org` / `https://github.com/login/oauth` with a hash-pinned
    sigstore 4.6.0 in an isolated venv (section 4); negative controls failed as
    expected. Remaining limitation: this authenticates publisher artifact bytes
-   only, not the installed Homebrew interpreter. The pin file's
-   `upstream_verified` flag is owned elsewhere and was not changed.
+   only, not the installed Homebrew interpreter. Commit `d4501e3` replaced the
+   broad `upstream_verified` flag with separate dated artifact and installed-build
+   status fields.
 2. **OPEN — installed interpreter is not the official binary.** No method can
    make the Homebrew-built `python3.15` equal to `python-3.15.2-macos11.pkg`
    contents; only the build source is tied to python.org bytes. Installing the
@@ -445,3 +446,14 @@ Companion records: [docs/PYTHON_TOOLCHAIN.md](PYTHON_TOOLCHAIN.md) (pin
 rationale and open items) and
 [docs/evidence/python-3.15.2-source-verification.md](evidence/python-3.15.2-source-verification.md)
 (the earlier source-tarball check).
+
+## 8. Cached source archive incident
+
+A later Python pin test accidentally redirected its negative fixture through
+a symlink to this job's ignored `artifacts/Python-3.15.2.tgz`, replacing that
+cached archive with a test string. The altered bytes were retained as
+`Python-3.15.2.tgz.altered-20261127`. A fresh copy from python.org was checked
+against the pinned SHA-256 and verified with the existing offline Sigstore
+trust data; `raw/coordinator-restored-sigstore.log` records the check. The
+installed interpreter and original verification logs were not modified. The
+test was corrected to use a separate regular negative fixture.
