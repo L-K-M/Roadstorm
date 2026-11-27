@@ -89,7 +89,10 @@ overlaid into the copy, so a project snapshot that carries an older or missing
 
 `tools/ci/out/` is gitignored by `tools/ci/out/.gitignore` and holds only local
 scratch: engine logs (`logs/`), one report per run (`reports/`), project copies,
-captures and exports. `validate` checks that nothing under it is tracked.
+captures and exports. `validate` checks that no build output under it is
+tracked; the directory's own `.gitignore` sentinel (the exact path
+`tools/ci/out/.gitignore`) is the intended exception, and every other tracked
+path there still fails.
 
 ## Commands
 
@@ -105,7 +108,7 @@ captures and exports. `validate` checks that nothing under it is tracked.
 | `capture --target <res://…> [--frames N] [--fps F] [--resolution WxH] [--name N]` | Deterministic AVI capture of one scene at a requested resolution. | the target does not exist, there is no display, an argument is malformed, the capture fails, or the recorded resolution differs from the requested one. |
 | `export --check` | Export preparation: pin, installed export templates for the three required platforms, and `export_presets.cfg` coverage. | templates are missing, or presets are missing/incomplete. |
 | `export --list-presets [names]` | Lists the declared export presets (`preset.N`, name, platform). | there is no `export_presets.cfg`. |
-| `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. | presets are missing, the preset is unknown, the export fails, or no file is produced. |
+| `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. A relative `--out` is resolved against the caller's working directory (not Godot's `--path` scratch copy) before the engine sees it. On failure the full captured engine log is printed, because Godot's configuration-error reasons are multi-line and indented. | presets are missing, the preset is unknown, the export fails, or no file is produced. |
 | `verify-engine --archive <file> [--binary <file>]` | Compares a downloaded release archive, and optionally the extracted editor binary, against the pinned publisher digest in `pin/engine.txt`. Resolves no engine, so it also runs on a host with none installed. | a digest does not match, a pinned digest is missing, or the file cannot be read (exit 1, before anything is extracted or executed). |
 | `install-templates --archive <file> --dest <dir> [--mode release\|debug]` | Verifies the export-template archive against the pinned publisher digest BEFORE extraction, locates its payload by `version.txt` (the official `.tpz` packages `templates/*` at the archive root, not a `<version>.stable/` directory), validates that version, checks the staged tree against this project's presets, and only then installs it as `<dir>/<version>.stable`. Refuses to replace an existing target directory rather than deleting an installed template tree; remove it explicitly to reinstall. Resolves no engine. | the digest does not match, `<dir>/<version>.stable` already exists, `version.txt` is missing or names another version, the required template files are absent/empty, or the destination cannot be written. Nothing is placed in or removed from `<dir>` on failure. |
 | `pin [--field <name>]` | Prints the pinned engine facts (tag, version, official URLs, pinned digests) as `key=value` lines. One source of truth for the workflow. | a requested digest field is not recorded. |
@@ -143,12 +146,17 @@ never reported as a pass.
    are skipped and reported, because the engine does not import them into this
    project either.
 4. **Tooling self-check**: the entry points are executable, the data files are
-   present, and nothing under `tools/ci/out` is tracked by Git.
+   present, and no build output under `tools/ci/out` is tracked by Git (the
+   directory's own `.gitignore` sentinel is the intended exception).
 5. **Tooling self-test** (`tests/run_tests.sh`): the tooling's own shell layer —
    pin parsing, digest comparison, the capture viewport override, the
    recorded-resolution probe, the argument validation, and the engine-log gates
    (error shapes, warning counting, the accepted-warning list, the strict and
-   Jolt warning behaviour). Hermetic: no network, no engine, no display, no Git.
+   Jolt warning behaviour). Hermetic: no network and no display; the
+   engine-backed export cases run only when a matching Godot and the pinned
+   templates are installed, and every other case uses synthetic fixtures. The
+   tracked-output cases create their own throwaway Git repository and index in
+   the private temporary directory rather than reading the checkout's index.
    Both directions are covered, so a check that stops checking fails the suite
    instead of passing silently.
 5. **Content-contract inventory** (`contracts.list`): reports which planned
@@ -206,7 +214,7 @@ unnoticed. Three levels:
 | any warning | printed, and counted in the report as `warnings=` / `unexpected_warnings=` |
 | a warning the project has accepted, listed in `tools/ci/warnings.allow` | printed and labelled `(N accepted in warnings.allow)`; never fatal, even with `--strict-warnings` |
 | an unexpected warning | not fatal by default; fatal with `--strict-warnings` (or `CI_STRICT_WARNINGS=1`) |
-| a warning that names **Jolt** | **fatal**: the pinned engine emits exactly five Jolt warnings and every one means contacts were ignored or a slower allocator was used, so a run that printed one is not a clean pass |
+| a warning matching one of the five pinned-engine **Jolt physics** messages | **fatal**: every one means contacts were ignored or a slower allocator was used, so a run that printed one is not a clean pass. A warning that merely mentions "jolt" (for example a nested-project path such as `res://tools/jolt_inventory`) is reported, not failed |
 
 Strict warnings are opt-in because a warning is not an error, and failing a check
 for a warning the project has not decided about would be failing for the wrong

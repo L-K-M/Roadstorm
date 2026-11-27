@@ -12,8 +12,12 @@
 # resolution as a success (PLAN.md M0.6, machine-inventory finding 9).
 #
 # Design rules:
-#   * Hermetic. No network, no Godot, no display, no Git. Everything runs in a
-#     private temporary directory that is removed on exit.
+#   * Hermetic. No network and no display. The base suite uses no engine and
+#     does not read the checkout's Git index; the tracked-output cases create
+#     their own throwaway Git repository/index in the private temporary
+#     directory, and the export end-to-end cases run only when a matching Godot
+#     and the pinned templates are installed. Everything runs in a private
+#     temporary directory that is removed on exit.
 #   * Each case states what it expects, so a case that silently stops checking
 #     is a failure rather than a pass.
 #   * Both directions are covered: a check that must PASS is shown passing, and
@@ -638,6 +642,178 @@ fi
 log "case $CASES_RUN: $CI_WARNINGS_ALLOW exists and lists at least one accepted warning -> $_ok"
 
 # ---------------------------------------------------------------------------
+# 9b. The shared Jolt classifier, the tracked-output sentinel and relative
+#     --out canonicalisation. These three are the independently reproduced
+#     hosted-run 45921573623 causes: a substring match on "jolt" failed the
+#     job for res://tools/jolt_inventory (C2); the self-check counted its own
+#     tracked .gitignore as forbidden build output (C1); and a relative export
+#     --out landed in the scratch project copy (M1).
+# ---------------------------------------------------------------------------
+JOLT_TRUE_LOG="$WORK_DIR/jolt-true.log"
+{
+	printf '%s\n' 'WARNING: Jolt Physics job system exceeded the maximum number of jobs. This should not happen. Please report this. Waiting for jobs to become available...'
+	printf '%s\n' 'WARNING: Jolt Physics manifold cache exceeded capacity and contacts were ignored. Consider increasing maximum number of contact constraints in project settings.'
+	printf '%s\n' 'WARNING: Jolt Physics body pair cache exceeded capacity and contacts were ignored. Consider increasing maximum number of body pairs in project settings.'
+	printf '%s\n' 'WARNING: Jolt Physics contact constraint buffer exceeded capacity and contacts were ignored. Consider increasing maximum number of contact constraints in project settings.'
+	printf '%s\n' 'WARNING: Jolt Physics temporary memory allocator exceeded capacity of 64 MiB. Falling back to slower general-purpose allocator.'
+} >"$JOLT_TRUE_LOG"
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_log_jolt_warning_count "$JOLT_TRUE_LOG" 2>/dev/null)" = "5" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: all five pinned-engine Jolt physics warnings are classified -> $_ok"
+
+# Real-path false positive: the nested project's warning contains "jolt" but is
+# not a physics message. Both the raw helper and the shared line filter must
+# reject it.
+JOLT_FALSE_LINE='WARNING: Detected another project.godot at res://tools/jolt_inventory. The folder will be ignored.'
+JOLT_FALSE_LOG="$WORK_DIR/jolt-false.log"
+printf '%s\n' "$JOLT_FALSE_LINE" >"$JOLT_FALSE_LOG"
+CASES_RUN=$((CASES_RUN + 1))
+if ci_is_jolt_physics_warning "$JOLT_FALSE_LINE"; then
+	_ok=no
+elif [ "$(ci_log_jolt_warning_count "$JOLT_FALSE_LOG" 2>/dev/null)" != "0" ]; then
+	_ok=no
+else
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+log "case $CASES_RUN: a nested-project warning naming res://tools/jolt_inventory is NOT a Jolt physics warning -> $_ok"
+
+# A line-number-prefixed real warning (the shape ci_log_* actually filters)
+# must still be recognised.
+CASES_RUN=$((CASES_RUN + 1))
+if ci_is_jolt_physics_warning "17:WARNING: Jolt Physics manifold cache exceeded capacity and contacts were ignored."; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a line-number-prefixed Jolt physics warning is recognised -> $_ok"
+
+# An ordinary unexpected warning containing "jolt" nowhere near a physics
+# message is not fatal, either.
+CASES_RUN=$((CASES_RUN + 1))
+if ci_is_jolt_physics_warning 'WARNING: something about JoltFish asset import'; then
+	_ok=no
+else
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+log "case $CASES_RUN: an unrelated warning mentioning Jolt is not fatal -> $_ok"
+
+# The tracked-output check: isolated temporary Git repository/index. Only the
+# exact "<out>/.gitignore" sentinel may be exempt; a real tracked build file,
+# and even another dotfile, must still fail.
+GITCHECK="$WORK_DIR/git-tracked-output"
+if command -v git >/dev/null 2>&1; then
+	rm -rf "$GITCHECK"
+	mkdir -p "$GITCHECK/tools/ci/out"
+	(
+		cd "$GITCHECK" || exit 1
+		git init -q
+		printf '*\n!.gitignore\n' >tools/ci/out/.gitignore
+		git add tools/ci/out/.gitignore
+	) || die 2 "could not create the isolated Git index for the tracked-output case"
+
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$(ci_tracked_output_paths "$GITCHECK" tools/ci/out 2>/dev/null | ci_count_lines)" = "0" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: the out directory's own .gitignore sentinel is exempt -> $_ok"
+
+	(
+		cd "$GITCHECK" || exit 1
+		printf 'engine log\n' >tools/ci/out/run.log
+		# The sentinel's `*` rule ignores this file, exactly as it would in the
+		# real tree; -f stages it anyway, which is what makes it a TRACKED build
+		# output the check must reject.
+		git add -f tools/ci/out/run.log
+	) || die 2 "could not stage a build log in the isolated Git index"
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$(ci_tracked_output_paths "$GITCHECK" tools/ci/out 2>/dev/null | ci_count_lines)" = "1" ] &&
+		[ "$(ci_tracked_output_paths "$GITCHECK" tools/ci/out 2>/dev/null)" = "tools/ci/out/run.log" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a tracked build log under the out directory is still rejected -> $_ok"
+
+	# Another dotfile is not the sentinel and must not inherit the exemption.
+	(
+		cd "$GITCHECK" || exit 1
+		printf 'notes\n' >tools/ci/out/other.gitignore
+		git add -f tools/ci/out/other.gitignore
+	) || die 2 "could not stage another dotfile in the isolated Git index"
+	CASES_RUN=$((CASES_RUN + 1))
+	if printf '%s\n' "$(ci_tracked_output_paths "$GITCHECK" tools/ci/out 2>/dev/null)" |
+		grep -qxF 'tools/ci/out/other.gitignore'; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a non-sentinel dotfile does not inherit the exemption -> $_ok"
+else
+	log "note: git is not installed; the tracked-output sentinel cases were skipped"
+fi
+
+# Relative --out canonicalisation: the path must resolve against the caller's
+# directory (the workflow passes build/<name>) with ./ and ../ resolved, and an
+# absolute path must keep the spelling the caller used.
+ABS_CWD="$WORK_DIR/abs-cwd"
+mkdir -p "$ABS_CWD"
+CASES_RUN=$((CASES_RUN + 1))
+_abs_got="$(cd "$ABS_CWD" && ci_abs_path './build/../pkg/app.zip' 2>/dev/null)"
+if [ "$_abs_got" = "$ABS_CWD/pkg/app.zip" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a relative --out resolves against the caller and drops ./ and ../ -> $_ok"
+[ "$_ok" = "yes" ] || log "  expected '$ABS_CWD/pkg/app.zip', got '$_abs_got'" >&2
+
+CASES_RUN=$((CASES_RUN + 1))
+_abs_got="$(cd "$ABS_CWD" && ci_abs_path 'deep/new/dir/app.zip' 2>/dev/null)"
+if [ "$_abs_got" = "$ABS_CWD/deep/new/dir/app.zip" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a relative --out through directories that do not exist yet is made absolute -> $_ok"
+[ "$_ok" = "yes" ] || log "  expected '$ABS_CWD/deep/new/dir/app.zip', got '$_abs_got'" >&2
+
+ABS_REAL="$WORK_DIR/abs-real"
+ABS_LINK="$WORK_DIR/abs-link"
+mkdir -p "$ABS_REAL"
+rm -f "$ABS_LINK"
+ln -s "$ABS_REAL" "$ABS_LINK" 2>/dev/null || true
+if [ -L "$ABS_LINK" ]; then
+	CASES_RUN=$((CASES_RUN + 1))
+	_abs_got="$(cd "$ABS_CWD" && ci_abs_path "$ABS_LINK/file.zip" 2>/dev/null)"
+	if [ "$_abs_got" = "$ABS_LINK/file.zip" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an absolute --out keeps the caller's spelling through a symlinked parent -> $_ok"
+	[ "$_ok" = "yes" ] || log "  expected '$ABS_LINK/file.zip', got '$_abs_got'" >&2
+else
+	log "note: symlinks are unavailable; the symlinked-parent --out case was skipped"
+fi
+
+# ---------------------------------------------------------------------------
 # 10. The export-preset platform mapping and coverage.
 #     `ci.sh export --check` requires a preset for every native target in
 #     docs/TECHNICAL_DESIGN.md, but the requirement names are the plan's
@@ -882,6 +1058,25 @@ ci_at_home_tpl() {
 	)
 }
 
+# ci_rel_at_home <cwd> <home> <project> [args...] : like ci_at_home, but runs
+# from a caller-specified working directory. This is how the workflow invokes
+# the export (a relative build/<name> path), so it is the only way to prove the
+# --out value is resolved against the CALLER rather than Godot's --path scratch
+# project copy.
+ci_rel_at_home() {
+	_crh_cwd="$1"
+	_crh_home="$2"
+	_crh_proj="$3"
+	shift 3
+	(
+		cd "$_crh_cwd" || exit 2
+		HOME="$_crh_home"
+		export HOME
+		unset GODOT_TEMPLATES_DIR
+		sh "$CI_SH" --project "$_crh_proj" "$@"
+	)
+}
+
 # seed_templates <templates-root> : version.txt plus a complete, NON-EMPTY
 # template tree for the three required targets at the architectures the
 # committed presets declare (macos.zip, windows_release_x86_64.exe,
@@ -969,6 +1164,10 @@ if [ "$_e2e" = "yes" ]; then
 		printf '[application]\n\n'
 		printf 'config/name="synthetic export project"\n'
 		printf 'run/main_scene="res://main.tscn"\n'
+		# macOS universal/arm64 exports require ETC2 ASTC import support; without
+		# this setting the engine refuses the preset before any path is written.
+		printf '\n[rendering]\n\n'
+		printf 'textures/vram_compression/import_etc2_astc=true\n'
 	} >"$SPROJ/project.godot"
 	printf 'extends Node\n\nfunc _ready() -> void:\n\tprint("synthetic export project ready")\n' \
 		>"$SPROJ/main.gd"
@@ -1223,6 +1422,33 @@ else
 	_ok=no
 fi
 log "case $CASES_RUN: a preset name resolves to its preset.N index -> $_ok"
+
+# The macOS preset must use Godot's built-in ad-hoc signer (codesign=1), not
+# Xcode codesign (codesign=3). Verified against the pinned engine source
+# (platform/macos/export/export_plugin.cpp at ed1daf0bf): mode 3 requires
+# /usr/bin/codesign or /bin/codesign and fails preset validation on the hosted
+# Linux runner, while mode 1 is implemented in editor/export/codesign.cpp,
+# which has no MACOS_ENABLED guard, so it cross-exports. Notarization must
+# remain disabled: the package is ad-hoc signed and UNNOTARIZED.
+CASES_RUN=$((CASES_RUN + 1))
+_cs_idx="$(ci_preset_index_for "$REAL_CFG" 'macOS Apple Silicon' 2>/dev/null)"
+if [ "$_cs_idx" = "preset.0" ] &&
+	[ "$(ci_preset_field "$REAL_CFG" "$_cs_idx" codesign/codesign 2>/dev/null)" = "1" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the macOS preset uses built-in ad-hoc signing (codesign=1), not Xcode codesign -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_preset_field "$REAL_CFG" "$_cs_idx" notarization/notarization 2>/dev/null)" = "0" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the macOS preset remains accurately unnotarized (notarization=0) -> $_ok"
 
 # ---------------------------------------------------------------------------
 # 13. `ci.sh verify-templates`: the publisher digest before extraction, and an
@@ -1644,6 +1870,46 @@ if [ "$_e2e" = "yes" ]; then
 			_ok=no
 		fi
 		log "case $CASES_RUN: the Linux package's sidecar .pck exists, is non-empty and is hashed -> $_ok"
+
+	# Relative --out for every preset, from a caller-specified working
+	# directory, exactly as the workflow invokes it. Before canonicalisation,
+	# Godot resolved the relative path against --path (the scratch project),
+	# so the wrapper reported "export produced no output" while the package sat
+	# in tools/ci/out/project-copy/. Each preset gets its own caller directory
+	# and its own output name; the checks below run immediately after that
+	# preset's export, before the next run replaces the scratch copy.
+	while IFS='|' read -r _rp_name _rp_ext; do
+		[ -n "$_rp_name" ] || continue
+		_rp_cwd="$WORK_DIR/relcwd-$(printf '%s' "$_rp_name" | tr ' ' '-')"
+		rm -rf "$_rp_cwd"
+		mkdir -p "$_rp_cwd"
+		_rp_out="build/${_rp_name}${_rp_ext:+.$_rp_ext}"
+		expect_case "relative --out exports preset '$_rp_name'" 0 \
+			ci_rel_at_home "$_rp_cwd" "$REALHOME" "$SPROJ" export --export "$_rp_name" --out "$_rp_out"
+		_rp_expected="$_rp_cwd/build/${_rp_name}${_rp_ext:+.$_rp_ext}"
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ -s "$_rp_expected" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: preset '$_rp_name' wrote its package at the caller-relative path -> $_ok"
+		[ "$_ok" = "yes" ] || log "  expected a non-empty file at '$_rp_expected'" >&2
+
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ ! -e "$SPROJ/tools/ci/out/project-copy/$_rp_out" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: preset '$_rp_name' did NOT write into the scratch project copy -> $_ok"
+	done <<EOF
+macOS Apple Silicon|zip
+Windows x86-64|exe
+Linux x86-64|
+EOF
 	else
 		log "note: the pinned export templates are not installed on this host; the sidecar .pck export case was skipped"
 	fi

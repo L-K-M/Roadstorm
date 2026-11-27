@@ -20,10 +20,12 @@
 #   * every WARNING/USER WARNING line found in the captured engine logs is
 #     printed, never filtered;
 #   * a line the project has accepted is labelled as accepted;
-#   * a Jolt-named line that is NOT accepted fails (exit 1): the pinned engine
-#     emits exactly five Jolt warnings and every one means contacts were ignored
-#     or a slower allocator was used, so such a run is not a clean pass (the
-#     open R7 item is the job-system one);
+#   * an unaccepted line matching one of the five known Jolt physics warnings
+#     fails (exit 1): every one means contacts were ignored or a slower
+#     allocator was used, so such a run is not a clean pass (the open R7 item
+#     is the job-system one). The match is on those message shapes, not on the
+#     substring "jolt": a benign nested-project path such as
+#     res://tools/jolt_inventory is reported, not failed;
 #   * any other warning is reported, not fatal -- a warning is not an error, and
 #     failing for the wrong reason is the defect this tooling avoids elsewhere.
 #
@@ -114,7 +116,19 @@ done <"$ALL"
 
 _unexpected="$(ci_count_lines <"$UNEXPECTED")"
 _accepted=$((_total - _unexpected))
-_jolt="$(grep -i 'jolt' "$UNEXPECTED" 2>/dev/null || true)"
+
+# Shared classification: ci_is_jolt_physics_warning (lib/common.sh) decides this,
+# so the workflow and `ci.sh` cannot disagree about what a physics warning is.
+# A grep for the substring "jolt" classified the benign nested-project warning
+# for res://tools/jolt_inventory as a physics failure in hosted run
+# 45921573623.
+_JOLT_LINES="$WORK/jolt-lines.txt"
+: >"$_JOLT_LINES"
+while IFS= read -r _ww_line || [ -n "$_ww_line" ]; do
+	[ -n "$_ww_line" ] || continue
+	ci_is_jolt_physics_warning "$_ww_line" && printf '%s\n' "$_ww_line" >>"$_JOLT_LINES"
+done <"$UNEXPECTED"
+_jolt="$(cat "$_JOLT_LINES" 2>/dev/null || true)"
 
 # Printed first, so the verdict can never hide the lines it was reached from.
 printf '[warning-watch] %s warning line(s) in %s, %s not accepted in %s\n' \

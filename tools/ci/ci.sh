@@ -921,13 +921,20 @@ ci_tooling_selfcheck() {
 			_self_rc="$CI_FAIL"
 		fi
 	done
-	# The scratch output directory must never be committed.
-	if [ -n "$CI_OUT_REL_PATH" ] && command -v git >/dev/null 2>&1 && [ -d "$CI_PROJECT/.git" ]; then
-		_tracked="$(cd "$CI_PROJECT" && git ls-files "$CI_OUT_REL_PATH" 2>/dev/null | ci_count_lines)"
+	# The scratch output directory must never be committed. It keeps itself
+	# ignored with a tracked .gitignore sentinel; that exact sentinel is the
+	# intended exception (tools/ci/out/.gitignore is deliberately in the index),
+	# while every other tracked path there is build output and fails. Exempting
+	# the whole directory or every dotfile would defeat the check.
+	if [ -n "$CI_OUT_REL_PATH" ] && command -v git >/dev/null 2>&1 &&
+		{ [ -d "$CI_PROJECT/.git" ] || [ -f "$CI_PROJECT/.git" ]; }; then
+		_tracked_list="$(ci_tracked_output_paths "$CI_PROJECT" "$CI_OUT_REL_PATH")"
+		_tracked="$(printf '%s\n' "$_tracked_list" | ci_count_lines)"
 		if [ "$_tracked" = "0" ]; then
-			ci_ok "no tracked files under $CI_OUT_REL_PATH"
+			ci_ok "no tracked build output under $CI_OUT_REL_PATH (its own .gitignore sentinel is the intended exception)"
 		else
-			ci_fail "$_tracked tracked file(s) under $CI_OUT_REL_PATH - build output must not be committed"
+			ci_fail "$_tracked tracked file(s) under $CI_OUT_REL_PATH - build output must not be committed:"
+			printf '%s\n' "$_tracked_list" | sed 's/^/    /'
 			_self_rc="$CI_FAIL"
 		fi
 	fi
@@ -1725,6 +1732,19 @@ ci_export_list() {
 	esac
 }
 
+# ci_print_export_failure_log <logfile> : print the whole captured engine log,
+# indented. Godot's export configuration errors are multi-line and indented,
+# so filtering to anchored ERROR lines alone hid the actual reason from hosted
+# run 45921573623. Called only on a failed export; never replaces the exit-code
+# verdict with the log contents.
+ci_print_export_failure_log() {
+	_pfl="$1"
+	[ -f "$_pfl" ] || return 0
+	ci_note "full engine log ($_pfl):"
+	sed 's/^/    /' "$_pfl"
+	return 0
+}
+
 ci_export_build() {
 	_mode="$1"
 	shift
@@ -1758,6 +1778,20 @@ ci_export_build() {
 	[ -n "$_preset" ] || ci_die "export --export: --preset <name> is required"
 	[ -n "$_out" ] || ci_die "export --export: --out <file> is required (the correct extension depends on the preset platform)"
 
+	# Canonicalise --out against the CALLER's directory BEFORE invoking the
+	# engine. Godot resolves a relative export path against --path (the scratch
+	# project), so a relative --out silently lands in tools/ci/out/project-copy/
+	# while this wrapper looks for it in the caller's directory -- reproduced as
+	# exit 0 followed by "export produced no output" for all three presets in
+	# hosted run 45921573623. The shell's logical $PWD is used, so the path the
+	# caller spelled stays the path reported and uploaded.
+	case "$_out" in
+		/*) : ;;
+		*) _out="${PWD:-$(pwd)}/$_out" ;;
+	esac
+	mkdir -p "$(dirname "$_out")" 2>/dev/null || ci_die "cannot create output directory for $_out"
+	_out="$(ci_abs_path "$_out")"
+
 	_cfg="$CI_PROJECT/export_presets.cfg"
 	[ -f "$_cfg" ] || {
 		ci_fail "export --export: no export_presets.cfg at the project root; native export preparation is not implemented yet (PLAN.md M0.5/M9.1)"
@@ -1770,23 +1804,25 @@ ci_export_build() {
 	fi
 
 	ci_prepared_copy || return "$CI_FAIL"
-	mkdir -p "$(dirname "$_out")" 2>/dev/null || ci_die "cannot create output directory for $_out"
 	_flag="--export-release"
 	[ "$_mode" = "debug" ] && _flag="--export-debug"
 	ci_step "export: preset '$_preset' ($_mode) -> $_out"
 	ci_run_godot export --headless --path "$CI_PROJECT_COPY" "$_flag" "$_preset" "$_out"
 	if [ "$CI_LAST_EXIT" -ne 0 ]; then
 		ci_fail "export exited $CI_LAST_EXIT"
-		ci_log_error_lines "$CI_LAST_LOG" | sed 's/^/    /'
+		ci_print_export_failure_log "$CI_LAST_LOG"
 		ci_report "export result=fail preset=$_preset exit=$CI_LAST_EXIT"
 		return "$CI_FAIL"
 	fi
 	ci_log_gate "$CI_LAST_LOG" || {
+		ci_print_export_failure_log "$CI_LAST_LOG"
 		ci_report "export result=fail preset=$_preset reason=engine-errors"
 		return "$CI_FAIL"
 	}
 	if [ ! -s "$_out" ]; then
 		ci_fail "export produced no output: $_out"
+		ci_note "the engine exited 0 and its log was checked; if --out was relative, it has been resolved against the caller's directory ($PWD), not the scratch copy"
+		ci_print_export_failure_log "$CI_LAST_LOG"
 		ci_report "export result=fail preset=$_preset reason=no-output"
 		return "$CI_FAIL"
 	fi

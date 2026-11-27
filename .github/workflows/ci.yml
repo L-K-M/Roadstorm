@@ -358,6 +358,21 @@ jobs:
               tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --export "$name" --out "$out"
             done
 
+      # Export failures are only actionable with the engine log. Godot's export
+      # configuration errors are multi-line and indented, so a filtered view of
+      # anchored ERROR lines alone hid the reason from hosted run 45921573623;
+      # ci.sh now prints the full captured log, and this upload preserves it when
+      # the job is read later. tools/ci/out/ also holds the per-run report that
+      # records the preset, exit status and output paths.
+      - name: Upload export logs and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: export-logs
+          path: tools/ci/out/
+          if-no-files-found: warn
+          retention-days: 14
+
       # The build step reports the main file AND the sidecar .pck (which carries
       # the project data; on Linux the main binary is the pinned stock template).
       # This upload therefore contains the package as it was actually produced.

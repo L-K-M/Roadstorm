@@ -14,7 +14,11 @@
 #   * keep the patterns narrow. A pattern that matches a whole class of engine
 #     output would silently disable the strict mode for that class.
 
-# tools/tick_probe is a separate nested Godot project (its own project.godot).
-# The engine ignores it when importing this project and says so on every import.
-# Expected and correct: the folder is not part of this project's content.
+# tools/tick_probe and tools/jolt_inventory are separate nested Godot projects
+# (each has its own project.godot). The engine ignores them when importing this
+# project and says so on every import. Expected and correct: neither folder is
+# part of this project's content, and neither warning is a physics failure --
+# the substring "jolt" in the jolt_inventory path must not be mistaken for one
+# of the five Jolt physics warnings (hosted run 45921573623).
 ^WARNING: Detected another project\.godot at res://tools/tick_probe\. The folder will be ignored\.$
+^WARNING: Detected another project\.godot at res://tools/jolt_inventory\. The folder will be ignored\.$

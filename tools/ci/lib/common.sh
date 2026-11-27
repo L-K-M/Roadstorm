@@ -238,23 +238,42 @@ ci_log_unexpected_warning_count() {
 	ci_log_unexpected_warning_lines "$1" | ci_count_lines
 }
 
+# ci_is_jolt_physics_warning <log-line> : true only for one of the five Jolt
+# physics warnings the pinned engine (4.7.2.stable.official.ed1daf0bf) emits,
+# verified in its source:
+#   modules/jolt_physics/spaces/jolt_job_system.cpp:123
+#     "Jolt Physics job system exceeded the maximum number of jobs. ..."
+#   modules/jolt_physics/spaces/jolt_space_3d.cpp:199,206,213
+#     "Jolt Physics manifold cache exceeded capacity and contacts were ignored. ..."
+#     "Jolt Physics body pair cache exceeded capacity and contacts were ignored. ..."
+#     "Jolt Physics contact constraint buffer exceeded capacity and contacts were ignored. ..."
+#   modules/jolt_physics/spaces/jolt_temp_allocator.cpp:89
+#     "Jolt Physics temporary memory allocator exceeded capacity of %d MiB. ..."
+# Each one reports a simulation limit being exceeded -- contacts were ignored or
+# a slower allocator was used -- so a run that printed one must not be reported
+# as a clean pass (Opus recheck finding R7'). The match is on those message
+# shapes, NOT on the substring "jolt": a benign warning about a nested project
+# path such as res://tools/jolt_inventory mentions Jolt without being a physics
+# failure, and failing for that reason is exactly the false positive hosted run
+# 45921573623 hit. A Jolt warning the project has decided to accept belongs in
+# tools/ci/warnings.allow, which keeps the acceptance explicit instead of hidden.
+ci_is_jolt_physics_warning() {
+	case "$1" in
+		*"Jolt Physics job system exceeded"* | *"Jolt Physics manifold cache exceeded"* | *"Jolt Physics body pair cache exceeded"* | *"Jolt Physics contact constraint buffer exceeded"* | *"Jolt Physics temporary memory allocator exceeded"*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
 # ci_log_jolt_warning_lines <logfile>
-# The unexpected WARNING lines that name the Jolt physics backend. Verified
-# against the pinned engine (4.7.2.stable.official.ed1daf0bf): it emits exactly
-# five of them, and every one reports a simulation limit being exceeded --
-#   "Jolt Physics job system exceeded the maximum number of jobs ..." (the open
-#   R7 item), "manifold cache exceeded capacity and contacts were ignored",
-#   "body pair cache exceeded capacity and contacts were ignored",
-#   "contact constraint buffer exceeded capacity and contacts were ignored",
-#   "temporary memory allocator exceeded capacity ... Falling back to slower
-#   general-purpose allocator".
-# None is informational: each one means the physics step ignored contacts or
-# fell back to a slower allocator, so a run that printed one must not be
-# reported as a clean pass (Opus recheck finding R7'). A Jolt warning the
-# project has decided to accept belongs in tools/ci/warnings.allow, which keeps
-# the acceptance explicit instead of hidden.
+# The unexpected WARNING lines that are one of the five known Jolt physics
+# warnings above -- not every line containing "jolt".
 ci_log_jolt_warning_lines() {
-	ci_log_unexpected_warning_lines "$1" | grep -i 'jolt' 2>/dev/null
+	ci_log_unexpected_warning_lines "$1" |
+		while IFS= read -r _ijw_line || [ -n "$_ijw_line" ]; do
+			ci_is_jolt_physics_warning "$_ijw_line" && printf '%s\n' "$_ijw_line"
+		done
 }
 
 # ci_log_jolt_warning_count <logfile>
@@ -1110,4 +1129,59 @@ ci_relpath() {
 		"$CI_PROJECT"/*) printf '%s\n' "${1#$CI_PROJECT/}" ;;
 		*) printf '%s\n' "$1" ;;
 	esac
+}
+
+# ci_tracked_output_paths <project-root> <rel-out-dir> : prints paths tracked
+# in the Git index under <rel-out-dir>, one per line, EXCLUDING the exact
+# sentinel "<rel-out-dir>/.gitignore" that keeps the scratch directory ignored
+# while itself staying tracked. Every other tracked path is build output and is
+# a failure: exempting the whole directory, or every dotfile, would defeat the
+# check this function exists for. Prints nothing when Git or an index is not
+# available; the caller decides whether that case is testable. Returns 1 only
+# for a malformed invocation.
+ci_tracked_output_paths() {
+	_top_root="$1"
+	_top_rel="$2"
+	[ -n "$_top_root" ] && [ -n "$_top_rel" ] || return 1
+	command -v git >/dev/null 2>&1 || return 0
+	if [ ! -d "$_top_root/.git" ] && [ ! -f "$_top_root/.git" ]; then
+		return 0
+	fi
+	(cd "$_top_root" && git ls-files -- "$_top_rel" 2>/dev/null) |
+		while IFS= read -r _top_path || [ -n "$_top_path" ]; do
+			[ -n "$_top_path" ] || continue
+			[ "$_top_path" = "$_top_rel/.gitignore" ] && continue
+			printf '%s\n' "$_top_path"
+		done
+	return 0
+}
+
+# ci_abs_path <path> : prints <path> made absolute against the current working
+# directory, with ".", ".." and repeated separators resolved. The shell's own
+# logical $PWD is used for a relative input, so the path the caller actually
+# spelled is preserved rather than rewritten through a symlinked TMPDIR; an
+# absolute input is kept as written. What matters for correctness is that the
+# result is ABSOLUTE before Godot sees it: Godot resolves a relative export path
+# against --path (the scratch project), which is exactly the hosted-run defect
+# where the package landed under tools/ci/out/project-copy and the wrapper
+# reported "export produced no output". Returns 1 on an empty argument.
+ci_abs_path() {
+	_cap_in="$1"
+	[ -n "$_cap_in" ] || return 1
+	case "$_cap_in" in
+		/*) : ;;
+		*) _cap_in="${PWD:-$(pwd)}/$_cap_in" ;;
+	esac
+	printf '%s\n' "$_cap_in" | awk '
+		BEGIN { RS = "/" }
+		$0 == "" || $0 == "." { next }
+		$0 == ".." { if (n > 0) n--; next }
+		{ part[++n] = $0 }
+		END {
+			if (n == 0) { print "/"; exit }
+			out = ""
+			for (i = 1; i <= n; i++) out = out "/" part[i]
+			print out
+		}
+	'
 }
