@@ -12,7 +12,8 @@ bounded isolated runner.
 
 | Path | Role |
 | --- | --- |
-| `src/laboratory/drive_lab.gd` | owned laboratory: car, camera rig, speed HUD, tick loop, telemetry |
+| `src/laboratory/drive_lab.gd` | owned laboratory: car, camera rig, speed HUD, one `VehicleFeedbackPlayer`, tick loop, telemetry |
+| `src/audio/vehicle_feedback_player.gd` | committed M1.5 component under test; this task treats it as read-only input and does not modify it |
 | `tools/drive_lab/drive_lab_checks.gd` | assertion collector, explicit tuning/state/command fixtures, node-census and HUD-reading helpers |
 | `tools/drive_lab/drive_lab_driver.gd` | headless `Node` driver that runs the validator cases |
 | `tools/drive_lab/validate_drive_lab.gd` | headless `SceneTree` entry point |
@@ -26,7 +27,8 @@ Cases, in order: `scene_and_manifest`, `rotated_spawn_heading`,
 `movement_from_rest`, `braking`,
 `displacement_accounting`, `repeatability`, `finite_state`, `hull_road_overlap`,
 `one_call_per_tick`, `refusal_halts`, `presentation_integration`,
-`keyboard_focus_lifecycle`, `reconfigure_presentation_counters`.
+`keyboard_focus_lifecycle`, `reconfigure_presentation_counters`,
+`audio_feedback_integration`.
 
 `presentation_integration` is the M1.5 presentation slice. It runs against the
 real `scenes/laboratory/drive_lab.tscn` and checks that the committed
@@ -73,6 +75,43 @@ schedule and requires every presentation and simulation counter to describe
 only the new configuration, followed by an independent run of that schedule.
 The pre-fix source carries the counters over and fails three assertions.
 
+`audio_feedback_integration` is the M1.5 synthesized-feedback wiring slice. It
+proves that exactly one committed `VehicleFeedbackPlayer` is a child of the
+laboratory, owns exactly two named `AudioStreamPlayer` voices (`Engine`/`Tire`),
+and holds one non-empty `AudioStreamWAV` per voice. Before any commit it must be
+set up and parked at the independently calculated idle pitch, idle engine level
+and silent-tire targets with both voices playing under the dummy driver, with no
+apply attempt yet.
+
+Over 60 real committed throttle ticks the case requires one apply attempt and
+one accepted update per commit, monotonically rising engine pitch and level, tire
+silence while slip is zero, and every measured target equal to an independent
+oracle for the committed speed/slip/grounded values. Both stream references and
+their PCM bytes must stay unchanged across those commits, so the update path
+never re-synthesizes or rebuilds a stream.
+
+A scheduled `null` command refuses at the adapter after ten committed ticks; the
+case then requires no further apply attempt, unchanged last accepted pitch/gain,
+an empty audio error, and the committed state/body still equal to the last trace
+entry. A separate diagnostic-refusal control tears the component down through its
+own public lifecycle, steps twice, and requires both commits to succeed while the
+lab counts two rejected applies, records a reason, clears its ready flag and does
+not fail the simulation; restoring setup recreates exactly two voices.
+
+Reconfiguring with a new schedule must keep the same single component and two
+voices, reset the audio counters/error, and then replay the `movement_from_rest`
+90-throttle schedule to a bit-identical committed simulation trace (position,
+velocity, heading, body transform), proving the audio wiring does not alter
+committed motion. Teardown must free the component and leave no
+`VehicleFeedbackPlayer` or `AudioStreamPlayer` in the tree.
+
+Headless Godot uses a dummy audio driver. This case proves node ownership,
+stream stability, mapped numeric targets and one-way update discipline only; it
+**cannot certify audible output, timbre, mix balance or listening comfort**. Only
+real-device listening can, and no such claim is made here. If the dummy server
+emits `ObjectDB` shutdown warnings after voices are started and stopped, they are
+benign dummy-driver teardown noise, not evidence of playback quality.
+
 `rotated_spawn_heading` covers the F6 heading-convention fix. The handling-lab
 builder's heading grows toward local left while `CarState`/`MotorBodyAdapter`
 grow toward local right, so a rotated authored spawn must be converted once at
@@ -94,9 +133,11 @@ case's assertions are demonstrably capable of failing.
 
 Scope: one car, one flat straight, structural and behavioural headless checks.
 The validator does not prove rendering, visual readability, HUD contrast or
-legibility at real resolutions, audio playback, controller input, split-screen
-cost, race integration, a real window-manager focus transition, or M1.5/M1
-acceptance.
+legibility at real resolutions, audible sound quality or mix, controller input,
+split-screen cost, race integration, a real window-manager focus transition, or
+M1.5/M1 acceptance. Audio feedback is validated structurally and numerically
+against the committed component's provisional mapping; headless tests cannot
+certify what a listener would hear.
 
 ## Run
 

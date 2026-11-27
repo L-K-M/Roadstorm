@@ -27,10 +27,21 @@ extends Node3D
 ## rear view is released on Godot focus loss. A fresh press after refocus
 ## registers normally; scripted and headless command isolation is unchanged.
 ##
+## Audio feedback (M1.5 slice): exactly one committed `VehicleFeedbackPlayer`
+## child is built once, set up on entrance and started parked at idle. After a
+## successful `MotorBodyAdapter.step()` commit it applies the committed
+## `CarState` and the accepted normalized command only; the component never
+## writes simulation state and this laboratory never calls the adapter for
+## audio. An apply refusal is counted and reported, never fatal. Reconfiguring
+## keeps the same single component and its two voices; teardown frees them with
+## the laboratory. Headless dummy audio proves node ownership, stream stability
+## and mapped values only, never audible quality.
+##
 ## The laboratory has no drift telemetry source, so the HUD cue is the honest
 ## `GRIP` phase with a zero slip reading and no qualifying flag: it never claims
-## a drift the flat straight cannot produce. Nothing here claims audio
-## playback, visual readability or M1.5/M1 acceptance.
+## a drift the flat straight cannot produce. Audio is wired structurally and
+## numerically only: nothing here claims audible sound quality, visual
+## readability or M1.5/M1 acceptance.
 ##
 ## Scope: flat-ground one-car integration only. Ground adhesion, jumps, drift,
 ## car-car contact, full input routing, reset placement, surface modifiers and
@@ -56,6 +67,7 @@ const DriverCommandScript := preload("res://src/simulation/driver_command.gd")
 const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
 const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 const SpeedHudScene := preload("res://scenes/ui/speed_hud.tscn")
+const VehicleFeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
 
 enum CommandMode { SCRIPTED, KEYBOARD }
 
@@ -102,6 +114,12 @@ var lab_manifest: Dictionary = {}
 ## cannot be built or refuses a committed state leaves this string nonempty and
 ## is reported by validation rather than presented as working evidence.
 var hud_error := ""
+## The one synthesized feedback component owned by this laboratory. Exactly one
+## exists; its two voices are children of it. Null only when construction failed.
+var feedback_player: VehicleFeedbackPlayer = null
+## Last audio setup/apply refusal reason, readable through `get_audio_error()`.
+## Cleared by a successful apply; a build/setup defect persists until repaired.
+var audio_error := ""
 
 var state: CarState = null
 var last_result: MotorBodyAdapter.Result = null
@@ -111,6 +129,9 @@ var steps_called := 0
 var ticks_committed := 0
 var hud_updates := 0
 var hud_rejected_updates := 0
+var audio_updates := 0
+var audio_rejected_updates := 0
+var audio_apply_attempts := 0
 var camera_mode_cycles := 0
 var rear_view_holds := 0
 var physics_callbacks := 0
@@ -162,6 +183,7 @@ func _ready() -> void:
 	_build_car()
 	_build_camera_rig()
 	_build_presentation()
+	_build_audio_feedback()
 	_apply_start_pose()
 	_update_presentation()
 	if not failed and (tuning == null or not tuning.is_valid()):
@@ -171,6 +193,16 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if feedback_player != null and is_instance_valid(feedback_player):
+		var engine_player := feedback_player.get_engine_player()
+		var tire_player := feedback_player.get_tire_player()
+		if engine_player != null:
+			engine_player.stop()
+		if tire_player != null:
+			tire_player.stop()
+		feedback_player.teardown()
+		feedback_player.queue_free()
+		feedback_player = null
 	if camera_rig != null and is_instance_valid(camera_rig):
 		camera_rig.clear_target()
 		camera_rig.queue_free()
@@ -371,6 +403,72 @@ func is_presentation_ready() -> bool:
 	)
 
 
+## The laboratory's one `VehicleFeedbackPlayer`, or null when it could not be
+## built (see `get_audio_error()`).
+func get_feedback_player() -> VehicleFeedbackPlayer:
+	return feedback_player
+
+
+## True when the feedback component is present, set up and owns both voices.
+func is_audio_ready() -> bool:
+	return (
+		feedback_player != null and is_instance_valid(feedback_player)
+		and feedback_player.is_setup_complete()
+		and feedback_player.get_engine_player() != null
+		and feedback_player.get_tire_player() != null
+	)
+
+
+func get_audio_error() -> String:
+	return audio_error
+
+
+## Read-only audio diagnostics for validation. These describe presentation
+## activity only; they never gate or alter the simulation run.
+func get_audio_telemetry() -> Dictionary:
+	var engine_stream_bytes := 0
+	var tire_stream_bytes := 0
+	var estimated_bytes := 0
+	var last_pitch := 0.0
+	var last_engine_db := 0.0
+	var last_tire_db := 0.0
+	var engine_playing := false
+	var tire_playing := false
+	var setup_complete := false
+	if feedback_player != null and is_instance_valid(feedback_player):
+		setup_complete = feedback_player.is_setup_complete()
+		var engine_stream: AudioStreamWAV = feedback_player.get_engine_stream()
+		var tire_stream: AudioStreamWAV = feedback_player.get_tire_stream()
+		if engine_stream != null:
+			engine_stream_bytes = int(engine_stream.data.size())
+		if tire_stream != null:
+			tire_stream_bytes = int(tire_stream.data.size())
+		estimated_bytes = feedback_player.estimated_memory_bytes()
+		last_pitch = feedback_player.get_last_engine_pitch_scale()
+		last_engine_db = feedback_player.get_last_engine_volume_db()
+		last_tire_db = feedback_player.get_last_tire_volume_db()
+		var engine_player := feedback_player.get_engine_player()
+		var tire_player := feedback_player.get_tire_player()
+		engine_playing = engine_player != null and engine_player.playing
+		tire_playing = tire_player != null and tire_player.playing
+	return {
+		"audio_ready": is_audio_ready(),
+		"audio_setup_complete": setup_complete,
+		"audio_updates": audio_updates,
+		"audio_apply_attempts": audio_apply_attempts,
+		"audio_rejected_updates": audio_rejected_updates,
+		"audio_error": audio_error,
+		"engine_stream_bytes": engine_stream_bytes,
+		"tire_stream_bytes": tire_stream_bytes,
+		"estimated_memory_bytes": estimated_bytes,
+		"last_engine_pitch_scale": last_pitch,
+		"last_engine_volume_db": last_engine_db,
+		"last_tire_volume_db": last_tire_db,
+		"engine_voice_playing": engine_playing,
+		"tire_voice_playing": tire_playing,
+	}
+
+
 ## Presentation-side counters for validation reporting. These describe
 ## presentation activity only; they never gate or alter the simulation run.
 func get_presentation_telemetry() -> Dictionary:
@@ -414,6 +512,7 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		_update_telemetry(result)
 		_append_tick_log(result)
 		_update_presentation()
+		_update_audio_feedback(command)
 		return result
 	var reason := result.rejection_reason
 	if reason.is_empty():
@@ -514,6 +613,30 @@ func _build_camera_rig() -> void:
 		camera_rig.get_camera().current = true
 	if body != null:
 		camera_rig.set_target(body)
+
+
+## Builds the laboratory's one `VehicleFeedbackPlayer`. The component owns its
+## two voices and performs its own bounded reference setup on entrance. This
+## owner starts both voices parked at the idle targets `setup()` installs;
+## headless dummy audio accepts the play flags but proves no audible output.
+## Repeated calls are refused so `configure()` can never leave duplicate
+## players or voices behind.
+func _build_audio_feedback() -> void:
+	if feedback_player != null and is_instance_valid(feedback_player):
+		return
+	var player := VehicleFeedbackScript.new()
+	player.name = "VehicleFeedback"
+	add_child(player)
+	feedback_player = player
+	if not player.is_setup_complete():
+		audio_error = player.get_last_error()
+		print("[drive_lab] PRESENTATION DEFECT: ", audio_error)
+		return
+	var engine_player := player.get_engine_player()
+	var tire_player := player.get_tire_player()
+	if engine_player != null and tire_player != null:
+		engine_player.play()
+		tire_player.play()
 
 
 ## Builds the laboratory's own presentation nodes: one `CanvasLayer` carrying
@@ -669,6 +792,31 @@ func _update_speed_hud() -> void:
 		hud_error = "speed HUD refused a committed-state update"
 
 
+## Applies one committed state and the already-accepted command to the single
+## feedback component. Called only from the `COMMITTED` branch of
+## `step_once()`, so an adapter refusal never reaches audio and audio never
+## triggers a second motor call. A component refusal is recorded and counted;
+## it never halts the simulation.
+func _update_audio_feedback(command) -> void:
+	if feedback_player == null or not is_instance_valid(feedback_player):
+		return
+	audio_apply_attempts += 1
+	if state == null or not state.is_finite():
+		_reject_audio_update("committed state is absent or nonfinite at an audio refresh")
+		return
+	if feedback_player.apply(state, command):
+		audio_updates += 1
+		audio_error = ""
+		return
+	_reject_audio_update(feedback_player.get_last_error())
+
+
+func _reject_audio_update(reason: String) -> void:
+	audio_rejected_updates += 1
+	if audio_error.is_empty():
+		audio_error = reason
+
+
 ## Keyboard-mode presentation controls. Called only from `_unhandled_input()`,
 ## which returns immediately in scripted and headless mode, so no GUI input is
 ## ever read there.
@@ -719,6 +867,10 @@ func _reset_run_state() -> void:
 	# lifetime of a node that is reconfigured with a new schedule.
 	hud_updates = 0
 	hud_rejected_updates = 0
+	audio_updates = 0
+	audio_rejected_updates = 0
+	audio_apply_attempts = 0
+	audio_error = ""
 	camera_mode_cycles = 0
 	rear_view_holds = 0
 	last_result = null

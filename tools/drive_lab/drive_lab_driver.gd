@@ -16,6 +16,7 @@ const AdapterScript := preload("res://src/simulation/motor_body_adapter.gd")
 const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
 const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 const HandlingLabBuilderScript := preload("res://src/laboratory/handling_lab_builder.gd")
+const FeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -28,6 +29,27 @@ const ROAD_HALF_WIDTH_M := 6.0
 const LOG_BOUND := 1800
 ## Bounded scripted tick count for the M1.5 presentation case.
 const PRESENTATION_TICKS := 30
+## Bounded tick counts for the M1.5 audio feedback integration case.
+const AUDIO_TICKS := 60
+const AUDIO_REFUSAL_HEAD_TICKS := 10
+## Must match the movement_from_rest schedule used as the committed-trace
+## baseline; the audio case replays it with audio wired.
+const AUDIO_BASELINE_TICKS := 90
+## Independent oracle constants mirroring the committed component's documented
+## provisional map. They exist so validation compares measured playback targets
+## against an independent calculation rather than trusting the component.
+const FEEDBACK_SPEED_FULL_M_S := 65.0
+const FEEDBACK_IDLE_HZ := 55.0
+const FEEDBACK_TOP_HZ := 240.0
+const FEEDBACK_THROTTLE_PITCH_LIFT := 0.25
+const FEEDBACK_IDLE_LEVEL := 0.18
+const FEEDBACK_LEVEL_SPEED_WEIGHT := 0.35
+const FEEDBACK_LEVEL_THROTTLE_WEIGHT := 0.65
+const FEEDBACK_TIRE_SLIP_FULL_DEG := 35.0
+const FEEDBACK_TIRE_SLIP_THRESHOLD_DEG := 2.0
+const FEEDBACK_TIRE_MIN_SPEED_M_S := 3.0
+const FEEDBACK_TIRE_REFERENCE_SPEED_M_S := 30.0
+const FEEDBACK_SILENCE_DB := -80.0
 ## Independent conversion oracle, mirroring the HUD's documented km/h factor.
 const KMH_PER_M_S := 3.6
 ## Bounded wait for a synthetic key event to reach the input pipeline.
@@ -56,6 +78,7 @@ const CASE_IDS: Array[String] = [
 	"presentation_integration",
 	"keyboard_focus_lifecycle",
 	"reconfigure_presentation_counters",
+	"audio_feedback_integration",
 ]
 
 var d := DriveLabChecks.new()
@@ -63,6 +86,9 @@ var measurements: Dictionary = {}
 var _results: Array[Dictionary] = []
 var _holder: Node3D = null
 var _input_probe: InputEventProbe = null
+## Committed trace captured by `movement_from_rest`; the audio case replays the
+## same schedule and requires a bit-identical simulation trace.
+var _baseline_trace: Array = []
 
 
 ## Records synthetic key events that reach the input pipeline. A check that
@@ -144,6 +170,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_keyboard_focus_lifecycle()
 		"reconfigure_presentation_counters":
 			await _case_reconfigure_presentation_counters()
+		"audio_feedback_integration":
+			await _case_audio_feedback_integration()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	var result := {
@@ -559,6 +587,8 @@ func _case_movement_from_rest() -> void:
 	measurements["final_speed_m_s"] = lab.state.speed_m_s()
 	measurements["forward_distance_m"] = station
 	measurements["max_prediction_discrepancy_m"] = max_prediction
+	_baseline_trace = _compact_tick_trace(lab.tick_log)
+	measurements["baseline_trace_entries"] = _baseline_trace.size()
 	await _teardown_lab(lab)
 
 
@@ -708,6 +738,21 @@ func _record_trace(commands: Array) -> Dictionary:
 		"state": d.snapshot_state(lab.state),
 	}
 	await _teardown_lab(lab)
+	return out
+
+
+## Compact committed-trace projection used for bit-identical comparisons.
+## Simulation-only fields exclude presentation counters that legitimately differ
+## between cases.
+func _compact_tick_trace(log: Array) -> Array:
+	var out: Array = []
+	for record in log:
+		out.append({
+			"position_m": record["position_m"],
+			"velocity_m_s": record["velocity_m_s"],
+			"heading_rad": record["heading_rad"],
+			"body_transform": record["body_transform"],
+		})
 	return out
 
 
@@ -1407,6 +1452,480 @@ func _case_reconfigure_presentation_counters() -> void:
 	measurements["reconfig_first_committed"] = int(first_run["committed"])
 	measurements["reconfig_second_committed"] = int(second_run["committed"])
 	await _teardown_lab(lab)
+
+
+# --- M1.5 audio feedback integration --------------------------------------
+
+
+## Wires the committed `VehicleFeedbackPlayer` into the laboratory's real node
+## tree and proves the integration is honest: exactly one component under the
+## laboratory owning exactly two named voices, startup parked at the independent
+## idle targets, mapped pitch/gain changing on real committed acceleration
+## ticks, stable stream references and PCM across those commits, no audio apply
+## on an adapter refusal, counted diagnostic refusals when the component is
+## torn down, one component and two voices across reconfiguration, and a
+## bit-identical committed simulation trace against the movement baseline.
+## Headless dummy audio cannot certify audible quality; see README.
+func _case_audio_feedback_integration() -> void:
+	await _audio_structure_and_startup_checks()
+	await _audio_acceleration_mapping_checks()
+	await _audio_adapter_refusal_checks()
+	await _audio_apply_refusal_checks()
+	await _audio_reconfigure_and_trace_checks()
+
+
+func _audio_api_available(lab) -> bool:
+	var required := [
+		"get_feedback_player", "is_audio_ready", "get_audio_error",
+		"get_audio_telemetry",
+	]
+	var missing: Array = []
+	for name in required:
+		if not lab.has_method(name):
+			missing.append(name)
+	d.check(missing.is_empty(), "audio.api_present: missing " + str(missing))
+	return missing.is_empty()
+
+
+func _audio_structure_and_startup_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _audio_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	d.check(not lab.failed, "audio.startup_not_failed: " + str(lab.failure_reason))
+	d.check(str(lab.get_audio_error()).is_empty(), "audio.no_startup_error: " + str(lab.get_audio_error()))
+	d.check(lab.is_audio_ready(), "audio.component_ready")
+	var player = lab.get_feedback_player()
+	d.check(player != null, "audio.player_present")
+	if player == null:
+		await _teardown_lab(lab)
+		return
+	d.check(player.get_parent() == lab, "audio.player_owned_by_laboratory")
+	d.check(player.get_script() == FeedbackScript, "audio.uses_committed_component")
+	d.check(
+		d.count_script_instances(get_tree().root, FeedbackScript) == 1,
+		"audio.exactly_one_component_in_tree"
+	)
+	d.check(player.is_setup_complete(), "audio.setup_complete")
+	d.check(player.get_child_count() == 2, "audio.owns_exactly_two_voices")
+	var engine_player = player.get_node_or_null("Engine")
+	var tire_player = player.get_node_or_null("Tire")
+	d.check(
+		engine_player is AudioStreamPlayer and tire_player is AudioStreamPlayer,
+		"audio.named_voices_are_audio_stream_players"
+	)
+	if engine_player != null:
+		d.check(engine_player.get_parent() == player, "audio.engine_voice_owned_by_component")
+	if tire_player != null:
+		d.check(tire_player.get_parent() == player, "audio.tire_voice_owned_by_component")
+	d.check(
+		d.count_class_instances(get_tree().root, "AudioStreamPlayer") == 2,
+		"audio.exactly_two_voices_in_tree"
+	)
+	var engine_stream: AudioStreamWAV = player.get_engine_stream()
+	var tire_stream: AudioStreamWAV = player.get_tire_stream()
+	d.check(engine_stream is AudioStreamWAV and tire_stream is AudioStreamWAV, "audio.both_streams_are_wav")
+	if engine_stream != null:
+		d.check(engine_stream.data.size() > 0, "audio.engine_pcm_present")
+	if tire_stream != null:
+		d.check(tire_stream.data.size() > 0, "audio.tire_pcm_present")
+	if engine_player != null and engine_stream != null:
+		d.check(engine_player.stream == engine_stream, "audio.engine_voice_assigned_the_engine_stream")
+	if tire_player != null and tire_stream != null:
+		d.check(tire_player.stream == tire_stream, "audio.tire_voice_assigned_the_tire_stream")
+
+	# Startup must be parked/idle: no commit, no apply attempt, idle targets and
+	# both voices playing under the dummy driver. Values only; no audible claim.
+	d.check(int(lab.ticks_committed) == 0, "audio.startup_before_any_commit")
+	var telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(telemetry["audio_setup_complete"]), "audio.startup_setup_complete_flag")
+	d.check(int(telemetry["audio_updates"]) == 0, "audio.startup_no_apply_yet")
+	d.check(int(telemetry["audio_rejected_updates"]) == 0, "audio.startup_no_refused_apply")
+	d.check(int(telemetry["audio_apply_attempts"]) == 0, "audio.startup_no_apply_attempt")
+	d.check(bool(telemetry["engine_voice_playing"]), "audio.startup_engine_voice_playing")
+	d.check(bool(telemetry["tire_voice_playing"]), "audio.startup_tire_voice_playing")
+	d.check_close(
+		float(telemetry["last_engine_pitch_scale"]),
+		feedback_oracle_pitch(0.0, 0.0), 1e-6, "audio.startup_idle_pitch"
+	)
+	d.check_close(
+		float(telemetry["last_engine_volume_db"]),
+		feedback_oracle_engine_db(0.0, 0.0), 1e-6, "audio.startup_idle_engine_level"
+	)
+	d.check_close(
+		float(telemetry["last_tire_volume_db"]),
+		FEEDBACK_SILENCE_DB, 1e-6, "audio.startup_tires_silent"
+	)
+	measurements["audio_idle_pitch"] = float(telemetry["last_engine_pitch_scale"])
+	measurements["audio_idle_engine_db"] = float(telemetry["last_engine_volume_db"])
+	measurements["audio_engine_pcm_bytes"] = int(telemetry["engine_stream_bytes"])
+	measurements["audio_tire_pcm_bytes"] = int(telemetry["tire_stream_bytes"])
+	await _teardown_lab(lab)
+
+
+func _audio_acceleration_mapping_checks() -> void:
+	var commands: Array = []
+	for _index in range(AUDIO_TICKS):
+		commands.append(d.throttle_command(1.0))
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	if not _audio_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	var player = lab.get_feedback_player()
+	var engine_stream: AudioStreamWAV = player.get_engine_stream() if player != null else null
+	var tire_stream: AudioStreamWAV = player.get_tire_stream() if player != null else null
+	if player == null or engine_stream == null or tire_stream == null:
+		d.check(false, "audio.acceleration_fixture_ready")
+		await _teardown_lab(lab)
+		return
+	var engine_data: PackedByteArray = engine_stream.data.duplicate()
+	var tire_data: PackedByteArray = tire_stream.data.duplicate()
+
+	var pitch_first := 0.0
+	var pitch_previous := 0.0
+	var engine_db_first := 0.0
+	var engine_db_previous := 0.0
+	var monotonic_pitch := true
+	var monotonic_engine_db := true
+	var oracle_mismatches := 0
+	var last_pitch := 0.0
+	var last_engine_db := 0.0
+	var last_tire_db := 0.0
+	lab.start()
+	for index in range(AUDIO_TICKS):
+		await get_tree().physics_frame
+		if lab.failed:
+			break
+		var telemetry: Dictionary = lab.get_audio_telemetry()
+		var pitch := float(telemetry["last_engine_pitch_scale"])
+		var engine_db := float(telemetry["last_engine_volume_db"])
+		var tire_db := float(telemetry["last_tire_volume_db"])
+		if index == 0:
+			pitch_first = pitch
+			engine_db_first = engine_db
+		else:
+			if pitch < pitch_previous - 1e-9:
+				monotonic_pitch = false
+			if engine_db < engine_db_previous - 1e-9:
+				monotonic_engine_db = false
+		pitch_previous = pitch
+		engine_db_previous = engine_db
+		last_pitch = pitch
+		last_engine_db = engine_db
+		last_tire_db = tire_db
+		var expected_pitch := feedback_oracle_pitch(lab.state.speed_m_s(), 1.0)
+		var expected_engine_db := feedback_oracle_engine_db(lab.state.speed_m_s(), 1.0)
+		var expected_tire_db := feedback_oracle_tire_db(
+			lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded
+		)
+		if absf(pitch - expected_pitch) > 1e-6:
+			oracle_mismatches += 1
+		if absf(engine_db - expected_engine_db) > 1e-6:
+			oracle_mismatches += 1
+		if absf(tire_db - expected_tire_db) > 1e-6:
+			oracle_mismatches += 1
+
+	d.check(not lab.failed, "audio.acceleration_run_not_failed: " + str(lab.failure_reason))
+	d.check(int(lab.ticks_committed) == AUDIO_TICKS, "audio.all_acceleration_ticks_committed")
+	var final_telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(final_telemetry["audio_updates"]) == AUDIO_TICKS, "audio.one_update_per_committed_tick")
+	d.check(int(final_telemetry["audio_apply_attempts"]) == AUDIO_TICKS, "audio.one_apply_attempt_per_committed_tick")
+	d.check(int(final_telemetry["audio_rejected_updates"]) == 0, "audio.no_refused_apply_on_normal_run")
+	d.check(monotonic_pitch, "audio.engine_pitch_monotonic_over_acceleration")
+	d.check(monotonic_engine_db, "audio.engine_level_monotonic_over_acceleration")
+	d.check(last_pitch > pitch_first, "audio.engine_pitch_rises_with_speed")
+	d.check(last_engine_db > engine_db_first, "audio.engine_level_rises_with_speed")
+	d.check(
+		oracle_mismatches == 0,
+		"audio.mapping_matches_independent_oracle (mismatches=%d)" % oracle_mismatches
+	)
+	d.check_close(
+		last_pitch, feedback_oracle_pitch(lab.state.speed_m_s(), 1.0), 1e-6,
+		"audio.final_pitch_oracle"
+	)
+	d.check_close(
+		last_engine_db, feedback_oracle_engine_db(lab.state.speed_m_s(), 1.0), 1e-6,
+		"audio.final_engine_level_oracle"
+	)
+	d.check_close(
+		last_tire_db,
+		feedback_oracle_tire_db(lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded),
+		1e-6, "audio.final_tire_level_oracle"
+	)
+	d.check(player.get_engine_stream() == engine_stream, "audio.engine_stream_reference_stable")
+	d.check(player.get_tire_stream() == tire_stream, "audio.tire_stream_reference_stable")
+	d.check(engine_stream.data == engine_data, "audio.engine_pcm_unchanged_across_commits")
+	d.check(tire_stream.data == tire_data, "audio.tire_pcm_unchanged_across_commits")
+	d.check(player.get_child_count() == 2, "audio.still_exactly_two_voices_after_commits")
+	d.check(
+		d.count_class_instances(get_tree().root, "AudioStreamPlayer") == 2,
+		"audio.no_duplicate_voices_after_commits"
+	)
+	measurements["audio_final_speed_m_s"] = lab.state.speed_m_s()
+	measurements["audio_final_pitch"] = last_pitch
+	measurements["audio_final_engine_db"] = last_engine_db
+	measurements["audio_oracle_mismatches"] = oracle_mismatches
+	await _teardown_lab(lab)
+
+
+func _audio_adapter_refusal_checks() -> void:
+	var commands: Array = []
+	for _index in range(AUDIO_REFUSAL_HEAD_TICKS):
+		commands.append(d.throttle_command(1.0))
+	commands.append(null)
+	for _index in range(10):
+		commands.append(d.throttle_command(1.0))
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	await _settle()
+	var player = lab.get_feedback_player()
+	if player == null:
+		d.check(false, "audio.refusal.fixture_ready")
+		await _teardown_lab(lab)
+		return
+	lab.start()
+	var guard := 0
+	while (
+		int(lab.ticks_committed) < AUDIO_REFUSAL_HEAD_TICKS
+		and guard < 400
+		and not lab.failed
+	):
+		await get_tree().physics_frame
+		guard += 1
+	var head_telemetry: Dictionary = lab.get_audio_telemetry()
+	var updates_at_head := int(head_telemetry["audio_updates"])
+	var attempts_at_head := int(head_telemetry["audio_apply_attempts"])
+	var rejected_at_head := int(head_telemetry["audio_rejected_updates"])
+	var pitch_at_head: float = player.get_last_engine_pitch_scale()
+	var engine_db_at_head: float = player.get_last_engine_volume_db()
+	var tire_db_at_head: float = player.get_last_tire_volume_db()
+	while not lab.failed and guard < 800:
+		await get_tree().physics_frame
+		guard += 1
+	d.check(lab.failed, "audio.refusal.adapter_refusal_detected")
+	d.check(str(lab.failure_reason) != "", "audio.refusal.reason_reported")
+	d.check(int(lab.ticks_committed) == AUDIO_REFUSAL_HEAD_TICKS, "audio.refusal.committed_before_refusal")
+	d.check(int(lab.steps_called) == AUDIO_REFUSAL_HEAD_TICKS + 1, "audio.refusal.one_refused_step")
+	var after_telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(after_telemetry["audio_updates"]) == updates_at_head, "audio.refusal.no_apply_after_refusal")
+	d.check(
+		int(after_telemetry["audio_apply_attempts"]) == attempts_at_head,
+		"audio.refusal.no_apply_attempt_after_refusal"
+	)
+	d.check(
+		int(after_telemetry["audio_rejected_updates"]) == rejected_at_head,
+		"audio.refusal.rejection_counter_unchanged"
+	)
+	d.check(
+		int(after_telemetry["audio_updates"]) == AUDIO_REFUSAL_HEAD_TICKS,
+		"audio.refusal.updates_equal_committed_ticks"
+	)
+	d.check(
+		int(after_telemetry["audio_apply_attempts"]) == AUDIO_REFUSAL_HEAD_TICKS,
+		"audio.refusal.attempts_equal_committed_ticks"
+	)
+	d.check(player.get_last_engine_pitch_scale() == pitch_at_head, "audio.refusal.engine_pitch_unchanged")
+	d.check(player.get_last_engine_volume_db() == engine_db_at_head, "audio.refusal.engine_gain_unchanged")
+	d.check(player.get_last_tire_volume_db() == tire_db_at_head, "audio.refusal.tire_gain_unchanged")
+	d.check(str(after_telemetry["audio_error"]).is_empty(), "audio.refusal.no_apply_error")
+	if not lab.tick_log.is_empty():
+		var last: Dictionary = lab.tick_log[-1]
+		d.check(lab.state.position_m == last["position_m"], "audio.refusal.state_unchanged")
+		d.check(lab.body.global_transform == last["body_transform"], "audio.refusal.body_unchanged")
+	await _teardown_lab(lab)
+
+
+func _audio_apply_refusal_checks() -> void:
+	var commands: Array = []
+	for _index in range(5):
+		commands.append(d.throttle_command(1.0))
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	if not _audio_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	var player = lab.get_feedback_player()
+	if player == null or not player.is_setup_complete():
+		d.check(false, "audio.apply_refusal.fixture_ready")
+		await _teardown_lab(lab)
+		return
+	player.teardown()
+	d.check(not player.is_setup_complete(), "audio.apply_refusal.setup_torn_down")
+	lab.set_auto_tick(false)
+	var steps_before := int(lab.steps_called)
+	var result = lab.step_once(d.throttle_command(1.0))
+	d.check(
+		result != null and int(result.status) == int(AdapterScript.Status.COMMITTED),
+		"audio.apply_refusal.simulation_still_commits"
+	)
+	d.check(int(lab.steps_called) == steps_before + 1, "audio.apply_refusal.one_step")
+	d.check(not lab.failed, "audio.apply_refusal.audio_refusal_does_not_fail_simulation")
+	var telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(telemetry["audio_apply_attempts"]) == 1, "audio.apply_refusal.attempt_counted")
+	d.check(int(telemetry["audio_updates"]) == 0, "audio.apply_refusal.no_successful_update")
+	d.check(int(telemetry["audio_rejected_updates"]) == 1, "audio.apply_refusal.refusal_counted")
+	d.check(not str(telemetry["audio_error"]).is_empty(), "audio.apply_refusal.reason_recorded")
+	d.check(not player.get_last_error().is_empty(), "audio.apply_refusal.component_reason_present")
+	d.check(not lab.is_audio_ready(), "audio.apply_refusal.ready_flag_clears")
+	var second = lab.step_once(d.throttle_command(1.0))
+	d.check(
+		second != null and int(second.status) == int(AdapterScript.Status.COMMITTED),
+		"audio.apply_refusal.second_tick_still_commits"
+	)
+	var second_telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(second_telemetry["audio_rejected_updates"]) == 2, "audio.apply_refusal.refusals_accumulate")
+	d.check(int(lab.ticks_committed) == 2, "audio.apply_refusal.simulation_commits_unaffected")
+	# Restoring the component's own lifecycle creates its two voices again; the
+	# laboratory must not have built a duplicate alongside them.
+	var restored: bool = player.setup()
+	d.check(restored and player.is_setup_complete(), "audio.apply_refusal.setup_can_be_restored")
+	d.check(player.get_child_count() == 2, "audio.apply_refusal.restored_voice_count")
+	d.check(
+		d.count_class_instances(get_tree().root, "AudioStreamPlayer") == 2,
+		"audio.apply_refusal.no_duplicate_voices_after_restore"
+	)
+	await _teardown_lab(lab)
+
+
+func _audio_reconfigure_and_trace_checks() -> void:
+	var first_commands: Array = []
+	for _index in range(5):
+		first_commands.append(d.idle_command())
+	var lab = _make_lab(first_commands)
+	if lab == null:
+		return
+	await _settle()
+	var first_run := await _run_auto(lab, first_commands.size())
+	d.check(int(first_run["committed"]) == first_commands.size(), "audio.reconfigure.first_schedule_ran")
+	var player = lab.get_feedback_player()
+	var first_telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(first_telemetry["audio_updates"]) == first_commands.size(), "audio.reconfigure.first_updates")
+
+	var trace_commands: Array = []
+	for _index in range(AUDIO_BASELINE_TICKS):
+		trace_commands.append(d.throttle_command(1.0))
+	var reconfigured: bool = lab.configure(lab.tuning, lab.adapter_config, trace_commands)
+	d.check(reconfigured, "audio.reconfigure.second_configure_accepted")
+	d.check(lab.get_feedback_player() == player, "audio.reconfigure.same_component_kept")
+	d.check(
+		d.count_script_instances(get_tree().root, FeedbackScript) == 1,
+		"audio.reconfigure.exactly_one_component"
+	)
+	d.check(
+		d.count_class_instances(get_tree().root, "AudioStreamPlayer") == 2,
+		"audio.reconfigure.exactly_two_voices"
+	)
+	d.check(player.get_child_count() == 2, "audio.reconfigure.component_keeps_two_children")
+	var reset_telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(int(reset_telemetry["audio_updates"]) == 0, "audio.reconfigure.update_counter_reset")
+	d.check(int(reset_telemetry["audio_apply_attempts"]) == 0, "audio.reconfigure.attempt_counter_reset")
+	d.check(int(reset_telemetry["audio_rejected_updates"]) == 0, "audio.reconfigure.rejection_counter_reset")
+	d.check(str(reset_telemetry["audio_error"]).is_empty(), "audio.reconfigure.error_cleared")
+
+	var second_run := await _run_auto(lab, AUDIO_BASELINE_TICKS)
+	d.check(not lab.failed, "audio.reconfigure.second_run_not_failed: " + str(lab.failure_reason))
+	d.check(int(second_run["committed"]) == AUDIO_BASELINE_TICKS, "audio.reconfigure.second_schedule_committed")
+	var second_telemetry: Dictionary = lab.get_audio_telemetry()
+	d.check(
+		int(second_telemetry["audio_updates"]) == AUDIO_BASELINE_TICKS,
+		"audio.reconfigure.second_updates_equal_commits"
+	)
+	d.check(int(second_telemetry["audio_rejected_updates"]) == 0, "audio.reconfigure.second_no_refusals")
+
+	d.check(not _baseline_trace.is_empty(), "audio.trace.baseline_present")
+	if not _baseline_trace.is_empty():
+		d.check(lab.tick_log.size() == _baseline_trace.size(), "audio.trace.entry_count_matches_baseline")
+		var mismatches := 0
+		for index in range(mini(lab.tick_log.size(), _baseline_trace.size())):
+			var record: Dictionary = lab.tick_log[index]
+			var baseline: Dictionary = _baseline_trace[index]
+			if record["position_m"] != baseline["position_m"]:
+				mismatches += 1
+			if record["velocity_m_s"] != baseline["velocity_m_s"]:
+				mismatches += 1
+			if record["heading_rad"] != baseline["heading_rad"]:
+				mismatches += 1
+			if record["body_transform"] != baseline["body_transform"]:
+				mismatches += 1
+		d.check(
+			mismatches == 0,
+			"audio.trace.bit_identical_to_audio_enabled_baseline (mismatches=%d)" % mismatches
+		)
+		measurements["audio_trace_mismatches"] = mismatches
+	measurements["audio_trace_entries"] = lab.tick_log.size()
+
+	await _teardown_lab(lab)
+	d.check(not is_instance_valid(player), "audio.teardown.component_freed")
+	d.check(
+		d.count_script_instances(get_tree().root, FeedbackScript) == 0,
+		"audio.teardown.no_component_left_in_tree"
+	)
+	d.check(
+		d.count_class_instances(get_tree().root, "AudioStreamPlayer") == 0,
+		"audio.teardown.no_voices_left_in_tree"
+	)
+
+
+## Independent playback-target oracle mirroring the committed component's
+## documented provisional coefficients. Validation compares measured values
+## against these formulas rather than trusting the component under test.
+func feedback_oracle_pitch(speed_m_s: float, throttle: float) -> float:
+	var speed_norm := clampf(speed_m_s / FEEDBACK_SPEED_FULL_M_S, 0.0, 1.0)
+	var fundamental := (
+		FEEDBACK_IDLE_HZ
+		* pow(FEEDBACK_TOP_HZ / FEEDBACK_IDLE_HZ, speed_norm)
+		* (1.0 + FEEDBACK_THROTTLE_PITCH_LIFT * throttle)
+	)
+	var reference := FEEDBACK_TOP_HZ * (1.0 + FEEDBACK_THROTTLE_PITCH_LIFT)
+	return clampf(
+		fundamental / reference,
+		FeedbackScript.MIN_PITCH_SCALE,
+		FeedbackScript.MAX_PITCH_SCALE
+	)
+
+
+func feedback_oracle_engine_db(speed_m_s: float, throttle: float) -> float:
+	var speed_norm := clampf(speed_m_s / FEEDBACK_SPEED_FULL_M_S, 0.0, 1.0)
+	var drive := clampf(
+		FEEDBACK_LEVEL_SPEED_WEIGHT * speed_norm
+		+ FEEDBACK_LEVEL_THROTTLE_WEIGHT * throttle,
+		0.0, 1.0
+	)
+	var level := FEEDBACK_IDLE_LEVEL + (1.0 - FEEDBACK_IDLE_LEVEL) * drive
+	return clampf(
+		linear_to_db(maxf(level, 1.0e-4)),
+		FeedbackScript.MIN_VOLUME_DB,
+		FeedbackScript.MAX_VOLUME_DB
+	)
+
+
+func feedback_oracle_tire_db(slip_deg: float, speed_m_s: float, grounded: bool) -> float:
+	if not grounded:
+		return FEEDBACK_SILENCE_DB
+	var threshold_norm := clampf(
+		FEEDBACK_TIRE_SLIP_THRESHOLD_DEG / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0
+	)
+	var slip_norm := clampf(absf(slip_deg) / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0)
+	var speed_factor := clampf(
+		(speed_m_s - FEEDBACK_TIRE_MIN_SPEED_M_S)
+		/ (FEEDBACK_TIRE_REFERENCE_SPEED_M_S - FEEDBACK_TIRE_MIN_SPEED_M_S),
+		0.0, 1.0
+	)
+	var intensity := smoothstep(threshold_norm, 1.0, slip_norm) * speed_factor
+	return clampf(
+		linear_to_db(maxf(intensity, 1.0e-4)),
+		FeedbackScript.MIN_VOLUME_DB,
+		FeedbackScript.MAX_VOLUME_DB
+	)
 
 
 # --- Bounded waits and synthetic input -------------------------------------
