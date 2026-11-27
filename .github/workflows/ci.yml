@@ -400,6 +400,13 @@ jobs:
             "SIGTERM releases the advisory lock and leaves no package -> yes" \
             "stale persistent lock files are inert after SIGTERM -> yes" \
             "attempt binding requires the exact bounded header line -> yes" \
+            "the attempt header is read through the held descriptor -> yes" \
+            "a symlink to the authentic report inode fails the bound-identity check -> yes" \
+            "an unbound inherited regular report is refused before any path read -> yes" \
+            "a direct inner unbound inherited report is refused before any path read -> yes" \
+            "an early .ci-lock refusal never appends to an unbound inherited report -> yes" \
+            "a missing inherited report path is not created by an early refusal -> yes" \
+            "a FIFO substituted at the header-read seam does not hang the export gate -> yes" \
             "a partial report body is never linked or published -> yes" \
             "corrupted PYTHONHOME still exports because preflight and checker share -I -> yes" \
             "a failing writer that deletes the report leaves no recreated verdict -> yes" \

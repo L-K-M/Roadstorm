@@ -308,6 +308,23 @@ rm -rf "$PUB_DIR"; mkdir -p "$PUB_DIR"
 printf 'attempt body\n' >"$PUB_DIR/source.txt"
 _inode() { ls -i "$1" 2>/dev/null | awk '{print $1}'; }
 
+# run_bounded_tree <seconds> <command...> : hard-bounded command execution for
+# regression probes that must never hang the suite (for example a FIFO the
+# tooling might open). Prefers coreutils timeout, which signals the child's
+# whole process group on expiry; falls back to ci_run_bounded when neither
+# timeout nor gtimeout exists (best effort: the direct child is killed).
+run_bounded_tree() {
+	_rbt_limit="$1"
+	shift
+	if command -v timeout >/dev/null 2>&1; then
+		timeout "$_rbt_limit" "$@"
+	elif command -v gtimeout >/dev/null 2>&1; then
+		gtimeout "$_rbt_limit" "$@"
+	else
+		ci_run_bounded "$_rbt_limit" "$@"
+	fi
+}
+
 # Positive control first: without it the negative cases below would also pass
 # when the helper is missing or always fails (the vacuity the reviews found).
 _pub_pos=no
@@ -445,6 +462,59 @@ fi
 CASES_RUN=$((CASES_RUN + 1))
 log "case $CASES_RUN: a held descriptor rejects an unlink-and-recreate replacement -> $_ok"
 [ "$_ok" = "yes" ] || { echo "  probe=$_fd_probe dst=$(cat "$FD_BIND/dst" 2>/dev/null)" >&2; }
+
+# A symlink whose target is a second hard link of the authentic report inode
+# must NOT satisfy ci_report_matches_bound_fd: the helper must use one no-follow
+# lstat and require a regular file in that same result. os.stat would follow the
+# symlink and accept it. A second name for the inode is still accepted.
+SYMID="$WORK_DIR/symlink-identity"
+rm -rf "$SYMID"; mkdir -p "$SYMID"
+printf 'attempt body\n' >"$SYMID/a"
+ln "$SYMID/a" "$SYMID/b"
+ln -s "$SYMID/b" "$SYMID/link"
+mkfifo "$SYMID/fifo" 2>/dev/null || true
+_si_out="$(
+	. "$COMMON_SH" >/dev/null 2>&1
+	exec 7<"$SYMID/a"
+	_si_reg=reject; ci_report_matches_bound_fd "$SYMID/a" && _si_reg=ok
+	_si_hard=reject; ci_report_matches_bound_fd "$SYMID/b" && _si_hard=ok
+	_si_link=ok; ci_report_matches_bound_fd "$SYMID/link" || _si_link=reject
+	_si_fifo=ok; ci_report_matches_bound_fd "$SYMID/fifo" || _si_fifo=reject
+	printf 'reg=%s hard=%s link=%s fifo=%s\n' "$_si_reg" "$_si_hard" "$_si_link" "$_si_fifo"
+)"
+_ok=no
+if [ "$_si_out" = "reg=ok hard=ok link=reject fifo=reject" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: a symlink to the authentic report inode fails the bound-identity check -> $_ok"
+[ "$_ok" = "yes" ] || { echo "  probe=$_si_out" >&2; }
+
+# The exact-first-line attempt check has a descriptor form so bound export
+# paths never open the pathname (where a substituted FIFO would block). It must
+# require the whole line, exactly as the path form does.
+HDR_FD="$WORK_DIR/header-fd"
+rm -rf "$HDR_FD"; mkdir -p "$HDR_FD"
+printf 'attempt-id: hdrfd1\ncommand: pin\n' >"$HDR_FD/ok"
+printf 'attempt-id: other\ncommand: pin\n' >"$HDR_FD/bad"
+printf 'comment attempt-id: hdrfd1\n' >"$HDR_FD/comment"
+_hf_out="$(
+	. "$COMMON_SH" >/dev/null 2>&1
+	exec 7<"$HDR_FD/ok"
+	_hf_match=reject; ci_report_has_attempt_header_fd 7 hdrfd1 && _hf_match=ok
+	_hf_wrong=ok; ci_report_has_attempt_header_fd 7 other || _hf_wrong=reject
+	_hf_alphabet=ok; ci_report_has_attempt_header_fd 7 'bad/id' || _hf_alphabet=reject
+	printf 'match=%s wrong=%s alphabet=%s\n' "$_hf_match" "$_hf_wrong" "$_hf_alphabet"
+)"
+_ok=no
+if [ "$_hf_out" = "match=ok wrong=reject alphabet=reject" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: the attempt header is read through the held descriptor -> $_ok"
+[ "$_ok" = "yes" ] || { echo "  probe=$_hf_out" >&2; }
 
 # The report body must be written completely before it is linked. Force the
 # FIRST printf (the attempt-id line) to fail while later printfs succeed: a
@@ -3438,6 +3508,52 @@ end.CI-LOCK"
 	log "case $CASES_RUN: a direct inner newline output path is refused before any Godot process -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-inner-newline.log" >&2; }
 
+	# The early .ci-lock/invalid-output guards run before CI_REPORT_REQUIRE_BOUND
+	# would normally be set by the export paths. An inherited but unbound
+	# ROADSTORM_CI_REPORT must never receive a FAIL append from them, and a
+	# missing inherited path must never be created by that append.
+	UG_OUT="$CONC/unguard-foreign"
+	rm -rf "$UG_OUT" "$CONC/ugcwd-f" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$UG_OUT/reports" "$CONC/ugcwd-f"
+	printf 'foreign evidence\n' >"$UG_OUT/reports/inherited-ug1.txt"
+	( export TMPDIR="$CONC/tmp-ug-f" ROADSTORM_CI_REPORT="$UG_OUT/reports/inherited-ug1.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=ug1
+		ci_rel_at_home "$CONC/ugcwd-f" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$UG_OUT" export --export "Linux x86-64" --out "$CONC/ugcwd-f/ns.ci-lock" ) >"$CONC/unguard-foreign.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/unguard-foreign.log" &&
+		[ "$(cat "$UG_OUT/reports/inherited-ug1.txt")" = "foreign evidence" ] &&
+		! grep -rq 'reason=lock-namespace' "$UG_OUT/reports/inherited-ug1.txt" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -d "$UG_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an early .ci-lock refusal never appends to an unbound inherited report -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/unguard-foreign.log" >&2; }
+
+	UG_MISS="$CONC/unguard-missing"
+	rm -rf "$UG_MISS" "$CONC/ugcwd-m" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$UG_MISS/reports" "$CONC/ugcwd-m"
+	( export TMPDIR="$CONC/tmp-ug-m" ROADSTORM_CI_REPORT="$UG_MISS/reports/missing-ug2.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=ug2
+		ci_rel_at_home "$CONC/ugcwd-m" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$UG_MISS" export --export "Linux x86-64" --out "$CONC/ugcwd-m/ns.CI-LOCK" ) >"$CONC/unguard-missing.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/unguard-missing.log" &&
+		[ ! -e "$UG_MISS/reports/missing-ug2.txt" ] &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -d "$UG_MISS/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a missing inherited report path is not created by an early refusal -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/unguard-missing.log" >&2; }
+
 	# A report source that disappears or stops being a regular file after the
 	# attempt has started must fail closed at both publication sites: no export
 	# writer, no PASS, nonzero exit. The fake --version seam invalidates the
@@ -3532,13 +3648,17 @@ EOF
 	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-noattempt.log" >&2; }
 
 	# A regular but headerless inherited ROADSTORM_CI_REPORT must not pass the
-	# publication handoff at either call site.
+	# publication handoff at either call site. The descriptor is bound so the
+	# failure comes from the exact-first-line header check through fd 7, not
+	# from the missing-identity gate.
 	HDR_OUT="$CONC/pub-hdrless-outer"
 	rm -rf "$HDR_OUT" "$CONC/hdrcwd-o" "$PUB_WRITER"
 	mkdir -p "$HDR_OUT/reports" "$CONC/hdrcwd-o"
 	printf 'foreign bytes with no attempt header\n' >"$HDR_OUT/reports/hdrless-o.txt"
+	HDR_O_ID="$(ci_report_identity "$HDR_OUT/reports/hdrless-o.txt")"
 	( export TMPDIR="$CONC/tmp-hdr-o" ROADSTORM_CI_REPORT="$HDR_OUT/reports/hdrless-o.txt" \
-		ROADSTORM_CI_ATTEMPT_ID=hdr1
+		ROADSTORM_CI_ATTEMPT_ID=hdr1 ROADSTORM_CI_REPORT_IDENTITY="$HDR_O_ID" ROADSTORM_CI_REPORT_FD=7
+		exec 7<"$HDR_OUT/reports/hdrless-o.txt"
 		ci_rel_at_home "$CONC/hdrcwd-o" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
 			--out "$HDR_OUT" export --export "Linux x86-64" --out "$CONC/hdrcwd-o/pkg" ) >"$CONC/pub-hdrless-outer.log" 2>&1
 	_pub_rc=$?
@@ -3559,8 +3679,10 @@ EOF
 	rm -rf "$HDR_INNER" "$CONC/hdrcwd-i" "$PUB_WRITER"
 	mkdir -p "$HDR_INNER/reports" "$CONC/hdrcwd-i"
 	printf 'foreign bytes with no attempt header\n' >"$HDR_INNER/reports/hdrless-i.txt"
+	HDR_I_ID="$(ci_report_identity "$HDR_INNER/reports/hdrless-i.txt")"
 	( export TMPDIR="$CONC/tmp-hdr-i" ROADSTORM_CI_REPORT="$HDR_INNER/reports/hdrless-i.txt" \
-		ROADSTORM_CI_ATTEMPT_ID=hdr2
+		ROADSTORM_CI_ATTEMPT_ID=hdr2 ROADSTORM_CI_REPORT_IDENTITY="$HDR_I_ID" ROADSTORM_CI_REPORT_FD=7
+		exec 7<"$HDR_INNER/reports/hdrless-i.txt"
 		ci_rel_at_home "$CONC/hdrcwd-i" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
 			--out "$HDR_INNER" __export-inner "Linux x86-64" release "$CONC/hdrcwd-i/pkg" ) >"$CONC/pub-hdrless-inner.log" 2>&1
 	_pub_rc=$?
@@ -3576,6 +3698,55 @@ EOF
 	fi
 	log "case $CASES_RUN: a headerless inherited direct inner report is refused -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-hdrless-inner.log" >&2; }
+
+	# A regular inherited ROADSTORM_CI_REPORT with a plausible attempt id but no
+	# live descriptor must be refused BEFORE any report-path read (a swap to a
+	# FIFO at that moment would otherwise block the awk header check).
+	UNB_OUT="$CONC/pub-unbound-outer"
+	rm -rf "$UNB_OUT" "$CONC/unbcwd-o" "$PUB_WRITER"
+	mkdir -p "$UNB_OUT/reports" "$CONC/unbcwd-o"
+	printf 'attempt-id: unb1\ncommand: export-linux-x86-64\n' >"$UNB_OUT/reports/pre-unb1.txt"
+	UNB_O_ID="$(ci_report_identity "$UNB_OUT/reports/pre-unb1.txt")"
+	( export TMPDIR="$CONC/tmp-unb-o" ROADSTORM_CI_REPORT="$UNB_OUT/reports/pre-unb1.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=unb1 ROADSTORM_CI_REPORT_IDENTITY="$UNB_O_ID"
+		ci_rel_at_home "$CONC/unbcwd-o" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$UNB_OUT" export --export "Linux x86-64" --out "$CONC/unbcwd-o/pkg" ) >"$CONC/pub-unbound-outer.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'no authentic attempt-report identity' "$CONC/pub-unbound-outer.log" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/unbcwd-o/pkg" ] &&
+		[ ! -e "$CONC/unbcwd-o/pkg.ci-lock" ] && [ ! -d "$UNB_OUT/attempts" ] &&
+		[ "$(cat "$UNB_OUT/reports/pre-unb1.txt")" = "$(printf 'attempt-id: unb1\ncommand: export-linux-x86-64')" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an unbound inherited regular report is refused before any path read -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-unbound-outer.log" >&2; }
+
+	UNB_INNER="$CONC/pub-unbound-inner"
+	rm -rf "$UNB_INNER" "$CONC/unbcwd-i" "$PUB_WRITER"
+	mkdir -p "$UNB_INNER/reports" "$CONC/unbcwd-i"
+	printf 'attempt-id: unb2\ncommand: export-linux-x86-64\n' >"$UNB_INNER/reports/pre-unb2.txt"
+	UNB_I_ID="$(ci_report_identity "$UNB_INNER/reports/pre-unb2.txt")"
+	( export TMPDIR="$CONC/tmp-unb-i" ROADSTORM_CI_REPORT="$UNB_INNER/reports/pre-unb2.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=unb2 ROADSTORM_CI_REPORT_IDENTITY="$UNB_I_ID"
+		ci_rel_at_home "$CONC/unbcwd-i" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$UNB_INNER" __export-inner "Linux x86-64" release "$CONC/unbcwd-i/pkg" ) >"$CONC/pub-unbound-inner.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'no authentic attempt-report identity' "$CONC/pub-unbound-inner.log" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/unbcwd-i/pkg" ] &&
+		[ ! -e "$CONC/unbcwd-i/pkg.ci-lock" ] && [ ! -d "$UNB_INNER/attempts" ] &&
+		[ "$(cat "$UNB_INNER/reports/pre-unb2.txt")" = "$(printf 'attempt-id: unb2\ncommand: export-linux-x86-64')" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a direct inner unbound inherited report is refused before any path read -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-unbound-inner.log" >&2; }
 
 	# Post-publication disappearance: after a successful writer/inventory run,
 	# remove the reserved report and require the final verdict to fail closed
@@ -3651,7 +3822,7 @@ EOF
 		_py_in_rc=$?
 		CASES_RUN=$((CASES_RUN + 1))
 		if [ "$_py_pin_rc" -eq 0 ] && [ "$_py_in_rc" -ne 0 ] &&
-			grep -q 'unusable for the package inventory' "$CONC/py-lin-inner.log" &&
+			grep -q 'no authentic attempt-report identity' "$CONC/py-lin-inner.log" &&
 			! grep -rq 'reason=inventory-python-unavailable' "$CONC/py-lin-inner-out/reports" 2>/dev/null &&
 			[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pycwd/pkg" ] &&
 			[ ! -e "$CONC/pycwd/pkg.ci-lock" ] && [ ! -d "$CONC/py-lin-inner-out/attempts" ]; then
@@ -3853,6 +4024,67 @@ EOF
 	fi
 	log "case $CASES_RUN: a passing writer that swaps the report prints no success -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  rc=$_sw_rc report=$(cat "$SW_REPORT" 2>/dev/null | tr '\n' '|')" >&2; sed 's/^/  | /' "$CONC/passing-swap.log" >&2; }
+
+	# A FIFO substituted for the report pathname at the moment the OLD
+	# path-based header check would open it must not hang the export gate: the
+	# bound header check now reads fd 7, so this seam should never fire. The
+	# whole run stays hard-bounded (a regression to a path read times out).
+	FIFO_OUT="$CONC/pub-fifo-hang"
+	FIFO_REPORT="$FIFO_OUT/reports/inherited-fifo1.txt"
+	AWK_FIFO="$CONC/awk-fifo-seam"
+	rm -rf "$FIFO_OUT" "$AWK_FIFO" "$CONC/fifocwd" "$CONC/fifo-marker"
+	mkdir -p "$FIFO_OUT/reports" "$AWK_FIFO" "$CONC/fifocwd"
+	printf 'attempt-id: fifo1\ncommand: export-linux-x86-64\n' >"$FIFO_REPORT"
+	FIFO_ID="$(ci_report_identity "$FIFO_REPORT")"
+	_real_awk_fifo="$(command -v awk)"
+	cat >"$AWK_FIFO/awk" <<EOF
+#!/bin/sh
+for _af_a in "\$@"; do
+	if [ "\$_af_a" = "$FIFO_REPORT" ]; then
+		rm -f "$FIFO_REPORT" 2>/dev/null
+		mkfifo "$FIFO_REPORT" 2>/dev/null
+		: >"$CONC/fifo-marker"
+		break
+	fi
+done
+exec "$_real_awk_fifo" "\$@"
+EOF
+	chmod +x "$AWK_FIFO/awk"
+	if command -v mkfifo >/dev/null 2>&1; then
+		_fifo_rc=0
+		run_bounded_tree 90 env \
+			FIFO_CI_SH="$CI_SH" FIFO_SPROJ="$SPROJ" FIFO_GODOT="$DELW" \
+			FIFO_CWD="$CONC/fifocwd" FIFO_HOME="$REALHOME" FIFO_TMP="$CONC/tmp-fifo" \
+			FIFO_REPORT="$FIFO_REPORT" FIFO_IDENTITY="$FIFO_ID" \
+			FIFO_OUT="$FIFO_OUT" FIFO_PKG="$CONC/fifocwd/pkg" \
+			FIFO_SHIM="$AWK_FIFO" \
+			sh -c '
+				cd "$FIFO_CWD" || exit 2
+				HOME="$FIFO_HOME"; export HOME
+				unset GODOT_TEMPLATES_DIR
+				exec 7<"$FIFO_REPORT" || exit 2
+				export PATH="$FIFO_SHIM:$PATH" TMPDIR="$FIFO_TMP" \
+					ROADSTORM_CI_REPORT="$FIFO_REPORT" ROADSTORM_CI_ATTEMPT_ID=fifo1 \
+					ROADSTORM_CI_REPORT_IDENTITY="$FIFO_IDENTITY" ROADSTORM_CI_REPORT_FD=7
+				exec sh "$FIFO_CI_SH" --project "$FIFO_SPROJ" --godot "$FIFO_GODOT" \
+					--out "$FIFO_OUT" __export-inner "Linux x86-64" release "$FIFO_PKG"
+			' >"$CONC/pub-fifo-hang.log" 2>&1
+		_fifo_rc=$?
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_fifo_rc" -ne 0 ] && [ ! -e "$CONC/fifo-marker" ] &&
+			! grep -q '\[ci:ok\] export:' "$CONC/pub-fifo-hang.log" &&
+			! grep -q 'export result=pass' "$CONC/pub-fifo-hang.log" &&
+			[ ! -e "$CONC/fifocwd/pkg" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: a FIFO substituted at the header-read seam does not hang the export gate -> $_ok"
+		[ "$_ok" = "yes" ] || { echo "  rc=$_fifo_rc marker=$([ -e "$CONC/fifo-marker" ] && echo y || echo n)" >&2; sed 's/^/  | /' "$CONC/pub-fifo-hang.log" >&2; }
+	else
+		log "note: mkfifo is unavailable; the FIFO header-read seam case was skipped"
+	fi
 
 	# Where the host's real ln supports -T, exercise the genuine GNU/coreutils
 	# fallback with Python disabled rather than the Python-backed emulator.

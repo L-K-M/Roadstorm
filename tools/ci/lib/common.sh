@@ -1125,8 +1125,16 @@ ci_init_report() {
 		# Open the private body read-only and keep that descriptor for the whole
 		# export handoff: it pins the inode, so a later replacement cannot reuse
 		# the freed inode number (the Linux failure mode).
+		#
+		# Probe readability in a subshell first. A failed redirection on the
+		# special builtin `exec` terminates a non-interactive dash shell before
+		# the cleanup below, leaving a .ci-report-body.* file behind (Opus
+		# recheck N3); the subshell turns that ordinary failure into a status.
+		# `command exec` is deliberately NOT used: bash-as-sh clears the
+		# caller's positional parameters around it.
 		exec 7>&-
-		if ! exec 7<"$_body"; then
+		if ! ( : <"$_body" ) 2>/dev/null ||
+			! exec 7<"$_body"; then
 			rm -f "$_body" 2>/dev/null
 			ci_die "cannot hold a read descriptor on the reserved report body $_body; refusing to publish an unbound report"
 		fi
@@ -1138,8 +1146,9 @@ ci_init_report() {
 			CI_REPORT_IDENTITY_TRUSTED=yes
 		else
 			# Descriptor held, but no interpreter to number the inode (Python-less
-			# ln -T host). Reservation still works for pin; export verdict binding
-			# and writer gating stay fail-closed through the capability guard.
+			# ln -T host). Reservation still works for pin; an export refuses
+			# before reading or appending the report because no authentic identity
+			# is bound.
 			CI_REPORT_IDENTITY=""
 			CI_REPORT_IDENTITY_TRUSTED=no
 		fi
@@ -1218,14 +1227,22 @@ print("%d %d" % (st.st_dev, st.st_ino))' "$1" 2>/dev/null
 # ci_report_matches_bound_fd <path> : true when the pathname still refers to
 # the inode pinned by the held descriptor. A replacement with a reused
 # inode number cannot match while the descriptor is open.
+#
+# One no-follow stat supplies BOTH facts: a symlink whose target is a second
+# name for the authentic inode must not pass merely because os.stat follows it,
+# and a FIFO substituted for the report must not pass either. The lstat result
+# must itself be a regular file, matching the descriptor opened on the private
+# body; only then are dev/inode compared.
 ci_report_matches_bound_fd() {
 	[ -n "$CI_REPORT_FD" ] || return 1
-	python3 -I -c 'import os, sys
+	python3 -I -c 'import os, stat as statmod, sys
 path, rfd = sys.argv[1], int(sys.argv[2])
 try:
     expected = os.fstat(rfd)
-    actual = os.stat(path)
+    actual = os.lstat(path)
 except OSError:
+    sys.exit(1)
+if not statmod.S_ISREG(expected.st_mode) or not statmod.S_ISREG(actual.st_mode):
     sys.exit(1)
 if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
     sys.exit(1)' "$1" "$CI_REPORT_FD" 2>/dev/null
@@ -1267,12 +1284,40 @@ finally:
 # reserved report contains EXACTLY this attempt's header line. A substring,
 # comment, prefix or suffix match is not evidence: the whole line must equal
 # "attempt-id: <id>" and the id must use the bounded token alphabet.
+#
+# This reads by pathname and therefore must never be used for a bound export
+# path: a swap to a FIFO between the identity check and this awk open blocks
+# indefinitely. Export paths use ci_report_has_attempt_header_fd instead.
 ci_report_has_attempt_header() {
 	[ -n "$1" ] && [ -n "$2" ] || return 1
 	case "$2" in
 	'' | *[!A-Za-z0-9._-]*) return 1 ;;
 	esac
 	awk -v _crah_id="$2" 'NR == 1 && $0 == "attempt-id: " _crah_id { _crah_found = 1 } END { exit _crah_found ? 0 : 1 }' "$1" 2>/dev/null
+}
+
+# ci_report_first_line_fd <fd> : print the first line of an open descriptor.
+# os.pread reads at offset 0 WITHOUT advancing the shared file offset, so the
+# held descriptor can be re-read later and concurrent writers are undisturbed.
+ci_report_first_line_fd() {
+	python3 -I -c 'import os, sys
+try:
+    data = os.pread(int(sys.argv[1]), 4096, 0)
+except OSError:
+    sys.exit(1)
+sys.stdout.write(data.split(b"\n", 1)[0].decode("utf-8", "replace") + "\n")' "$1" 2>/dev/null
+}
+
+# ci_report_has_attempt_header_fd <fd> <attempt-id> : the same exact-first-line
+# check, but through a held descriptor rather than the pathname. Because the
+# descriptor is the pinned report body, a symlink, regular file or FIFO
+# substituted at the path cannot alter the answer or block the read.
+ci_report_has_attempt_header_fd() {
+	[ -n "$1" ] && [ -n "$2" ] || return 1
+	case "$2" in
+	'' | *[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	[ "$(ci_report_first_line_fd "$1")" = "attempt-id: $2" ]
 }
 
 # The package inventory checker and every capability probe must use the same
@@ -1322,8 +1367,9 @@ ci_link_mechanism() {
 # atomic primitive; Python's os.link binds it portably on the supported macOS
 # and Linux hosts and fails with EEXIST for a regular file, dangling symlink,
 # directory or symlink-to-directory occupant. When Python 3 is unavailable,
-# GNU coreutils/busybox `ln -T` provides the same exact-destination link(2)
-# semantics on Linux. Returns 0 only when the link exists at <destination>;
+# GNU coreutils `ln -T` provides the same exact-destination link(2)
+# semantics on Linux when Python 3 is unavailable; busybox `ln -T` takes the
+# same code path but is not verified on this project's hosts. Returns 0 only when the link exists at <destination>;
 # every failure leaves the destination byte/link-exact. Returns 2 when no
 # usable mechanism exists or a non-collision error (permission, cross-device,
 # unwritable path, broken interpreter) makes retrying pointless; returns 1 for

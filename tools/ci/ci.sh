@@ -307,14 +307,33 @@ _ci_assert_publishable_report() {
 		ci_report "export result=fail reason=no-attempt-id"
 		return "$CI_FAIL"
 	fi
+	# A bound export must hold an authentic identity from a live descriptor. If
+	# it does not, refuse BEFORE any pathname read: the header check for such a
+	# path could block on a FIFO substituted after the checks above, and there is
+	# no verified inode to bind anyway.
+	if [ "${CI_REPORT_REQUIRE_BOUND:-0}" = "1" ] &&
+		[ "${CI_REPORT_IDENTITY_TRUSTED:-no}" != "yes" ]; then
+		ci_fail "export --export: no authentic attempt-report identity is bound to a live descriptor for $CI_REPORT; refusing to read or append the report by path"
+		return "$CI_FAIL"
+	fi
 	if [ -n "$CI_REPORT_IDENTITY" ] &&
 		! ci_report_matches_bound_fd "$CI_REPORT"; then
 		ci_fail "export --export: the report at $CI_REPORT is not the inode pinned by the reserved body; refusing to publish or record a verdict in a replacement"
 		return "$CI_FAIL"
 	fi
-	if ! ci_report_has_attempt_header "$CI_REPORT" "$CI_ATTEMPT_ID"; then
-		ci_fail "export --export: the report source $CI_REPORT does not carry this attempt's attempt-id header; refusing to publish or record a verdict in a foreign/headerless report"
-		return "$CI_FAIL"
+	if [ "${CI_REPORT_IDENTITY_TRUSTED:-no}" = "yes" ]; then
+		# Read the exact first line through the held descriptor at offset 0.
+		# The pathname is deliberately not opened here: a swap to a FIFO between
+		# the identity check and the read would block indefinitely.
+		if ! ci_report_has_attempt_header_fd "$CI_REPORT_FD" "$CI_ATTEMPT_ID"; then
+			ci_fail "export --export: the report source $CI_REPORT does not carry this attempt's attempt-id header; refusing to publish or record a verdict in a foreign/headerless report"
+			return "$CI_FAIL"
+		fi
+	else
+		if ! ci_report_has_attempt_header "$CI_REPORT" "$CI_ATTEMPT_ID"; then
+			ci_fail "export --export: the report source $CI_REPORT does not carry this attempt's attempt-id header; refusing to publish or record a verdict in a foreign/headerless report"
+			return "$CI_FAIL"
+		fi
 	fi
 	return "$CI_OK"
 }
@@ -431,6 +450,11 @@ _ci_early_export_request() {
 ci_early_namespace_guard() {
 	_eng_req="$(_ci_early_export_request "$@" 2>/dev/null)" || return "$CI_OK"
 	[ -n "$_eng_req" ] || return "$CI_OK"
+	# Every refusal below records an export verdict. This runs before the normal
+	# export path can set CI_REPORT_REQUIRE_BOUND, so set it here: an inherited
+	# but unbound ROADSTORM_CI_REPORT must never receive a FAIL line, and a
+	# missing path must never be created by the append.
+	CI_REPORT_REQUIRE_BOUND=1
 	case "$_eng_req" in
 	__ROADSTORM_CI_INVALID_OUTPUT_PATH__)
 		ci_init_logs
@@ -2535,12 +2559,11 @@ EOF
 	# package look successful and left it eligible for the package upload
 	# (Sol recheck 8c6c928).
 	#
-	# Bind the final verdict to the still-present, attempt-bound report. If the
-	# reserved file disappeared after publication, >> would silently recreate a
-	# headerless report and print success while the real evidence is gone; fail
-	# closed instead. POSIX shell cannot atomically append without O_CREAT, so a
-	# hostile unlink in the narrow window between this check and the append is a
-	# documented residual race; observable disappearance fails closed.
+	# Bind the final verdict to the still-present, attempt-bound report. The
+	# append goes through the held descriptor with O_CREAT omitted, so a
+	# missing path is refused rather than recreated; the residual is a hostile
+	# change AFTER the post-append recheck below (or in-place edits of the
+	# genuine inode), which no tool-level check can prevent.
 	if ! _ci_assert_publishable_report; then
 		return "$CI_FAIL"
 	fi
