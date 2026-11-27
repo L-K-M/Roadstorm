@@ -29,6 +29,10 @@ This proves one 60 Hz integration tick at a time:
 - a gentle yaw below the former per-tick skip threshold (about 0.555 rad/s
   for the default tolerance and this hull) is probed on every committed tick,
   so a trailing hull corner cannot creep across a nearby parallel wall;
+- when that probe shortens a proposed yaw, the proposal's longitudinal and
+  lateral velocity scalars are reprojected into the applied heading before any
+  wall response, so a blocked rotation is not published as velocity and no
+  inward component is created solely by the rejected yaw fraction;
 - a wall on a layer excluded from the car mask is crossed with the full
   physical motion committed and the primary prediction matching it, while the
   identical wall on an included layer still stops the car and the prediction;
@@ -164,6 +168,32 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
   defaults to 0.02 m (the pinned solver's penetration slop), is capped at
   0.1 m, and must stay below half the smallest hull extent so the reduced
   probe remains a positive box.
+- Committed-velocity policy: when `heading_constrained` is true, the adapter
+  reprojects `proposal.state.velocity_m_s` from the fully proposed nose frame
+  into `applied_heading` by preserving its longitudinal and lateral scalar
+  components. The two frames are orthonormal, so both scalars and the speed
+  magnitude survive up to rounding; an unconstrained tick keeps the motor
+  velocity untouched. The wall response still runs afterwards and only for a
+  real wall-like contact, now against the reprojected velocity. A translation
+  chord that never touches a wall therefore gets no inward velocity from the
+  yaw fraction the probe refused. The policy removes only that rejected-yaw
+  contribution: an inward component carried by the accepted translation or by
+  a pre-existing lateral scalar remains until a real contact response. It does
+  not scrub tangential speed without contact.
+- Yaw-constrained velocity regression: `yaw_constrained_velocity_policy`
+  stages a real pinned-Jolt parallel wall 5 cm from the hull's right side. The
+  car carries a -0.5 m/s lateral component away from the wall at 2 m/s forward
+  and steers fully right with yaw gain 9.0 (about 0.3 rad/tick proposed), so
+  the translation chord moves away and produces no wall hit while the yawed
+  hull corner would cross the wall. Eight ticks assert the committed pose
+  basis, heading, finite state, exact reprojection of the proposal's scalars,
+  preserved speed bound, nonzero lateral scalar, and that the removed
+  rejected-yaw vector points into the wall and leaves the committed velocity
+  non-inward. Against the pre-policy `915ad48` adapter in an isolated control
+  project the same case fails on the first tick (0.534 m/s reprojection
+  error, full-proposal velocity published into the wall) and later ticks then
+  collide. A clean-ground control with identical steering asserts no
+  constraint and exact motor-velocity passthrough.
 - Orientation probe limits: the probe checks only sampled orientations (tick
   start, proposed pose, and the bisection midpoints), never every intermediate
   rotation; contact along a yaw arc is not guaranteed monotonic, so the

@@ -33,6 +33,19 @@ const GENTLE_YAW_TICKS := 30
 ## ~ 0.00925 rad (about 0.555 rad/s). The low speed keeps translation small.
 const GENTLE_YAW_FORWARD_SPEED_M_S := 0.1
 const GENTLE_YAW_GAIN_GRIP := 5.0
+## Yaw-constrained committed-velocity regression layout: a parallel wall whose
+## near face is 5 cm from the hull's right side. The car carries a lateral
+## component pointing away from the wall while steering hard toward it, so the
+## translation chord moves away (no wall hit) but the proposed yaw swings the
+## long hull's right corner into the wall. The old adapter publishes the full
+## proposal velocity into the wall; the policy reprojects the same scalars into
+## the applied heading.
+const YAW_VELOCITY_WALL_POINT := Vector3(0.95, 2.0, 0.0)
+const YAW_VELOCITY_FORWARD_SPEED_M_S := 2.0
+const YAW_VELOCITY_LATERAL_SPEED_M_S := -0.5
+const YAW_VELOCITY_STEER_GAIN_GRIP := 9.0
+const YAW_VELOCITY_MAX_YAW_RATE_RAD_S := 20.0
+const YAW_VELOCITY_TICKS := 8
 ## Same slab used with its layer excluded from and included in the body mask.
 const MASK_CONSISTENCY_WALL_POINT := Vector3(0.0, 2.0, -10.0)
 const MASK_CONSISTENCY_APPROACH_SPEED_M_S := 20.0
@@ -66,6 +79,7 @@ const CASE_IDS := [
 	"wall_contact_normal_authority",
 	"rotated_hull_wall_orientation",
 	"gentle_yaw_wall_probe",
+	"yaw_constrained_velocity_policy",
 	"envelope_refusal",
 	"work_cap_and_truncation",
 	"fixed_60hz_repeatability",
@@ -191,6 +205,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_rotated_hull_wall_orientation()
 		"gentle_yaw_wall_probe":
 			await _case_gentle_yaw_wall_probe()
+		"yaw_constrained_velocity_policy":
+			await _case_yaw_constrained_velocity_policy()
 		"envelope_refusal":
 			await _case_envelope_refusal()
 		"work_cap_and_truncation":
@@ -1576,6 +1592,210 @@ func _case_gentle_yaw_wall_probe() -> void:
 		"gentle refusal: body pose unchanged"
 	)
 	await _destroy_world(world)
+
+
+func _case_yaw_constrained_velocity_policy() -> void:
+	# Regression for GPT-6.2 Sol interim finding 3: when the installed-pose
+	# probe shortens the proposed yaw, the motor velocity was still published in
+	# the fully proposed nose frame. Here a real pinned-Jolt parallel wall leaves
+	# the translation chord outside the wall (the car's lateral component points
+	# away), but the proposed yaw swings the long hull's right corner into it.
+	# The old adapter commits the full proposal velocity and points into the
+	# wall; the committed-velocity policy reprojects the same longitudinal and
+	# lateral scalars into the applied heading before any wall response.
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+	tuning.yaw_gain_grip = YAW_VELOCITY_STEER_GAIN_GRIP
+	tuning.max_yaw_rate_rad_s = YAW_VELOCITY_MAX_YAW_RATE_RAD_S
+	tuning.lateral_damping_grip_per_s = 0.0
+	var wall_spec := {
+		"point": YAW_VELOCITY_WALL_POINT,
+		"yaw_deg": -90.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(
+		Vector2.ZERO,
+		Vector2(YAW_VELOCITY_LATERAL_SPEED_M_S, YAW_VELOCITY_FORWARD_SPEED_M_S),
+		0.0
+	)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var commands: Array = []
+	for _index in range(YAW_VELOCITY_TICKS):
+		commands.append(d.make_steer_command(1.0, 0.0))
+	var records := await _drive(world, state, commands, tuning, config)
+	d.check(records.size() == YAW_VELOCITY_TICKS, "yawvel: %d ticks driven" % YAW_VELOCITY_TICKS)
+
+	var saw_constraint := false
+	var worst_hull_plane_distance := 0.0
+	var max_speed_error := 0.0
+	var max_reprojection_error := 0.0
+	var rejected_inward_speed_sum := 0.0
+	for index in range(records.size()):
+		var result = records[index]["result"]
+		var label := "yawvel tick %d" % (index + 1)
+		d.check(result.status == AdapterScript.Status.COMMITTED, "%s: committed" % label)
+		if result.committed_state == null:
+			continue
+		d.check(not result.contact, "%s: translation did not hit the wall" % label)
+		d.check(not result.wall_contact, "%s: no wall contact response" % label)
+		d.check(result.heading_constrained, "%s: proposed yaw was constrained" % label)
+		saw_constraint = true
+		var proposed = result.proposed_state
+		var committed = result.committed_state
+		d.check(committed.is_finite(), "%s: finite committed state" % label)
+		d.check(
+			not is_equal_approx(committed.heading_rad, proposed.heading_rad),
+			"%s: applied heading differs from the full proposal" % label
+		)
+		var pose: Transform3D = records[index]["pose"]
+		d.check(
+			pose.basis.is_equal_approx(
+				AdapterScript.basis_from_heading(committed.heading_rad)
+			),
+			"%s: body basis matches the committed heading" % label
+		)
+		d.check_close(pose.origin.x, committed.position_m.x, 1e-5, "%s: body x mapping" % label)
+		d.check_close(pose.origin.z, -committed.position_m.y, 1e-5, "%s: body z mapping" % label)
+
+		# The committed velocity must carry the proposal's longitudinal and
+		# lateral scalars in the applied heading, not the full-proposal yaw.
+		var proposed_heading: float = proposed.heading_rad
+		var committed_heading: float = committed.heading_rad
+		var proposed_forward := Vector2(sin(proposed_heading), cos(proposed_heading))
+		var proposed_right := Vector2(proposed_forward.y, -proposed_forward.x)
+		var longitudinal_speed: float = proposed.velocity_m_s.dot(proposed_forward)
+		var lateral_speed: float = proposed.velocity_m_s.dot(proposed_right)
+		var applied_forward := Vector2(sin(committed_heading), cos(committed_heading))
+		var applied_right := Vector2(applied_forward.y, -applied_forward.x)
+		var expected_velocity: Vector2 = (
+			applied_forward * longitudinal_speed + applied_right * lateral_speed
+		)
+		var reprojection_error: float = expected_velocity.distance_to(
+			committed.velocity_m_s
+		)
+		max_reprojection_error = maxf(max_reprojection_error, reprojection_error)
+		d.check(
+			reprojection_error <= 1e-6,
+			"%s: committed velocity equals the reprojection (error %.9f)"
+			% [label, reprojection_error]
+		)
+		var speed_error: float = absf(committed.speed_m_s() - proposed.speed_m_s())
+		max_speed_error = maxf(max_speed_error, speed_error)
+		d.check(
+			speed_error <= 1e-6,
+			"%s: speed magnitude preserved (error %.9f)" % [label, speed_error]
+		)
+		d.check(
+			committed.speed_m_s() <= proposed.speed_m_s() + 1e-6,
+			"%s: committed speed is bounded by the proposal" % label
+		)
+		d.check_close(
+			float(committed.velocity_m_s.dot(applied_forward)),
+			longitudinal_speed,
+			1e-6,
+			"%s: longitudinal scalar preserved" % label
+		)
+		d.check_close(
+			float(committed.velocity_m_s.dot(applied_right)),
+			lateral_speed,
+			1e-6,
+			"%s: lateral scalar preserved (%.6f m/s)" % [label, lateral_speed]
+		)
+
+		# No inward velocity created solely by the rejected yaw fraction. The
+		# rejected rotation is exactly the difference between the full proposal
+		# and the committed velocity; its wall-normal component must point into
+		# the wall, so removing it leaves the committed velocity less inward.
+		var proposed_world: Vector3 = AdapterScript.road_vector_to_world(
+			proposed.velocity_m_s
+		)
+		var committed_world: Vector3 = AdapterScript.road_vector_to_world(
+			committed.velocity_m_s
+		)
+		var proposed_normal_speed: float = proposed_world.dot(world.wall_normal)
+		var committed_normal_speed: float = committed_world.dot(world.wall_normal)
+		var rejected_normal_speed: float = (
+			(proposed_world - committed_world).dot(world.wall_normal)
+		)
+		rejected_inward_speed_sum += rejected_normal_speed
+		d.check(
+			proposed_normal_speed <= -1e-3,
+			"%s: full proposal points into the wall (%.6f m/s)"
+			% [label, proposed_normal_speed]
+		)
+		d.check(
+			rejected_normal_speed <= -1e-6,
+			"%s: rejected yaw fraction contributed inward speed (%.6f m/s)"
+			% [label, rejected_normal_speed]
+		)
+		d.check(
+			committed_normal_speed >= proposed_normal_speed + 1e-6,
+			"%s: committed velocity is less inward than the proposal (%.6f vs %.6f)"
+			% [label, committed_normal_speed, proposed_normal_speed]
+		)
+		d.check(
+			committed_normal_speed > 0.0,
+			"%s: committed velocity has no inward wall component (%.6f m/s)"
+			% [label, committed_normal_speed]
+		)
+
+		var support: Vector3 = d.box_support_point(
+			pose, world.hull_shape.size, -world.wall_normal
+		)
+		var signed: float = (support - world.wall_point).dot(world.wall_normal)
+		worst_hull_plane_distance = minf(worst_hull_plane_distance, signed)
+		d.check(
+			signed >= -PENETRATION_TOLERANCE_M,
+			"%s: hull passed the wall near face by %.6f m" % [label, -signed]
+		)
+	d.check(saw_constraint, "yawvel: at least one constrained tick")
+	measurements["worst_hull_plane_distance_m"] = worst_hull_plane_distance
+	measurements["max_reprojection_error_mps"] = max_reprojection_error
+	measurements["max_speed_error_mps"] = max_speed_error
+	measurements["rejected_inward_speed_sum_mps"] = rejected_inward_speed_sum
+	await _destroy_world(world)
+
+	# Clean-ground control: identical steering has no wall, so the yaw is not
+	# constrained and the motor velocity must pass through untouched.
+	var open_world := await _build_world(config, {})
+	var open_state := d.make_state(
+		Vector2.ZERO,
+		Vector2(YAW_VELOCITY_LATERAL_SPEED_M_S, YAW_VELOCITY_FORWARD_SPEED_M_S),
+		0.0
+	)
+	await _place_body(open_world, open_state, d.BODY_SUPPORT_Y)
+	var open_records := await _drive(open_world, open_state, commands, tuning, config)
+	var max_open_velocity_error := 0.0
+	for index in range(open_records.size()):
+		var result = open_records[index]["result"]
+		var label := "yawvel open tick %d" % (index + 1)
+		d.check(result.status == AdapterScript.Status.COMMITTED, "%s: committed" % label)
+		if result.committed_state == null:
+			continue
+		d.check(not result.heading_constrained, "%s: clear ground does not constrain yaw" % label)
+		d.check(
+			is_equal_approx(result.committed_state.heading_rad, result.proposed_state.heading_rad),
+			"%s: clear ground preserves the proposed yaw" % label
+		)
+		var error: float = result.committed_state.velocity_m_s.distance_to(
+			result.proposed_state.velocity_m_s
+		)
+		max_open_velocity_error = maxf(max_open_velocity_error, error)
+		d.check(
+			error <= 1e-12,
+			"%s: unconstrained velocity is untouched (error %.9f)" % [label, error]
+		)
+		d.check_close(
+			result.committed_state.speed_m_s(),
+			result.proposed_state.speed_m_s(),
+			1e-9,
+			"%s: speed preserved" % label
+		)
+	measurements["open_ticks"] = open_records.size()
+	measurements["max_open_velocity_error_mps"] = max_open_velocity_error
+	await _destroy_world(open_world)
 
 
 func _case_envelope_refusal() -> void:

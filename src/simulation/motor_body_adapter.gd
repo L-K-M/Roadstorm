@@ -52,7 +52,11 @@ extends RefCounted
 ##     collider in the mask, floor and ramp colliders included, not only
 ##     wall-like normals; flat-ground laboratory staging keeps ordinary ground
 ##     contact outside the reduced box. Zero yaw relies on the translation
-##     sweep's own prediction/commit.
+##     sweep's own prediction/commit. When the probe constrains the yaw, the
+##     proposal's longitudinal/lateral velocity scalars are reprojected into the
+##     applied heading before any wall response, so the blocked fraction of the
+##     rotation is not published as velocity; both scalars and the speed
+##     magnitude are preserved.
 ##   * every swept prediction and installed-pose probe uses the body's actual
 ##     `collision_mask`, so an obstacle excluded by the body mask is not
 ##     considered by the prediction solely because of the query's default.
@@ -521,7 +525,21 @@ static func step(
 	committed.position_m = state_in.position_m + world_vector_to_road(accepted)
 	committed.heading_rad = applied_heading
 
-	var velocity_world := road_vector_to_world(proposal.state.velocity_m_s)
+	# Committed-velocity policy for a constrained yaw. The motor builds its
+	# proposal velocity from longitudinal/lateral scalars in the fully proposed
+	# nose frame. When the installed-orientation probe shortens the yaw,
+	# publishing that velocity would retain the rejected rotation and can point
+	# the car into the wall the hull never reached. Reproject the same two
+	# scalars into the applied heading before any wall response. Both frames are
+	# orthonormal, so the speed bound and the scalar components are preserved;
+	# an unconstrained tick keeps the motor velocity untouched.
+	var committed_velocity_road := proposal.state.velocity_m_s
+	if heading_constrained:
+		committed_velocity_road = _reproject_velocity_road(
+			proposal.state.velocity_m_s, proposed_heading, applied_heading
+		)
+
+	var velocity_world := road_vector_to_world(committed_velocity_road)
 	var authoritative_wall_normal := Vector3.ZERO
 	if wall_hit:
 		authoritative_wall_normal = _select_wall_response_normal(
@@ -567,6 +585,30 @@ static func road_vector_to_world(road: Vector2) -> Vector3:
 ## Road-plane free vector from a world vector (fixed axis mapping, no heading).
 static func world_vector_to_road(world: Vector3) -> Vector2:
 	return Vector2(world.x, -world.z)
+
+## Reproject a road-plane velocity from `proposed_heading_rad` into
+## `applied_heading_rad` by preserving its longitudinal and lateral scalar
+## components. Used when the installed-orientation probe constrains the yaw:
+## the motor constructs its proposal velocity in the proposed nose frame, so
+## committing it unchanged would publish the rejected rotation. The two frames
+## are orthonormal, so both scalar components and the speed magnitude survive
+## (up to rounding). Equal headings return the input vector unchanged.
+static func _reproject_velocity_road(
+	velocity_road: Vector2,
+	proposed_heading_rad: float,
+	applied_heading_rad: float
+) -> Vector2:
+	var proposed_forward := Vector2(
+		sin(proposed_heading_rad), cos(proposed_heading_rad)
+	)
+	var proposed_right := Vector2(proposed_forward.y, -proposed_forward.x)
+	var longitudinal_speed := velocity_road.dot(proposed_forward)
+	var lateral_speed := velocity_road.dot(proposed_right)
+	var applied_forward := Vector2(
+		sin(applied_heading_rad), cos(applied_heading_rad)
+	)
+	var applied_right := Vector2(applied_forward.y, -applied_forward.x)
+	return applied_forward * longitudinal_speed + applied_right * lateral_speed
 
 
 ## Nose forward direction in world space for a road-plane heading.
