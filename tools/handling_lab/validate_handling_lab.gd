@@ -19,6 +19,8 @@ const SETTLE_PHYSICS_FRAMES := 8
 const MAX_WAIT_FRAMES := 1800
 const RAY_TOLERANCE_M := 0.35
 const DIMENSION_TOLERANCE_M := 0.05
+## Tolerance for the measured Jolt collision gap versus the authored jump gap.
+const GAP_MEASUREMENT_TOLERANCE_M := 0.2
 
 const EXPECTED_BAY_IDS: Array[String] = [
 	"bank",
@@ -123,6 +125,7 @@ func _run_checks() -> void:
 	_check_layout_separation()
 	_check_features_and_walls(manifest)
 	_check_ray_probes(manifest)
+	_check_boundary_probes(manifest)
 	_check_determinism()
 
 
@@ -217,6 +220,14 @@ func _check_bays_and_sections(manifest: Dictionary) -> void:
 		if String(section.get("type", "")) == "gap":
 			_check(not has_mesh and not has_body, "sections.gap_has_no_geometry", sid)
 			continue
+		if String(section.get("role", "")) == "strip":
+			# Restarted strips author their own station origin, so their
+			# station range must begin at zero regardless of the road bay.
+			_check(
+				absf(float(section.get("start_s_m", 0.0))) <= 1e-6,
+				"sections.restart_strip_station.%s" % sid,
+				str(section.get("start_s_m", 0.0))
+			)
 		_check(has_mesh, "sections.mesh_present.%s" % sid, "missing MeshInstance3D")
 		_check(has_body, "sections.collider_present.%s" % sid, "missing StaticBody3D")
 		if String(section.get("role", "")) == "road":
@@ -514,6 +525,233 @@ func _check_ray_probes(manifest: Dictionary) -> void:
 		_record_failure("probe.missing.wall_frontal", "authored probe absent")
 
 
+func _check_boundary_probes(manifest: Dictionary) -> void:
+	_check_join_probes(manifest)
+	_check_restart_probes(manifest)
+	_check_jump_gap_probe(manifest)
+
+
+func _metadata_join_keys(manifest: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	for bay in manifest.get("bays", []):
+		var prev: Dictionary = {}
+		for section in bay.get("sections", []):
+			if String(section.get("type", "")) == "gap":
+				prev = {}
+				continue
+			if not prev.is_empty():
+				var station := float(prev.get("end_s_m", 0.0))
+				if absf(station - float(section.get("start_s_m", 0.0))) <= 1e-6:
+					out.append("%s@%.3f" % [String(bay.get("bay_id", "")), station])
+			prev = section
+	return out
+
+
+func _check_join_probes(manifest: Dictionary) -> void:
+	var probes: Dictionary = manifest.get("probe_points", {})
+	if not probes.has("join_probes"):
+		_record_failure("probe.missing.join_probes", "authored join probes absent")
+		return
+	var joins: Array = probes["join_probes"]
+	var metadata := _metadata_join_keys(manifest)
+	_check(
+		joins.size() == metadata.size(),
+		"probe.join_count",
+		"%d probes vs %d metadata joins" % [joins.size(), metadata.size()]
+	)
+	var covered := {}
+	for join in joins:
+		var bay_id := String(join.get("bay_id", ""))
+		var station := float(join.get("station_s_m", 0.0))
+		var before_surface := String(join.get("before_surface_id", ""))
+		var after_surface := String(join.get("after_surface_id", ""))
+		covered["%s@%.3f" % [bay_id, station]] = true
+		var label := "probe.join.%s.%.2f" % [bay_id, station]
+		_run_expected_probe(join.get("before", {}), "%s.before" % label, before_surface)
+		_run_expected_probe(join.get("seam_before", {}), "%s.seam_before" % label, before_surface)
+		_run_expected_probe(join.get("seam_after", {}), "%s.seam_after" % label, after_surface)
+		_run_expected_probe(join.get("after", {}), "%s.after" % label, after_surface)
+	for key in metadata:
+		_check(covered.has(key), "probe.join_coverage.%s" % key, "no authored join probe")
+
+
+func _check_restart_probes(manifest: Dictionary) -> void:
+	var probes: Dictionary = manifest.get("probe_points", {})
+	if not probes.has("restart_probes"):
+		_record_failure("probe.missing.restart_probes", "authored restart probes absent")
+		return
+	var restarts: Array = probes["restart_probes"]
+	_check(restarts.size() >= 1, "probe.restart_count", str(restarts.size()))
+	for entry in restarts:
+		var surface := String(entry.get("surface_id", ""))
+		var label := "probe.restart.%s" % String(entry.get("section_id", ""))
+		_run_expected_probe(entry.get("start", {}), "%s.start" % label, surface)
+		_run_expected_probe(entry.get("end", {}), "%s.end" % label, surface)
+
+
+func _check_jump_gap_probe(manifest: Dictionary) -> void:
+	var probes: Dictionary = manifest.get("probe_points", {})
+	if not probes.has("jump_gap"):
+		_record_failure("probe.missing.jump_gap", "authored jump gap probes absent")
+		return
+	var gp: Dictionary = probes["jump_gap"]
+	var gaps := _features(manifest, "jump_gap")
+	_check(gaps.size() == 1, "probe.jump_gap_feature_count", str(gaps.size()))
+	if gaps.is_empty():
+		return
+	var feature: Dictionary = gaps[0]
+	var section_id := String(feature.get("section_id", ""))
+	var gap_section := _section_by_id(manifest, section_id)
+	_check(not gap_section.is_empty(), "probe.jump_gap_section", "gap section missing")
+	if gap_section.is_empty():
+		return
+
+	var start: Vector3 = gp["start"]
+	var end: Vector3 = gp["end"]
+	var gap_m := float(gp["gap_m"])
+	var drop_m := float(gp["drop_m"])
+	_check(start.is_equal_approx(feature["start"]), "jump_gap.feature_start_matches_probe", str(start))
+	_check(end.is_equal_approx(feature["end"]), "jump_gap.feature_end_matches_probe", str(end))
+	_check(
+		absf(float(feature.get("gap_m", 0.0)) - gap_m) <= 1e-6,
+		"jump_gap.feature_gap_matches_probe",
+		str(gap_m)
+	)
+	var flat_span := Vector3(end.x - start.x, 0.0, end.z - start.z).length()
+	_check(
+		absf(flat_span - gap_m) <= DIMENSION_TOLERANCE_M,
+		"jump_gap.authored_horizontal_span",
+		"%.3f m" % flat_span
+	)
+	var vertical_drop := start.y - end.y
+	_check(
+		absf(vertical_drop - drop_m) <= DIMENSION_TOLERANCE_M,
+		"jump_gap.authored_vertical_drop",
+		"%.3f m" % vertical_drop
+	)
+	var station_span := float(gap_section.get("end_s_m", 0.0)) - float(gap_section.get("start_s_m", 0.0))
+	_check(absf(station_span - gap_m) <= 1e-6, "jump_gap.section_station_span", "%.3f m" % station_span)
+
+	var sections: Array = _bay_by_id(manifest, String(gap_section.get("bay_id", ""))).get("sections", [])
+	var gap_index := -1
+	for i in range(sections.size()):
+		if String(sections[i].get("section_id", "")) == section_id:
+			gap_index = i
+			break
+	_check(gap_index > 0, "jump_gap.takeoff_section_present", str(gap_index))
+	_check(gap_index + 1 < sections.size(), "jump_gap.landing_section_present", str(gap_index))
+	if gap_index > 0:
+		var prev_section: Dictionary = sections[gap_index - 1]
+		_check(
+			absf(float(prev_section.get("end_s_m", 0.0)) - float(gap_section.get("start_s_m", 0.0))) <= 1e-6,
+			"jump_gap.takeoff_section_station",
+			"%.3f vs %.3f" % [
+				float(prev_section.get("end_s_m", 0.0)),
+				float(gap_section.get("start_s_m", 0.0))
+			]
+		)
+		_check(
+			String(prev_section.get("surface_id", "")) == String(gp.get("takeoff_surface_id", "")),
+			"jump_gap.takeoff_surface_metadata",
+			String(prev_section.get("surface_id", ""))
+		)
+	if gap_index + 1 < sections.size():
+		var next_section: Dictionary = sections[gap_index + 1]
+		_check(
+			absf(float(next_section.get("start_s_m", 0.0)) - float(gap_section.get("end_s_m", 0.0))) <= 1e-6,
+			"jump_gap.landing_section_station",
+			"%.3f vs %.3f" % [
+				float(next_section.get("start_s_m", 0.0)),
+				float(gap_section.get("end_s_m", 0.0))
+			]
+		)
+		_check(
+			String(next_section.get("surface_id", "")) == String(gp.get("landing_surface_id", "")),
+			"jump_gap.landing_surface_metadata",
+			String(next_section.get("surface_id", ""))
+		)
+
+	var takeoff_surface := String(gp.get("takeoff_surface_id", ""))
+	var landing_surface := String(gp.get("landing_surface_id", ""))
+	_run_expected_probe(gp.get("takeoff_before", {}), "probe.jump_gap.takeoff_before", takeoff_surface)
+	_run_expected_probe(gp.get("takeoff_edge", {}), "probe.jump_gap.takeoff_edge", takeoff_surface)
+	_run_no_hit_probe(gp.get("mid_gap", {}), "probe.jump_gap.mid_gap")
+	_run_expected_probe(gp.get("landing_edge", {}), "probe.jump_gap.landing_edge", landing_surface)
+	_run_expected_probe(gp.get("landing_after", {}), "probe.jump_gap.landing_after", landing_surface)
+
+	var measured := _measure_collision_gap(start, end)
+	_measured["jump_gap_measured_m"] = measured
+	_check(
+		absf(measured - gap_m) <= GAP_MEASUREMENT_TOLERANCE_M,
+		"jump_gap.measured_collision_gap",
+		"%.3f m measured vs %.3f m authored" % [measured, gap_m]
+	)
+
+
+func _run_expected_probe(probe: Dictionary, label: String, expected_surface: String) -> void:
+	if probe.is_empty():
+		_record_failure("%s.present" % label, "probe absent")
+		return
+	var hit := _ray_hit(probe["from"], probe["to"])
+	if hit.is_empty():
+		_record_failure("%s.hit" % label, "no ray hit")
+		return
+	var collider: Object = hit.get("collider")
+	var surface_id := ""
+	if collider != null and collider.has_meta("surface_id"):
+		surface_id = String(collider.get_meta("surface_id"))
+	_check(surface_id == expected_surface, "%s.surface" % label, surface_id)
+	var expected: Vector3 = probe["expected_position"]
+	var distance := (hit["position"] as Vector3).distance_to(expected)
+	_check(distance <= RAY_TOLERANCE_M, "%s.position" % label, "%.3f m" % distance)
+	_measured["%s_distance_m" % label] = distance
+
+
+func _run_no_hit_probe(probe: Dictionary, label: String) -> void:
+	if probe.is_empty():
+		_record_failure("%s.present" % label, "probe absent")
+		return
+	var hit := _ray_hit(probe["from"], probe["to"])
+	_check(hit.is_empty(), "%s.unexpected_hit" % label, str(hit.get("position", Vector3.ZERO)))
+
+
+func _gap_ground_at(flat_a: Vector3, flat_b: Vector3, y_ref: float, t: float) -> bool:
+	var p := flat_a.lerp(flat_b, t)
+	var hit := _ray_hit(
+		Vector3(p.x, y_ref + 3.0, p.z),
+		Vector3(p.x, y_ref - 10.0, p.z)
+	)
+	return not hit.is_empty()
+
+
+func _measure_collision_gap(start: Vector3, end: Vector3) -> float:
+	var flat_a := Vector3(start.x, 0.0, start.z)
+	var flat_b := Vector3(end.x, 0.0, end.z)
+	var span := flat_a.distance_to(flat_b)
+	if span <= 1e-6:
+		return 0.0
+	var y_ref := maxf(start.y, end.y)
+	var lo := 0.0
+	var hi := 0.5
+	for _i in range(32):
+		var mid := 0.5 * (lo + hi)
+		if _gap_ground_at(flat_a, flat_b, y_ref, mid):
+			lo = mid
+		else:
+			hi = mid
+	var takeoff_t := lo
+	lo = 0.5
+	hi = 1.0
+	for _i in range(32):
+		var mid := 0.5 * (lo + hi)
+		if _gap_ground_at(flat_a, flat_b, y_ref, mid):
+			hi = mid
+		else:
+			lo = mid
+	var landing_t := hi
+	return (landing_t - takeoff_t) * span
+
+
 func _check_determinism() -> void:
 	var packed: PackedScene = load(LAB_SCENE_PATH)
 	if packed == null:
@@ -674,6 +912,7 @@ func _finish() -> void:
 			"No car body, motor, surface modifiers, AI or gameplay are integrated; no M1.2 acceptance result is claimed.",
 			"Esses and draft fixtures are outside this slice.",
 			"Static concave trimesh road colliders match the visible ribbons in this revision; future car integration must add the thickened swept collision the technical design requires.",
+			"Adjacent road sections are independent static trimesh bodies; their shared boundary edges coincide and a sub-millimetre crack exactly on a seam can return no ray hit, so boundary probes straddle each join by 5 mm.",
 		],
 	}
 	print("LAB_RESULT ", JSON.stringify(report))

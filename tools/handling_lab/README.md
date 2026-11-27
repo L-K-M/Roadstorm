@@ -31,6 +31,16 @@ All surfaces are tagged with stable `surface_id` metadata on both visible
 meshes and static collision bodies. Collision is static and uses the same
 vertex arrays as the visible ribbons. Face indices are never used as identity.
 
+Every non-gap section starts with its exact start cross-section, so adjacent
+sections share a boundary station instead of leaving the earlier one-step
+uncovered interval. End caps are omitted where two sections join and kept at
+real road ends (bay edges and jump lips); restarted shoulder strips reset
+their own station origin. The manifest carries `join_probes`,
+`restart_probes` and a `jump_gap` probe group. The validator casts vertical
+Jolt rays immediately before, 5 mm either side of, and after each internal
+join, checks the surface metadata on each side, and measures the actual
+collision gap across the jump against the authored `gap_m`.
+
 ## Run
 
 From the repository root, with the pinned Godot 4.7.2 binary:

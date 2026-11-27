@@ -17,6 +17,12 @@ const BAY_NODE_PREFIX := "Bay_"
 const SPAWN_PREFIX := "Spawn_"
 const RECOVERY_PREFIX := "Recovery_"
 const RECOVERY_ANCHOR_NAME := "RecoveryZoneAnchor"
+## Distance from a section join at which boundary-coverage probes are cast.
+const JOIN_PROBE_OFFSET_M := 0.25
+## Half-width of the sub-centimetre band straddling a section join. The exact
+## seam is a zero-width crack between two independent trimesh bodies, so a
+## ray precisely on it can fall through; these offsets sit safely on each side.
+const JOIN_SEAM_PROBE_OFFSET_M := 0.005
 
 
 static func build(root: Node3D) -> Dictionary:
@@ -81,13 +87,22 @@ static func build(root: Node3D) -> Dictionary:
 			features = sampled["features"]
 			var runs := _split_runs(samples)
 			for run_index in range(runs.size()):
-				_add_surface_run(bay_node, bay, runs[run_index], run_index, materials)
+				var run: Array = runs[run_index]
+				# End caps are real road ends (bay edges, jump lips, restarted
+				# strips). At an ordinary join the next run repeats this run's
+				# last cross-section, so a cap there would be a coincident
+				# vertical obstacle across the seam; omit it on both sides.
+				var cap_start := not bool(run[0].get("joined_prev", false))
+				var cap_end := true
+				if run_index + 1 < runs.size():
+					cap_end = not bool(runs[run_index + 1][0].get("joined_prev", false))
+				_add_surface_run(bay_node, bay, run, run_index, materials, cap_start, cap_end)
 
 		for wall in bay.get("walls", []):
 			_add_wall(bay_node, bay, wall, samples, materials)
 
 		_add_pose_markers(bay_node, bay, pose)
-		_collect_probes(bay_id, bay["origin"], samples, slab_spec, probes)
+		_collect_probes(bay, samples, slab_spec, sections, features, probes)
 
 		bay_records.append({
 			"bay_id": bay_id,
@@ -214,24 +229,37 @@ static func _sample_bay(bay: Dictionary) -> Dictionary:
 	if segments.is_empty():
 		return {"samples": samples, "sections": sections, "features": features}
 
-	var first: Dictionary = segments[0]
-	samples.append(_make_sample(
-		pos, heading,
-		float(first.get("grade_start_percent", 0.0)),
-		float(first.get("bank_start_deg", 0.0)),
-		float(first["width_m"]),
-		float(first.get("lateral_offset_m", 0.0)),
-		String(first["surface_id"]), String(first["section_id"]),
-		String(first.get("feature", "")), s
-	))
 	var pending_break := false
 
 	for seg in segments:
-		if bool(seg.get("restart_at_origin", false)):
+		var restart := bool(seg.get("restart_at_origin", false))
+		if restart:
 			pos = origin
 			heading = yaw_rad
+			s = 0.0
+			pending_break = true
 		var type := String(seg["type"])
 		var start_s := s
+		if type != "gap":
+			# Every non-gap section begins with its exact start cross-section.
+			# At an ordinary join this repeats the previous section's end pose
+			# under the new surface and section tags, so adjacent ribbons abut
+			# with no uncovered interval. `joined_prev` marks that shared
+			# boundary; `break_before` marks a run that starts away from the
+			# previous run (after a jump gap or at a restarted strip).
+			var start_sample := _make_sample(
+				pos, heading,
+				float(seg.get("grade_start_percent", 0.0)),
+				float(seg.get("bank_start_deg", 0.0)),
+				float(seg["width_m"]),
+				float(seg.get("lateral_offset_m", 0.0)),
+				String(seg["surface_id"]), String(seg["section_id"]),
+				String(seg.get("feature", "")), s
+			)
+			start_sample["break_before"] = pending_break
+			start_sample["joined_prev"] = not pending_break and not samples.is_empty()
+			pending_break = false
+			samples.append(start_sample)
 		if type == "straight":
 			var length := float(seg["length_m"])
 			var n := maxi(1, int(ceil(length / DataScript.SAMPLE_STEP_M - 1e-9)))
@@ -253,8 +281,6 @@ static func _sample_bay(bay: Dictionary) -> Dictionary:
 					String(seg["surface_id"]), String(seg["section_id"]),
 					String(seg.get("feature", "")), s
 				)
-				smp["break_before"] = pending_break
-				pending_break = false
 				samples.append(smp)
 			sections.append(_section_record(seg, bay, start_s, s))
 		elif type == "arc":
@@ -281,8 +307,6 @@ static func _sample_bay(bay: Dictionary) -> Dictionary:
 					String(seg["surface_id"]), String(seg["section_id"]),
 					String(seg.get("feature", "")), s
 				)
-				smp["break_before"] = pending_break
-				pending_break = false
 				samples.append(smp)
 			sections.append(_section_record(seg, bay, start_s, s))
 		elif type == "gap":
@@ -369,7 +393,9 @@ static func _add_surface_run(
 	bay: Dictionary,
 	run: Array,
 	run_index: int,
-	materials: Dictionary
+	materials: Dictionary,
+	cap_start: bool,
+	cap_end: bool
 ) -> void:
 	if run.size() < 2:
 		return
@@ -413,8 +439,10 @@ static func _add_surface_run(
 		_append_tris(indices, [b + 1, nxt + 1, nxt + 3, b + 1, nxt + 3, b + 3])
 	var first := 0
 	var last := (run.size() - 1) * 4
-	_append_tris(indices, [first, first + 1, first + 3, first, first + 3, first + 2])
-	_append_tris(indices, [last, last + 2, last + 3, last, last + 3, last + 1])
+	if cap_start:
+		_append_tris(indices, [first, first + 1, first + 3, first, first + 3, first + 2])
+	if cap_end:
+		_append_tris(indices, [last, last + 2, last + 3, last, last + 3, last + 1])
 
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
@@ -571,12 +599,15 @@ static func _add_recovery_anchor(root: Node3D, bay_records: Array[Dictionary]) -
 		node.set_meta("clearance_margin_m", DataScript.CLEARANCE_MARGIN_M)
 		root.add_child(node)
 static func _collect_probes(
-	bay_id: String,
-	bay_origin: Vector3,
+	bay: Dictionary,
 	samples: Array[Dictionary],
 	slab_spec: Dictionary,
+	sections: Array[Dictionary],
+	features: Array[Dictionary],
 	probes: Dictionary
 ) -> void:
+	var bay_id := String(bay["bay_id"])
+	var bay_origin: Vector3 = bay["origin"]
 	match bay_id:
 		"straight":
 			var asphalt := _nearest_sample(samples, 10.0)
@@ -614,6 +645,168 @@ static func _collect_probes(
 				"expected_position": pad_center,
 			}
 
+	_collect_join_probes(bay_id, samples, sections, probes)
+	_collect_restart_probes(bay, probes)
+	_collect_jump_gap_probe(bay_id, sections, features, probes)
+
+
+static func _collect_join_probes(
+	bay_id: String,
+	samples: Array[Dictionary],
+	sections: Array[Dictionary],
+	probes: Dictionary
+) -> void:
+	if not probes.has("join_probes"):
+		probes["join_probes"] = []
+	var joins: Array = probes["join_probes"]
+	var prev: Dictionary = {}
+	for section in sections:
+		if String(section.get("type", "")) == "gap":
+			prev = {}
+			continue
+		if not prev.is_empty():
+			var station := float(prev["end_s_m"])
+			if absf(station - float(section["start_s_m"])) <= 1e-6:
+				var before_surface := String(prev.get("surface_id", ""))
+				var after_surface := String(section.get("surface_id", ""))
+				joins.append({
+					"bay_id": bay_id,
+					"station_s_m": station,
+					"before_surface_id": before_surface,
+					"after_surface_id": after_surface,
+					"before": _station_probe(samples, station - JOIN_PROBE_OFFSET_M, before_surface),
+					"seam_before": _station_probe(
+						samples, station - JOIN_SEAM_PROBE_OFFSET_M, before_surface
+					),
+					"seam_after": _station_probe(
+						samples, station + JOIN_SEAM_PROBE_OFFSET_M, after_surface
+					),
+					"after": _station_probe(samples, station + JOIN_PROBE_OFFSET_M, after_surface),
+				})
+		prev = section
+
+
+static func _collect_restart_probes(bay: Dictionary, probes: Dictionary) -> void:
+	if not probes.has("restart_probes"):
+		probes["restart_probes"] = []
+	var out: Array = probes["restart_probes"]
+	var yaw_rad := deg_to_rad(float(bay["yaw_deg"]))
+	var forward := _forward(yaw_rad)
+	var right := forward.cross(Vector3.UP)
+	if right.length_squared() < 1e-9:
+		right = Vector3.RIGHT
+	else:
+		right = right.normalized()
+	var origin: Vector3 = bay["origin"]
+	for seg in bay["segments"]:
+		if not bool(seg.get("restart_at_origin", false)):
+			continue
+		var surface_id := String(seg["surface_id"])
+		var center := origin + right * float(seg.get("lateral_offset_m", 0.0))
+		var length := float(seg.get("length_m", 0.0))
+		out.append({
+			"bay_id": String(bay["bay_id"]),
+			"section_id": String(seg["section_id"]),
+			"surface_id": surface_id,
+			"start": _point_probe(center + forward * JOIN_PROBE_OFFSET_M, surface_id),
+			"end": _point_probe(center + forward * (length - JOIN_PROBE_OFFSET_M), surface_id),
+		})
+
+
+static func _collect_jump_gap_probe(
+	bay_id: String,
+	sections: Array[Dictionary],
+	features: Array[Dictionary],
+	probes: Dictionary
+) -> void:
+	var gap_feature: Dictionary = {}
+	for feature in features:
+		if String(feature.get("feature", "")) == "jump_gap":
+			gap_feature = feature
+			break
+	if gap_feature.is_empty():
+		return
+	var neighbors := _gap_neighbors(sections)
+	var gap_start: Vector3 = gap_feature["start"]
+	var gap_end: Vector3 = gap_feature["end"]
+	var flat := Vector3(gap_end.x - gap_start.x, 0.0, gap_end.z - gap_start.z)
+	if flat.length_squared() <= 1e-9:
+		return
+	var dir := flat.normalized()
+	var mid := gap_start.lerp(gap_end, 0.5)
+	var takeoff_surface := String(neighbors["before"])
+	var landing_surface := String(neighbors["after"])
+	probes["jump_gap"] = {
+		"bay_id": bay_id,
+		"start": gap_start,
+		"end": gap_end,
+		"gap_m": float(gap_feature["gap_m"]),
+		"drop_m": float(gap_feature["drop_m"]),
+		"takeoff_surface_id": takeoff_surface,
+		"landing_surface_id": landing_surface,
+		"takeoff_before": _point_probe(gap_start - dir * JOIN_PROBE_OFFSET_M, takeoff_surface),
+		"takeoff_edge": _point_probe(gap_start, takeoff_surface),
+		"mid_gap": _point_probe(mid, "", false),
+		"landing_edge": _point_probe(gap_end, landing_surface),
+		"landing_after": _point_probe(gap_end + dir * JOIN_PROBE_OFFSET_M, landing_surface),
+	}
+
+
+static func _gap_neighbors(sections: Array[Dictionary]) -> Dictionary:
+	for i in range(sections.size()):
+		if String(sections[i].get("type", "")) != "gap":
+			continue
+		var before := ""
+		var after := ""
+		if i > 0:
+			before = String(sections[i - 1].get("surface_id", ""))
+		if i + 1 < sections.size():
+			after = String(sections[i + 1].get("surface_id", ""))
+		return {"before": before, "after": after}
+	return {"before": "", "after": ""}
+
+
+static func _station_probe(
+	samples: Array[Dictionary],
+	station_s: float,
+	expected_surface: String
+) -> Dictionary:
+	var point := _position_at_station(samples, station_s)
+	return {
+		"from": point + Vector3.UP * 3.0,
+		"to": point - Vector3.UP * 10.0,
+		"expected_position": point,
+		"expected_surface": expected_surface,
+	}
+
+
+static func _point_probe(point: Vector3, expected_surface: String, expect_hit: bool = true) -> Dictionary:
+	var probe := {
+		"from": point + Vector3.UP * 3.0,
+		"to": point - Vector3.UP * 10.0,
+		"expected_position": point,
+		"expected_hit": expect_hit,
+	}
+	if expect_hit:
+		probe["expected_surface"] = expected_surface
+	return probe
+
+
+static func _position_at_station(samples: Array[Dictionary], station_s: float) -> Vector3:
+	for i in range(samples.size() - 1):
+		var a: Dictionary = samples[i]
+		var b: Dictionary = samples[i + 1]
+		var sa := float(a["s"])
+		var sb := float(b["s"])
+		if station_s < sa or station_s > sb:
+			continue
+		var span := sb - sa
+		var u := 0.0 if span <= 1e-9 else (station_s - sa) / span
+		return (a["pos"] as Vector3).lerp(b["pos"], u)
+	var nearest := _nearest_sample(samples, station_s)
+	if nearest.is_empty():
+		return Vector3.ZERO
+	return nearest["pos"] as Vector3
 
 static func _floor_probe(smp: Dictionary, expected_surface: String) -> Dictionary:
 	var p: Vector3 = smp["pos"] + smp["right"] * float(smp["lateral_offset"])
