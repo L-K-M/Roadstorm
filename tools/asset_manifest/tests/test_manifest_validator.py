@@ -2363,5 +2363,499 @@ class RegisterReadGuardTestCase(unittest.TestCase):
             )
 
 
+class JunctionComponentTestCase(unittest.TestCase):
+    """Cross-platform controls for detecting directory junctions.
+
+    A Windows directory junction carries ``FILE_ATTRIBUTE_REPARSE_POINT`` but
+    is *not* a symbolic link, so ``Path.is_symlink()`` alone reports False for
+    it while ``CreateFileW`` still resolves through it. The checks below fake
+    that combination - ``is_symlink`` False plus a reparse attribute on the
+    intermediate directory - and assert every guarded path refuses it.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.root / "a").mkdir()
+        (self.root / "a" / "b").write_text("fixture bytes\n", encoding="utf-8")
+
+    def _fake_lstat(self, path):
+        class Attributes:
+            st_file_attributes = (
+                manifest_validator._FILE_ATTRIBUTE_REPARSE_POINT
+                if str(path).endswith("/a")
+                else 0
+            )
+
+        return Attributes()
+
+    def _patched(self):
+        return (
+            mock.patch.object(Path, "is_symlink", lambda self: False),
+            mock.patch.object(manifest_validator.os, "lstat", self._fake_lstat),
+        )
+
+    def test_junction_like_intermediate_is_detected_as_a_link(self):
+        first, second = self._patched()
+        with first, second:
+            self.assertEqual(
+                manifest_validator._symlinked_component(self.root, "a/b"), "a"
+            )
+
+    def test_plain_real_components_are_not_reported_as_links(self):
+        self.assertIsNone(manifest_validator._symlinked_component(self.root, "a/b"))
+
+    def test_symlink_leaf_is_detected_without_the_reparse_attribute(self):
+        def no_reparse(path):
+            class Attributes:
+                st_file_attributes = 0
+
+            return Attributes()
+
+        with mock.patch.object(
+            Path, "is_symlink", lambda self: self.name == "b"
+        ), mock.patch.object(manifest_validator.os, "lstat", no_reparse):
+            self.assertEqual(
+                manifest_validator._symlinked_component(self.root, "a/b"), "a/b"
+            )
+
+    def test_existence_and_read_paths_refuse_a_junction_like_parent(self):
+        """The same refusal must reach the existence, hash and record paths."""
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+        first, second = self._patched()
+        with first, second:
+            findings = manifest_validator.Findings()
+            checker.check(findings, "loc", "a/b", "test output path")
+            self.assertIn("symlinked-path", [f.code for f in findings.errors])
+            self.assertIn("symlink", messages(findings))
+            self.assertIsNone(checker.digest("a/b"))
+            references = manifest_validator.Findings()
+            manifest_validator._check_reference_resolves(
+                references, "loc", "a/b", "test record", checker
+            )
+            self.assertIn("unresolved-reference", [f.code for f in references.errors])
+
+
+class FakeWindowsFileApi:
+    """Recorded Win32 answers for the Windows guarded-open branch.
+
+    Stands in for ``_WindowsFileApi`` so call order, failure branches and
+    handle ownership can be asserted without a Windows host. ``attributes``
+    of ``None`` means the metadata query failed; ``handle`` of ``None`` means
+    ``CreateFileW`` failed.
+    """
+
+    FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+    FILE_ATTRIBUTE_DIRECTORY = 0x10
+    FILE_TYPE_DISK = 0x1
+
+    def __init__(
+        self,
+        handle=42,
+        attributes=0,
+        file_type_value=None,
+        descriptor=7,
+        create_error=None,
+        tag_error=None,
+        type_error=None,
+        open_error=None,
+    ) -> None:
+        self.handle = handle
+        self.attributes = attributes
+        self.file_type_value = (
+            FakeWindowsFileApi.FILE_TYPE_DISK
+            if file_type_value is None
+            else file_type_value
+        )
+        self.descriptor = descriptor
+        self.create_error = create_error
+        self.tag_error = tag_error
+        self.type_error = type_error
+        self.open_error = open_error
+        self.calls: list[tuple[str, object]] = []
+        self.closed: list = []
+
+    def create_file(self, path):
+        self.calls.append(("create_file", path))
+        if self.create_error is not None:
+            raise self.create_error
+        return self.handle
+
+    def file_attribute_tag(self, handle):
+        self.calls.append(("file_attribute_tag", handle))
+        if self.tag_error is not None:
+            raise self.tag_error
+        return None if self.attributes is None else (self.attributes, 0)
+
+    def file_type(self, handle):
+        self.calls.append(("file_type", handle))
+        if self.type_error is not None:
+            raise self.type_error
+        return self.file_type_value
+
+    def open_osfhandle(self, handle):
+        self.calls.append(("open_osfhandle", handle))
+        if self.open_error is not None:
+            raise self.open_error
+        return self.descriptor
+
+    def close_handle(self, handle):
+        self.calls.append(("close_handle", handle))
+        self.closed.append(handle)
+        return True
+
+    @property
+    def names(self) -> list[str]:
+        return [name for name, _argument in self.calls]
+
+
+class WindowsGuardedOpenTestCase(unittest.TestCase):
+    """Fake-WinAPI controls for the Windows guarded-open branch.
+
+    These run on every platform: they replace the Win32 adapter with a recorder
+    and assert call order, each refusal branch, exactly-one handle close and
+    the ``None`` error mapping. They prove the control flow, not real Windows
+    semantics - see ``WindowsNativeGuardTestCase``.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def guard(self, api):
+        return manifest_validator._windows_open_regular_descriptor(
+            self.root, "assets/generated/fixture/body.res", api=api
+        )
+
+    def test_happy_path_bridges_without_closing_the_raw_handle(self):
+        """A normal file: open, query, type, bridge - and no CloseHandle."""
+        api = FakeWindowsFileApi(handle=42, attributes=0x80, descriptor=9)
+        self.assertEqual(self.guard(api), 9)
+        self.assertEqual(
+            api.names,
+            ["create_file", "file_attribute_tag", "file_type", "open_osfhandle"],
+        )
+        self.assertEqual(api.closed, [], "a bridged handle must not be closed twice")
+
+    def test_create_failure_returns_none_and_touches_nothing_else(self):
+        api = FakeWindowsFileApi(handle=None)
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names, ["create_file"])
+        self.assertEqual(api.closed, [])
+
+    def test_create_oserror_is_mapped_to_none(self):
+        api = FakeWindowsFileApi(create_error=OSError("open failed"))
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names, ["create_file"])
+        self.assertEqual(api.closed, [])
+
+    def test_metadata_query_failure_closes_exactly_once(self):
+        api = FakeWindowsFileApi(attributes=None)
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names, ["create_file", "file_attribute_tag", "close_handle"])
+        self.assertEqual(api.closed, [42])
+
+    def test_metadata_query_oserror_closes_exactly_once(self):
+        api = FakeWindowsFileApi(tag_error=OSError("query failed"))
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names[-1], "close_handle")
+        self.assertEqual(api.closed, [42])
+
+    def test_reparse_leaf_is_refused_without_type_or_bridge(self):
+        api = FakeWindowsFileApi(attributes=FakeWindowsFileApi.FILE_ATTRIBUTE_REPARSE_POINT)
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names, ["create_file", "file_attribute_tag", "close_handle"])
+        self.assertEqual(api.closed, [42])
+
+    def test_directory_is_refused_without_type_or_bridge(self):
+        api = FakeWindowsFileApi(attributes=FakeWindowsFileApi.FILE_ATTRIBUTE_DIRECTORY)
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names, ["create_file", "file_attribute_tag", "close_handle"])
+        self.assertEqual(api.closed, [42])
+
+    def test_non_disk_type_is_refused_without_bridging(self):
+        api = FakeWindowsFileApi(file_type_value=0x3)  # FILE_TYPE_PIPE
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(
+            api.names, ["create_file", "file_attribute_tag", "file_type", "close_handle"]
+        )
+        self.assertEqual(api.closed, [42])
+
+    def test_file_type_oserror_closes_exactly_once(self):
+        api = FakeWindowsFileApi(type_error=OSError("type failed"))
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names[-1], "close_handle")
+        self.assertEqual(api.closed, [42])
+
+    def test_bridge_failure_closes_exactly_once(self):
+        """If open_osfhandle fails the raw handle is still ours to close."""
+        api = FakeWindowsFileApi(open_error=OSError("no fd"))
+        self.assertIsNone(self.guard(api))
+        self.assertEqual(api.names[-1], "close_handle")
+        self.assertEqual(api.closed, [42])
+
+    def test_every_refusal_branch_maps_to_none(self):
+        scenarios = [
+            # (adapter, number of raw handles that must be closed)
+            (FakeWindowsFileApi(handle=None), 0),  # CreateFileW failed: no handle
+            (FakeWindowsFileApi(create_error=OSError()), 0),
+            (FakeWindowsFileApi(attributes=None), 1),
+            (FakeWindowsFileApi(tag_error=OSError()), 1),
+            (FakeWindowsFileApi(attributes=FakeWindowsFileApi.FILE_ATTRIBUTE_REPARSE_POINT), 1),
+            (FakeWindowsFileApi(attributes=FakeWindowsFileApi.FILE_ATTRIBUTE_DIRECTORY), 1),
+            (FakeWindowsFileApi(file_type_value=0x2), 1),  # FILE_TYPE_CHAR
+            (FakeWindowsFileApi(type_error=OSError()), 1),
+            (FakeWindowsFileApi(open_error=OSError()), 1),
+        ]
+        for api, expected_closes in scenarios:
+            self.assertIsNone(self.guard(api), api.names)
+            self.assertEqual(len(api.closed), expected_closes, api.names)
+
+    def test_requested_path_is_root_relative_with_posix_spelling(self):
+        api = FakeWindowsFileApi(descriptor=5)
+        self.guard(api)
+        self.assertEqual(
+            api.calls[0],
+            ("create_file", str(self.root / "assets" / "generated" / "fixture" / "body.res")),
+        )
+
+    def test_dispatch_uses_the_windows_branch_on_nt(self):
+        api = FakeWindowsFileApi(descriptor=11)
+        with mock.patch.object(os, "name", "nt"), mock.patch.object(
+            manifest_validator, "_windows_file_api", lambda: api
+        ):
+            result = manifest_validator._open_regular_file_descriptor(
+                self.root, "assets/generated/fixture/body.res"
+            )
+        self.assertEqual(result, 11)
+        self.assertEqual(api.names[0], "create_file")
+
+    def test_dispatch_keeps_the_posix_branch_off_windows(self):
+        with mock.patch.object(os, "name", "posix"), mock.patch.object(
+            manifest_validator, "_guarded_open_flags", lambda: None
+        ):
+            self.assertIsNone(
+                manifest_validator._open_regular_file_descriptor(
+                    self.root, "assets/generated/fixture/body.res"
+                )
+            )
+
+    def test_windows_api_construction_failure_fails_closed(self):
+        """A platform where even the guarded API cannot bind refuses."""
+        with mock.patch.object(
+            manifest_validator,
+            "_windows_file_api",
+            mock.Mock(side_effect=AttributeError("no CreateFileW")),
+        ):
+            self.assertIsNone(
+                manifest_validator._windows_open_regular_descriptor(
+                    self.root, "assets/generated/fixture/body.res"
+                )
+            )
+
+    def test_no_builtin_open_fallback_on_the_windows_branch(self):
+        """The requirement is a guarded descriptor, never a plain open()."""
+        api = FakeWindowsFileApi(descriptor=13)
+        with mock.patch.object(
+            builtins, "open", side_effect=AssertionError("unguarded open fallback")
+        ):
+            self.assertEqual(self.guard(api), 13)
+
+
+@unittest.skipUnless(os.name == "nt", "native Win32 acceptance requires a Windows host")
+class WindowsNativeGuardTestCase(unittest.TestCase):
+    """Real-host acceptance for the Windows guarded-open branch.
+
+    Skipped everywhere else. These are the only tests allowed to claim the
+    Windows behavior actually works; until a Windows runner executes them, the
+    branch stays unverified.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def checker(self):
+        return manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+
+    def remove_link(self, link: Path) -> None:
+        try:
+            os.rmdir(link)
+        except OSError:
+            try:
+                os.unlink(link)
+            except OSError:
+                pass
+
+    def make_junction(self, link: Path, target: Path) -> bool:
+        import subprocess
+
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+        )
+        return completed.returncode == 0
+
+    def test_native_regular_outputs_hash_and_anchors_resolve(self):
+        """Positive control: the previously broken normal case."""
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        self.assertEqual(self.checker().digest(relative), digest_of(self.root / relative)[7:])
+        findings = validate(self.root, write_manifest(self.root, [entry]), check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+        service = service_entry(self.root, "texture.service.sky")
+        copy_real_terms_register(self.root)
+        service["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-stepfun"
+        findings = validate(self.root, write_manifest(self.root, [service]), check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_native_symlinked_output_is_refused(self):
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        target = self.root / relative
+        outside = self.root.parent / ("roadstorm-native-link-" + self.root.name)
+        outside.write_text("outside the checkout\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        target.unlink()
+        try:
+            target.symlink_to(outside)
+        except OSError as exc:
+            self.skipTest("cannot create a symlink on this host: {}".format(exc))
+        self.assertIsNone(self.checker().digest(relative))
+        findings = validate(self.root, write_manifest(self.root, [entry]), check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("missing-file", codes)
+        self.assertNotIn("hash-mismatch", codes)
+
+    def test_native_junction_parent_is_refused(self):
+        """A static intermediate junction must fail closed, and never be read.
+
+        Setup writes only to the outside fixture: the linked path inside the
+        root is never created or written through the junction. The recorded
+        hash is the outside file's real digest, so an implementation that
+        wrongly read through the junction would produce a matching digest and
+        lose the ``missing-file`` finding - the test detects that.
+        """
+        outside = self.root.parent / ("roadstorm-native-junction-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        outside_body = outside / "body.res"
+        outside_body.write_text("outside the checkout\n", encoding="utf-8")
+        outside_bytes = outside_body.read_bytes()
+        link = self.root / "assets" / "generated" / "junction"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        if not self.make_junction(link, outside):
+            self.skipTest("mklink /J unavailable on this host")
+        self.addCleanup(self.remove_link, link)
+        # Materialize the entry without ever touching the linked path.
+        entry = complete_entry()
+        relative = "assets/generated/junction/body.res"
+        touch(self.root, "assets/source/fixture/recipe.json")
+        touch(self.root, "content/fixture/recipe.json")
+        touch(self.root, "provenance/OWNER_AUTHORITY.md")
+        entry["identity"]["output_paths"] = [relative]
+        entry["hashes"] = {relative: digest_of(outside_body)}
+        self.assertIsNone(self.checker().digest(relative))
+        findings = validate(self.root, write_manifest(self.root, [entry]), check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("missing-file", codes)
+        self.assertNotIn("hash-mismatch", codes)
+        self.assertIn("symlink", messages(findings))
+        self.assertEqual(outside_body.read_bytes(), outside_bytes, "validation wrote through the junction")
+
+    def test_native_directory_in_place_of_output_is_refused(self):
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        (self.root / relative).unlink()
+        (self.root / relative).mkdir()
+        self.assertIsNone(self.checker().digest(relative))
+        findings = validate(self.root, write_manifest(self.root, [entry]), check_hashes=True)
+        codes = error_codes(findings)
+        self.assertTrue({"not-a-file", "missing-file"} & set(codes), codes)
+
+    def test_native_swap_at_the_pre_check_seam_is_still_refused(self):
+        """The reparse bit is checked on the opened handle, not the pre-check path."""
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        target = self.root / relative
+        outside = self.root.parent / ("roadstorm-native-seam-" + self.root.name)
+        outside.write_text("outside the checkout\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        original = manifest_validator._record_file_is_readable
+
+        def swapped_pre_check(root, spelled):
+            target.unlink()
+            try:
+                target.symlink_to(outside)
+            except OSError as exc:
+                raise AssertionError("seam test needs a symlink: {}".format(exc)) from exc
+            return True
+
+        with mock.patch.object(
+            manifest_validator, "_record_file_is_readable", swapped_pre_check
+        ):
+            digest, timed_out = bounded_call(lambda: self.checker().digest(relative))
+        self.assertFalse(timed_out)
+        self.assertIsNone(digest)
+
+    def test_native_unreadable_output_is_structured_not_a_traceback(self):
+        import contextlib
+        import io
+        import subprocess
+
+        icacls = shutil.which("icacls")
+        user = os.environ.get("USERNAME") or os.environ.get("USER")
+        if not icacls or not user:
+            self.skipTest("icacls or an account name is required")
+        entry = materialize(self.root, complete_entry())
+        target = self.root / entry["identity"]["output_paths"][0]
+        deny = subprocess.run(
+            [icacls, str(target), "/deny", "{}:(R)".format(user)],
+            capture_output=True,
+            text=True,
+        )
+        if deny.returncode != 0:
+            self.skipTest("could not deny read access: {}".format(deny.stdout.strip()))
+        try:
+            manifest = write_manifest(self.root, [entry])
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = main(
+                    [str(manifest), "--root", str(self.root), "--check-hashes", "--json"]
+                )
+            self.assertEqual(exit_code, 1)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual([e["code"] for e in payload["errors"]], ["missing-file"])
+            self.assertEqual(stderr.getvalue(), "")
+        finally:
+            subprocess.run(
+                [icacls, str(target), "/remove:d", user], capture_output=True, text=True
+            )
+
+    def test_native_oversized_integer_cli_exits_2_with_json(self):
+        import contextlib
+        import io
+
+        limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+        if not limit:
+            self.skipTest("this interpreter has no integer digit limit")
+        manifest = self.write_raw('{"schema_version": ' + ("9" * (limit + 100)) + "}")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = main([str(manifest), "--root", str(self.root), "--json"])
+        self.assertEqual(exit_code, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual([e["code"] for e in payload["errors"]], ["invalid-json"])
+        self.assertEqual(stderr.getvalue(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

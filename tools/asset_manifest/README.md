@@ -107,7 +107,7 @@ Cross-entry, once the whole registry is known:
 | Check | Rule |
 | --- | --- |
 | Output ownership | Each `identity.output_paths` entry has exactly one owning entry, and is listed once inside it (`duplicate-output-path`). Two entries claiming one output path make the provenance, lineage and hash of that file ambiguous. Sharing a *source* path is ordinary lineage and stays allowed. |
-| Path safety | Referenced paths must be regular files inside the root reached through real directories: a symlink is rejected (`symlinked-path`) - at the leaf *and* at any parent directory, because a parent symlink resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for symlinks before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open: no-follow, non-blocking and an `fstat` regular-file check, failing closed where those flags do not exist, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed symlink. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, non-symlinked regular file inside the root, so a rejected register path is never opened. |
+| Path safety | Referenced paths must be regular files inside the root reached through real directories: a link at *any* component is rejected (`symlinked-path`) - the leaf and every parent directory, and on Windows a directory junction as well as a symlink, because a parent link resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for links before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed link. On POSIX that open uses no-follow, non-blocking and an `fstat` regular-file check; on Windows it uses `CreateFileW(OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT)` plus handle metadata (`FILE_ATTRIBUTE_REPARSE_POINT`, `FILE_ATTRIBUTE_DIRECTORY`) and `GetFileType == FILE_TYPE_DISK`. On any other platform offering neither POSIX flag, the guarded open fails closed. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, link-free regular file inside the root, so a rejected register path is never opened. |
 | Dependency order | `lineage.depends_on` is acyclic (`dependency-cycle`): direct (A↔B), self (A→A) and indirect (A→B→C→A) loops are all rejected, because an asset can only be built once the entries it depends on exist. The search is iterative, so a long chain cannot exhaust the stack. |
 
 Document level:
@@ -196,6 +196,31 @@ Document level:
   the structured `invalid-json` finding, not a `ValueError` traceback -
   checked in text mode and through the CLI in `--json` mode (exit 2, empty
   stderr). Skipped where the interpreter has no digit limit.
+- **Windows guarded open** (fake WinAPI, platform-independent):
+  `_windows_open_regular_descriptor` is exercised with a recording fake in
+  place of the Win32 adapter, asserting the exact call order
+  (`CreateFileW` -> metadata query -> type check -> bridge), each refusal
+  branch (open failure, metadata failure/`OSError`, reparse leaf,
+  directory, non-disk type, type `OSError`, bridge failure), exactly one
+  `CloseHandle` per raw handle and none after a successful bridge, the
+  root-relative path spelling, dispatch on `os.name == "nt"` versus the
+  POSIX branch, and that no unguarded builtins `open` fallback exists.
+- **Windows native acceptance** (`@unittest.skipUnless(os.name == "nt")`,
+  skipped everywhere else): regular outputs hash and register anchors resolve;
+  symlinked output and junction parent are refused without hashing the
+  target; a directory in place of an output is refused; a swap at the
+  pre-check/open seam is still refused by the reparse bit; an ACL-denied
+  output gives the structured `missing-file` finding with empty stderr; the
+  oversized-integer contract holds. The junction test sets up only through the
+  outside fixture - it never writes through the link - and records the outside
+  file's real digest, so a wrong read through the junction would produce a
+  matching hash and lose the expected `missing-file` finding. These are the
+  only tests allowed to claim Windows behaviour works.
+- **junction components** (cross-platform fake): a directory that reports a
+  reparse attribute while `Path.is_symlink()` says False - the Windows junction
+  shape - is detected by `_symlinked_component`, and the existence, hash and
+  record-reference paths all refuse it. A mutation check confirms these
+  controls fail when the reparse-attribute check is removed.
 - **reference resolution**: a `service_terms_ref` that is the first-party
   `not_applicable` sentinel, another placeholder, an arbitrary string, a
   record outside `provenance/`, or a record that does not exist is an error,
@@ -290,19 +315,37 @@ temporary directory.
   for registration (dangling references) but not for cycles.
 - **Existence is local.** Path checks resolve against the given root on the
   machine running the check, and referenced files must be regular files
-  reached through real directories: a symlink at any component is rejected
-  rather than followed. Cross-platform path case sensitivity is not
-  simulated.
+  reached through real directories: a link at any component - including a
+  Windows directory junction - is rejected rather than followed.
+  Cross-platform path case sensitivity is not simulated.
 - **Reads narrow, they do not close, the swap window.** Every open this tool
-  performs re-validates spelling, every component for symlinks, file type and
-  read permission before opening, then re-checks the descriptor with `fstat`
-  and opens no-follow and non-blocking. That catches a leaf swapped between
-  the check and the open. It does **not** make resolution race-free: parent
-  components are still resolved by name by the kernel after those checks, so
-  a parent directory replaced by a symlink in that window would be followed,
-  and a swap after the open is invisible. A `dir_fd`-based walk would be
-  needed for that, and it is not implemented. Where the platform offers
-  neither `O_NOFOLLOW` nor `O_NONBLOCK`, reads fail closed instead.
+  performs re-validates spelling, every component for links, file type and
+  read permission before opening, then re-checks the descriptor (POSIX `fstat`;
+  Windows handle metadata and type). That catches a leaf swapped between the
+  check and the open. It does **not** make resolution race-free: parent
+  components are still resolved by name after those checks, so a parent
+  directory replaced by a symlink or junction in that window would be
+  followed, and a swap after the open is invisible. A `dir_fd`-based walk
+  (POSIX) or equivalent parent-handle walk would be needed, and neither is
+  implemented. A platform offering neither `O_NOFOLLOW` nor `O_NONBLOCK`
+  fails closed.
+- **The Windows branch is implemented but unverified on a real host.**
+  `_windows_open_regular_descriptor` uses `CreateFileW` with
+  `OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT`, rejects leaf reparse points
+  and directories via `GetFileInformationByHandleEx(FileAttributeTagInfo)`,
+  requires `GetFileType == FILE_TYPE_DISK`, bridges with
+  `msvcrt.open_osfhandle` and closes each raw handle exactly once. Static
+  intermediate links are refused before the open by `_symlinked_component`,
+  which recognizes directory junctions through the `FILE_ATTRIBUTE_REPARSE_POINT`
+  attribute (`Path.is_symlink()` alone reports False for them); a junction
+  swapped in between that check and the open is still only a narrowable race.
+  Fake-WinAPI unit controls cover call order, every refusal branch, handle
+  ownership and the `None` error mapping on any platform, and cross-platform
+  fake-junction controls cover the component check, but real semantics
+  (reparse-handle behaviour, `open_osfhandle` round-trip, ACL denial, long
+  paths) can only be confirmed by the Windows-only native tests, which skip
+  off Windows. No claim of Windows support is made until those run on a
+  Windows host.
 - **Limited CI wiring.** The committed GitHub workflow runs the manifest CLI
   separately; full content validation and package inventory remain open.
 - **No asset entries exist.** The positive-control entry in the tests is a
@@ -444,3 +487,65 @@ Residual limits (unchanged and documented): parent components are resolved by
 name after the checks, so a parent swapped for a symlink in that window is
 still followed - this narrows the window, it is not race-free resolution, and
 no `dir_fd` walk is implemented.
+
+## Disposition: Windows guarded-read branch (2026-11-27)
+
+Implements the design in `work/agents/c682a700-beea-40a8-925c-22b50c58bff5/windows-guard-research-report.md`.
+`dd0628b`'s POSIX-only flags made every Windows read fail closed (valid hashes
+and anchored terms reads both failed). Now `_open_regular_file_descriptor`
+dispatches on `os.name == "nt"` to `_windows_open_regular_descriptor`, which
+uses only the standard library: `CreateFileW(OPEN_EXISTING |
+FILE_FLAG_OPEN_REPARSE_POINT)`, handle metadata via
+`GetFileInformationByHandleEx(FileAttributeTagInfo)` (reject reparse leaf and
+directory), `GetFileType == FILE_TYPE_DISK` (reject devices/pipes), then
+`msvcrt.open_osfhandle`. Each raw handle is closed exactly once; a successful
+bridge hands ownership to the CRT descriptor. All failures return `None`, so
+the existing structured findings are unchanged. There is deliberately no
+unguarded Windows `open` fallback.
+
+Status: implemented; the fake-WinAPI unit controls pass on macOS, including
+mutation checks that the refusal branches, call order, dispatch and
+single-close accounting actually bite. **Not verified on a real Windows host**,
+so Windows compatibility remains open. Real-host blockers, each needing a
+Windows runner the coordinator owns:
+
+- actual `CreateFileW`/`FILE_FLAG_OPEN_REPARSE_POINT` and
+  `GetFileInformationByHandleEx` behaviour and return codes;
+- `msvcrt.open_osfhandle` round-trip with `os.read` and correct handle
+  release on `os.close`;
+- ACL-denied and sharing-violated opens, junction/symlink creation privileges;
+- long-path (`\\?\`) policy;
+- execution of the gated native acceptance tests listed above.
+
+### Follow-up: static parent junctions (2026-11-27)
+
+Independent inspection found that the draft's claim to reject *all* parent
+junctions was too strong: `_symlinked_component` used only
+`Path.is_symlink()`, and on Windows a directory junction is a reparse point
+that `is_symlink()` reports as False, while `CreateFileW` still resolves
+through an intermediate junction and `FILE_FLAG_OPEN_REPARSE_POINT` binds only
+the leaf. A mocked control reproduced the miss (no finding, digest computed
+through the junction-like parent).
+
+Fixed in `_component_is_link`: after `is_symlink()`, the check reads
+`os.lstat(...).st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT`, which covers
+symlinks, junctions and mount points; on platforms without the attribute it
+degrades to `is_symlink()` alone, and a real POSIX `lstat` result has no such
+attribute so it never fires there. Because `_symlinked_component` is shared,
+existence checks (`PathChecker.check`), record resolution
+(`_check_reference_resolves`) and hash/read paths (`digest`,
+`_record_file_is_readable`) all refuse a static intermediate junction now.
+
+The acknowledged parent-swap race is unchanged and still documented: a link
+swapped in between the component check and the open is not detected, because
+both POSIX path resolution and `CreateFileW` resolve intermediates by name.
+
+Tests: cross-platform fake controls (`JunctionComponentTestCase`) simulate
+`is_symlink() == False` with a reparse attribute and assert detection plus
+refusal on the existence, hash and record paths; reverting the reparse check
+makes them fail. The native junction test was corrected to set up only through
+the outside fixture - it no longer writes through the link - and its recorded
+hash is the outside file's real digest, so an unexpected read through the
+junction would satisfy the hash and lose the expected `missing-file` finding.
+Native Windows execution remains blocked on a Windows host; no Windows
+acceptance is claimed here.

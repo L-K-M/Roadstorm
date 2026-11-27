@@ -467,21 +467,45 @@ def _terms_register_route_ids(root: Path) -> set[str] | None:
     return routes
 
 
+def _component_is_link(path: Path) -> bool:
+    """Whether ``path`` is a symlink, directory junction or other reparse point.
+
+    ``Path.is_symlink`` alone is not enough on Windows: a directory junction
+    carries ``FILE_ATTRIBUTE_REPARSE_POINT`` but is not a symbolic link, so
+    ``is_symlink`` returns False for it. ``os.lstat`` exposes
+    ``st_file_attributes``, whose reparse bit covers symlinks, junctions and
+    mount points alike; on platforms without that attribute the check degrades
+    to ``is_symlink`` only.
+    """
+    if path.is_symlink():
+        return True
+    if not _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _symlinked_component(root: Path, relative: str) -> str | None:
-    """Return the first component of ``relative`` (under ``root``) that is a symlink.
+    """Return the first component of ``relative`` (under ``root``) that is a link.
 
     ``is_symlink()`` on the final component alone is not enough: with
     ``assets/generated/fixture/etcdir`` a symlink to a directory outside the
     checkout, the reference ``assets/generated/fixture/etcdir/hosts`` resolves
-    to a regular file whose existence and hash the entry does not govern. A
-    reference is only inside the root when every component below the root is
-    a real directory and the leaf is a real regular file, so each component
-    is checked - for existence checks and for hashing alike.
+    to a regular file whose existence and hash the entry does not govern. The
+    same holds for an *intermediate* component, and on Windows for a directory
+    junction, which ``is_symlink()`` reports as False - hence
+    ``_component_is_link``. A reference is only inside the root when every
+    component below the root is a real directory and the leaf is a real regular
+    file, so each component is checked - for existence checks and for hashing
+    alike.
     """
     prefix = Path()
     for part in Path(relative).parts:
         prefix = prefix / part
-        if (root / prefix).is_symlink():
+        if _component_is_link(root / prefix):
             return prefix.as_posix()
     return None
 
@@ -518,8 +542,9 @@ def _record_file_is_readable(root: Path, relative: str) -> bool:
 # Open-time protections for every file this checker reads: no-follow so a leaf
 # swapped for a symlink between the path check and the open is refused, and
 # non-blocking so a FIFO or device node swapped in its place is opened without
-# blocking. Both are ordinary POSIX flags; where a platform provides neither,
-# the guarded open fails closed (see _guarded_open_flags).
+# blocking. Both are ordinary POSIX flags; on Windows the same guarantees are
+# built from CreateFileW instead (see _windows_open_regular_descriptor), and on
+# any other platform that offers neither flag the guarded open fails closed.
 _NO_FOLLOW_FLAG = getattr(os, "O_NOFOLLOW", None)
 _NON_BLOCK_FLAG = getattr(os, "O_NONBLOCK", None)
 
@@ -537,17 +562,204 @@ def _guarded_open_flags() -> int | None:
     return os.O_RDONLY | _NO_FOLLOW_FLAG | _NON_BLOCK_FLAG
 
 
+class _WindowsFileApi:
+    """Standard-library Win32 adapter used by the Windows guarded open.
+
+    It exposes four file operations and three attribute constants so the
+    guard logic stays testable with a fake: ``create_file`` opens the path,
+    ``file_attribute_tag`` returns ``(dwFileAttributes, dwReparseTag)`` or
+    ``None``, ``file_type`` returns the GetFileType value, ``open_osfhandle``
+    bridges a raw handle to a CRT descriptor and ``close_handle`` releases
+    one. ``ctypes``/``msvcrt`` are imported only here, so non-Windows imports
+    never touch them.
+
+    Not exercised on a real Windows host yet: see the README limitation.
+    """
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+
+        self._ctypes = ctypes
+        self._msvcrt = msvcrt
+        self.INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        self.GENERIC_READ = 0x80000000
+        self.FILE_SHARE_FLAGS = 0x1 | 0x2 | 0x4
+        self.OPEN_EXISTING = 3
+        self.FILE_ATTRIBUTE_NORMAL = 0x80
+        self.FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+        self.FILE_ATTRIBUTE_DIRECTORY = 0x10
+        self.FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+        self.FILE_TYPE_DISK = 0x1
+        self.FILE_INFO_BY_HANDLE_FILE_ATTRIBUTE_TAG_INFO = 9
+
+        class AttributeTag(ctypes.Structure):
+            _fields_ = [
+                ("dwFileAttributes", wintypes.DWORD),
+                ("dwReparseTag", wintypes.DWORD),
+            ]
+
+        self._attribute_tag = AttributeTag
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.restype = ctypes.c_void_p
+        create_file.argtypes = [
+            wintypes.LPCWSTR,   # lpFileName
+            wintypes.DWORD,     # dwDesiredAccess
+            wintypes.DWORD,     # dwShareMode
+            ctypes.c_void_p,    # lpSecurityAttributes
+            wintypes.DWORD,     # dwCreationDisposition
+            wintypes.DWORD,     # dwFlagsAndAttributes
+            ctypes.c_void_p,    # hTemplateFile
+        ]
+        attribute_query = kernel32.GetFileInformationByHandleEx
+        attribute_query.restype = wintypes.BOOL
+        attribute_query.argtypes = [
+            ctypes.c_void_p,    # hFile
+            wintypes.DWORD,     # FILE_INFO_BY_HANDLE_CLASS
+            ctypes.c_void_p,    # lpFileInformation
+            wintypes.DWORD,     # dwBufferSize
+        ]
+        file_type = kernel32.GetFileType
+        file_type.restype = wintypes.DWORD
+        file_type.argtypes = [ctypes.c_void_p]
+        close_handle = kernel32.CloseHandle
+        close_handle.restype = wintypes.BOOL
+        close_handle.argtypes = [ctypes.c_void_p]
+        self._create_file = create_file
+        self._attribute_query = attribute_query
+        self._file_type = file_type
+        self._close_handle = close_handle
+
+    def create_file(self, path: str):
+        """Open an existing path read-only, or ``None`` on failure."""
+        handle = self._create_file(
+            path,
+            self.GENERIC_READ,
+            self.FILE_SHARE_FLAGS,
+            None,
+            self.OPEN_EXISTING,
+            self.FILE_ATTRIBUTE_NORMAL | self.FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        if handle is None or handle == self.INVALID_HANDLE_VALUE:
+            return None
+        return handle
+
+    def file_attribute_tag(self, handle):
+        """Return ``(dwFileAttributes, dwReparseTag)``, or ``None``."""
+        info = self._attribute_tag()
+        ok = self._attribute_query(
+            handle,
+            self.FILE_INFO_BY_HANDLE_FILE_ATTRIBUTE_TAG_INFO,
+            self._ctypes.byref(info),
+            self._ctypes.sizeof(info),
+        )
+        if not ok:
+            return None
+        return info.dwFileAttributes, info.dwReparseTag
+
+    def file_type(self, handle):
+        """Return the GetFileType value for ``handle``."""
+        return int(self._file_type(handle))
+
+    def open_osfhandle(self, handle):
+        """Bridge a raw Win32 handle to a CRT descriptor (owns the handle)."""
+        return self._msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_NOINHERIT)
+
+    def close_handle(self, handle):
+        """Release a raw Win32 handle exactly once."""
+        return bool(self._close_handle(handle))
+
+
+_WINDOWS_FILE_API = None
+
+
+def _windows_file_api() -> "_WindowsFileApi":
+    """Lazily build the Win32 adapter; tests replace this to inject a fake."""
+    global _WINDOWS_FILE_API
+    if _WINDOWS_FILE_API is None:
+        _WINDOWS_FILE_API = _WindowsFileApi()
+    return _WINDOWS_FILE_API
+
+
+def _windows_open_regular_descriptor(root: Path, relative: str, api=None) -> int | None:
+    """Windows counterpart of the POSIX guarded open, or ``None``.
+
+    Mirrors the POSIX contract - readable regular file inside the root, or
+    ``None`` - using the Win32 primitives the research report proposes:
+
+    * ``CreateFileW`` with ``OPEN_EXISTING`` and
+      ``FILE_FLAG_OPEN_REPARSE_POINT`` binds the handle to a leaf reparse point
+      instead of following it;
+    * ``GetFileInformationByHandleEx(FileAttributeTagInfo)`` rejects a reparse
+      leaf (symlink, junction, mount point, DOS device alias) and a directory
+      using metadata about that same handle, so a swap between the open and the
+      query cannot be followed;
+    * ``GetFileType == FILE_TYPE_DISK`` rejects character devices and pipes;
+    * ``msvcrt.open_osfhandle`` hands the handle to the CRT descriptor the
+      existing readers already use.
+
+    Every rejection closes the raw handle exactly once; on a successful bridge
+    ownership moves to the descriptor and the raw handle is not closed again.
+    All failures map to ``None``, so callers keep emitting their structured
+    findings. Static intermediate links - including directory junctions, which
+    ``_symlinked_component`` now recognizes through the reparse attribute - are
+    refused before this function runs; a parent directory swapped for a link
+    between that check and ``CreateFileW`` remains a narrowable race, not a
+    closed one - same residual as the POSIX branch. Not verified on a real
+    Windows host.
+    """
+    if api is None:
+        try:
+            api = _windows_file_api()
+        except (OSError, ImportError, AttributeError):
+            # Even the guarded API cannot be built here: fail closed rather
+            # than fall back to an unguarded open.
+            return None
+    try:
+        handle = api.create_file(str(root / relative))
+    except OSError:
+        return None
+    if handle is None:
+        return None
+    descriptor = None
+    try:
+        tag = api.file_attribute_tag(handle)
+        if tag is None:
+            return None
+        attributes, _reparse_tag = tag
+        if attributes & (api.FILE_ATTRIBUTE_REPARSE_POINT | api.FILE_ATTRIBUTE_DIRECTORY):
+            return None
+        if api.file_type(handle) != api.FILE_TYPE_DISK:
+            return None
+        descriptor = api.open_osfhandle(handle)
+    except OSError:
+        return None
+    finally:
+        if descriptor is None:
+            # The raw handle is still ours unless the CRT took it; closing it
+            # here on every refusal keeps the count exactly one per open.
+            api.close_handle(handle)
+    return descriptor
+
+
 def _open_regular_file_descriptor(root: Path, relative: str) -> int | None:
     """Open ``root/relative`` as a real regular file, or ``None``.
 
     Callers validate the path with ``_record_file_is_readable`` first; this
-    function adds what only an open can guarantee. The descriptor must
+    function adds what only an open can guarantee. On POSIX the descriptor must
     describe a regular file, so a path swapped for a FIFO or device node
-    between the check and here is closed unread. ``O_NOFOLLOW`` refuses a leaf
-    that became a symlink, and ``O_NONBLOCK`` keeps a swapped-in FIFO from
-    blocking; blocking is then restored on the descriptor so the caller's
-    streaming reads behave normally.
+    between the check and here is closed unread; ``O_NOFOLLOW`` refuses a leaf
+    that became a symlink and ``O_NONBLOCK`` keeps a swapped-in FIFO from
+    blocking, then blocking is restored so the caller's streaming reads behave
+    normally. Windows uses ``_windows_open_regular_descriptor`` instead, since
+    those flags do not exist there. Any other platform offering neither flag
+    fails closed rather than opening unchecked.
     """
+    if os.name == "nt":
+        return _windows_open_regular_descriptor(root, relative)
     flags = _guarded_open_flags()
     if flags is None:
         # No fd-level protection available: fail closed instead of opening a
@@ -613,16 +825,23 @@ def _read_record_text(root: Path, relative: str) -> str | None:
         return None
 
 
+# Reparse-point attribute bit from the Win32 file attributes exposed by
+# os.lstat on Windows. The numeric fallback keeps the check defined on hosts
+# where the stat module does not publish it (simulated environments); a real
+# POSIX lstat result has no st_file_attributes, so it never fires there.
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
 class PathChecker:
     """Resolves manifest-relative paths against a project root.
 
     Manifest paths must be POSIX-style, project-relative, and free of ``..``
     so that a manifest cannot point outside the checkout or hide an absolute
     machine path in the record. Referenced files must additionally be regular
-    files reached through real directories: a symlink at *any* component -
-    the leaf or a parent directory - can name a file outside the checkout
-    that the entry does not govern, so its existence and hash would vouch for
-    content the record never accounted for.
+    files reached through real directories: a link at *any* component - the
+    leaf or a parent directory, including a Windows junction - can name a file
+    outside the checkout that the entry does not govern, so its existence and
+    hash would vouch for content the record never accounted for.
     """
 
     def __init__(self, root: Path | None, file_checks: bool = True, check_hashes: bool = False):
