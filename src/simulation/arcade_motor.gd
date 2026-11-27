@@ -16,9 +16,9 @@ extends RefCounted
 ##     deferred: the kernel accepts exactly one curve and does not read the
 ##     handling resource);
 ##   * braking, aerodynamic/rolling drag and coasting;
-##   * the design's reverse transition (at/below 1 m/s after a 0.3 s brake hold,
-##     docs/GAME_DESIGN.md:11) using explicit tuning values, with throttle
-##     taking deterministic priority over brake;
+##   * the design's reverse transition (road-plane speed magnitude at/below
+##     1 m/s after a 0.3 s brake hold, docs/GAME_DESIGN.md:11) using explicit
+##     tuning values, with throttle taking deterministic priority over brake;
 ##   * basic speed-scaled grip yaw and exponential lateral damping.
 ##
 ## Deferred seams are documented on `CarState`: drift, surface modifiers,
@@ -241,17 +241,26 @@ static func propose(
 	var reverse_engaged := state_in.reverse_engaged
 	var reverse_hold_s := state_in.reverse_hold_s
 
-	if state_in.grounded:
+	if not state_in.grounded:
+		# Airborne cars receive no braking, reverse drive or yaw in this slice,
+		# and new engagement needs ground contact. A released brake or applied
+		# throttle still clears a partial hold so it cannot survive airtime and
+		# complete on landing; a continuous brake hold carries across the hop.
+		if command.brake <= 0.0 or command.throttle > 0.0:
+			reverse_hold_s = 0.0
+	else:
 		# Reverse transition. Throttle has deterministic priority over brake:
 		# it both blocks engagement and leaves an already engaged reverse, so
-		# simultaneous legal input cannot cycle the flag. Engagement needs the
-		# brake alone at/below the design-bounded trigger speed for the
-		# configured hold.
+		# simultaneous legal input cannot cycle the flag. New engagement needs
+		# the brake alone and a road-plane speed magnitude at/below the
+		# design-bounded trigger for the configured hold. Magnitude admits the
+		# signed-speed case that previously let any backward motion start
+		# reverse; lateral-dominant travel at road speed stays above the bound.
 		if not reverse_engaged:
 			if (
 				command.brake > 0.0
 				and command.throttle <= 0.0
-				and forward_speed <= tuning.reverse_trigger_speed_m_s
+				and state_in.speed_m_s() <= tuning.reverse_trigger_speed_m_s
 			):
 				reverse_hold_s += dt
 				if reverse_hold_s >= tuning.reverse_hold_time_s:

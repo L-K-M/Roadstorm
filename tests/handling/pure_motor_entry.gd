@@ -820,6 +820,89 @@ func _case_reverse_hold_timing() -> void:
 	)
 	measurements["hold_min_ticks"] = min_ticks
 
+	# Hold continuity across an airborne branch. A released brake must clear a
+	# partial hold in the air so a later press starts fresh on landing; a
+	# continuous brake hold carries across the hop without advancing.
+	var continuity_tuning = d.make_tuning(
+		[[0.0, 9.0], [20.0, 0.0]], 0.0, 0.0, 0.0, 0.0, INF, 0.0, 1.0, 0.3, 0.0, 0.0
+	)
+	var interrupted = d.make_state()
+	for _index in range(min_ticks - 6):
+		var proposal = d.advance(interrupted, brake_command, continuity_tuning)
+		if proposal == null:
+			d.check(false, "continuity setup returned null")
+			break
+		interrupted = proposal.state
+	d.check(
+		interrupted.reverse_hold_s > 0.0 and not interrupted.reverse_engaged,
+		"partial hold accumulated before airtime"
+	)
+	var airborne = interrupted.copy()
+	airborne.grounded = false
+	var released_command = DriverCommandScript.create()
+	for _index in range(5):
+		var proposal = d.advance(airborne, released_command, continuity_tuning)
+		if proposal == null:
+			d.check(false, "airborne release returned null")
+			break
+		airborne = proposal.state
+	d.check(not airborne.reverse_engaged, "release during airtime does not engage reverse")
+	d.check(
+		airborne.reverse_hold_s == 0.0,
+		"releasing the brake in airtime clears the partial hold"
+	)
+	var landed = airborne.copy()
+	landed.grounded = true
+	var landed_states = d.trace_states(landed, brake_command, continuity_tuning, 60)
+	var landed_engaged_tick := -1
+	for index in range(landed_states.size()):
+		if landed_states[index].reverse_engaged:
+			landed_engaged_tick = index + 1
+			break
+	d.check(landed_engaged_tick > 0, "brake hold after landing eventually engages reverse")
+	if landed_engaged_tick > 0:
+		d.check(
+			landed_engaged_tick >= min_ticks,
+		"landing engagement waits for a fresh full hold (tick %d, min %d)" % [landed_engaged_tick, min_ticks]
+		)
+		measurements["airborne_interrupted_engaged_tick"] = landed_engaged_tick
+
+	var continuous = d.make_state()
+	for _index in range(min_ticks - 6):
+		var proposal = d.advance(continuous, brake_command, continuity_tuning)
+		if proposal == null:
+			d.check(false, "continuous-hold setup returned null")
+			break
+		continuous = proposal.state
+	var carried_hold_s = continuous.reverse_hold_s
+	var continuous_air = continuous.copy()
+	continuous_air.grounded = false
+	for _index in range(5):
+		var proposal = d.advance(continuous_air, brake_command, continuity_tuning)
+		if proposal == null:
+			d.check(false, "airborne continuous hold returned null")
+			break
+		continuous_air = proposal.state
+	d.check(
+		is_equal_approx(continuous_air.reverse_hold_s, carried_hold_s),
+		"a brake held through airtime preserves the accumulated hold"
+	)
+	var continuous_landed = continuous_air.copy()
+	continuous_landed.grounded = true
+	var continuous_states = d.trace_states(
+		continuous_landed, brake_command, continuity_tuning, 60
+	)
+	var continuous_engaged_tick := -1
+	for index in range(continuous_states.size()):
+		if continuous_states[index].reverse_engaged:
+			continuous_engaged_tick = index + 1
+			break
+	d.check(
+		continuous_engaged_tick > 0 and continuous_engaged_tick < min_ticks,
+		"a carried hold completes sooner than a fresh one (tick %d, min %d)" % [continuous_engaged_tick, min_ticks]
+	)
+	measurements["airborne_carried_hold_s"] = carried_hold_s
+
 
 func _case_reverse_road_speed() -> void:
 	var tuning = d.handling_tuning()
@@ -868,8 +951,105 @@ func _case_reverse_road_speed() -> void:
 			high_engaged = true
 			break
 	d.check(not high_engaged, "one second of braking from 20 m/s does not engage reverse")
+
+	# New engagement is gated by road-plane speed magnitude, not signed
+	# longitudinal speed: a backward roll and a lateral-dominant slide at road
+	# speed are both above the trigger and must not engage. An already-engaged
+	# reverse is unaffected by the new gate.
+	var inert = d.make_tuning(
+		[[0.0, 9.0], [20.0, 0.0]], 0.0, 0.0, 0.0, 0.0, INF, 0.0, 1.0, 0.3, 0.0, 0.0
+	)
+	var backward_fast = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, -5.0)), brake_command, inert, 60
+	)
+	d.check(not backward_fast[-1].reverse_engaged, "-5 m/s backward roll does not engage reverse")
+	var lateral_dominant = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(-20.0, 0.0)), brake_command, inert, 60
+	)
+	d.check(
+		not lateral_dominant[-1].reverse_engaged,
+		"pure lateral slide at 20 m/s does not engage reverse"
+	)
+	var already_engaged = d.make_state(Vector2.ZERO, Vector2(0.0, -5.0))
+	already_engaged.reverse_engaged = true
+	var kept = d.advance(already_engaged, brake_command, tuning)
+	d.check(
+		kept != null and kept.state.reverse_engaged,
+		"an already-engaged reverse at -5 m/s stays engaged"
+	)
+
+	# With braking, a backward roll decelerates into the allowed range and
+	# engages only after a full hold measured from that crossing.
+	var min_ticks := int(
+		ceil((ArcadeMotorScript.REVERSE_HOLD_TIME_MIN_S - 1e-9) / ArcadeMotorScript.DT)
+	)
+	var rolling_back = d.make_state(Vector2.ZERO, Vector2(0.0, -5.0))
+	var decel_states = d.trace_states(rolling_back, brake_command, tuning, 300)
+	var gate_open_tick := -1
+	for index in range(decel_states.size()):
+		var pre_state = rolling_back if index == 0 else decel_states[index - 1]
+		if pre_state.speed_m_s() <= tuning.reverse_trigger_speed_m_s + 1e-9:
+			gate_open_tick = index + 1
+			break
+	var decel_engaged_tick := -1
+	for index in range(decel_states.size()):
+		if decel_states[index].reverse_engaged:
+			decel_engaged_tick = index + 1
+			break
+	d.check(gate_open_tick > 0, "backward roll reaches the allowed speed range")
+	d.check(
+		decel_engaged_tick > gate_open_tick,
+		"backward roll engages only after entering the range"
+	)
+	if gate_open_tick > 0 and decel_engaged_tick > 0:
+		var pre_engagement = (
+			rolling_back if decel_engaged_tick == 1 else decel_states[decel_engaged_tick - 2]
+		)
+		d.check(
+			pre_engagement.speed_m_s() <= tuning.reverse_trigger_speed_m_s + 1e-9,
+			"engagement pre-state is at or below 1 m/s"
+		)
+		d.check(
+			decel_engaged_tick >= gate_open_tick + min_ticks - 1,
+		"backward engagement waits for the full hold after deceleration (tick %d, gate tick %d, min %d)" % [
+				decel_engaged_tick, gate_open_tick, min_ticks
+			]
+		)
+
+	# Exact threshold boundary with zero forces keeps the speed fixed: exactly
+	# 1 m/s in either travel direction engages after the hold, just above does
+	# not engage at all.
+	var at_limit_forward = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 1.0)), brake_command, inert, 60
+	)
+	var at_limit_backward = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, -1.0)), brake_command, inert, 60
+	)
+	var above_limit = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 1.0 + 1e-6)), brake_command, inert, 60
+	)
+	var at_forward_tick := -1
+	var at_backward_tick := -1
+	for index in range(60):
+		if at_forward_tick < 0 and at_limit_forward[index].reverse_engaged:
+			at_forward_tick = index + 1
+		if at_backward_tick < 0 and at_limit_backward[index].reverse_engaged:
+			at_backward_tick = index + 1
+	d.check(at_forward_tick > 0, "exactly 1 m/s forward engages reverse")
+	d.check(at_backward_tick > 0, "exactly 1 m/s backward engages reverse")
+	d.check(
+		not above_limit[-1].reverse_engaged,
+		"just above 1 m/s never engages reverse"
+	)
+	if at_forward_tick > 0:
+		d.check(at_forward_tick >= min_ticks, "1 m/s engagement waits for the full hold")
+
 	measurements["road_speed_engaged_tick"] = engaged_tick
 	measurements["road_speed_at_engagement_mps"] = engagement_previous_speed
+	measurements["backward_decel_gate_open_tick"] = gate_open_tick
+	measurements["backward_decel_engaged_tick"] = decel_engaged_tick
+	measurements["exact_limit_forward_tick"] = at_forward_tick
+	measurements["exact_limit_backward_tick"] = at_backward_tick
 
 
 func _case_reverse_top_speed() -> void:
