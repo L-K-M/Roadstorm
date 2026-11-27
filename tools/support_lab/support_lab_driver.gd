@@ -27,6 +27,8 @@ const SEAM_HALF_WIDTH := 0.15
 const LONG_RAY_LENGTH_M := 1.6
 const SUPPORT_BOUND_M := 0.75
 const UNEVEN_SUPPORT_BOUND_M := 1.0
+## Lower-shoulder drop used by the coherent-cluster case, metres.
+const SHOULDER_DROP_M := 0.30
 
 ## Internal wall-clock guard: a stalled await must not leave a headless
 ## engine running forever. The runner bounds every invocation as well.
@@ -41,6 +43,7 @@ const CASE_IDS := [
 	"ceiling_overpass_rejection",
 	"distant_support",
 	"uneven_support_spread",
+	"coherent_cluster_three_plus_one",
 	"too_steep_surface",
 	"absent_floor",
 	"mask_exclusion",
@@ -143,6 +146,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_distant_support()
 		"uneven_support_spread":
 			await _case_uneven_support_spread()
+		"coherent_cluster_three_plus_one":
+			await _case_coherent_cluster_three_plus_one()
 		"too_steep_surface":
 			await _case_too_steep_surface()
 		"absent_floor":
@@ -155,6 +160,9 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_deterministic_repeat()
 		"exactly_five_queries":
 			await _case_exactly_five_queries()
+	# Guard against a case id that reaches the dispatcher without a match arm:
+	# such a case would otherwise report a vacuous zero-check pass.
+	d.check(d.checks > 0, "%s: case emitted at least one assertion" % case_id)
 	var result := {
 		"case": case_id,
 		"pass": d.failures.is_empty(),
@@ -178,6 +186,19 @@ func _fingerprints_equal(a: Array, b: Array) -> bool:
 		elif a[index] != b[index]:
 			return false
 	return true
+
+
+## Read the newer cluster diagnostics safely. The historical-probe negative
+## control replaces the probe script with an older Result shape, so `get()`
+## keeps that run loadable instead of raising a missing-property error.
+func _cluster_size_of(result: ProbeScript.Result) -> int:
+	var value = result.get("grounding_cluster_size")
+	return int(value) if typeof(value) == TYPE_INT else 0
+
+
+func _cluster_indices_of(result: ProbeScript.Result) -> Array:
+	var value = result.get("grounding_cluster_indices")
+	return value if typeof(value) == TYPE_ARRAY else []
 
 
 func _run_intentional_failure() -> Dictionary:
@@ -306,6 +327,33 @@ func _gap_slabs(top_y: float) -> Array[Dictionary]:
 			"FloorRight",
 			slab_size,
 			Vector3(center_x, top_y - 0.5, 0.0)
+		),
+	]
+
+
+## Three road-level footprint surfaces plus one lower shoulder. A 0.30 m
+## central seam leaves the centre ray unsupported: the right side carries two
+## road footprints, the rear left carries one, and the front left reads the
+## shoulder at `shoulder_top_y`.
+func _three_road_plus_shoulder_slabs(shoulder_top_y: float) -> Array[Dictionary]:
+	var side_width := FLOOR_SIZE.x - SEAM_HALF_WIDTH
+	var side_depth := 0.5 * FLOOR_SIZE.z
+	var side_center_x := -(SEAM_HALF_WIDTH + 0.5 * side_width)
+	return [
+		_slab(
+			"RoadRight",
+			Vector3(side_width, FLOOR_SIZE.y, FLOOR_SIZE.z),
+			Vector3(SEAM_HALF_WIDTH + 0.5 * side_width, -0.5, 0.0)
+		),
+		_slab(
+			"RoadRearLeft",
+			Vector3(side_width, FLOOR_SIZE.y, side_depth),
+			Vector3(side_center_x, -0.5, 0.25 * FLOOR_SIZE.z)
+		),
+		_slab(
+			"ShoulderFrontLeft",
+			Vector3(side_width, FLOOR_SIZE.y, side_depth),
+			Vector3(side_center_x, shoulder_top_y - 0.5, -0.25 * FLOOR_SIZE.z)
 		),
 	]
 
@@ -798,7 +846,12 @@ func _case_uneven_support_spread() -> void:
 	d.check(not result.center_supported, "uneven: centre over the gap")
 	d.check(
 		not result.grounded,
-		"uneven: 0.35 m spread exceeds the 0.25 m provisional tolerance"
+		"uneven: equal 2+2 clusters are ambiguous and remain ungrounded"
+	)
+	d.check(
+		_cluster_size_of(result) == 0,
+		"uneven: no uniquely largest cluster is reported (got %d)"
+		% _cluster_size_of(result)
 	)
 	var distances := []
 	for index in range(1, result.probes.size()):
@@ -811,15 +864,131 @@ func _case_uneven_support_spread() -> void:
 		"uneven: closest legal support is still reported"
 	)
 
-	# Sensitivity control: the same geometry grounds when the spread tolerance
-	# is widened to cover the authored step.
+	# Tie handling is independent of the required count: lowering it does not
+	# turn an equal-size split into one coherent cluster.
+	var lenient := d.make_config_with(
+		LONG_RAY_LENGTH_M, UNEVEN_SUPPORT_BOUND_M, 1, 0.25
+	)
+	var lenient_result := _probe(world, "Car", lenient, transform)
+	d.check(
+		not lenient_result.grounded,
+		"uneven: required=1 still refuses an equal 2+2 split"
+	)
+
+	# Sensitivity control: widening the spread bound makes all four hits one
+	# coherent cluster and grounds the body.
 	var relaxed := d.make_config_with(
 		LONG_RAY_LENGTH_M, UNEVEN_SUPPORT_BOUND_M, 2, 0.5
 	)
 	var relaxed_result := _probe(world, "Car", relaxed, transform)
 	d.check(relaxed_result.grounded, "uneven control: relaxed spread grounds")
+	d.check(
+		_cluster_size_of(relaxed_result) == 4,
+		"uneven control: relaxed cluster contains all four hits (got %d)"
+		% _cluster_size_of(relaxed_result)
+	)
 	measurements["measured_spread_m"] = distances.max() - distances.min()
 	await _destroy(world)
+
+
+func _case_coherent_cluster_three_plus_one() -> void:
+	# Three footprints on road level and one on a legal shoulder 0.30 m
+	# lower, with the central ray in a 0.30 m seam. The three road hits form
+	# the uniquely largest coherent cluster, so the documented rule grounds;
+	# the historical all-legal-hits spread rule rejected this pose.
+	var config := d.make_config_with(
+		LONG_RAY_LENGTH_M, UNEVEN_SUPPORT_BOUND_M, 2, 0.25
+	)
+	var transform := d.flat_transform(Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))
+	var world := await _build(
+		_three_road_plus_shoulder_slabs(-SHOULDER_DROP_M),
+		[],
+		[_car_spec("Car", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))]
+	)
+	var result := _probe(world, "Car", config, transform)
+	_check_common_ok_result(result, config, ProbeScript.PROBE_COUNT, "coherent")
+	d.check(not result.center_supported, "coherent: centre ray misses the seam")
+	d.check(
+		result.footprint_support_count == 4,
+		"coherent: four legal footprint hits (got %d)" % result.footprint_support_count
+	)
+	d.check(
+		result.grounded,
+		"coherent: three agreeing road hits ground despite a lower shoulder"
+	)
+	d.check(result.support_count == 4, "coherent: four valid supports")
+	d.check(
+		_cluster_size_of(result) == 3,
+		"coherent: unique cluster size is three (got %d)" % _cluster_size_of(result)
+	)
+	d.check(
+		_cluster_indices_of(result) == [1, 2, 3],
+		"coherent: cluster is rear_right, rear_left and front_right (got %s)"
+		% str(_cluster_indices_of(result))
+	)
+	var road_hits := 0
+	var shoulder_hits := 0
+	for index in range(1, result.probes.size()):
+		var detail: Dictionary = result.probes[index]
+		var distance: float = detail["distance_m"]
+		if absf(distance - d.BODY_SUPPORT_Y) <= 1e-5:
+			road_hits += 1
+		elif absf(distance - (d.BODY_SUPPORT_Y + SHOULDER_DROP_M)) <= 1e-5:
+			shoulder_hits += 1
+	d.check(
+		road_hits == 3 and shoulder_hits == 1,
+		"coherent: three road hits and one shoulder hit (got %d/%d)"
+		% [road_hits, shoulder_hits]
+	)
+	var all_hit_spread: float = (
+		result.probes[4]["distance_m"] - result.probes[1]["distance_m"]
+	)
+	d.check_close(all_hit_spread, SHOULDER_DROP_M, 1e-5, "coherent: all-hit spread")
+	d.check(
+		all_hit_spread > config.footprint_support_spread_max_m,
+		"coherent: all-hit spread exceeds the provisional tolerance"
+	)
+
+	# Non-monotonicity control: the same shoulder deeper than the support
+	# bound is discarded, leaving the same three-hit road cluster grounded.
+	# Destroy the shallow stage first so its shoulder cannot lie above the deep
+	# one along the same ray.
+	await _destroy(world)
+	var deep_world := await _build(
+		_three_road_plus_shoulder_slabs(-0.8),
+		[],
+		[_car_spec("Car", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))]
+	)
+	var deep := _probe(deep_world, "Car", config, transform)
+	_check_common_ok_result(deep, config, ProbeScript.PROBE_COUNT, "coherent-deep")
+	var deep_shoulder: Dictionary = deep.probes[4]
+	d.check(
+		not deep_shoulder["valid"],
+		"coherent-deep: shoulder beyond the support bound is not legal"
+	)
+	d.check(
+		deep_shoulder["reason"] == "beyond_max_support",
+		"coherent-deep: shoulder reason beyond_max_support (got %s)"
+		% deep_shoulder["reason"]
+	)
+	d.check(
+		deep.footprint_support_count == 3,
+		"coherent-deep: three legal footprint hits remain (got %d)"
+		% deep.footprint_support_count
+	)
+	d.check(
+		deep.grounded,
+		"coherent-deep: three road hits still ground without the far shoulder"
+	)
+	d.check(
+		_cluster_size_of(deep) == 3,
+		"coherent-deep: remaining cluster size is three (got %d)"
+		% _cluster_size_of(deep)
+	)
+	measurements["coherent_cluster_size"] = _cluster_size_of(result)
+	measurements["coherent_all_hit_spread_m"] = all_hit_spread
+	measurements["coherent_deep_cluster_size"] = _cluster_size_of(deep)
+	await _destroy(deep_world)
 
 
 func _case_too_steep_surface() -> void:

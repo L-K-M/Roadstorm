@@ -28,6 +28,7 @@
 #   --case ID           run only this case (all|intentional_failure|<case>)
 #   --mutant NAME       run only this mutant's negative control
 #   --skip-mutants      skip phase 3
+#   --legacy-probe FILE run only the historical-source negative control
 #   --keep-scratch      retain the temporary stage and logs
 #
 # Exit codes: 0 = every required phase passed; 1 = a phase failed;
@@ -47,6 +48,7 @@ TIMEOUT_S=${ROADSTORM_TEST_TIMEOUT:-120}
 OUTER_LIMIT_S=${ROADSTORM_OUTER_TIMEOUT:-300}
 CASE_ID=""
 MUTANT_ONLY=""
+LEGACY_PROBE=""
 SKIP_MUTANTS=0
 KEEP_SCRATCH=0
 
@@ -55,10 +57,12 @@ usage() {
 Usage: run_validation.sh [--project DIR] [--godot BIN]
                          [--timeout SECONDS] [--outer-timeout SECONDS]
                          [--case ID] [--mutant NAME] [--skip-mutants]
-                         [--keep-scratch]
+                         [--legacy-probe FILE] [--keep-scratch]
 
 Stages a private copy, imports, then runs the support_lab suite, the
 deliberate-failure proof and broken-behaviour mutants under pinned Godot.
+With --legacy-probe, runs only the historical-source negative control:
+the supplied older probe must fail the coherent-cluster case.
 EOF
 }
 
@@ -124,6 +128,15 @@ while [ $# -gt 0 ]; do
 		MUTANT_ONLY=${1#*=}
 		shift
 		;;
+	--legacy-probe)
+		[ $# -ge 2 ] || die_usage "--legacy-probe needs a value"
+		LEGACY_PROBE=$2
+		shift 2
+		;;
+	--legacy-probe=*)
+		LEGACY_PROBE=${1#*=}
+		shift
+		;;
 	--skip-mutants)
 		SKIP_MUTANTS=1
 		shift
@@ -168,6 +181,9 @@ if [ -n "$MUTANT_ONLY" ]; then
 	*) die_usage "unknown mutant '$MUTANT_ONLY'; use one of: $MUTANTS" ;;
 	esac
 fi
+if [ -n "$LEGACY_PROBE" ] && [ ! -f "$LEGACY_PROBE" ]; then
+	die_usage "--legacy-probe file not found: $LEGACY_PROBE"
+fi
 if [ -n "$CASE_ID" ]; then
 	case "$CASE_ID" in
 	all | intentional_failure) ;;
@@ -175,7 +191,8 @@ if [ -n "$CASE_ID" ]; then
 		case "$CASE_ID" in
 		flat_floor | bank_and_ramp | frame_orientation_gate | \
 		center_gap_seam | near_edge_partial_support | ceiling_overpass_rejection | \
-		distant_support | uneven_support_spread | too_steep_surface | \
+		distant_support | uneven_support_spread | coherent_cluster_three_plus_one | \
+		too_steep_surface | \
 		absent_floor | mask_exclusion | invalid_input_unchanged | \
 		deterministic_repeat | exactly_five_queries)
 			;;
@@ -350,7 +367,7 @@ apply_mutant() {
 		replace_literal "$_file" 'elif detail["up_dot"] < config.min_up_dot:' 'elif false:'
 		;;
 	footprint)
-		replace_literal "$_file" 'if not result.grounded and footprint_count >= config.required_footprint_hits:' 'if not result.grounded and footprint_count >= 1:'
+		replace_literal "$_file" 'if cluster_indices.size() >= config.required_footprint_hits:' 'if cluster_indices.size() >= 1:'
 		;;
 	distance)
 		replace_literal "$_file" 'elif along > config.max_support_distance_m + DISTANCE_TOLERANCE_M:' 'elif false:'
@@ -359,7 +376,7 @@ apply_mutant() {
 		replace_literal "$_file" 'const PROBE_COUNT := 5' 'const PROBE_COUNT := 4'
 		;;
 	spread)
-		replace_literal "$_file" 'result.grounded = (footprint_max - footprint_min) <= config.footprint_support_spread_max_m' 'result.grounded = true'
+		replace_literal "$_file" 'return (high - low) <= spread_max + DISTANCE_TOLERANCE_M' 'return (high - low) <= ABSOLUTE_MAX_RAY_LENGTH_M + DISTANCE_TOLERANCE_M'
 		;;
 	mask)
 		replace_literal "$_file" 'query.collision_mask = body.collision_mask' 'query.collision_mask = 4294967295'
@@ -408,6 +425,39 @@ if grep_errors "$import_log" | grep -q .; then
 	exit 1
 fi
 echo "[support-lab] import complete"
+
+# Historical-source negative control: run the new coherent-cluster case
+# against an older probe source supplied by the caller. The control passes
+# only when that source fails the case, demonstrating the behaviour change.
+if [ -n "$LEGACY_PROBE" ]; then
+	cp "$LEGACY_PROBE" "$probe_stage" || {
+		echo "run_validation: failed to stage legacy probe source" >&2
+		exit 1
+	}
+	legacy_log="$mut_root/legacy_probe.log"
+	: >"$legacy_log"
+	run_engine "coherent_cluster_three_plus_one" "$legacy_log"
+	legacy_status=$?
+	legacy_ok=1
+	if grep_errors "$legacy_log" | grep -q .; then
+		echo "run_validation: legacy-probe control log reported engine errors:" >&2
+		grep_errors "$legacy_log" | sed 's/^/  /' >&2
+		legacy_ok=0
+	elif [ "$legacy_status" -eq 0 ]; then
+		echo "run_validation: LEGACY CONTROL FAILED: old probe passed coherent_cluster_three_plus_one" >&2
+		legacy_ok=0
+	elif ! case_pass_false "coherent_cluster_three_plus_one" "$legacy_log"; then
+		echo "run_validation: LEGACY CONTROL FAILED: old probe did not fail coherent_cluster_three_plus_one" >&2
+		legacy_ok=0
+	else
+		echo "[support-lab] legacy probe control failed coherent_cluster_three_plus_one as expected"
+	fi
+	if [ "$legacy_ok" -ne 1 ]; then
+		exit 1
+	fi
+	echo "[support-lab] legacy probe control complete"
+	exit 0
+fi
 
 # Selected-case mode: used directly for debugging and by mutant controls.
 if [ -n "$CASE_ID" ]; then

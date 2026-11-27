@@ -35,11 +35,18 @@ extends RefCounted
 ## and is within `max_support_distance_m`. Ceilings and wall-like surfaces
 ## are therefore never promoted to support.
 ##
-## `grounded` requires either a legal central hit or at least
-## `required_footprint_hits` legal footprint hits whose support distances
-## agree within `footprint_support_spread_max_m`. That lets a body whose
-## centre hangs over a legal road seam stay grounded on nearby floor while a
-## single distant or steep hit cannot claim support by itself.
+## `grounded` requires either a legal central hit or one uniquely largest
+## coherent cluster of legal footprint support distances. A cluster is a set
+## of footprint distances whose spread (maximum minus minimum) is at most
+## `footprint_support_spread_max_m` (including the probe's distance
+## tolerance). Clusters are formed in ascending distance order and only
+## clusters that cannot be extended by either neighbouring distance are
+## candidates; a qualifying cluster must also contain at least
+## `required_footprint_hits` hits. Equal-largest clusters, such as a 2+2
+## split across two levels, are ambiguous and leave the body ungrounded.
+## That lets a body whose centre hangs over a legal road seam stay grounded
+## when three footprints agree and a fourth reads a lower shoulder, while an
+## ambiguous split or a lone distant hit cannot claim support by itself.
 ##
 ## Limitations, stated rather than hidden:
 ##   * point rays have no skin or radius; a seam can fall between the five
@@ -197,6 +204,13 @@ class Result extends RefCounted:
 	var support_count := 0
 	## Number of legal support hits among the four footprint probes.
 	var footprint_support_count := 0
+	## Size of the uniquely largest coherent footprint-distance cluster, even
+	## when it has fewer than `required_footprint_hits` members. Zero when the
+	## centre supports, no footprint is legal, or the largest cluster is tied.
+	var grounding_cluster_size := 0
+	## Probe indices of that cluster in fixed probe order, empty when no
+	## unique cluster exists or the centre supports.
+	var grounding_cluster_indices: Array[int] = []
 	## Closest legal support point below the transform origin, if any.
 	var has_support := false
 	var support_probe_index := -1
@@ -351,20 +365,29 @@ static func probe(
 	result.support_count = valid_indices.size()
 	result.center_supported = not probes.is_empty() and bool(probes[0]["valid"])
 
-	var footprint_count := 0
-	var footprint_min := INF
-	var footprint_max := -INF
+	var footprint_indices: Array[int] = []
+	var footprint_distances: Array[float] = []
 	for index in range(1, PROBE_COUNT):
 		if bool(probes[index]["valid"]):
-			footprint_count += 1
-			var distance: float = probes[index]["distance_m"]
-			footprint_min = minf(footprint_min, distance)
-			footprint_max = maxf(footprint_max, distance)
-	result.footprint_support_count = footprint_count
+			footprint_indices.append(index)
+			footprint_distances.append(float(probes[index]["distance_m"]))
+	result.footprint_support_count = footprint_indices.size()
 
+	# A legal central hit grounds on its own. Otherwise only one uniquely
+	# largest coherent cluster of legal footprint distances may ground, so a
+	# lower shoulder reading cannot veto three agreeing road hits and an
+	# ambiguous equal split cannot claim support.
 	result.grounded = result.center_supported
-	if not result.grounded and footprint_count >= config.required_footprint_hits:
-		result.grounded = (footprint_max - footprint_min) <= config.footprint_support_spread_max_m
+	result.grounding_cluster_size = 0
+	result.grounding_cluster_indices = []
+	if not result.grounded:
+		var cluster_indices: Array[int] = _uniquely_largest_coherent_cluster(
+			footprint_distances, footprint_indices, config.footprint_support_spread_max_m
+		)
+		result.grounding_cluster_size = cluster_indices.size()
+		result.grounding_cluster_indices = cluster_indices
+		if cluster_indices.size() >= config.required_footprint_hits:
+			result.grounded = true
 
 	if valid_indices.is_empty():
 		return result
@@ -392,6 +415,91 @@ static func probe(
 		if averaged.dot(up) >= config.min_up_dot:
 			result.support_normal = averaged
 	return result
+
+
+## Shared spread test for the centre-miss cluster rule. The tolerance matches
+## the other distance comparisons so a cluster exactly at the bound counts.
+static func _within_spread(low: float, high: float, spread_max: float) -> bool:
+	return (high - low) <= spread_max + DISTANCE_TOLERANCE_M
+
+
+## Exact centre-miss coherence rule.
+##
+## Returns the fixed-order probe indices of the uniquely largest maximal
+## cluster of `distances` whose spread is within `spread_max`, or an empty
+## array when the largest cluster is tied or there are no distances.
+## `probe_indices[i]` is the probe index for `distances[i]`. A cluster is
+## maximal when neither neighbouring distance in ascending order can be added
+## without exceeding the bound. Distances are ordered by value, breaking
+## ties by position, so the outcome is deterministic for a fixed input. A
+## 2+2 disjoint split therefore yields two equal-largest clusters and an
+## empty result, while three agreeing hits plus one far reading yield the
+## three-hit cluster.
+static func _uniquely_largest_coherent_cluster(
+	distances: Array[float], probe_indices: Array[int], spread_max: float
+) -> Array[int]:
+	var count := distances.size()
+	if count == 0:
+		return []
+	var order: Array[int] = []
+	for index in range(count):
+		order.append(index)
+	# Insertion sort with an explicit distance/index ordering. The input has at
+	# most four entries and the tie-break keeps repeated calls identical.
+	for index in range(1, count):
+		var key := order[index]
+		var key_distance := distances[key]
+		var cursor := index - 1
+		while cursor >= 0 and (
+			distances[order[cursor]] > key_distance
+			or (
+				distances[order[cursor]] == key_distance
+				and order[cursor] > key
+			)
+		):
+			order[cursor + 1] = order[cursor]
+			cursor -= 1
+		order[cursor + 1] = key
+
+	var best_size := 0
+	var best_start := -1
+	var best_end := -1
+	var tie_count := 0
+	for start in range(count):
+		for end in range(start, count):
+			if not _within_spread(
+				distances[order[start]], distances[order[end]], spread_max
+			):
+				break
+			var left_extendable := (
+				start > 0
+				and _within_spread(
+					distances[order[start - 1]], distances[order[end]], spread_max
+				)
+			)
+			var right_extendable := (
+				end < count - 1
+				and _within_spread(
+					distances[order[start]], distances[order[end + 1]], spread_max
+				)
+			)
+			if left_extendable or right_extendable:
+				continue
+			var size := end - start + 1
+			if size > best_size:
+				best_size = size
+				best_start = start
+				best_end = end
+				tie_count = 1
+			elif size == best_size:
+				tie_count += 1
+	if tie_count != 1 or best_start < 0:
+		return []
+	var cluster: Array[int] = []
+	for position in range(best_start, best_end + 1):
+		cluster.append(probe_indices[order[position]])
+	cluster.sort()
+	return cluster
 
 
 static func _reject(result: Result, reason: String) -> Result:
