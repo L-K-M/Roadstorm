@@ -1,0 +1,38 @@
+# Roadstorm M0 CI/export guard review
+
+**Verdict:** changes required
+
+**Candidate:** `037bff0664d55eb8493d0e984a7e7dc05544001f`  
+**Previously reviewed:** `65285be7fd7cb3f56ba5e4687126377378b4cd85`  
+**Reviewer:** OpenAI Codex, GPT‑6 family. The session exposes `CODEX_VERSION=0.171.0`. It does not expose the exact model ID, so the coordinator should use the launcher record to attest the assigned GPT‑6.2 Sol identity.  
+**Date:** 2026-11-27
+
+I reviewed the four scoped CI files, both assigned historical reports, and the relevant hosted workflow steps from the supplied archive.
+
+## Ranked findings
+
+1. **P2 · The new missing-linker self-test will fail on hosted Ubuntu when the supported fallback works.** `tools/ci/tests/run_tests.sh:3443–3467` replaces `python3` with a program that exits 127 and leaves `ln` available. On the `ubuntu-latest` runner, `tools/ci/lib/common.sh:1126–1139,1175–1177` selects `ln -T`. The `pin` command can then reserve its report and succeed, while the test requires exit 2 and a missing-linker diagnostic. The workflow fails on any self-test failure before reaching the package builds (`.github/workflows/ci.yml:346–356`). Add separate tests for Linux fallback success and for absence of both mechanisms. In the latter, control linker availability explicitly and assert the one-attempt failure. My read-only selector probe returned `lnT` with Linux and `none` with Darwin when the Python probe failed. The hosted failure is a prediction from the source, with no candidate hosted run supplied.
+
+2. **P2 · Report publication still accepts a headerless regular file, and the final append can recreate a vanished report.** The handoff at `tools/ci/lib/common.sh:1042–1048` accepts an inherited pathname and token. The new check at `tools/ci/ci.sh:296–310` verifies file type and a nonempty token, then both export paths can publish the file (`:2013–2029`, `:2170–2186`). I passed a headerless regular archive file to the exact guard with a nonempty token and got exit 0. That establishes the guard bypass. Separately, `ci_init_report` ignores the header-write status before linking the body (`common.sh:1077–1087`), and the final PASS uses a pathname append that creates the file if it disappeared after publication (`common.sh:1105–1109`, `ci.sh:2465–2470`). A successful append therefore does not establish that PASS reached the reserved, attempt-bound report. Check the header write before linking, validate the inherited header against the attempt before allowing the writer, and record the verdict through a handle bound to the reserved report. Add cases for a headerless regular source and a report that disappears after publication. Print the success lines only after the verdict is recorded.
+
+3. **P3 · Missing Python can still allow the package writer to run on Linux.** The fallback reserves and publishes reports without Python. The export writer at `tools/ci/ci.sh:2275–2279` runs before the inventory prerequisite check at `:2364–2373`. With Python absent, the check fails after the writer can leave package files. With an unusable Python executable, `command -v` also passes and the later inventory invocation fails. A successful hosted package upload is gated separately by `.github/workflows/ci.yml:460–473`. Check for a usable inventory interpreter and checker before scratch preparation and the package writer. Keep the report-link fallback for commands such as `pin` that can complete without Python.
+
+## Prior findings and regression coverage
+
+- **Explicit debug mode reaching Godot `--version` · fixed for both reported forms.** The early parser now consumes the export subcommand, then `--mode debug` or `--mode=debug`, then the build arguments (`ci.sh:333–369`). The guard runs before `ci_find_godot` (`:448–466`). Both `.CI-LOCK` probes returned `reason=lock-namespace` and exit 1. A plain debug destination returned 0. The process-level tests assert an empty Godot invocation log for both spellings (`run_tests.sh:3260–3301`).
+- **Literal newline reaching engine discovery · fixed for the reported outer and direct-inner paths.** The raw output argument is checked before line serialization (`ci.sh:313–324,380–395`). Both probes returned `reason=invalid-output-path` and exit 1. The process-level tests exercise both entry points (`run_tests.sh:3303–3348`). Comparing the early and dispatch parsers, I found no remaining pre-version bypass for the archive’s declared presets and ordinary supported output paths.
+- **Missing or nonregular source and empty attempt ID skipping publication · fixed at both publication sites.** My missing-file, directory, and empty-ID probes each returned exit 1. The new tests invalidate the outer and direct-inner sources at the version seam and check for an untouched writer and destination (`run_tests.sh:3350–3439`). The empty-ID case exercises the outer entry point and the inner uses the same gate. Finding 2 covers the remaining header and report-lifetime gap.
+- **Exact-destination hard links and occupied report names · prior fix preserved.** Source inspection confirms `os.link` and Linux `ln -T` address the exact destination. The outer and inner paths stop on publication failure before acquiring destination locks or invoking the writer. The collision tests retain an affirmative control that checks shared inode identity and PASS visibility through both names (`common.sh:1157–1200`, `run_tests.sh:3043–3173`). The Python-shim race case is specific to that implementation path.
+- **Python-unavailable retry loop · fixed when the selector returns `none`.** Reservation aborts after one failed mechanism selection (`common.sh:1086–1097`). The Linux selection checks for the presence of `ln` without verifying `-T` support, so a Linux host with an incompatible `ln` can still retry. The supported GNU/BusyBox fallback and the no-mechanism case need separate coverage. The README now describes exclusive inventory creation by the checker (`tools/ci/README.md:122`).
+
+## Commands, evidence, and limits
+
+- Ran `sh -n` and `dash -n` on `tools/ci/ci.sh`, `tools/ci/lib/common.sh`, and `tools/ci/tests/run_tests.sh`. All six checks passed.
+- Ran a read-only `dash -c` probe that sourced the archive’s `common.sh` and loaded `ci.sh:270–419` with `sed`. It used the real path resolver and stubbed logging and report writes. A separate probe stubbed the Python capability check and exercised linker selection for Linux and Darwin in fresh subshells. The initial heredoc invocation was blocked by the read-only sandbox and was rerun via `dash -c`.
+- Used `ls`, `cat`, `rg`, `nl`, and `sed` for inspection, and `shasum -a 256` to fingerprint the four scoped files. All reads were from the assigned archive. I produced no files, packages, or filesystem publication artifacts and did not independently verify the archive against Git objects.
+- The coordinator supplied the pinned-engine `sh` result of **257/257** and a worker-reported `dash` result of **257/257**. My checks did not rerun either full suite or start Godot. Earlier hosted general CI and Windows native results apply to `65285be`. Hosted verification of `037bff0` remains pending.
+
+This verdict covers the corrected CI/export guard only. Target-platform launch, game playability, rights clearance, and whole-M0 acceptance are outside its scope.
+## Coordinator invocation attestation (separate from reviewer text)
+
+The supervised `codex exec` launcher requested `-m gpt-6.2-sol`; its own invocation header in the private stderr log records `model: gpt-6.2-sol` and `provider: openai`. The reviewer correctly noted that its in-session environment did not expose the exact model ID.
