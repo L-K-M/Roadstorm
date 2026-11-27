@@ -307,29 +307,21 @@ _ci_assert_publishable_report() {
 		ci_report "export result=fail reason=no-attempt-id"
 		return "$CI_FAIL"
 	fi
+	if [ -n "$CI_REPORT_IDENTITY" ] &&
+		! ci_report_matches_bound_fd "$CI_REPORT"; then
+		ci_fail "export --export: the report at $CI_REPORT is not the inode pinned by the reserved body; refusing to publish or record a verdict in a replacement"
+		return "$CI_FAIL"
+	fi
 	if ! ci_report_has_attempt_header "$CI_REPORT" "$CI_ATTEMPT_ID"; then
 		ci_fail "export --export: the report source $CI_REPORT does not carry this attempt's attempt-id header; refusing to publish or record a verdict in a foreign/headerless report"
 		return "$CI_FAIL"
 	fi
-	if [ -n "$CI_REPORT_IDENTITY" ]; then
-		_apr_now="$(ci_report_identity "$CI_REPORT" 2>/dev/null)" || {
-			ci_fail "export --export: cannot re-read the reserved report inode for $CI_REPORT"
-			return "$CI_FAIL"
-		}
-		if [ "$_apr_now" != "$CI_REPORT_IDENTITY" ]; then
-			ci_fail "export --export: the report at $CI_REPORT is not the reserved inode; refusing to record a verdict in a replacement"
-			return "$CI_FAIL"
-		fi
-	fi
 	return "$CI_OK"
 }
 
-# _ci_verify_report_identity : confirm the path still resolves to the reserved
-# dev/inode so every verdict append is bound to that file and can never create
-# a missing path.
-# The expected dev/inode comes from the private mktemp body (or an authentic
-# parent handoff); the path must still resolve to exactly that inode before any
-# lock, scratch copy or writer.
+# _ci_verify_report_identity : confirm the pathname still refers to the inode
+# pinned by the held descriptor from the private body. The open descriptor
+# prevents inode reuse, so a same-header replacement cannot compare equal.
 _ci_verify_report_identity() {
 	if [ "${CI_REPORT_IDENTITY_TRUSTED:-no}" != "yes" ] || [ -z "$CI_REPORT_IDENTITY" ]; then
 		if command -v python3 >/dev/null 2>&1 &&
@@ -340,12 +332,8 @@ _ci_verify_report_identity() {
 		# No usable interpreter: the inventory capability guard refuses the writer.
 		return "$CI_OK"
 	fi
-	_vri_now="$(ci_report_identity "$CI_REPORT" 2>/dev/null)" || {
-		ci_fail "export --export: the reserved report inode cannot be read: $CI_REPORT"
-		return "$CI_FAIL"
-	}
-	if [ "$_vri_now" != "$CI_REPORT_IDENTITY" ]; then
-		ci_fail "export --export: the report at $CI_REPORT is not the reserved inode (replaced or swapped); refusing before locks or writer"
+	if ! ci_report_matches_bound_fd "$CI_REPORT"; then
+		ci_fail "export --export: the report at $CI_REPORT is not the inode pinned by the reserved body (replaced, swapped or deleted); refusing before locks or writer"
 		return "$CI_FAIL"
 	fi
 	return "$CI_OK"
@@ -2143,7 +2131,8 @@ EOF
 	fi
 	_saved_report_env="${ROADSTORM_CI_REPORT:-}"
 	export ROADSTORM_CI_REPORT="$CI_REPORT" ROADSTORM_CI_ATTEMPT_ID="$CI_ATTEMPT_ID" \
-		ROADSTORM_CI_REPORT_IDENTITY="$CI_REPORT_IDENTITY"
+		ROADSTORM_CI_REPORT_IDENTITY="$CI_REPORT_IDENTITY" \
+		ROADSTORM_CI_REPORT_FD="$CI_REPORT_FD"
 	_attempt_slug="${_slug}-${CI_ATTEMPT_ID}"
 	export ROADSTORM_CI_LOG_BASE="$CI_OUT/logs/export-${_attempt_slug}"
 	export ROADSTORM_CI_COPY_BASE="$CI_OUT/attempts/export-${_attempt_slug}/project-copy"
@@ -2159,6 +2148,7 @@ EOF
 	# final `report:` line even though it did not create that file.
 	eval "$_inner_cmd"
 	_inner_rc=$?
+	_ci_close_report_fd
 	if [ -n "$_saved_report_env" ]; then
 		export ROADSTORM_CI_REPORT="$_saved_report_env"
 	else
@@ -2334,8 +2324,8 @@ EOF
 			return "$CI_FAIL"
 		fi
 	fi
-	trap '_ci_close_lock_fds' EXIT
-	trap '_ci_close_lock_fds; exit 130' INT TERM HUP
+	trap '_ci_close_report_fd; _ci_close_lock_fds' EXIT
+	trap '_ci_close_report_fd; _ci_close_lock_fds; exit 130' INT TERM HUP
 
 	# Under the lock: refuse to reuse an output path that already holds a file
 	# or sidecar (Opus R2). Without this, a later engine run that silently
@@ -2556,6 +2546,14 @@ EOF
 	fi
 	if ! ci_report "export result=pass preset=$_preset mode=$_mode $_pass_fields pack_inventory=pass platform=$_inv_plat report=$_inv_report"; then
 		ci_fail "export: the passing verdict could not be appended to $CI_REPORT; refusing to report an unrecorded pass"
+		return "$CI_FAIL"
+	fi
+	# Re-check after the append and before any success line: the target must
+	# still be a regular file at the reserved inode, so a concurrent swap or
+	# unlink cannot yield a printed PASS on foreign or absent evidence.
+	if [ -L "$CI_REPORT" ] || [ ! -f "$CI_REPORT" ] ||
+		! ci_report_matches_bound_fd "$CI_REPORT"; then
+		ci_fail "export: the report at $CI_REPORT no longer matches the reserved inode after the append; refusing to print success"
 		return "$CI_FAIL"
 	fi
 	ci_ok "export: $_pass_msg"

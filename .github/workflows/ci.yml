@@ -412,7 +412,8 @@ jobs:
             "simulated Linux ln -T fallback links exactly and refuses occupants -> yes" \
             "a detected but broken ln -T fails fast without retry -> yes" \
             "a pre-bind same-header substitution is rejected before writer -> yes" \
-            "a passing writer that swaps the report prints no success -> yes"
+            "a passing writer that swaps the report prints no success -> yes" \
+            "the real host ln -T fallback links exactly with Python disabled -> yes"
           do
             if ! grep -qF -- "$_needle" "$log"; then
               echo "::error::required export failure-path case did not pass: $_needle"

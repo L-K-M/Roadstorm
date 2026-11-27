@@ -414,6 +414,38 @@ fi
 CASES_RUN=$((CASES_RUN + 1))
 log "case $CASES_RUN: attempt binding requires the exact bounded header line -> $_ok"
 
+# The held descriptor, not a numeric comparison alone, is the authority:
+# unlinking the original body and creating a replacement must not make the
+# replacement acceptable even though inode numbers are allocator-dependent.
+FD_BIND="$WORK_DIR/fd-binding"
+rm -rf "$FD_BIND"; mkdir -p "$FD_BIND"
+printf 'original body\n' >"$FD_BIND/src"
+(
+	. "$COMMON_SH" >/dev/null 2>&1
+	exec 7<"$FD_BIND/src"
+	rm -f "$FD_BIND/src"
+	printf 'replacement body\n' >"$FD_BIND/dst"
+	_fd_src_id="$(ci_report_identity_fd 7)"
+	_fd_dst_id="$(ci_report_identity "$FD_BIND/dst")"
+	CI_REPORT="$FD_BIND/dst"
+	CI_REPORT_FD=7
+	CI_REPORT_IDENTITY="$_fd_dst_id"
+	CI_REPORT_REQUIRE_BOUND=1
+	ci_report "export result=fail reason=should-not-land" >/dev/null 2>&1
+	echo "rc=$?"
+) >"$FD_BIND/probe.out" 2>&1
+_fd_probe="$(sed -n '$p' "$FD_BIND/probe.out" 2>/dev/null)"
+_ok=no
+if [ "$_fd_probe" = "rc=1" ] &&
+	[ "$(cat "$FD_BIND/dst")" = "replacement body" ] &&
+	! grep -q 'should-not-land' "$FD_BIND/dst" 2>/dev/null; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: a held descriptor rejects an unlink-and-recreate replacement -> $_ok"
+[ "$_ok" = "yes" ] || { echo "  probe=$_fd_probe dst=$(cat "$FD_BIND/dst" 2>/dev/null)" >&2; }
+
 # The report body must be written completely before it is linked. Force the
 # FIRST printf (the attempt-id line) to fail while later printfs succeed: a
 # compound-group status would mask the first failure and publish a partial
@@ -3570,8 +3602,9 @@ EOF
 	printf 'attempt-id: pd1\ncommand: export-linux-x86-64\n' >"$PD_REPORT"
 	PD_ID="$(ci_report_identity "$PD_REPORT")"
 	( export HOME="$REALHOME"; unset GODOT_TEMPLATES_DIR
+		exec 7<"$PD_REPORT"
 		export ROADSTORM_CI_REPORT="$PD_REPORT" ROADSTORM_CI_ATTEMPT_ID=pd1 \
-			ROADSTORM_CI_REPORT_IDENTITY="$PD_ID" \
+			ROADSTORM_CI_REPORT_IDENTITY="$PD_ID" ROADSTORM_CI_REPORT_FD=7 \
 			FAKE_DELETE_AFTER_EXPORT="$PD_REPORT"
 		sh "$CI_SH" --project "$SPROJ" --godot "$POST_DEL" --out "$PD_OUT" \
 			__export-inner "Linux x86-64" release "$CONC/pdcwd/pkg" ) >"$CONC/pub-post-disappear.log" 2>&1
@@ -3688,8 +3721,9 @@ EOF
 	mkdir -p "$DW_OUT/reports" "$CONC/dwcwd"
 	printf 'attempt-id: dw1\ncommand: export-linux-x86-64\n' >"$DW_REPORT"
 	DW_ID="$(ci_report_identity "$DW_REPORT")"
-	( export ROADSTORM_CI_REPORT="$DW_REPORT" ROADSTORM_CI_ATTEMPT_ID=dw1 \
-		ROADSTORM_CI_REPORT_IDENTITY="$DW_ID" FAKE_DELETE_REPORT="$DW_REPORT"
+	( exec 7<"$DW_REPORT"
+		export ROADSTORM_CI_REPORT="$DW_REPORT" ROADSTORM_CI_ATTEMPT_ID=dw1 \
+			ROADSTORM_CI_REPORT_IDENTITY="$DW_ID" ROADSTORM_CI_REPORT_FD=7 FAKE_DELETE_REPORT="$DW_REPORT"
 		sh "$CI_SH" --project "$SPROJ" --godot "$DELW" --out "$DW_OUT" \
 			__export-inner "Linux x86-64" release "$CONC/dwcwd/pkg" ) >"$CONC/writer-deletes-report.log" 2>&1
 	_dw_rc=$?
@@ -3726,8 +3760,9 @@ EOF
 	mkdir -p "$RP_OUT/reports" "$CONC/rpcwd"
 	printf 'attempt-id: rp1\ncommand: export-linux-x86-64\n' >"$RP_REPORT"
 	RP_ID="$(ci_report_identity "$RP_REPORT")"
-	( export ROADSTORM_CI_REPORT="$RP_REPORT" ROADSTORM_CI_ATTEMPT_ID=rp1 \
-		ROADSTORM_CI_REPORT_IDENTITY="$RP_ID" FAKE_REPLACE_REPORT="$RP_REPORT"
+	( exec 7<"$RP_REPORT"
+		export ROADSTORM_CI_REPORT="$RP_REPORT" ROADSTORM_CI_ATTEMPT_ID=rp1 \
+			ROADSTORM_CI_REPORT_IDENTITY="$RP_ID" ROADSTORM_CI_REPORT_FD=7 FAKE_REPLACE_REPORT="$RP_REPORT"
 		sh "$CI_SH" --project "$SPROJ" --godot "$REPL" --out "$RP_OUT" \
 			__export-inner "Linux x86-64" release "$CONC/rpcwd/pkg" ) >"$CONC/writer-replaces-report.log" 2>&1
 	_rp_rc=$?
@@ -3753,13 +3788,14 @@ EOF
 	printf 'attempt-id: sb1\ncommand: authoritative\n' >"$SB_A"
 	printf 'attempt-id: sb1\ncommand: substituted\n' >"$SB_B"
 	SB_A_ID="$(ci_report_identity "$SB_A")"
-	( export ROADSTORM_CI_REPORT="$SB_B" ROADSTORM_CI_ATTEMPT_ID=sb1 \
-		ROADSTORM_CI_REPORT_IDENTITY="$SB_A_ID"
+	( exec 7<"$SB_A"
+		export ROADSTORM_CI_REPORT="$SB_B" ROADSTORM_CI_ATTEMPT_ID=sb1 \
+			ROADSTORM_CI_REPORT_IDENTITY="$SB_A_ID" ROADSTORM_CI_REPORT_FD=7
 		ci_rel_at_home "$CONC/sbcwd" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
 			--out "$SB_OUT" __export-inner "Linux x86-64" release "$CONC/sbcwd/pkg" ) >"$CONC/prebind-swap.log" 2>&1
 	_sb_rc=$?
 	CASES_RUN=$((CASES_RUN + 1))
-	if [ "$_sb_rc" -ne 0 ] && grep -q 'not the reserved inode' "$CONC/prebind-swap.log" &&
+	if [ "$_sb_rc" -ne 0 ] && grep -q 'pinned by the reserved body' "$CONC/prebind-swap.log" &&
 		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/sbcwd/pkg" ] &&
 		[ ! -e "$CONC/sbcwd/pkg.ci-lock" ] && [ ! -d "$SB_OUT/attempts" ] &&
 		[ "$(cat "$SB_B")" = "$(printf 'attempt-id: sb1\ncommand: substituted')" ]; then
@@ -3799,8 +3835,9 @@ EOF
 	printf 'attempt-id: sw2\ncommand: export-linux-x86-64\n' >"$SW_REPORT"
 	SW_ID="$(ci_report_identity "$SW_REPORT")"
 	( export HOME="$REALHOME"; unset GODOT_TEMPLATES_DIR
+		exec 7<"$SW_REPORT"
 		export ROADSTORM_CI_REPORT="$SW_REPORT" ROADSTORM_CI_ATTEMPT_ID=sw2 \
-			ROADSTORM_CI_REPORT_IDENTITY="$SW_ID" FAKE_SWAP_REPORT="$SW_REPORT"
+			ROADSTORM_CI_REPORT_IDENTITY="$SW_ID" ROADSTORM_CI_REPORT_FD=7 FAKE_SWAP_REPORT="$SW_REPORT"
 		sh "$CI_SH" --project "$SPROJ" --godot "$SWAPOK" --out "$SW_OUT" \
 			__export-inner "Linux x86-64" release "$CONC/swcwd/pkg" ) >"$CONC/passing-swap.log" 2>&1
 	_sw_rc=$?

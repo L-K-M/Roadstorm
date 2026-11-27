@@ -1043,6 +1043,12 @@ CI_REPORT_IDENTITY_TRUSTED="no"
 # Set by export build paths: their verdict appends must never fall back to a
 # create-on-append when no identity could be bound.
 CI_REPORT_REQUIRE_BOUND="0"
+# Read descriptor held on the original private report body for the whole
+# export handoff. While it is open the inode cannot be freed and reused, so a
+# replacement at the pathname can never compare equal. Nested workers inherit
+# this descriptor.
+CI_REPORT_FD="7"
+_CI_REPORT_FD_HELD="no"
 # Unique id for THIS invocation/attempt (<utc>-<random>). The per-run report and
 # the pack-inventory report share it, so a consumer can associate an inventory
 # with the exact attempt that produced it (Sol recheck 675ec1c finding 2).
@@ -1056,15 +1062,24 @@ ci_init_report() {
 		[ -n "${ROADSTORM_CI_ATTEMPT_ID:-}" ] && CI_ATTEMPT_ID="$ROADSTORM_CI_ATTEMPT_ID"
 		CI_REPORT_IDENTITY=""
 		CI_REPORT_IDENTITY_TRUSTED="no"
+		# Authentic nested handoff: an inherited open descriptor on the original
+		# body, plus its numeric identity. Without a usable descriptor this is not
+		# trustworthy and export verification fails closed.
+		case "${ROADSTORM_CI_REPORT_FD:-}" in
+		7)
+			_fd_id="$(ci_report_identity_fd 7 2>/dev/null)" || _fd_id=""
+			if [ -n "$_fd_id" ]; then
+				CI_REPORT_FD=7
+				CI_REPORT_IDENTITY="$_fd_id"
+				CI_REPORT_IDENTITY_TRUSTED=yes
+				_CI_REPORT_FD_HELD=yes
+			fi
+			;;
+		esac
 		case "${ROADSTORM_CI_REPORT_IDENTITY:-}" in
 		'') : ;;
 		*[!0-9\ ]*) : ;;
-		*)
-			if [ "$(printf '%s\n' "$ROADSTORM_CI_REPORT_IDENTITY" | wc -w | tr -d ' ')" = "2" ]; then
-				CI_REPORT_IDENTITY="$ROADSTORM_CI_REPORT_IDENTITY"
-				CI_REPORT_IDENTITY_TRUSTED="yes"
-			fi
-			;;
+		*) [ "$(printf '%s\n' "$ROADSTORM_CI_REPORT_IDENTITY" | wc -w | tr -d ' ')" = "2" ] || ROADSTORM_CI_REPORT_IDENTITY="" ;;
 		esac
 		return 0
 	fi
@@ -1107,16 +1122,26 @@ ci_init_report() {
 			rm -f "$_body" 2>/dev/null
 			ci_die "could not write the complete reserved report body $_body in $CI_OUT/reports (unwritable filesystem or exhausted disk); refusing to link an unverified report"
 		fi
-		# Capture the identity from the PRIVATE mktemp body before publishing it:
-		# the hard link shares this inode, so a later same-header replacement at
-		# the pathname is detectable and cannot become the trusted inode.
-		_cri_id="$(ci_report_identity "$_body" 2>/dev/null)" || _cri_id=""
+		# Open the private body read-only and keep that descriptor for the whole
+		# export handoff: it pins the inode, so a later replacement cannot reuse
+		# the freed inode number (the Linux failure mode).
+		exec 7>&-
+		if ! exec 7<"$_body"; then
+			rm -f "$_body" 2>/dev/null
+			ci_die "cannot hold a read descriptor on the reserved report body $_body; refusing to publish an unbound report"
+		fi
+		_CI_REPORT_FD_HELD=yes
+		CI_REPORT_FD=7
+		_cri_id="$(ci_report_identity_fd 7 2>/dev/null)" || _cri_id=""
 		if [ -n "$_cri_id" ]; then
 			CI_REPORT_IDENTITY="$_cri_id"
-			CI_REPORT_IDENTITY_TRUSTED="yes"
+			CI_REPORT_IDENTITY_TRUSTED=yes
 		else
+			# Descriptor held, but no interpreter to number the inode (Python-less
+			# ln -T host). Reservation still works for pin; export verdict binding
+			# and writer gating stay fail-closed through the capability guard.
 			CI_REPORT_IDENTITY=""
-			CI_REPORT_IDENTITY_TRUSTED="no"
+			CI_REPORT_IDENTITY_TRUSTED=no
 		fi
 		_link_rc=0
 		ci_link_create_only "$_body" "$_new_report" 2>/dev/null || _link_rc=$?
@@ -1125,6 +1150,8 @@ ci_init_report() {
 			CI_REPORT="$_new_report"
 			break
 		fi
+		exec 7>&-
+		_CI_REPORT_FD_HELD=no
 		rm -f "$_body" 2>/dev/null
 		if [ "$_link_rc" -eq 2 ]; then
 			ci_die "atomic report reservation is unavailable: no working python3/GNU ln -T, or the link failed for a non-collision reason (permission, cross-device, unwritable path); refusing to reserve a report in $CI_OUT/reports"
@@ -1160,34 +1187,80 @@ ci_report() {
 	printf '%s\n' "$*" >>"$CI_REPORT" 2>/dev/null
 }
 
-# ci_report_identity <file> : print "<st_dev> <st_ino>" for the report so
-# verdict writes can be bound to that exact inode.
+# Close the held read descriptor, if this process owns one. A read
+# descriptor never blocks writers, but closing explicitly avoids leaking it
+# into unrelated long-lived children.
+_ci_close_report_fd() {
+	[ "${_CI_REPORT_FD_HELD:-no}" = "yes" ] || return 0
+	# Literal descriptor number: `exec "$var">&-` is parsed as running a
+	# command named by the variable while closing stdout (sh/dash exit 127).
+	# No 2>/dev/null here: on a redirection-only exec it would permanently point
+	# this shell's stderr at /dev/null.
+	exec 7>&-
+	_CI_REPORT_FD_HELD=no
+}
+
+# ci_report_identity <file> : print "<st_dev> <st_ino>" for a path. Used by
+# diagnostics and tests; export binding uses the held descriptor below.
 ci_report_identity() {
 	python3 -I -c 'import os, sys
 st = os.stat(sys.argv[1])
 print("%d %d" % (st.st_dev, st.st_ino))' "$1" 2>/dev/null
 }
 
-# ci_append_report_verdict <message> : append one line to the already-open
-# reserved report, with no O_CREAT and an fstat check against the bound
-# dev/inode. Missing or swapped targets fail instead of being recreated.
-ci_append_report_verdict() {
+# ci_report_identity_fd <fd> : print "<st_dev> <st_ino>" of an open descriptor.
+ci_report_identity_fd() {
 	python3 -I -c 'import os, sys
-path, expected, message = sys.argv[1], sys.argv[2], sys.argv[3]
+st = os.fstat(int(sys.argv[1]))
+print("%d %d" % (st.st_dev, st.st_ino))' "$1" 2>/dev/null
+}
+
+# ci_report_matches_bound_fd <path> : true when the pathname still refers to
+# the inode pinned by the held descriptor. A replacement with a reused
+# inode number cannot match while the descriptor is open.
+ci_report_matches_bound_fd() {
+	[ -n "$CI_REPORT_FD" ] || return 1
+	python3 -I -c 'import os, sys
+path, rfd = sys.argv[1], int(sys.argv[2])
 try:
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+    expected = os.fstat(rfd)
+    actual = os.stat(path)
+except OSError:
+    sys.exit(1)
+if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+    sys.exit(1)' "$1" "$CI_REPORT_FD" 2>/dev/null
+}
+
+# ci_append_report_verdict <message> : append one line to the reserved report.
+# Opens with O_WRONLY|O_APPEND|O_NONBLOCK and NO O_CREAT, then compares the
+# opened descriptor against the held body descriptor; a missing, swapped or
+# FIFO target fails closed instead of being created or blocking.
+ci_append_report_verdict() {
+	python3 -I -c 'import os, stat as statmod, sys
+path, rfd, message = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    expected = os.fstat(rfd)
+except OSError:
+    sys.exit(1)
+flags = os.O_WRONLY | os.O_APPEND | os.O_NONBLOCK
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+try:
+    fd = os.open(path, flags)
 except OSError:
     sys.exit(1)
 try:
-    st = os.fstat(fd)
-    if "%d %d" % (st.st_dev, st.st_ino) != expected:
+    actual = os.fstat(fd)
+    if not statmod.S_ISREG(actual.st_mode):
+        sys.exit(1)
+    if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
         sys.exit(1)
     data = (message + "\n").encode("utf-8")
     while data:
         written = os.write(fd, data)
         data = data[written:]
 finally:
-    os.close(fd)' "$CI_REPORT" "$CI_REPORT_IDENTITY" "$1" 2>/dev/null
+    os.close(fd)' "$CI_REPORT" "$CI_REPORT_FD" "$1" 2>/dev/null
 }
 
 # ci_report_has_attempt_header <file> <attempt-id> : true only when the
