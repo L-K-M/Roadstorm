@@ -145,8 +145,13 @@ def print_diagnostics(result: _RecordingResult) -> None:
     verdict.
     """
     if result.failed_ids or result.error_ids:
-        print("")
-        print("full unittest failure and error details:")
+        stream = getattr(result, "stream", None)
+        if stream is None:
+            print("")
+            print("full unittest failure and error details:")
+        else:
+            stream.writeln("")
+            stream.writeln("full unittest failure and error details:")
         result.printErrors()
 
 

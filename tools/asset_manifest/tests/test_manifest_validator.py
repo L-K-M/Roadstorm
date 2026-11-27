@@ -251,20 +251,43 @@ def bounded_call(func, timeout: float = 30):
 
 REGISTER_BASENAME = "PROVIDER_TERMS.md"
 
+_UNIX_MODE_SKIP = (
+    "Unix mode-000 read control needs os.geteuid(); Windows ACL coverage is "
+    "in WindowsNativeGuardTestCase"
+)
+
+
+def require_unix_mode_controls(case) -> None:
+    """Skip a mode-000 test unless Unix permission bits can deny a read.
+
+    ``os.chmod(0)`` does not model a Windows ACL denial, so these controls are
+    Unix-specific by construction; the native ACL equivalents live in
+    ``WindowsNativeGuardTestCase``.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        case.skipTest(_UNIX_MODE_SKIP)
+    if geteuid() == 0:
+        case.skipTest("running as root: permission bits do not block reads")
+
 
 class ReadAttempts:
     """What a validation run actually did to the provider-terms register.
 
     ``entered`` records calls into the module's read path
-    (``manifest_validator._read_record_text``); ``opened`` records real open
+    (``manifest_validator._read_record_text``); ``opened`` records raw open
     attempts at the OS level (``os.open``, ``builtins.open``,
-    ``Path.read_text``, ``Path.read_bytes``). A rejected register path must
-    appear in neither, and an accepted one in both exactly once.
+    ``Path.read_text``, ``Path.read_bytes``); ``guarded`` records every call
+    through the shared guarded-open primitive together with its result, which
+    is the platform-neutral way to see an actual successful open - Windows
+    uses ``CreateFileW``, invisible to ``os.open``. A rejected register path
+    must appear nowhere as a successful guarded open.
     """
 
     def __init__(self) -> None:
         self.entered: list[str] = []
         self.opened: list[str] = []
+        self.guarded: list[tuple[str, object]] = []
 
     def note_entered(self, target) -> None:
         self.entered.append(str(target))
@@ -272,8 +295,17 @@ class ReadAttempts:
     def note_opened(self, target) -> None:
         self.opened.append(str(target))
 
+    def note_guarded(self, target, descriptor) -> None:
+        self.guarded.append((str(target), descriptor))
+
+    def register_guards(self):
+        """Guarded-open results for paths naming the register."""
+        return [descriptor for path, descriptor in self.guarded if REGISTER_BASENAME in path]
+
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
-        return "ReadAttempts(entered={!r}, opened={!r})".format(self.entered, self.opened)
+        return "ReadAttempts(entered={!r}, opened={!r}, guarded={!r})".format(
+            self.entered, self.opened, self.guarded
+        )
 
 
 @contextlib.contextmanager
@@ -292,6 +324,7 @@ def spy_on_register_reads():
     real_read_text = Path.read_text
     real_read_bytes = Path.read_bytes
     real_read_record_text = getattr(manifest_validator, "_read_record_text", None)
+    real_guarded_open = manifest_validator._open_regular_file_descriptor
 
     def spy_os_open(path, *args, **kwargs):
         if REGISTER_BASENAME in str(path):
@@ -317,11 +350,21 @@ def spy_on_register_reads():
         attempts.note_entered(root / relative)
         return real_read_record_text(root, relative)
 
+    def spy_guarded_open(root, relative):
+        descriptor = real_guarded_open(root, relative)
+        attempts.note_guarded(root / relative, descriptor)
+        return descriptor
+
     try:
         stack.enter_context(mock.patch.object(os, "open", spy_os_open))
         stack.enter_context(mock.patch.object(builtins, "open", spy_builtin_open))
         stack.enter_context(mock.patch.object(Path, "read_text", spy_read_text))
         stack.enter_context(mock.patch.object(Path, "read_bytes", spy_read_bytes))
+        stack.enter_context(
+            mock.patch.object(
+                manifest_validator, "_open_regular_file_descriptor", spy_guarded_open
+            )
+        )
         if real_read_record_text is not None:
             stack.enter_context(
                 mock.patch.object(
@@ -712,8 +755,7 @@ class ManifestValidatorTestCase(unittest.TestCase):
 
     def test_unreadable_output_is_a_structured_finding_not_a_traceback(self):
         """Independent failure: a mode-000 output fails closed, with a finding."""
-        if os.geteuid() == 0:
-            self.skipTest("running as root: permission bits do not block reads")
+        require_unix_mode_controls(self)
         entry = materialize(self.root, complete_entry())
         relative = entry["identity"]["output_paths"][0]
         target = self.root / relative
@@ -734,8 +776,7 @@ class ManifestValidatorTestCase(unittest.TestCase):
 
     def test_unreadable_output_cli_emits_json_instead_of_a_traceback(self):
         """End to end: the CLI reports the structured finding, not a traceback."""
-        if os.geteuid() == 0:
-            self.skipTest("running as root: permission bits do not block reads")
+        require_unix_mode_controls(self)
         import contextlib
         import io
 
@@ -840,6 +881,11 @@ class ManifestValidatorTestCase(unittest.TestCase):
         self.assertIn("missing-file", codes)
         self.assertNotIn("hash-mismatch", codes)
 
+    @unittest.skipUnless(
+        os.name != "nt",
+        "POSIX-only control: on Windows the guarded open uses CreateFileW, not "
+        "O_NOFOLLOW/O_NONBLOCK (see WindowsGuardedOpenTestCase)",
+    )
     def test_guarded_open_fails_closed_without_fd_protections(self):
         """Where no-follow/non-blocking flags are unavailable, reads refuse."""
         entry = materialize(self.root, complete_entry())
@@ -1193,8 +1239,7 @@ class ManifestValidatorTestCase(unittest.TestCase):
 
     def test_unreadable_register_is_rejected_before_any_read(self):
         """A register this process cannot read is not read, and is an error."""
-        if os.geteuid() == 0:
-            self.skipTest("running as root: permission bits do not block reads")
+        require_unix_mode_controls(self)
         manifest = self.register_reference_manifest("provenance/PROVIDER_TERMS.md#pi-stepfun")
         register = write_terms_register(self.root, ["pi-stepfun"])
         register.chmod(0)
@@ -1216,9 +1261,15 @@ class ManifestValidatorTestCase(unittest.TestCase):
         self.assertIn("unresolved-reference", error_codes(findings))
         self.assertIn("could not be read", messages(findings))
         # A binary register is a real, readable regular file: the guard lets it
-        # through and the decode fails, which resolves no row.
+        # through and the decode fails, which resolves no row. The guarded-open
+        # result is the platform-neutral proof of the open; ``os.open`` only
+        # sees it on POSIX (Windows uses CreateFileW).
         self.assertEqual(len(reads.entered), 1, reads)
-        self.assertEqual(len(reads.opened), 1, reads)
+        register_guards = reads.register_guards()
+        self.assertEqual(len(register_guards), 1, reads)
+        self.assertIsNotNone(register_guards[0], "the binary register must be opened")
+        if os.name != "nt":
+            self.assertEqual(len(reads.opened), 1, reads)
         self.assertNotIn("no row for that route", messages(findings))
 
     def test_accepted_register_reference_is_read_exactly_once(self):
@@ -1229,7 +1280,11 @@ class ManifestValidatorTestCase(unittest.TestCase):
             findings = validate(self.root, manifest, check_hashes=True)
         self.assertEqual(findings.errors, [], messages(findings))
         self.assertEqual(len(reads.entered), 1, reads)
-        self.assertEqual(len(reads.opened), 1, reads)
+        register_guards = reads.register_guards()
+        self.assertEqual(len(register_guards), 1, reads)
+        self.assertIsNotNone(register_guards[0], "an accepted register must actually be opened")
+        if os.name != "nt":
+            self.assertEqual(len(reads.opened), 1, reads)
 
     def test_register_reference_without_an_anchor_is_not_read(self):
         """No anchor means no row to resolve, so the register text is not read."""
@@ -1784,8 +1839,7 @@ class ManifestValidatorTestCase(unittest.TestCase):
 
     def test_cli_unreadable_manifest_exits_2(self):
         """Exit 2 means 'could not be read', not 'failed validation'."""
-        if os.geteuid() == 0:
-            self.skipTest("running as root: permission bits do not block reads")
+        require_unix_mode_controls(self)
         entry = materialize(self.root, complete_entry())
         manifest = write_manifest(self.root, [entry])
         manifest.chmod(0)
@@ -2224,8 +2278,7 @@ class RegisterReadGuardTestCase(unittest.TestCase):
         self.assertFalse(self.register_is_readable())
 
     def test_refuses_an_unreadable_register(self):
-        if os.geteuid() == 0:
-            self.skipTest("running as root: permission bits do not block reads")
+        require_unix_mode_controls(self)
         register = self.register_path()
         register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
         register.chmod(0)
@@ -2351,6 +2404,11 @@ class RegisterReadGuardTestCase(unittest.TestCase):
             )
         )
 
+    @unittest.skipUnless(
+        os.name != "nt",
+        "POSIX-only control: the Windows branch never consults _guarded_open_flags "
+        "(see WindowsGuardedOpenTestCase)",
+    )
     def test_guarded_open_fails_closed_where_flags_are_unavailable(self):
         """Without no-follow/non-blocking the primitive refuses to open."""
         register = self.register_path()
@@ -2381,12 +2439,17 @@ class JunctionComponentTestCase(unittest.TestCase):
         (self.root / "a" / "b").write_text("fixture bytes\n", encoding="utf-8")
 
     def _fake_lstat(self, path):
+        # Windows spells the same relative path with backslashes; normalise
+        # before matching the component suffix.
+        normalized = str(path).replace("\\", "/")
+        attributes = (
+            manifest_validator._FILE_ATTRIBUTE_REPARSE_POINT
+            if normalized.endswith("/a")
+            else 0
+        )
+
         class Attributes:
-            st_file_attributes = (
-                manifest_validator._FILE_ATTRIBUTE_REPARSE_POINT
-                if str(path).endswith("/a")
-                else 0
-            )
+            st_file_attributes = attributes
 
         return Attributes()
 
@@ -2402,6 +2465,17 @@ class JunctionComponentTestCase(unittest.TestCase):
             self.assertEqual(
                 manifest_validator._symlinked_component(self.root, "a/b"), "a"
             )
+
+    def test_junction_fake_matches_windows_backslash_spelling(self):
+        """Regression: the fake must recognise ``\\a`` as well as ``/a``."""
+        self.assertEqual(
+            self._fake_lstat(r"C:\Users\RUNNER~1\Temp\tmpX\a").st_file_attributes,
+            manifest_validator._FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+        self.assertEqual(
+            self._fake_lstat(r"C:\Users\RUNNER~1\Temp\tmpX\a\b").st_file_attributes,
+            0,
+        )
 
     def test_plain_real_components_are_not_reported_as_links(self):
         self.assertIsNone(manifest_validator._symlinked_component(self.root, "a/b"))
@@ -2704,6 +2778,40 @@ class WindowsNativeGuardTestCase(unittest.TestCase):
         )
         return completed.returncode == 0
 
+    def write_raw(self, text: str) -> Path:
+        """Write raw manifest text into the fixture root."""
+        path = self.root / "assets" / "manifest.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def deny_read(self, path: Path) -> None:
+        """Deny this account read access through icacls; restored on cleanup.
+
+        The Unix mode-000 controls do not model an ACL denial, so the native
+        suite carries the equivalent coverage here.
+        """
+        import subprocess
+
+        icacls = shutil.which("icacls")
+        user = os.environ.get("USERNAME") or os.environ.get("USER")
+        if not icacls or not user:
+            self.skipTest("ACL control needs icacls and an account name")
+        deny = subprocess.run(
+            [icacls, str(path), "/deny", "{}:(R)".format(user)],
+            capture_output=True,
+            text=True,
+        )
+        if deny.returncode != 0:
+            self.skipTest(
+                "could not deny read access: {}".format((deny.stdout + deny.stderr).strip())
+            )
+        self.addCleanup(
+            lambda: subprocess.run(
+                [icacls, str(path), "/remove:d", user], capture_output=True, text=True
+            )
+        )
+
     def test_native_regular_outputs_hash_and_anchors_resolve(self):
         """Positive control: the previously broken normal case."""
         entry = materialize(self.root, complete_entry())
@@ -2809,36 +2917,54 @@ class WindowsNativeGuardTestCase(unittest.TestCase):
     def test_native_unreadable_output_is_structured_not_a_traceback(self):
         import contextlib
         import io
-        import subprocess
 
-        icacls = shutil.which("icacls")
-        user = os.environ.get("USERNAME") or os.environ.get("USER")
-        if not icacls or not user:
-            self.skipTest("icacls or an account name is required")
         entry = materialize(self.root, complete_entry())
         target = self.root / entry["identity"]["output_paths"][0]
-        deny = subprocess.run(
-            [icacls, str(target), "/deny", "{}:(R)".format(user)],
-            capture_output=True,
-            text=True,
-        )
-        if deny.returncode != 0:
-            self.skipTest("could not deny read access: {}".format(deny.stdout.strip()))
-        try:
-            manifest = write_manifest(self.root, [entry])
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                exit_code = main(
-                    [str(manifest), "--root", str(self.root), "--check-hashes", "--json"]
-                )
-            self.assertEqual(exit_code, 1)
-            payload = json.loads(stdout.getvalue())
-            self.assertEqual([e["code"] for e in payload["errors"]], ["missing-file"])
-            self.assertEqual(stderr.getvalue(), "")
-        finally:
-            subprocess.run(
-                [icacls, str(target), "/remove:d", user], capture_output=True, text=True
+        self.deny_read(target)
+        manifest = write_manifest(self.root, [entry])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = main(
+                [str(manifest), "--root", str(self.root), "--check-hashes", "--json"]
             )
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual([e["code"] for e in payload["errors"]], ["missing-file"])
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_native_unreadable_register_is_rejected_before_any_read(self):
+        """The register ACL equivalent of the Unix mode-000 control."""
+        entry = service_entry(self.root, "texture.service.sky")
+        write_terms_register(self.root, ["pi-stepfun"])
+        entry["rights"]["service_terms_ref"] = "provenance/PROVIDER_TERMS.md#pi-stepfun"
+        manifest = write_manifest(self.root, [entry])
+        self.deny_read(self.root / "provenance" / REGISTER_BASENAME)
+        with spy_on_register_reads() as reads:
+            findings = validate(self.root, manifest, check_hashes=True)
+        self.assertIn("unresolved-reference", error_codes(findings))
+        self.assertIn("read", messages(findings))
+        # Whatever the ACL reports to os.access, the guarded open must fail.
+        self.assertTrue(
+            all(descriptor is None for descriptor in reads.register_guards()),
+            "an unreadable register must not produce a descriptor",
+        )
+
+    def test_native_unreadable_manifest_exits_2_with_json(self):
+        """An ACL-denied manifest is 'could not be read', not a content defect."""
+        import contextlib
+        import io
+
+        manifest = self.root / "assets" / "manifest.json"
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(SHIPPED_MANIFEST, manifest)
+        self.deny_read(manifest)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = main([str(manifest), "--root", str(self.root), "--json"])
+        self.assertEqual(exit_code, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual([e["code"] for e in payload["errors"]], ["unreadable-manifest"])
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_native_oversized_integer_cli_exits_2_with_json(self):
         import contextlib

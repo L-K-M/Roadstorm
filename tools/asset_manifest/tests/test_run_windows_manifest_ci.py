@@ -156,6 +156,7 @@ class RunnerFailurePolicyTestCase(unittest.TestCase):
         self.assertEqual(result.failed_ids, [_Failing("test_boom").id()])
         runner.print_diagnostics(result)
         text = stream.getvalue()
+        self.assertIn("full unittest failure and error details:", text)
         self.assertIn("FAIL", text)
         self.assertIn("test_boom", text)
         self.assertIn("1 != 2", text)
