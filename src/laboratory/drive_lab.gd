@@ -63,6 +63,29 @@ extends Node3D
 ## road +y. A zero-yaw spawn produces the exact axis `(0, 1)`, which keeps the
 ## original y-difference arithmetic bit-for-bit unchanged.
 ##
+## Automatic-gearbox integration (M1.1 bounded slice): exactly one
+## `AutomaticGearbox` instance owns gear indication. Every accepted
+## `MotorBodyAdapter` COMMITTED tick proposes exactly once from that committed
+## physical `CarState` at fixed `DT`, mirrors the canonical gear into the
+## published `CarState`, and only then advances the published pair, telemetry,
+## presentation and audio. A gearbox proposal or mirror refusal is an atomic
+## failure path: the adapter commit is irreversible, so the laboratory records
+## an explicit bounded reason, does not publish the unmirrored record as its
+## committed pair, keeps the last successfully published pair untouched, and
+## halts without another adapter call. That last pair remains internally
+## consistent but is deliberately not reconciled with the irreversibly
+## advanced body; validation proves no further adapter call happens.
+##
+## Replay/restore is explicitly state-only in this slice.
+## `snapshot_drive_state()` captures the complete `CarState` + `GearboxState`
+## pair. `restore_drive_snapshot()` validates the whole pair in a temporary
+## gearbox, repairs the gear mirror, and publishes both together. It does not
+## restore the body transform, so a restored laboratory blocks every tick
+## (`is_drive_replay_blocked()`) until a future body-pose reconciliation
+## operation exists. Restoring a `CarState` alone is not offered: it cannot
+## reproduce shift dwell or canonical rpm. Gear selection drives no audio or
+## HUD display here; no shift sound or gear readout wiring is claimed.
+##
 ## Headless scripted mode never reads GUI input. Keyboard mode is a separate
 ## convenience path for interactive use.
 
@@ -75,6 +98,25 @@ const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
 const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 const SpeedHudScene := preload("res://scenes/ui/speed_hud.tscn")
 const VehicleFeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
+const GearboxScript := preload("res://src/simulation/automatic_gearbox.gd")
+
+## Hard cap on recorded gearbox shift events. Further events are counted as
+## dropped instead of growing without bound.
+const MAX_GEAR_SHIFT_EVENTS := 128
+## Halt reason used after a state-only drive restore, which cannot advance the
+## simulation until a body-pose reconciliation operation exists.
+const DRIVE_STATE_ONLY_HALT := "state-only drive restore awaits body pose reconciliation"
+
+## Complete state-only drive replay record: one committed `CarState` and the
+## canonical `GearboxState` captured as a pair. The pair carries the shift
+## cooldown and normalized rpm that a `CarState` alone cannot reproduce. It is
+## deliberately not a runnable replay: restoring it does not reconcile the
+## physical body transform, so the destination laboratory blocks ticks.
+class DriveSnapshot extends RefCounted:
+	var schema := "roadstorm.drive_snapshot.v1"
+	var car_state: CarState = null
+	var gearbox_state: AutomaticGearbox.GearboxState = null
+
 
 enum CommandMode { SCRIPTED, KEYBOARD }
 
@@ -127,6 +169,26 @@ var feedback_player: VehicleFeedbackPlayer = null
 ## Last audio setup/apply refusal reason, readable through `get_audio_error()`.
 ## Cleared by a successful apply; a build/setup defect persists until repaired.
 var audio_error := ""
+## The laboratory's one canonical `AutomaticGearbox`. It owns gear indication,
+## shift dwell and rpm; `state.gear_index` is only the published mirror.
+var gearbox: AutomaticGearbox = null
+## Physical `CarState` produced by the adapter on the most recent COMMITTED
+## tick, before the gear mirror was applied. Diagnostic only; never published
+## as the laboratory's committed pair.
+var last_committed_physical: CarState = null
+## Bounded shift-event telemetry, oldest first. Each entry is a Dictionary with
+## `tick`, `from_gear`, `to_gear`, `direction`, `normalized_rpm` and
+## `forward_speed_m_s`.
+var gear_shift_events: Array = []
+var gear_shift_events_dropped := 0
+var gearbox_refusals := 0
+var gearbox_failure_reason := ""
+var drive_restores := 0
+var drive_restore_refusals := 0
+var drive_restore_refusal_reason := ""
+## True after a state-only drive restore. Cleared only by a future body-pose
+## reconciliation operation, which this slice deliberately does not implement.
+var _drive_body_pose_stale := false
 
 var state: CarState = null
 var last_result: MotorBodyAdapter.Result = null
@@ -176,6 +238,7 @@ func _init() -> void:
 	tuning = make_laboratory_tuning()
 	adapter_config = make_laboratory_config()
 	state = CarStateScript.new()
+	gearbox = AutomaticGearbox.create(make_laboratory_gearbox_config())
 
 
 func _ready() -> void:
@@ -200,6 +263,8 @@ func _ready() -> void:
 		_fail("invalid laboratory motor tuning")
 	elif not failed and (adapter_config == null or not adapter_config.is_valid()):
 		_fail("invalid laboratory motor-body config")
+	if not failed and gearbox == null:
+		_fail("laboratory gearbox could not be built")
 
 
 func _exit_tree() -> void:
@@ -297,6 +362,21 @@ func make_laboratory_tuning() -> ArcadeMotor.MotorTuning:
 	return ArcadeMotorScript.MotorTuning.make(
 		curve, 12.0, 0.0, 0.05, 0.05, 1.5, 5.0, 1.0, 0.3, 4.0, 8.0
 	)
+
+
+## Explicit provisional gearbox thresholds spanning the committed 0-45 m/s
+## laboratory motor envelope. These are M1.1 starting values, not frozen
+## handling coefficients; M1.6/M1.7 measurements own their ratification.
+func make_laboratory_gearbox_config() -> AutomaticGearbox.GearboxConfig:
+	var config := AutomaticGearbox.GearboxConfig.new()
+	config.forward_gear_count = 6
+	config.upshift_speeds_m_s = [8.0, 14.0, 21.0, 29.0, 38.0]
+	config.downshift_speeds_m_s = [5.0, 10.0, 16.0, 23.0, 31.0]
+	config.min_shift_dwell_s = 0.25
+	config.min_hysteresis_gap_m_s = 0.5
+	config.reverse_exit_forward_speed_m_s = 0.5
+	config.top_reference_speed_m_s = 45.0
+	return config
 
 
 ## Supplies the tuning, adapter config and scripted command schedule. Valid
@@ -479,6 +559,152 @@ func get_audio_telemetry() -> Dictionary:
 	}
 
 
+# --- Gearbox and drive-replay API ------------------------------------------
+
+
+## Read-only copy of the canonical gearbox state (gear, shift cooldown,
+## normalized rpm). The returned object is a copy: mutating it cannot change
+## the laboratory.
+func get_gearbox_state() -> AutomaticGearbox.GearboxState:
+	if gearbox == null:
+		return null
+	return gearbox.get_state()
+
+
+## Machine-readable canonical gearbox snapshot, matching
+## `AutomaticGearbox.snapshot()`.
+func get_gearbox_snapshot() -> Dictionary:
+	if gearbox == null:
+		return {}
+	return gearbox.snapshot()
+
+
+## Snapshot of the copied gearbox configuration actually in force.
+func get_gearbox_config_snapshot() -> Dictionary:
+	if gearbox == null:
+		return {}
+	return gearbox.config_snapshot()
+
+
+## Bounded shift-event telemetry, oldest first. The array is capped at
+## `MAX_GEAR_SHIFT_EVENTS`; later events are counted, not stored. Every
+## returned entry is an independent copy, so mutating the result cannot alter
+## the laboratory's telemetry.
+func get_gear_shift_events() -> Array:
+	var copy: Array = []
+	for event in gear_shift_events:
+		copy.append((event as Dictionary).duplicate())
+	return copy
+
+
+## Gearbox-facing counters for validation reporting. These describe the gear
+## indication only; they never gate or alter the physical simulation run.
+func get_gearbox_telemetry() -> Dictionary:
+	var gear_index := 0
+	var cooldown := 0.0
+	var rpm := 0.0
+	if gearbox != null:
+		var current := gearbox.get_state()
+		gear_index = current.gear_index
+		cooldown = current.shift_cooldown_s
+		rpm = current.normalized_rpm
+	return {
+		"gear_index": gear_index,
+		"shift_cooldown_s": cooldown,
+		"normalized_rpm": rpm,
+		"shift_event_count": gear_shift_events.size(),
+		"shift_events_dropped": gear_shift_events_dropped,
+		"gearbox_refusals": gearbox_refusals,
+		"gearbox_failure_reason": gearbox_failure_reason,
+	}
+
+
+## Last gearbox proposal/mirror refusal reason, empty when no gearbox refusal
+## has occurred.
+func get_gearbox_error() -> String:
+	return gearbox_failure_reason
+
+
+## Copy of the physical `CarState` produced by the most recent COMMITTED
+## adapter tick, before the gear mirror was applied. Null before the first
+## committed tick.
+func get_last_committed_physical_state() -> CarState:
+	if last_committed_physical == null:
+		return null
+	return last_committed_physical.copy()
+
+
+## Captures the complete state-only drive pair. Both records are independent
+## copies. This is not a runnable replay: restoring it does not reconcile the
+## body transform.
+func snapshot_drive_state() -> DriveSnapshot:
+	var snapshot := DriveSnapshot.new()
+	if state != null:
+		snapshot.car_state = state.copy()
+	if gearbox != null:
+		snapshot.gearbox_state = gearbox.get_state()
+	return snapshot
+
+
+## Restores a complete `DriveSnapshot` pair atomically. The whole pair is
+## validated against a temporary gearbox before either live record changes;
+## an invalid or incomplete pair returns false and leaves both records
+## untouched. A valid restore repairs `CarState.gear_index` from the canonical
+## gearbox gear, publishes both records together, then blocks all ticks because
+## the body pose is deliberately not restored. There is intentionally no
+## CarState-only restore: dwell and rpm would be lost.
+func restore_drive_snapshot(snapshot) -> bool:
+	if snapshot == null or not (snapshot is DriveSnapshot):
+		return _reject_drive_restore("snapshot is absent or is not a DriveSnapshot")
+	if snapshot.car_state == null or snapshot.gearbox_state == null:
+		return _reject_drive_restore("snapshot pair is incomplete")
+	# Validate into a temporary gearbox; the live records are not touched yet.
+	var candidate_box := AutomaticGearbox.create(make_laboratory_gearbox_config())
+	if candidate_box == null:
+		return _reject_drive_restore("laboratory gearbox configuration is invalid")
+	if not candidate_box.restore_state(snapshot.gearbox_state):
+		return _reject_drive_restore("gearbox record is invalid for this configuration")
+	if not snapshot.car_state.is_finite():
+		return _reject_drive_restore("car record is nonfinite")
+	var candidate_car: CarState = snapshot.car_state.copy()
+	var published := candidate_box.mirror_gear(candidate_car)
+	if published == null or not published.is_finite():
+		return _reject_drive_restore("complete pair cannot be mirrored")
+	if int(published.gear_index) != int(candidate_box.get_state().gear_index):
+		return _reject_drive_restore("repaired mirror disagrees with the canonical gear")
+	# Every check passed on copies/temporary objects: publish the pair together.
+	gearbox = candidate_box
+	state = published
+	last_committed_physical = null
+	drive_restores += 1
+	_drive_body_pose_stale = true
+	_running = false
+	if not failed and not halted:
+		halted = true
+		halt_reason = DRIVE_STATE_ONLY_HALT
+	return true
+
+
+## True while a state-only drive restore has left the body pose unreconciled.
+## `step_once()` refuses every tick in this state until a future body-pose
+## reconciliation operation exists.
+func is_drive_replay_blocked() -> bool:
+	return _drive_body_pose_stale
+
+
+## Explicit reason ticks are blocked after a state-only restore, empty when
+## ticks are allowed.
+func get_drive_replay_block_reason() -> String:
+	if _drive_body_pose_stale:
+		return DRIVE_STATE_ONLY_HALT
+	return ""
+
+
+## Last drive-restore refusal reason, empty when no restore was refused.
+func get_drive_restore_error() -> String:
+	return drive_restore_refusal_reason
+
+
 ## Presentation-side counters for validation reporting. These describe
 ## presentation activity only; they never gate or alter the simulation run.
 func get_presentation_telemetry() -> Dictionary:
@@ -501,6 +727,10 @@ func get_presentation_telemetry() -> Dictionary:
 func step_once(command) -> MotorBodyAdapter.Result:
 	if failed or halted:
 		return null
+	# A state-only drive restore leaves the body transform unreconciled. No
+	# tick is allowed until a body-pose reconciliation operation exists.
+	if _drive_body_pose_stale:
+		return null
 	if body == null or hull_shape == null or state == null \
 			or tuning == null or adapter_config == null:
 		_fail("incomplete laboratory")
@@ -517,8 +747,41 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		if result.committed_state == null or not result.committed_state.is_finite():
 			_fail("nonfinite committed state")
 			return result
-		state = result.committed_state
+		# The adapter commit is irreversible from here: the body transform has
+		# already advanced. Remember the physical record for diagnostics, then
+		# obtain exactly one gearbox proposal and its canonical gear mirror. A
+		# refusal below leaves `state` at the last successfully published pair;
+		# it never publishes an unmirrored record as the committed pair.
+		var committed := result.committed_state
+		last_committed_physical = committed.copy()
+		var proposal := gearbox.propose(committed, DT)
+		if proposal == null:
+			_reject_gearbox_step(
+				"gearbox proposal refused after the irreversible COMMITTED physical tick; "
+				+ "canonical gearbox is unchanged and no CarState was published"
+			)
+			return result
+		var published := gearbox.mirror_gear(committed)
+		if published == null:
+			_reject_gearbox_step(
+				(
+					"gearbox mirror refused after the irreversible COMMITTED physical tick; "
+					+ "canonical gear advanced to %d but no CarState was published"
+				) % int(proposal.gear_index)
+			)
+			return result
+		if int(published.gear_index) != int(proposal.gear_index) or not published.is_finite():
+			_reject_gearbox_step(
+				(
+					"gearbox mirror disagreed with the canonical gear after the irreversible "
+					+ "COMMITTED physical tick (canonical=%d mirrored=%d); no mismatched "
+					+ "CarState was published"
+				) % [int(proposal.gear_index), int(published.gear_index)]
+			)
+			return result
+		state = published
 		ticks_committed += 1
+		_record_shift_event(proposal)
 		_update_telemetry(result)
 		_append_tick_log(result)
 		_update_presentation()
@@ -564,6 +827,14 @@ func get_telemetry() -> Dictionary:
 		"tick_log_entries": tick_log.size(),
 		"tick_log_dropped": tick_log_dropped,
 		"road_station_m": get_road_station_m(),
+		"gear_index": 0 if state == null else int(state.gear_index),
+		"gear_shift_events": gear_shift_events.size(),
+		"gear_shift_events_dropped": gear_shift_events_dropped,
+		"gearbox_refusals": gearbox_refusals,
+		"drive_restores": drive_restores,
+		"drive_restore_refusals": drive_restore_refusals,
+		"drive_replay_blocked": _drive_body_pose_stale,
+		"body_pose_reconciled": not _drive_body_pose_stale,
 		"failed": failed,
 		"failure_reason": failure_reason,
 		"halted": halted,
@@ -695,6 +966,10 @@ func _apply_start_pose() -> void:
 				)
 					break
 	state = CarStateScript.new()
+	# A fresh spawn starts a fresh complete pair: canonical gear 1, zero dwell,
+	# zero rpm, and the published mirror agreeing with both.
+	if gearbox != null:
+		gearbox.reset()
 	state.position_m = AdapterScript.world_vector_to_road(spawn)
 	state.heading_rad = heading
 	start_position_m = state.position_m
@@ -769,6 +1044,8 @@ func _append_tick_log(result: MotorBodyAdapter.Result) -> void:
 		"heading_rad": state.heading_rad,
 		"grounded": state.grounded,
 		"reverse_engaged": state.reverse_engaged,
+		"gear_index": int(state.gear_index),
+		"normalized_rpm": float(gearbox.get_state().normalized_rpm) if gearbox != null else 0.0,
 		"body_transform": body.global_transform,
 		"substeps": result.substeps,
 		"contact": result.contact,
@@ -895,6 +1172,22 @@ func _reset_run_state() -> void:
 	camera_mode_cycles = 0
 	rear_view_holds = 0
 	last_result = null
+	# Reconfiguration starts a fresh complete pair: canonical gear 1, zero
+	# dwell and the published mirror agreeing with it. A prior state-only
+	# restore's body-pose block is deliberately NOT cleared here; no body-pose
+	# reconciliation operation exists yet.
+	gear_shift_events = []
+	gear_shift_events_dropped = 0
+	gearbox_refusals = 0
+	gearbox_failure_reason = ""
+	drive_restores = 0
+	drive_restore_refusals = 0
+	drive_restore_refusal_reason = ""
+	last_committed_physical = null
+	if gearbox != null:
+		gearbox.reset()
+		if state != null:
+			state.gear_index = gearbox.get_state().gear_index
 	if _material != null:
 		_material.albedo_color = GRAYBOX_COLOR
 	_update_presentation()
@@ -907,6 +1200,44 @@ func _reject_configuration(reason: String) -> bool:
 	_running = false
 	print("[drive_lab] CONFIG REFUSED: ", reason)
 	_show_failure_visual()
+	return false
+
+
+## Records one gearbox shift event in bounded telemetry. Called only after the
+## proposal and mirror both succeeded, so an event always belongs to a
+## published paired tick.
+func _record_shift_event(proposal: AutomaticGearbox.GearboxProposal) -> void:
+	if proposal == null or not proposal.has_event():
+		return
+	if gear_shift_events.size() >= MAX_GEAR_SHIFT_EVENTS:
+		gear_shift_events_dropped += 1
+		return
+	var event: AutomaticGearbox.ShiftEvent = proposal.event
+	gear_shift_events.append({
+		"tick": ticks_committed,
+		"from_gear": int(event.from_gear),
+		"to_gear": int(event.to_gear),
+		"direction": int(event.direction),
+		"normalized_rpm": float(event.normalized_rpm),
+		"forward_speed_m_s": state.forward_speed_m_s() if state != null else 0.0,
+	})
+
+
+## Bounded explicit gearbox failure. The physical tick is already committed
+## and cannot be rolled back; this records the reason and halts the run without
+## publishing the unmirrored record as the committed pair.
+func _reject_gearbox_step(reason: String) -> void:
+	gearbox_refusals += 1
+	gearbox_failure_reason = reason
+	_fail(reason)
+
+
+## Atomic drive-restore refusal: no live record was modified, so recording the
+## reason and returning false is the whole operation.
+func _reject_drive_restore(reason: String) -> bool:
+	drive_restore_refusals += 1
+	drive_restore_refusal_reason = reason
+	print("[drive_lab] DRIVE RESTORE REFUSED: ", reason)
 	return false
 
 

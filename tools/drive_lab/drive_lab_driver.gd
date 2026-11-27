@@ -18,6 +18,7 @@ const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 const HandlingLabBuilderScript := preload("res://src/laboratory/handling_lab_builder.gd")
 const FeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
 const SynthScript := preload("res://src/audio/vehicle_feedback_synth.gd")
+const GearboxScript := preload("res://src/simulation/automatic_gearbox.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -50,6 +51,17 @@ const AUDIO_OBLIQUE_BACKWARD_SPEED_M_S := 30.0
 ## Must match the movement_from_rest schedule used as the committed-trace
 ## baseline; the audio case replays it with audio wired.
 const AUDIO_BASELINE_TICKS := 90
+## Bounded tick counts for the M1.1 gearbox integration case.
+const GEARBOX_FORWARD_TICKS := 300
+const GEARBOX_BRAKE_TICKS := 120
+const GEARBOX_EVENT_GAP_TICKS := 10
+const GEARBOX_REVERSE_THROTTLE_TICKS := 60
+const GEARBOX_REVERSE_BRAKE_TICKS := 90
+const GEARBOX_COAST_TICKS := 20
+const GEARBOX_FORWARD_RESUME_TICKS := 60
+const GEARBOX_SNAPSHOT_TICKS := 120
+const GEARBOX_TRACE_TICKS := 90
+const GEARBOX_RECONFIG_IDLE_TICKS := 5
 ## Independent oracle constants mirroring the committed component's documented
 ## provisional map. They exist so validation compares measured playback targets
 ## against an independent calculation rather than trusting the component.
@@ -102,6 +114,7 @@ const CASE_IDS: Array[String] = [
 	"keyboard_focus_lifecycle",
 	"reconfigure_presentation_counters",
 	"audio_feedback_integration",
+	"gearbox_integration",
 ]
 
 var d := DriveLabChecks.new()
@@ -195,6 +208,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_reconfigure_presentation_counters()
 		"audio_feedback_integration":
 			await _case_audio_feedback_integration()
+		"gearbox_integration":
+			await _case_gearbox_integration()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	var result := {
@@ -900,6 +915,8 @@ func _case_hull_road_overlap() -> void:
 			"overlap.tick_%d_within_road" % (index + 1)
 		)
 	for index in [0, int(lab.tick_log.size() / 2), lab.tick_log.size() - 1]:
+		if lab.tick_log.is_empty():
+			break
 		var transform: Transform3D = lab.tick_log[index]["body_transform"]
 		var hit := _ray_hit(
 			transform.origin + Vector3.UP * 2.0,
@@ -2305,6 +2322,863 @@ func feedback_oracle_tire_db_from_intensity(intensity: float) -> float:
 		FeedbackScript.MIN_VOLUME_DB,
 		FeedbackScript.MAX_VOLUME_DB
 	)
+
+
+# --- M1.1 gearbox integration ---------------------------------------------
+
+## One canonical AutomaticGearbox per laboratory: initial pair agreement,
+## natural shifts with bounded event telemetry and no dithering, reverse-latch
+## entry and backward coast after latch clear, state-only snapshot/restore with
+## an explicit body-pose block, atomic refusal of invalid pairs, and
+## reconfiguration/reset agreement. Every wait is bounded.
+func _case_gearbox_integration() -> void:
+	await _gearbox_initial_checks()
+	await _gearbox_forward_shift_checks()
+	await _gearbox_reverse_and_coast_checks()
+	await _gearbox_snapshot_restore_checks()
+	await _gearbox_invalid_pair_atomicity_checks()
+	await _gearbox_reconfigure_reset_checks()
+	await _gearbox_physical_trace_checks()
+
+
+func _gearbox_api_available(lab) -> bool:
+	var required := [
+		"get_gearbox_state", "get_gearbox_snapshot", "get_gearbox_config_snapshot",
+		"get_gear_shift_events", "get_gearbox_telemetry", "get_gearbox_error",
+		"get_last_committed_physical_state", "snapshot_drive_state",
+		"restore_drive_snapshot", "is_drive_replay_blocked",
+		"get_drive_replay_block_reason", "get_drive_restore_error",
+	]
+	var missing: Array = []
+	for name in required:
+		if not lab.has_method(name):
+			missing.append(name)
+	d.check(missing.is_empty(), "gearbox.api_present: missing " + str(missing))
+	return missing.is_empty()
+
+
+func _gearbox_check_float_array(actual, expected: Array, label: String) -> void:
+	d.check(
+		actual.size() == expected.size(),
+		label + ".size (actual=%d expected=%d)" % [actual.size(), expected.size()]
+	)
+	for index in range(mini(actual.size(), expected.size())):
+		d.check_close(
+			float(actual[index]), float(expected[index]), 1e-12,
+			label + ".entry_%d" % index
+		)
+
+
+func _gearbox_variant_snapshot(car, box) -> DriveLabScript.DriveSnapshot:
+	var snapshot := DriveLabScript.DriveSnapshot.new()
+	snapshot.car_state = car
+	snapshot.gearbox_state = box
+	return snapshot
+
+
+func _gearbox_compact_trace(log: Array) -> Array:
+	var out: Array = []
+	for record in log:
+		out.append({
+			"position_m": record["position_m"],
+			"velocity_m_s": record["velocity_m_s"],
+			"heading_rad": record["heading_rad"],
+			"body_transform": record["body_transform"],
+			"gear_index": int(record["gear_index"]),
+			"normalized_rpm": float(record["normalized_rpm"]),
+		})
+	return out
+
+
+func _gearbox_capture(lab) -> Dictionary:
+	return {
+		"trace": _gearbox_compact_trace(lab.tick_log),
+		"events": lab.get_gear_shift_events().duplicate(),
+		"gearbox": lab.get_gearbox_snapshot(),
+	}
+
+
+func _gearbox_manual_run(lab, commands: Array) -> bool:
+	lab.set_auto_tick(false)
+	for index in range(commands.size()):
+		var result = lab.step_once(commands[index])
+		if result == null or int(result.status) != int(AdapterScript.Status.COMMITTED):
+			return false
+		if lab.failed:
+			return false
+		await get_tree().physics_frame
+	return true
+
+
+func _gearbox_initial_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	d.check(not lab.failed, "gearbox.initial_not_failed: " + str(lab.failure_reason))
+	d.check(lab.gearbox != null and lab.gearbox is GearboxScript, "gearbox.instance_present")
+	d.check(int(lab.state.gear_index) == 1, "gearbox.initial_car_mirror_is_first_gear")
+	var box = lab.get_gearbox_state()
+	d.check(box != null, "gearbox.initial_state_copy_present")
+	if box != null:
+		d.check(int(box.gear_index) == 1, "gearbox.initial_canonical_gear_is_one")
+		d.check_exact_float(box.shift_cooldown_s, 0.0, "gearbox.initial_cooldown_zero")
+		d.check_exact_float(box.normalized_rpm, 0.0, "gearbox.initial_rpm_zero")
+	d.check(lab.get_gear_shift_events().is_empty(), "gearbox.initial_no_events")
+	var telemetry: Dictionary = lab.get_gearbox_telemetry()
+	d.check(int(telemetry["shift_event_count"]) == 0, "gearbox.initial_event_counter_zero")
+	d.check(int(telemetry["shift_events_dropped"]) == 0, "gearbox.initial_drop_counter_zero")
+	d.check(int(telemetry["gearbox_refusals"]) == 0, "gearbox.initial_refusal_counter_zero")
+	d.check(str(lab.get_gearbox_error()).is_empty(), "gearbox.initial_no_failure")
+	d.check(not lab.is_drive_replay_blocked(), "gearbox.initial_ticks_allowed")
+	d.check(str(lab.get_drive_replay_block_reason()).is_empty(), "gearbox.initial_no_block_reason")
+
+	var config: Dictionary = lab.get_gearbox_config_snapshot()
+	d.check(int(config["forward_gear_count"]) == 6, "gearbox.config_forward_gears")
+	_gearbox_check_float_array(
+		config["upshift_speeds_m_s"], [8.0, 14.0, 21.0, 29.0, 38.0],
+		"gearbox.config_upshifts"
+	)
+	_gearbox_check_float_array(
+		config["downshift_speeds_m_s"], [5.0, 10.0, 16.0, 23.0, 31.0],
+		"gearbox.config_downshifts"
+	)
+	d.check_close(float(config["min_shift_dwell_s"]), 0.25, 1e-12, "gearbox.config_dwell")
+	d.check_close(
+		float(config["reverse_exit_forward_speed_m_s"]), 0.5, 1e-12,
+		"gearbox.config_reverse_exit"
+	)
+
+	var snapshot = lab.snapshot_drive_state()
+	d.check(snapshot is DriveLabScript.DriveSnapshot, "gearbox.snapshot_type")
+	d.check(String(snapshot.schema) == "roadstorm.drive_snapshot.v1", "gearbox.snapshot_schema")
+	d.check(
+		snapshot.car_state != null and snapshot.car_state.is_finite(),
+		"gearbox.snapshot_car_finite"
+	)
+	d.check(snapshot.gearbox_state != null, "gearbox.snapshot_gearbox_present")
+	if snapshot.car_state != null and snapshot.gearbox_state != null:
+		d.check(
+			int(snapshot.car_state.gear_index) == int(snapshot.gearbox_state.gear_index),
+			"gearbox.snapshot_pair_mirror_agrees"
+		)
+		d.check_exact_float(
+			snapshot.car_state.position_m.x, lab.state.position_m.x,
+			"gearbox.snapshot_copies_position_x"
+		)
+	# Copy semantics: neither live record nor a returned copy aliases another.
+	var exposed = lab.get_gearbox_state()
+	if exposed != null:
+		exposed.gear_index = 99
+		d.check(
+			lab.get_gearbox_state() != null and int(lab.get_gearbox_state().gear_index) == 1,
+			"gearbox.get_state_returns_independent_copy"
+	)
+	var live_x: float = lab.state.position_m.x
+	if snapshot.car_state != null:
+		snapshot.car_state.position_m.x = 123.0
+		d.check_exact_float(
+			lab.state.position_m.x, live_x,
+			"gearbox.snapshot_car_is_a_copy"
+	)
+	if snapshot.gearbox_state != null:
+		snapshot.gearbox_state.gear_index = 99
+		var live_snapshot: Dictionary = lab.get_gearbox_snapshot()
+		d.check(int(live_snapshot["gear_index"]) == 1, "gearbox.snapshot_gearbox_is_a_copy")
+	await _teardown_lab(lab)
+
+
+func _gearbox_forward_shift_checks() -> void:
+	var commands: Array = []
+	for _index in range(GEARBOX_FORWARD_TICKS):
+		commands.append(d.throttle_command(1.0))
+	for _index in range(GEARBOX_BRAKE_TICKS):
+		commands.append(d.brake_command(1.0))
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var ticks_run := 0
+	var dwell_limit: float = lab.get_gearbox_config_snapshot()["min_shift_dwell_s"]
+	for index in range(commands.size()):
+		var result = lab.step_once(commands[index])
+		if result == null or int(result.status) != int(AdapterScript.Status.COMMITTED):
+			d.check(false, "gearbox.shift.tick_%d_committed" % (index + 1))
+			break
+		# A gearbox refusal halts before publishing; there is no paired record
+		# or tick-log entry for this irreversible physical tick.
+		if lab.failed:
+			break
+		ticks_run += 1
+		var canonical = lab.get_gearbox_state()
+		d.check(
+			int(lab.state.gear_index) == int(canonical.gear_index),
+			"gearbox.shift.tick_%d_mirror_matches_canonical" % (index + 1)
+		)
+		var record: Dictionary = lab.tick_log[-1]
+		d.check(
+			int(record["gear_index"]) == int(lab.state.gear_index),
+			"gearbox.shift.tick_%d_logged_gear" % (index + 1)
+		)
+		var rpm := float(record["normalized_rpm"])
+		d.check(rpm >= 0.0 and rpm <= 1.0, "gearbox.shift.tick_%d_rpm_bounded" % (index + 1))
+		d.check_exact_float(
+			rpm, float(canonical.normalized_rpm),
+			"gearbox.shift.tick_%d_rpm_matches_canonical" % (index + 1)
+		)
+		d.check(
+			float(canonical.shift_cooldown_s) >= 0.0
+			and float(canonical.shift_cooldown_s) <= dwell_limit + 1e-12,
+			"gearbox.shift.tick_%d_cooldown_bounded" % (index + 1)
+		)
+		await get_tree().physics_frame
+	d.check(not lab.failed, "gearbox.shift.run_not_failed: " + str(lab.failure_reason))
+	d.check(ticks_run == commands.size(), "gearbox.shift.all_ticks_committed")
+
+	var log: Array = lab.tick_log
+	var events: Array = lab.get_gear_shift_events()
+	if log.is_empty():
+		d.check(false, "gearbox.shift.trace_present")
+		await _teardown_lab(lab)
+		return
+	var transitions: Array = []
+	for index in range(1, log.size()):
+		if int(log[index]["gear_index"]) != int(log[index - 1]["gear_index"]):
+			transitions.append(index + 1)
+	d.check(
+		events.size() == transitions.size(),
+		"gearbox.shift.event_count_equals_transitions (events=%d transitions=%d)"
+			% [events.size(), transitions.size()]
+	)
+	var forward_events := 0
+	var brake_events := 0
+	for index in range(mini(events.size(), transitions.size())):
+		var event: Dictionary = events[index]
+		var tick := int(transitions[index])
+		d.check(
+			int(event["tick"]) == tick,
+			"gearbox.shift.event_%d_tick_matches_transition" % index
+		)
+		var previous_gear := 1
+		if tick >= 2:
+			previous_gear = int(log[tick - 2]["gear_index"])
+		var current_gear := int(log[tick - 1]["gear_index"])
+		d.check(
+			int(event["from_gear"]) == previous_gear,
+			"gearbox.shift.event_%d_from_gear_matches_log" % index
+		)
+		d.check(
+			int(event["to_gear"]) == current_gear,
+			"gearbox.shift.event_%d_to_gear_matches_log" % index
+		)
+		d.check(
+			int(event["from_gear"]) != int(event["to_gear"]),
+			"gearbox.shift.event_%d_is_a_real_change" % index
+		)
+		d.check_exact_float(
+			float(event["normalized_rpm"]), float(log[tick - 1]["normalized_rpm"]),
+			"gearbox.shift.event_%d_rpm_matches_log" % index
+		)
+		if tick <= GEARBOX_FORWARD_TICKS:
+			forward_events += 1
+			d.check(
+				int(event["direction"]) == int(GearboxScript.ShiftDirection.UPSHIFT),
+				"gearbox.shift.event_%d_is_an_upshift" % index
+			)
+		else:
+			brake_events += 1
+			d.check(
+				int(event["direction"]) == int(GearboxScript.ShiftDirection.DOWNSHIFT),
+				"gearbox.shift.event_%d_is_a_downshift" % index
+			)
+	d.check(forward_events >= 2, "gearbox.shift.natural_forward_shifts_observed (%d)" % forward_events)
+	d.check(brake_events >= 1, "gearbox.shift.downshifts_observed (%d)" % brake_events)
+	for index in range(1, transitions.size()):
+		d.check(
+			int(transitions[index]) - int(transitions[index - 1]) >= GEARBOX_EVENT_GAP_TICKS,
+			"gearbox.shift.events_are_not_repeated_within_dwell (ticks %d and %d)"
+			% [int(transitions[index - 1]), int(transitions[index])]
+		)
+	var forward_gears: Array = []
+	for tick in transitions:
+		if int(tick) <= GEARBOX_FORWARD_TICKS:
+			forward_gears.append(int(log[int(tick) - 1]["gear_index"]))
+	var monotonic_forward := true
+	for index in range(1, forward_gears.size()):
+		if forward_gears[index] <= forward_gears[index - 1]:
+			monotonic_forward = false
+	d.check(monotonic_forward, "gearbox.shift.forward_gears_strictly_increase")
+	var max_forward_gear := 1
+	for tick in transitions:
+		if int(tick) <= GEARBOX_FORWARD_TICKS:
+			max_forward_gear = maxi(
+				max_forward_gear, int(log[int(tick) - 1]["gear_index"])
+			)
+	d.check(
+		max_forward_gear >= 3,
+		"gearbox.shift.reaches_at_least_third_gear (%d)" % max_forward_gear
+	)
+	var final_gear := int(log[-1]["gear_index"])
+	d.check(
+		int(lab.get_gearbox_telemetry()["shift_events_dropped"]) == 0,
+		"gearbox.shift.no_dropped_events"
+	)
+	# Returned telemetry entries are copies: mutating them cannot alter the
+	# laboratory's bounded internal log.
+	var exposed_events = lab.get_gear_shift_events()
+	if exposed_events.size() > 0:
+		exposed_events[0]["to_gear"] = 99
+		exposed_events[0]["normalized_rpm"] = -1.0
+		var internal_again: Array = lab.get_gear_shift_events()
+		d.check(
+			int(internal_again[0]["to_gear"]) == int(events[0]["to_gear"]),
+			"gearbox.shift.returned_event_entries_are_copies"
+		)
+		d.check_exact_float(
+			float(internal_again[0]["normalized_rpm"]), float(events[0]["normalized_rpm"]),
+			"gearbox.shift.returned_event_values_are_copies"
+		)
+	d.check(
+		int(lab.steps_called) == int(lab.ticks_committed),
+		"gearbox.shift.one_adapter_call_per_committed_tick"
+	)
+	measurements["gearbox_forward_events"] = forward_events
+	measurements["gearbox_brake_events"] = brake_events
+	measurements["gearbox_max_forward_gear"] = max_forward_gear
+	measurements["gearbox_final_gear"] = final_gear
+	await _teardown_lab(lab)
+
+
+func _gearbox_reverse_and_coast_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var total := (
+		GEARBOX_REVERSE_THROTTLE_TICKS
+		+ GEARBOX_REVERSE_BRAKE_TICKS
+		+ GEARBOX_COAST_TICKS
+		+ GEARBOX_FORWARD_RESUME_TICKS
+	)
+	var brake_end := GEARBOX_REVERSE_THROTTLE_TICKS + GEARBOX_REVERSE_BRAKE_TICKS
+	var coast_end := brake_end + GEARBOX_COAST_TICKS
+	for index in range(total):
+		var command
+		if index < GEARBOX_REVERSE_THROTTLE_TICKS:
+			command = d.throttle_command(1.0)
+		elif index < brake_end:
+			command = d.brake_command(1.0)
+		elif index < coast_end:
+			command = d.idle_command()
+		else:
+			command = d.throttle_command(1.0)
+		var result = lab.step_once(command)
+		if result == null or int(result.status) != int(AdapterScript.Status.COMMITTED):
+			d.check(false, "gearbox.reverse.tick_%d_committed" % (index + 1))
+			break
+		if lab.failed:
+			break
+		var canonical = lab.get_gearbox_state()
+		d.check(
+			int(lab.state.gear_index) == int(canonical.gear_index),
+			"gearbox.reverse.tick_%d_mirror_matches_canonical" % (index + 1)
+		)
+		if index + 1 == GEARBOX_REVERSE_THROTTLE_TICKS:
+			d.check(not lab.state.reverse_engaged, "gearbox.reverse.latch_clear_while_forward")
+			d.check(int(canonical.gear_index) >= 1, "gearbox.reverse.forward_gear_before_brake")
+		if index + 1 == brake_end:
+			d.check(lab.state.reverse_engaged, "gearbox.reverse.latch_engaged_after_brake_hold")
+			d.check(
+				lab.state.forward_speed_m_s() < 0.0,
+				"gearbox.reverse.travelling_backwards_after_latch"
+			)
+			d.check(int(canonical.gear_index) == -1, "gearbox.reverse.canonical_reverse_gear")
+		if index + 1 == coast_end:
+			d.check(not lab.state.reverse_engaged, "gearbox.coast.latch_cleared_after_idle")
+			d.check(
+				lab.state.forward_speed_m_s() < 0.0,
+				"gearbox.coast.still_travelling_backwards"
+			)
+			d.check(int(canonical.gear_index) == -1, "gearbox.coast.gear_stays_reverse")
+			for event in lab.get_gear_shift_events():
+				d.check(
+					int(event["direction"]) != int(GearboxScript.ShiftDirection.EXIT_REVERSE),
+					"gearbox.coast.no_exit_reverse_during_backward_coast"
+				)
+		await get_tree().physics_frame
+	d.check(not lab.failed, "gearbox.reverse.run_not_failed: " + str(lab.failure_reason))
+	var enter_events := 0
+	var exit_events := 0
+	var exit_event: Dictionary = {}
+	for event in lab.get_gear_shift_events():
+		if int(event["direction"]) == int(GearboxScript.ShiftDirection.ENTER_REVERSE):
+			enter_events += 1
+		elif int(event["direction"]) == int(GearboxScript.ShiftDirection.EXIT_REVERSE):
+			exit_events += 1
+			if exit_event.is_empty():
+				exit_event = event
+	d.check(enter_events == 1, "gearbox.reverse.exactly_one_enter_reverse_event (%d)" % enter_events)
+	d.check(exit_events == 1, "gearbox.reverse.exactly_one_exit_reverse_event (%d)" % exit_events)
+	d.check(not exit_event.is_empty(), "gearbox.reverse.exit_event_present_after_forward_resume")
+	if not exit_event.is_empty():
+		d.check(int(exit_event["from_gear"]) == -1, "gearbox.reverse.exit_from_reverse")
+		d.check(int(exit_event["to_gear"]) >= 1, "gearbox.reverse.exit_to_forward_gear")
+		d.check(
+			int(exit_event["tick"]) > coast_end,
+			"gearbox.reverse.exit_happens_after_latch_clear"
+		)
+	d.check(int(lab.state.gear_index) >= 1, "gearbox.reverse.forward_gear_after_exit")
+	measurements["gearbox_reverse_enter_events"] = enter_events
+	measurements["gearbox_reverse_exit_events"] = exit_events
+	await _teardown_lab(lab)
+
+
+func _gearbox_snapshot_restore_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var snapshot: DriveLabScript.DriveSnapshot = null
+	var captured_tick := 0
+	for index in range(GEARBOX_SNAPSHOT_TICKS):
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null or int(result.status) != int(AdapterScript.Status.COMMITTED):
+			d.check(false, "gearbox.snapshot.tick_%d_committed" % (index + 1))
+			break
+		if lab.failed:
+			break
+		captured_tick = index + 1
+		if lab.get_gear_shift_events().size() > 0:
+			snapshot = lab.snapshot_drive_state()
+			break
+		await get_tree().physics_frame
+	d.check(snapshot != null, "gearbox.snapshot.captured_immediately_after_first_shift")
+	if snapshot == null:
+		await _teardown_lab(lab)
+		return
+	d.check(snapshot.car_state != null and snapshot.gearbox_state != null, "gearbox.snapshot.complete_pair")
+	var checkpoint = snapshot.gearbox_state.copy()
+	var checkpoint_car = snapshot.car_state.copy()
+	d.check(int(checkpoint.gear_index) >= 2, "gearbox.snapshot.nonzero_gear_checkpoint")
+	d.check(float(checkpoint.shift_cooldown_s) > 0.0, "gearbox.snapshot.nonzero_cooldown")
+	d.check(
+		float(checkpoint.shift_cooldown_s) <= 0.25 + 1e-12,
+		"gearbox.snapshot.cooldown_within_dwell"
+	)
+	d.check(
+		float(checkpoint.normalized_rpm) > 0.0 and float(checkpoint.normalized_rpm) <= 1.0,
+		"gearbox.snapshot.normalized_rpm"
+	)
+	d.check(
+		int(checkpoint_car.gear_index) == int(checkpoint.gear_index),
+		"gearbox.snapshot.mirror_agrees_with_canonical"
+	)
+	d.check(captured_tick > 0, "gearbox.snapshot.capture_tick_recorded")
+	# Snapshot copies are independent of the live pair.
+	var alias_probe = lab.snapshot_drive_state()
+	alias_probe.car_state.position_m.x += 5.0
+	alias_probe.gearbox_state.gear_index = 99
+	var live_now: Dictionary = lab.get_gearbox_snapshot()
+	d.check(
+		int(live_now["gear_index"]) == int(checkpoint.gear_index),
+		"gearbox.snapshot.does_not_alias_live_pair"
+	)
+	d.check_exact_float(
+		lab.state.position_m.x, checkpoint_car.position_m.x,
+		"gearbox.snapshot.car_is_a_copy"
+	)
+
+	var dest = _make_lab([])
+	if dest == null:
+		await _teardown_lab(lab)
+		return
+	if not _gearbox_api_available(dest):
+		await _teardown_lab(dest)
+		await _teardown_lab(lab)
+		return
+	var restored_ok: bool = dest.restore_drive_snapshot(snapshot)
+	d.check(restored_ok, "gearbox.restore.valid_pair_accepted")
+	d.check(dest.state != null and dest.state.is_finite(), "gearbox.restore.published_car_finite")
+	if dest.state != null:
+		d.check(
+			dest.state.position_m == checkpoint_car.position_m,
+			"gearbox.restore.car_position_published"
+		)
+		d.check(
+			dest.state.velocity_m_s == checkpoint_car.velocity_m_s,
+			"gearbox.restore.car_velocity_published"
+		)
+		d.check_exact_float(
+			dest.state.heading_rad, checkpoint_car.heading_rad,
+			"gearbox.restore.car_heading_published"
+		)
+		d.check(
+			dest.state.grounded == checkpoint_car.grounded
+			and dest.state.surface_id == checkpoint_car.surface_id
+			and dest.state.reverse_engaged == checkpoint_car.reverse_engaged
+			and dest.state.drafting_active == checkpoint_car.drafting_active,
+			"gearbox.restore.car_flags_verbatim"
+		)
+		d.check_exact_float(
+			dest.state.reverse_hold_s, checkpoint_car.reverse_hold_s,
+			"gearbox.restore.car_reverse_hold_verbatim"
+		)
+		d.check_exact_float(
+			dest.state.drift_timer_s, checkpoint_car.drift_timer_s,
+			"gearbox.restore.car_drift_timer_verbatim"
+		)
+		d.check_exact_float(
+			dest.state.drift_slip_deg, checkpoint_car.drift_slip_deg,
+			"gearbox.restore.car_drift_slip_verbatim"
+		)
+		d.check_exact_float(
+			dest.state.surge_cooldown_s, checkpoint_car.surge_cooldown_s,
+			"gearbox.restore.car_surge_cooldown_verbatim"
+		)
+		d.check_exact_float(
+			dest.state.contact_immunity_s, checkpoint_car.contact_immunity_s,
+			"gearbox.restore.car_contact_immunity_verbatim"
+		)
+		d.check_exact_float(
+			dest.state.valid_progress_m, checkpoint_car.valid_progress_m,
+			"gearbox.restore.car_progress_verbatim"
+		)
+		d.check(
+			int(dest.state.gear_index) == int(checkpoint.gear_index),
+			"gearbox.restore.mirror_repaired_from_canonical"
+		)
+	var restored_box = dest.get_gearbox_state()
+	d.check(restored_box != null, "gearbox.restore.box_present")
+	if restored_box != null:
+		d.check(int(restored_box.gear_index) == int(checkpoint.gear_index), "gearbox.restore.gear_exact")
+		d.check_exact_float(
+			restored_box.shift_cooldown_s, float(checkpoint.shift_cooldown_s),
+			"gearbox.restore.cooldown_exact"
+		)
+		d.check_exact_float(
+			restored_box.normalized_rpm, float(checkpoint.normalized_rpm),
+			"gearbox.restore.rpm_exact"
+		)
+	# State-only restore blocks every tick until body pose reconciliation exists.
+	d.check(dest.is_drive_replay_blocked(), "gearbox.restore.ticks_blocked")
+	d.check(
+		str(dest.get_drive_replay_block_reason()) != "",
+		"gearbox.restore.explicit_block_reason"
+	)
+	var steps_before := int(dest.steps_called)
+	var blocked_result = dest.step_once(d.throttle_command(1.0))
+	d.check(blocked_result == null, "gearbox.restore.step_refused_without_adapter_call")
+	d.check(int(dest.steps_called) == steps_before, "gearbox.restore.no_adapter_call_consumed")
+	d.check(not dest.failed, "gearbox.restore.block_is_not_a_failure")
+	d.check(dest.halted, "gearbox.restore.halt_flag_set")
+	d.check(
+		str(dest.halt_reason) == String(DriveLabScript.DRIVE_STATE_ONLY_HALT),
+		"gearbox.restore.explicit_halt_reason"
+	)
+
+	# Restoring the same pair into a second destination is deterministic.
+	var dest2 = _make_lab([])
+	if dest2 != null and _gearbox_api_available(dest2):
+		var fresh_snapshot = lab.snapshot_drive_state()
+		var ok2: bool = dest2.restore_drive_snapshot(fresh_snapshot)
+		d.check(ok2, "gearbox.restore.second_destination_accepts_valid_pair")
+		d.check(
+			dest2.get_gearbox_snapshot() == dest.get_gearbox_snapshot(),
+			"gearbox.restore.deterministic_across_destinations"
+		)
+		await _teardown_lab(dest2)
+
+	# A stale CarState mirror is repaired from the canonical gearbox gear.
+	var dest3 = _make_lab([])
+	if dest3 != null and _gearbox_api_available(dest3):
+		var repair_snapshot = lab.snapshot_drive_state()
+		repair_snapshot.car_state.gear_index = 99
+		var ok3: bool = dest3.restore_drive_snapshot(repair_snapshot)
+		d.check(ok3, "gearbox.restore.stale_mirror_repair_accepted")
+		d.check(
+			int(dest3.state.gear_index) == int(repair_snapshot.gearbox_state.gear_index),
+			"gearbox.restore.publishes_canonical_not_stale_mirror"
+		)
+		await _teardown_lab(dest3)
+		await _teardown_lab(dest)
+	else:
+		await _teardown_lab(dest)
+	await _teardown_lab(lab)
+
+
+func _gearbox_invalid_pair_atomicity_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var warmup := []
+	for _index in range(80):
+		warmup.append(d.throttle_command(1.0))
+	var warmed := await _gearbox_manual_run(lab, warmup)
+	d.check(warmed, "gearbox.atomic.warmup_completed")
+	var base = lab.snapshot_drive_state()
+	d.check(base.car_state != null and base.gearbox_state != null, "gearbox.atomic.base_complete")
+	var box_before: Dictionary = lab.get_gearbox_snapshot()
+	var state_before: Dictionary = d.snapshot_state(lab.state)
+	var gear_before := int(lab.state.gear_index)
+	var events_before: int = lab.get_gear_shift_events().size()
+
+	var nonfinite_car = base.car_state.copy()
+	nonfinite_car.position_m.x = NAN
+	var null_car_box = base.gearbox_state.copy()
+	var bad_gear_zero = base.gearbox_state.copy()
+	bad_gear_zero.gear_index = 0
+	var bad_gear_high = base.gearbox_state.copy()
+	bad_gear_high.gear_index = int(lab.get_gearbox_config_snapshot()["forward_gear_count"]) + 1
+	var bad_gear_negative = base.gearbox_state.copy()
+	bad_gear_negative.gear_index = -2
+	var bad_cooldown_negative = base.gearbox_state.copy()
+	bad_cooldown_negative.shift_cooldown_s = -0.1
+	var bad_cooldown_high = base.gearbox_state.copy()
+	bad_cooldown_high.shift_cooldown_s = 0.3
+	var bad_cooldown_nan = base.gearbox_state.copy()
+	bad_cooldown_nan.shift_cooldown_s = NAN
+	var bad_rpm_low = base.gearbox_state.copy()
+	bad_rpm_low.normalized_rpm = -0.1
+	var bad_rpm_high = base.gearbox_state.copy()
+	bad_rpm_high.normalized_rpm = 1.5
+	var bad_rpm_nan = base.gearbox_state.copy()
+	bad_rpm_nan.normalized_rpm = NAN
+
+	var variants: Array = [
+		{"name": "nonfinite_car", "snapshot": _gearbox_variant_snapshot(nonfinite_car, base.gearbox_state.copy())},
+		{"name": "null_car", "snapshot": _gearbox_variant_snapshot(null, null_car_box)},
+		{"name": "null_gearbox", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), null)},
+		{"name": "gear_zero", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_gear_zero)},
+		{"name": "gear_above_configured", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_gear_high)},
+		{"name": "gear_negative_two", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_gear_negative)},
+		{"name": "cooldown_negative", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_cooldown_negative)},
+		{"name": "cooldown_above_dwell", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_cooldown_high)},
+		{"name": "cooldown_nonfinite", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_cooldown_nan)},
+		{"name": "rpm_negative", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_rpm_low)},
+		{"name": "rpm_above_one", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_rpm_high)},
+		{"name": "rpm_nonfinite", "snapshot": _gearbox_variant_snapshot(base.car_state.copy(), bad_rpm_nan)},
+		{"name": "plain_dictionary", "snapshot": {}},
+	]
+	for variant in variants:
+		var label: String = variant["name"]
+		var refused: bool = not lab.restore_drive_snapshot(variant["snapshot"])
+		d.check(refused, "gearbox.atomic." + label + "_refused")
+		d.check(
+			lab.get_gearbox_snapshot() == box_before,
+			"gearbox.atomic." + label + "_gearbox_unchanged"
+		)
+		d.check(
+			d.snapshot_state(lab.state) == state_before,
+			"gearbox.atomic." + label + "_state_unchanged"
+		)
+		d.check(
+			int(lab.state.gear_index) == gear_before,
+			"gearbox.atomic." + label + "_mirror_unchanged"
+		)
+		d.check(
+			lab.get_gear_shift_events().size() == events_before,
+			"gearbox.atomic." + label + "_no_new_events"
+		)
+		d.check(
+			not lab.is_drive_replay_blocked(),
+			"gearbox.atomic." + label + "_no_restore_side_effect"
+		)
+		d.check(not lab.failed, "gearbox.atomic." + label + "_not_failed")
+	d.check(
+		str(lab.get_drive_restore_error()) != "",
+		"gearbox.atomic.refusal_reason_recorded"
+	)
+	d.check(not lab.restore_drive_snapshot(null), "gearbox.atomic.null_snapshot_refused")
+	d.check(
+		lab.get_gearbox_snapshot() == box_before,
+		"gearbox.atomic.final_gearbox_unchanged"
+	)
+	var valid_restore: bool = lab.restore_drive_snapshot(base)
+	d.check(valid_restore, "gearbox.atomic.valid_restore_still_works_after_refusals")
+	d.check(lab.is_drive_replay_blocked(), "gearbox.atomic.valid_restore_blocks_ticks")
+	await _teardown_lab(lab)
+
+
+func _gearbox_reconfigure_reset_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var warmup: Array = []
+	for _index in range(80):
+		warmup.append(d.throttle_command(1.0))
+	var warmed := await _gearbox_manual_run(lab, warmup)
+	d.check(warmed, "gearbox.reset.warmup_completed")
+	d.check(lab.get_gear_shift_events().size() > 0, "gearbox.reset.shifts_before_reconfigure")
+	var commands: Array = []
+	for _index in range(GEARBOX_TRACE_TICKS):
+		commands.append(d.throttle_command(1.0))
+	var reconfigured: bool = lab.configure(lab.tuning, lab.adapter_config, commands)
+	d.check(reconfigured, "gearbox.reset.configure_accepted")
+	var box = lab.get_gearbox_state()
+	d.check(int(box.gear_index) == 1, "gearbox.reset.gear_one")
+	d.check_exact_float(box.shift_cooldown_s, 0.0, "gearbox.reset.zero_cooldown")
+	d.check_exact_float(box.normalized_rpm, 0.0, "gearbox.reset.zero_rpm")
+	d.check(int(lab.state.gear_index) == 1, "gearbox.reset.mirror_agrees")
+	d.check(lab.get_gear_shift_events().is_empty(), "gearbox.reset.events_cleared")
+	d.check(
+		int(lab.get_gearbox_telemetry()["gearbox_refusals"]) == 0,
+		"gearbox.reset.refusal_counter_cleared"
+	)
+	d.check(not lab.is_drive_replay_blocked(), "gearbox.reset.ticks_allowed")
+	var ran := await _gearbox_manual_run(lab, commands)
+	d.check(ran, "gearbox.reset.second_schedule_ran")
+	d.check(not lab.failed, "gearbox.reset.second_run_not_failed: " + str(lab.failure_reason))
+	d.check(
+		int(lab.state.gear_index) == int(lab.get_gearbox_state().gear_index),
+		"gearbox.reset.second_run_mirror_agrees"
+	)
+	d.check(
+		lab.get_gear_shift_events().size() >= 1,
+		"gearbox.reset.new_schedule_shifts_again"
+	)
+	await _teardown_lab(lab)
+
+
+func _gearbox_physical_trace_checks() -> void:
+	# Part 1: on every committed tick the published physical fields are copied
+	# verbatim from the adapter commit; only the gear mirror can differ.
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var compared := 0
+	for _index in range(GEARBOX_TRACE_TICKS):
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null or int(result.status) != int(AdapterScript.Status.COMMITTED):
+			d.check(false, "gearbox.trace.tick_%d_committed" % (_index + 1))
+			break
+		if lab.failed:
+			break
+		var physical = lab.get_last_committed_physical_state()
+		d.check(physical != null, "gearbox.trace.physical_copy_present")
+		if physical != null:
+			d.check(
+				lab.state.position_m == physical.position_m,
+			"gearbox.trace.tick_%d_position_verbatim" % (_index + 1)
+			)
+			d.check(
+				lab.state.velocity_m_s == physical.velocity_m_s,
+			"gearbox.trace.tick_%d_velocity_verbatim" % (_index + 1)
+			)
+			d.check_exact_float(
+				lab.state.heading_rad, physical.heading_rad,
+				"gearbox.trace.tick_%d_heading_verbatim" % (_index + 1)
+			)
+			d.check(
+				lab.state.grounded == physical.grounded
+				and lab.state.surface_id == physical.surface_id
+				and lab.state.reverse_engaged == physical.reverse_engaged
+				and lab.state.drafting_active == physical.drafting_active,
+			"gearbox.trace.tick_%d_flags_verbatim" % (_index + 1)
+			)
+			d.check_exact_float(
+				lab.state.reverse_hold_s, physical.reverse_hold_s,
+			"gearbox.trace.tick_%d_reverse_hold_verbatim" % (_index + 1)
+			)
+			d.check_exact_float(
+				lab.state.drift_timer_s, physical.drift_timer_s,
+			"gearbox.trace.tick_%d_drift_timer_verbatim" % (_index + 1)
+			)
+			d.check_exact_float(
+				lab.state.surge_cooldown_s, physical.surge_cooldown_s,
+			"gearbox.trace.tick_%d_surge_cooldown_verbatim" % (_index + 1)
+			)
+			d.check_exact_float(
+				lab.state.contact_immunity_s, physical.contact_immunity_s,
+			"gearbox.trace.tick_%d_contact_immunity_verbatim" % (_index + 1)
+			)
+			d.check_exact_float(
+				lab.state.valid_progress_m, physical.valid_progress_m,
+			"gearbox.trace.tick_%d_progress_verbatim" % (_index + 1)
+		)
+			compared += 1
+		await get_tree().physics_frame
+	d.check(not lab.failed, "gearbox.trace.run_not_failed: " + str(lab.failure_reason))
+	d.check(compared == GEARBOX_TRACE_TICKS, "gearbox.trace.all_ticks_compared")
+	await _teardown_lab(lab)
+
+	# Part 2: an independent fresh run reproduces position, velocity, heading,
+	# body transform, gear and rpm bit-for-bit after a configure/idle baseline.
+	var reference_lab = _make_lab([])
+	if reference_lab == null:
+		return
+	var idle_commands: Array = []
+	for _index in range(GEARBOX_RECONFIG_IDLE_TICKS):
+		idle_commands.append(d.idle_command())
+	var trace_commands: Array = []
+	for _index in range(GEARBOX_TRACE_TICKS):
+		trace_commands.append(d.throttle_command(1.0))
+	var reference_ready := await _gearbox_manual_run(reference_lab, idle_commands)
+	d.check(reference_ready, "gearbox.trace.reference_idle_ran")
+	var reconfigured: bool = reference_lab.configure(
+		reference_lab.tuning, reference_lab.adapter_config, trace_commands
+	)
+	d.check(reconfigured, "gearbox.trace.reference_reconfigure_accepted")
+	var reference_ran := await _gearbox_manual_run(reference_lab, trace_commands)
+	d.check(reference_ran, "gearbox.trace.reference_run_ran")
+	var reference = _gearbox_capture(reference_lab)
+	# Tear the reference laboratory down before the independent run: both cars
+	# share one physics world and spawn lane, so a parked reference body would
+	# otherwise block the fresh car once it caught up.
+	await _teardown_lab(reference_lab)
+	var fresh_lab = _make_lab(trace_commands)
+	if fresh_lab == null:
+		return
+	var fresh_ran := await _gearbox_manual_run(fresh_lab, trace_commands)
+	d.check(fresh_ran, "gearbox.trace.fresh_run_ran")
+	var fresh = _gearbox_capture(fresh_lab)
+	d.check(
+		reference["trace"].size() == fresh["trace"].size(),
+		"gearbox.trace.entry_count_matches"
+	)
+	var mismatches := 0
+	for index in range(mini(reference["trace"].size(), fresh["trace"].size())):
+		if reference["trace"][index] != fresh["trace"][index]:
+			mismatches += 1
+	d.check(
+		mismatches == 0,
+		"gearbox.trace.bit_identical_position_velocity_heading_body_gear_rpm (mismatches=%d)"
+		% mismatches
+	)
+	d.check(reference["events"] == fresh["events"], "gearbox.trace.shift_events_identical")
+	d.check(reference["gearbox"] == fresh["gearbox"], "gearbox.trace.final_gearbox_state_identical")
+	measurements["gearbox_trace_entries"] = reference["trace"].size()
+	measurements["gearbox_trace_mismatches"] = mismatches
+	await _teardown_lab(fresh_lab)
 
 
 # --- Bounded waits and synthetic input -------------------------------------

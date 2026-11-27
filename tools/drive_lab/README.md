@@ -20,6 +20,8 @@ bounded isolated runner.
 | `tools/drive_lab/run_validation.sh` | pinned-engine wrapper that stages an isolated copy, imports it, bounds every Godot run, and runs the validator, the bad-config fixture and the deliberate failure probe |
 | `tools/drive_lab/bad_config_fixture.gd` | atomic-refusal fixture for invalid adapter configs and hull mismatches |
 | `tools/drive_lab/failure_probe.gd` | deliberate failing check, so a green run cannot be vacuous |
+| `tools/drive_lab/run_gearbox_mutant_control.sh` | bounded negative control: stages a private copy, removes the gear mirror or forces a proposal refusal, and requires `gearbox_integration` to fail |
+| `tools/drive_lab/apply_gearbox_mutation.py` | mutation helper invoked by `run_gearbox_mutant_control.sh` for both mutants; never runs against the real checkout |
 
 ## What the validator proves
 
@@ -28,7 +30,7 @@ Cases, in order: `scene_and_manifest`, `rotated_spawn_heading`,
 `displacement_accounting`, `repeatability`, `finite_state`, `hull_road_overlap`,
 `one_call_per_tick`, `refusal_halts`, `presentation_integration`,
 `keyboard_focus_lifecycle`, `reconfigure_presentation_counters`,
-`audio_feedback_integration`.
+`audio_feedback_integration`, `gearbox_integration`.
 
 `presentation_integration` is the M1.5 presentation slice. It runs against the
 real `scenes/laboratory/drive_lab.tscn` and checks that the committed
@@ -130,6 +132,69 @@ A deliberate negative control inside the presentation case feeds a scratch
 collector a wrong expectation about a real measurement and requires it to
 record exactly one failure while the live collector stays untouched, so the
 case's assertions are demonstrably capable of failing.
+
+## M1.1 gearbox integration
+
+`gearbox_integration` integrates exactly one canonical `AutomaticGearbox`
+into the laboratory and checks:
+
+* initial pair agreement (published `CarState.gear_index` 1, canonical gear 1,
+  zero dwell/rpm), read-only state copies and the bounded event log;
+* natural forward shifts: event count equals logged gear transitions, every event
+  matches its tick's from/to gear and rpm, events are UPSHIFT while accelerating
+  and DOWNSHIFT while braking, consecutive events keep at least the shift dwell,
+  gears strictly increase during acceleration, and the run reaches third gear;
+* reverse latch entry produces exactly one ENTER_REVERSE event, and after the
+  latch clears while the car is still rolling backwards the gear stays `-1`
+  with no EXIT_REVERSE until forward travel resumes;
+* every committed tick's published physical fields (position, velocity,
+  heading, flags and inert seams) are copied verbatim from the adapter commit;
+  only the gear mirror may differ, and `steps_called == ticks_committed`;
+* an independent fresh run reproduces position, velocity, heading, body
+  transform, gear, rpm and the whole event sequence bit-for-bit;
+* snapshot/restore captures a checkpoint with nonzero cooldown and normalized
+  rpm, restores both records exactly into a second laboratory, repairs a stale
+  mirror from the canonical gear, publishes both together, and then blocks all
+  ticks because the body pose is not restored; reconfiguring does not clear
+  that block;
+* invalid or incomplete pairs (nonfinite car, null/missing record, bad gear,
+  out-of-range/nonfinite dwell or rpm, plain dictionary, null) are refused
+  atomically with both live records unchanged and no side effects.
+
+The snapshot/restore operation is deliberately **state-only**. It does not
+restore the body transform, so it is not a runnable drive replay and claims no
+replay completion. After a restore, `is_drive_replay_blocked()` stays true and
+`step_once()` refuses without calling the adapter until a body-pose
+reconciliation operation exists. Restoring a `CarState` alone is not offered;
+shift dwell and canonical rpm would be lost.
+
+A gearbox proposal or mirror refusal after an irreversible adapter COMMITTED
+tick is reported as an explicit bounded failure and halts the run. The
+unmirrored physical record is never published as the committed pair, and no
+further adapter call is made; the last successfully published pair is not
+reconciled with the irreversibly advanced body.
+
+Gear selection drives no audio or HUD display here. This slice wires neither
+shift sound nor a gear readout, and claims none.
+
+## Negative control
+
+`run_validation.sh` runs the deliberate failing probe, but it cannot prove the
+new gearbox assertions can detect a missing integration. The bounded mutant
+control does:
+
+```sh
+timeout 600 lockf -k -w -t 600 work/agents/coordinator/godot-test.lock \
+  tools/drive_lab/run_gearbox_mutant_control.sh \
+  --godot "$PWD/work/agents/coordinator/toolchain-m01/prefix/editor/Godot.app/Contents/MacOS/Godot" \
+  --timeout 500 --mutation mirror_removed \
+  --log work/agents/<job-id>/logs/gearbox-mutant-mirror.log
+```
+
+Repeat with `--mutation proposal_refused` to exercise the refusal path. Exit 0
+means the mutation was detected (`gearbox_integration` failed behaviourally);
+exit 1 means it was not. The script stages its own private copy, imports under
+a watchdog, and never mutates the real checkout.
 
 Scope: one car, one flat straight, structural and behavioural headless checks.
 The validator does not prove rendering, visual readability, HUD contrast or
