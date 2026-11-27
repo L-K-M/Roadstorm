@@ -195,10 +195,14 @@ Code-signing observation (open, not fully explained): `codesign --verify
 installed extension modules, but fails for the installed framework library
 `Frameworks/Python.framework/Versions/3.15/Python` and for
 `Resources/Python.app` with "code has no resources but signature indicates
-they must be present". Copies of those same two files extracted from the
-verified bottle verify successfully. The cause was not established here; it
-may relate to pour-time relocation happening after signing. It is recorded as
-an integrity caveat, not as proof of tampering.
+they must be present". An independent context-preserving extraction of the
+bottle reproduced the same failure for both framework and app. Bare copies of
+the Mach-O binaries passed; adding a parseable bundle `Info.plist` reproduced
+the failure. This corrects the earlier comparison, which tested bare copies.
+The result is consistent with bundle verification requiring a resource seal
+absent from the ad-hoc Mach-O signatures; it does not establish tampering.
+See job `00c35fe3-4f0e-4a19-bda3-47cfa50ce2b2` for the controlled matrix,
+source analysis and limits.
 
 ## 4. Official primary-source checks performed here
 
@@ -381,8 +385,9 @@ Not verified / not possible here:
    internal API JWS signature was not verified against Homebrew's key.
 4. **OPEN — framework code-signing anomaly.** Installed
    `Frameworks/.../Versions/3.15/Python` and `Resources/Python.app` fail
-   `codesign --verify --strict`; bottle counterparts pass. Cause not
-   established.
+   `codesign --verify --strict`; context-preserving bottle counterparts fail
+   the same way, while bare binaries pass. Bundle verification and resource
+   sealing remain an open distribution question, not evidence of tampering.
 5. **OPEN — Linux x86-64 has no publisher binary.** The source tarball is the
    official record for that platform; no target build/launch was attempted.
 6. **OPEN — CI/project scripts still use PATH `python3`**, i.e. the Homebrew
