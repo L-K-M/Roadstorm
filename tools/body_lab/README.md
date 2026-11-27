@@ -9,7 +9,8 @@ This proves one 60 Hz integration tick at a time:
 
 - the motor proposal is computed from immutable inputs;
 - a nonmutating body-motion prediction precedes the single accepted
-  `move_and_collide()` commit per substep;
+  `move_and_collide()` commit per substep, using the body's actual collision
+  mask so both see the same collision set;
 - invalid command/tuning/state/config/dt and over-envelope travel are refused
   with the body and caller state untouched;
 - CarState x maps to world +X, CarState y to world -Z, and positive heading
@@ -19,6 +20,9 @@ This proves one 60 Hz integration tick at a time:
 - an unchecked yaw that would install the hull across a parallel wall is
   constrained to the largest safe fraction of the proposed yaw, or refused;
   clear open-ground steering still rotates freely;
+- a wall on a layer excluded from the car mask is crossed with the full
+  physical motion committed and the primary prediction matching it, while the
+  identical wall on an included layer still stops the car and the prediction;
 - repeated fixed-60 Hz callbacks reproduce bit-identical traces.
 
 It does not implement ground adhesion, jumps, drift, reset, surfaces,
@@ -65,7 +69,9 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
   the actual shape to match its documented envelope.
 - Sweep margin 0: on this engine a zero-margin `cast_motion` safe fraction
   reproduces the committed `move_and_collide()` travel; a nonzero margin stops
-  the prediction early. `test_move` is recorded as a secondary diagnostic
+  the prediction early. The query also copies `body.collision_mask` (default
+  physics shape queries test every layer, which would predict blockers the
+  committed call ignores). `test_move` is recorded as a secondary diagnostic
   because it carries a depenetration/recovery offset near contacts.
 - Default work cap: 16 substeps x 0.25 m = 4.0 m/tick (240 m/s), so a 65 m/s
   tick (1.083 m) is applied as five swept substeps against a 2 m thick wall.

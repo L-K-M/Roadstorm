@@ -37,6 +37,9 @@ extends RefCounted
 ##     tick is refused. The probe deliberately allows configured contact
 ##     penetration and solver slop; it does not prove zero overlap of the
 ##     full hull or sweep every intermediate rotation.
+##   * every swept prediction and installed-pose probe uses the body's actual
+##     `collision_mask`, so an obstacle excluded by the body mask is not
+##     considered by the prediction solely because of the query's default.
 ##
 ## This is one-car flat-ground laboratory work. It does not implement ground
 ## adhesion, jumps, drift, reset, controls, surfaces or multi-car contacts, and
@@ -540,8 +543,11 @@ static func basis_from_heading(heading_rad: float) -> Basis:
 
 
 ## Nonmutating shape-motion prediction: fraction of `motion` reachable from
-## `from` before contact. Zero margin reproduces the committed travel measured
-## on the pinned Jolt build; a nonzero margin stops the prediction early.
+## `from` before contact. The query uses the body's actual `collision_mask`
+## and excludes the body RID, so it tests exactly the collision set the
+## committed `move_and_collide()` call uses. Zero margin reproduces the
+## committed travel measured on the pinned Jolt build; a nonzero margin stops
+## the prediction early.
 static func _cast_safe_fraction(
 	body: CharacterBody3D,
 	hull_shape: BoxShape3D,
@@ -555,6 +561,7 @@ static func _cast_safe_fraction(
 	query.transform = from
 	query.motion = motion
 	query.margin = config.sweep_margin_m
+	query.collision_mask = body.collision_mask
 	query.collide_with_bodies = true
 	query.collide_with_areas = false
 	query.exclude = [body.get_rid()]

@@ -24,6 +24,10 @@ const POSE_SETTLE_FRAMES := 3
 ## Straight-wall laboratory layout.
 const STRAIGHT_WALL_Z := -20.0
 const OBLIQUE_WALL_POINT := Vector3(0.0, 2.0, -15.0)
+## Same slab used with its layer excluded from and included in the body mask.
+const MASK_CONSISTENCY_WALL_POINT := Vector3(0.0, 2.0, -10.0)
+const MASK_CONSISTENCY_APPROACH_SPEED_M_S := 20.0
+const MASK_CONSISTENCY_TICKS := 55
 const WALL_THICKNESS_M := 2.0
 const WALL_WIDTH_M := 20.0
 ## No-tunneling assertion allowance, metres. The pinned Jolt build reports
@@ -45,6 +49,7 @@ const CASE_IDS := [
 	"coordinate_sign_conventions",
 	"straight_motion_flat_ground",
 	"prediction_commit_consistency",
+	"collision_mask_consistency",
 	"wall_approach_no_tunnel",
 	"oblique_wall_response",
 	"rotated_hull_wall_orientation",
@@ -135,6 +140,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_straight_motion()
 		"prediction_commit_consistency":
 			await _case_prediction_commit_consistency()
+		"collision_mask_consistency":
+			await _case_collision_mask_consistency()
 		"wall_approach_no_tunnel":
 			await _case_wall_approach()
 		"oblique_wall_response":
@@ -572,6 +579,126 @@ func _case_prediction_commit_consistency() -> void:
 	)
 
 	await _destroy_world(world)
+
+
+func _case_collision_mask_consistency() -> void:
+	# Regression for the MEDIUM interim finding: `_cast_safe_fraction()` must
+	# query with the body's actual collision mask. A wall on an excluded layer is
+	# invisible to `move_and_collide()`, so the primary prediction must ignore it
+	# too and stay bit-consistent with the committed travel. The identical slab on
+	# an included layer must still stop the body and the prediction.
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+	var wall_spec := {
+		"point": MASK_CONSISTENCY_WALL_POINT,
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var commands: Array = []
+	for _index in range(MASK_CONSISTENCY_TICKS):
+		commands.append(d.make_idle_command())
+
+	# --- Excluded layer: the wall is on layer 2, the car mask is layer 1. ---
+	var world := await _build_world(config, wall_spec)
+	world.wall.collision_layer = 2
+	world.body.collision_layer = 1
+	world.body.collision_mask = 1
+	await _await_frames(2)
+	d.check(world.wall.collision_layer == 2, "mask-excluded: wall is on layer 2")
+	d.check(world.body.collision_mask == 1, "mask-excluded: car mask is layer 1 only")
+	var state := d.make_state(
+		Vector2.ZERO, Vector2(0.0, MASK_CONSISTENCY_APPROACH_SPEED_M_S), 0.0
+	)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var records := await _drive(world, state, commands, tuning, config)
+	d.check(records.size() == MASK_CONSISTENCY_TICKS, "mask-excluded: all ticks driven")
+	for index in range(records.size()):
+		var result = records[index]["result"]
+		var label := "mask-excluded tick %d" % (index + 1)
+		d.check(result.status == AdapterScript.Status.COMMITTED, "%s: committed" % label)
+		d.check(not result.contact, "%s: excluded-layer wall produces no contact" % label)
+		d.check(
+			result.prediction_commit_discrepancy_m <= PREDICTION_TOLERANCE_M,
+			"%s: primary prediction matches commit (%.9f)"
+			% [label, result.prediction_commit_discrepancy_m]
+		)
+		d.check(
+			result.predicted_motion_m.distance_to(result.accepted_motion_m)
+			<= PREDICTION_TOLERANCE_M,
+			"%s: predicted travel equals committed travel" % label
+		)
+		d.check(
+			result.accepted_motion_m.distance_to(result.proposed_motion_m)
+			<= PREDICTION_TOLERANCE_M,
+			"%s: full physical motion committed" % label
+		)
+	var final_origin: Vector3 = records[-1]["pose"].origin
+	var far_face_z := MASK_CONSISTENCY_WALL_POINT.z - WALL_THICKNESS_M * 0.5
+	var rear_offset := world.hull_shape.size.z * 0.5
+	d.check(
+		final_origin.z + rear_offset <= far_face_z + PREDICTION_TOLERANCE_M,
+		"mask-excluded: hull fully crosses the excluded-layer wall (origin z %.6f)"
+		% final_origin.z
+	)
+	measurements["excluded_final_origin_z"] = final_origin.z
+	measurements["excluded_wall_far_face_z"] = far_face_z
+	measurements["excluded_max_prediction_discrepancy_m"] = _max_prediction_discrepancy(records)
+	await _destroy_world(world)
+
+	# --- Included layer: the identical slab stops body and prediction. -----
+	var included_world := await _build_world(config, wall_spec)
+	included_world.wall.collision_layer = 1
+	included_world.body.collision_layer = 1
+	included_world.body.collision_mask = 1
+	await _await_frames(2)
+	d.check(included_world.wall.collision_layer == 1, "mask-included: wall is on layer 1")
+	d.check(
+		included_world.body.collision_mask == 1,
+		"mask-included: car mask includes layer 1"
+	)
+	var included_state := d.make_state(
+		Vector2.ZERO, Vector2(0.0, MASK_CONSISTENCY_APPROACH_SPEED_M_S), 0.0
+	)
+	await _place_body(included_world, included_state, d.BODY_SUPPORT_Y)
+	var included_records := await _drive(
+		included_world, included_state, commands, tuning, config
+	)
+	d.check(
+		included_records.size() == MASK_CONSISTENCY_TICKS,
+		"mask-included: all ticks driven"
+	)
+	var first_contact := _first_contact_index(included_records)
+	d.check(first_contact > 0, "mask-included: included-layer wall produced contact")
+	if first_contact >= 0:
+		var impact = included_records[first_contact]["result"]
+		d.check(impact.wall_contact, "mask-included: impact classified as wall contact")
+		d.check(
+			impact.contact_normal.z > 0.9,
+			"mask-included: contact normal points back toward the car (+Z)"
+		)
+		d.check(
+			impact.prediction_commit_discrepancy_m <= PREDICTION_TOLERANCE_M,
+			"mask-included: primary prediction matches the stopped commit (%.9f)"
+			% impact.prediction_commit_discrepancy_m
+		)
+		d.check(
+			impact.accepted_motion_m.length() < impact.proposed_motion_m.length(),
+			"mask-included: contact stops the physical motion short"
+		)
+		d.check(
+			impact.contact_limited_remainder,
+			"mask-included: contact-limited remainder reported"
+		)
+		measurements["included_first_contact_tick"] = first_contact + 1
+	var worst_included := _assert_hull_within_wall_bounds(
+		included_world, included_records, PENETRATION_TOLERANCE_M, "mask-included"
+	)
+	measurements["included_worst_hull_plane_distance_m"] = worst_included
+	measurements["included_max_prediction_discrepancy_m"] = _max_prediction_discrepancy(
+		included_records
+	)
+	await _destroy_world(included_world)
 
 
 ## Replay the wall approach on one persistent world. Rebuilding worlds between
