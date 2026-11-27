@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.1.safety.emergency.persistent",
+      "check": "emergency_consistency"
+    }
+  ]
+}

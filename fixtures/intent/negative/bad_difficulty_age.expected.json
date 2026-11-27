@@ -2,7 +2,7 @@
   "expected_failures": [
     {
       "code": "semantic",
-      "path": "records.0",
+      "path": "records.1",
       "check": "difficulty_age"
     }
   ]

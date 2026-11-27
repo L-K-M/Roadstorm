@@ -4,7 +4,7 @@
   "fixture_family": "full_vector",
   "title": "Surge-style full 64-feature observation with two ordered neighbors",
   "description": "One 5 Hz observation for a learned-style (surge) participant at Racer difficulty on a 12 m section (top speed 65 m/s, usable half-width 6.0 m). Ego is drifting with speed 52 m/s; road-ahead shows a gentle left then tightening curve at a constant 12 m width, so all three road-width features normalize to 0.6; two neighbors are present and sorted by ascending absolute route gap (21 m then 35 m ahead); history is valid with a recent right-side pass attempt; corridor occupancy is 0.4 left / 0.7 right at the planned encounter. traffic_age_ticks is the Racer default 12 (sampled_tick 996, traffic_snapshot_tick 984). raw_inputs pins the pre-normalization values for twelve representative ratio features so the validator can recompute each normalization from the schema coefficients. Status 'example': the surge style input is exercised to prove the shared contract admits it; no trained model is claimed to exist (observation_builder_revision is a placeholder and is listed in unknowns).",
-  "revision": "1.1.0",
+  "revision": "1.1.1",
   "status": "example",
   "units": {
     "length": "m",
@@ -216,6 +216,24 @@
       "check": "unknown_pairing",
       "path": "records",
       "statement": "Every null that means 'not yet determined' (occupancy_encounter_gap_m) has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.raw_input_keys",
+      "check": "raw_input_keys",
+      "path": "records.0",
+      "statement": "Every raw_inputs key is a canonical feature-index string naming each index at most once, so an aliased key (e.g. '027' for 27) cannot satisfy one check while bypassing another that looks the index up canonically."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry a numeric value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
     }
   ],
   "comparison": {
@@ -274,9 +292,15 @@
       "reason": "The current-vs-delayed split inside the history group (own lane targets 51,52 and own forward distance 55 treated as current; traffic-derived pass side 53, attempt age 54 and recent contact 56 treated as delayed) is an interpretation of OPPONENT_AI.md and must be confirmed when demonstrations are collected.",
       "blocking": true,
       "until": "M4.2"
+    },
+    {
+      "path": "context.usable_half_width_m",
+      "reason": "The usable-half-width convention is unratified and blocks dependent work: OPPONENT_AI.md normalizes feature 4 (lane offset) by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width' without defining the quantity, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m. The authored value here is road_width/2 (12 m section, 6.0 m half-width) as an illustrative value only The convention (road half-width versus the action-0 legal-corridor half-width) must be ratified before demonstrations are collected; this slice records the ambiguity and does not decide it.",
+      "blocking": true,
+      "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:29d5aae46d837025e6015a2e2aada77b8b6194c0470cd5baba82341ba3b3145f",
+  "content_hash": "sha256:6443330e965dff187fde1ac4c9f23c3bc79ab72c0be8a52ce2a8991cd353ab72",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
     "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",

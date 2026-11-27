@@ -4,7 +4,7 @@
   "fixture_family": "fallback",
   "title": "Safe diagnostic fallback on zero usable width (Racer, Switch)",
   "description": "One 5 Hz observation in which the ObservationBuilder hit zero usable road width and produced the safe diagnostic fallback (OPPONENT_AI.md 'Shared schema version 1': unknown schema, zero usable width or nonfinite input produces a safe diagnostic fallback). The sensor-derived features (ego 0-11, road-ahead 12-26, neighbor 27-50, history 51-56, occupancy 62-63) are replaced by the safe defaults (zeros here); masks.history_valid is 0 because no valid history is available. The explicit difficulty and style inputs are configuration, not sensors, so their one-hots stay correct (Racer at index 58, Switch at index 61) and the tick bookkeeping still satisfies traffic-age arithmetic (Racer 12). fallback.active is true with a reason and the substituted groups in defaults_applied. The exact safe-default vector content is an authored placeholder, not a specified value; see unknowns. No raw_inputs are supplied because normalization is bypassed in fallback. Status 'provisional'.",
-  "revision": "1.0.0",
+  "revision": "1.0.1",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -196,6 +196,18 @@
       "check": "unknown_pairing",
       "path": "records",
       "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry a numeric value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
     }
   ],
   "comparison": {
@@ -236,9 +248,15 @@
       "reason": "history_valid is 0 with reset_generation 0 and post_reset_defaults_applied false: the safe diagnostic fallback masks history without a reset, and OPPONENT_AI.md never says whether a fallback must also bump reset_generation or set post_reset_defaults_applied. The validator accepts this state (one-way implication only) rather than inventing a stricter rule.",
       "blocking": true,
       "until": "M4.2"
+    },
+    {
+      "path": "context.usable_half_width_m",
+      "reason": "The usable-half-width convention is unratified and blocks dependent work: OPPONENT_AI.md normalizes feature 4 (lane offset) by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width' without defining the quantity, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m. This fixture authors 0.0, the zero-usable-width case that must trigger the safe diagnostic fallback; which formula decides that a section has zero usable width is the same unratified convention The convention (road half-width versus the action-0 legal-corridor half-width) must be ratified before demonstrations are collected; this slice records the ambiguity and does not decide it.",
+      "blocking": true,
+      "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:e5c3df75ccbe8d3aaa9f71b9dcfeda1add7bd21e28af062807cc5a4ef85d52ac",
+  "content_hash": "sha256:93dcc6ed69af73f8680c0093eb3a5fea32aa0e97591f8254f34d3bfde45e4dca",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
     "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",

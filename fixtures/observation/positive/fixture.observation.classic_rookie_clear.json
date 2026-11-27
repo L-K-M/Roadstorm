@@ -4,7 +4,7 @@
   "fixture_family": "classic_only",
   "title": "Classic-only observation on a clear straight (Rookie)",
   "description": "One 5 Hz observation for a Classic-only participant at Rookie difficulty on a clear 10 m straight (top speed 65 m/s, usable half-width 5.0 m). Style is 'none', so both style one-hot inputs are 0/0 while the rule personality remains explicit configuration (OPPONENT_AI.md 'Shared schema version 1'). No neighbor is present: all four neighbor slots are absent and fully zeroed, and the corridor-occupancy fractions are 0. History is valid with no recent pass attempt (pass side 0, attempt age saturated at the 3 s clip). traffic_age_ticks is the Rookie default 18 (sampled_tick 500, traffic_snapshot_tick 482). Status 'provisional'.",
-  "revision": "1.0.0",
+  "revision": "1.0.1",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -208,6 +208,24 @@
       "check": "unknown_pairing",
       "path": "records",
       "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.raw_input_keys",
+      "check": "raw_input_keys",
+      "path": "records.0",
+      "statement": "Every raw_inputs key is a canonical feature-index string naming each index at most once, so an aliased key (e.g. '027' for 27) cannot satisfy one check while bypassing another that looks the index up canonically."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry a numeric value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
     }
   ],
   "comparison": {
@@ -250,9 +268,15 @@
       "reason": "The current-vs-delayed split inside the history group is an interpretation of OPPONENT_AI.md and must be confirmed when demonstrations are collected.",
       "blocking": true,
       "until": "M4.2"
+    },
+    {
+      "path": "context.usable_half_width_m",
+      "reason": "The usable-half-width convention is unratified and blocks dependent work: OPPONENT_AI.md normalizes feature 4 (lane offset) by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width' without defining the quantity, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m. The authored value here is road_width/2 (10 m section, 5.0 m half-width) as an illustrative value only The convention (road half-width versus the action-0 legal-corridor half-width) must be ratified before demonstrations are collected; this slice records the ambiguity and does not decide it.",
+      "blocking": true,
+      "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:25506e6e11d2febaaa76c111bc7e818969bb5b26ba3d37a9b648f7f1f276d771",
+  "content_hash": "sha256:3ee013f7165be16bd8966b45f7b7625a93bb6d233282ba9a1e11dd9f9328ceb5",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
     "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",

@@ -27,7 +27,11 @@ The suite pins five things:
   declared per-feature kinds/ranges and the neighbor window are enforced, an
   omitted optional field fails gracefully instead of crashing, empty or
   bogus reset defaults are rejected, and 'measured' metrics cannot ride in a
-  fixture file.
+  fixture file;
+* the M0.9 checkpoint repairs stay repaired: canonical raw_inputs keys (an
+  aliased key can no longer bypass the neighbor window), the normalization
+  coefficients_revision binding, the acceptance-metric shape/status rules
+  shared with the other slices, and the diagnostic neighbor_ids tie order.
 """
 
 from __future__ import annotations
@@ -304,13 +308,60 @@ class RemediationRegressionTests(unittest.TestCase):
                 "metrics": [{"name": "probe", "status": "measured"}]
             }
         }
-        failures = voc.check_comparison_metrics(fixture)
+        failures = voc.check_metric_status_honesty(fixture, self.constants)
         self.assertTrue(
-            any(f.check == "comparison_metrics" and f.path == "comparison.metrics.0" for f in failures),
+            any(
+                f.check == "metric_status_honesty" and f.path == "comparison.metrics.0.status"
+                for f in failures
+            ),
             msg=str(failures),
         )
-        clean = {"comparison": {"metrics": [{"name": "probe", "status": "documented_initial_target"}]}}
-        self.assertEqual(voc.check_comparison_metrics(clean), [])
+        clean = {
+            "comparison": {
+                "metrics": [{"name": "probe", "status": "documented_initial_target"}]
+            }
+        }
+        self.assertEqual(voc.check_metric_status_honesty(clean, self.constants), [])
+        unknown = {
+            "comparison": {
+                "metrics": [{"name": "probe", "status": "guessed"}]
+            }
+        }
+        self.assertTrue(
+            any(f.check == "metric_status_honesty" for f in voc.check_metric_status_honesty(unknown, self.constants)),
+            msg=str(failures),
+        )
+
+    # B9: the acceptance-metric comparator/bound vocabulary (common.schema.json
+    # allOf rules) is enforced semantically, as in the other slices
+    def test_metric_shape_rules_are_enforced(self) -> None:
+        base = {"name": "probe", "description": "probe", "status": "documented_initial_target"}
+        cases = {
+            "threshold without value": dict(base, comparator="lte"),
+            "threshold with bounds": dict(base, comparator="lte", value=0.5, value_min=0.0),
+            "range without bounds": dict(base, comparator="ratio_range"),
+            "range with unordered bounds": dict(base, comparator="range", value_min=1.1, value_max=0.9),
+            "range with point value": dict(base, comparator="range", value_min=0.9, value_max=1.1, value=1.0),
+            "report with threshold": dict(base, comparator="report", value=0.5),
+        }
+        for label, metric in cases.items():
+            with self.subTest(metric=label):
+                failures = voc.check_metric_shape({"comparison": {"metrics": [metric]}}, self.constants)
+                self.assertTrue(failures, msg=f"{label} was accepted")
+                self.assertTrue(all(f.check == "metric_shape" for f in failures), msg=str(failures))
+        clean = [
+            dict(base, comparator="lte", value=0.5),
+            dict(base, comparator="ratio_range", value_min=0.9, value_max=1.1),
+            dict(base, comparator="report"),
+        ]
+        self.assertEqual(voc.check_metric_shape({"comparison": {"metrics": clean}}, self.constants), [])
+
+    def test_metric_vocabulary_comes_from_the_shared_schema(self) -> None:
+        vocabulary = self.constants.metric_vocabulary
+        self.assertIn("ratio_range", vocabulary.comparators)
+        self.assertIn("report", vocabulary.comparators)
+        self.assertIn("measured", vocabulary.statuses)
+        self.assertNotIn("measured", vocabulary.fixture_statuses)
 
     # B8: schema-form additionalProperties is applied by the evaluator
     def test_additional_properties_schema_form_is_applied(self) -> None:
@@ -389,6 +440,161 @@ class RemediationRegressionTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertNotIn("Traceback", proc.stderr)
         self.assertIn("occupancy_encounter_gap_m", proc.stdout)
+
+
+class CheckpointRepairTests(unittest.TestCase):
+    """M0.9 checkpoint repairs stay repaired (job 0bc309a1-9344-455f-8dca-93c23a7edc64)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contracts = voc.load_contracts(SCHEMAS_DIR)
+        cls.constants = cls.contracts.constants
+
+    def _fixture(self) -> dict:
+        return json.loads(
+            (POSITIVE_DIR / "fixture.observation.surge_full_vector.json").read_text(encoding="utf-8")
+        )
+
+    def _validate(self, document: dict) -> list[voc.Failure]:
+        import tempfile
+
+        document["content_hash"] = voc.canonical_hash(document)
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "probe.json"
+            target.write_text(json.dumps(document), encoding="utf-8")
+            return voc.validate_positive(target, self.contracts)
+
+    # sol finding 3: raw_inputs keys must be canonical index strings
+    def test_raw_input_keys_must_be_canonical(self) -> None:
+        for key in ("027", " 27", "+27", "27.0", "fast"):
+            with self.subTest(key=key):
+                document = self._fixture()
+                raw = document["records"][0]["raw_inputs"]
+                raw[key] = raw.pop("27")
+                failures = self._validate(document)
+                self.assertTrue(
+                    any(f.check == "raw_input_keys" for f in failures),
+                    msg=f"{key!r} was accepted: {failures}",
+                )
+
+    def test_duplicate_raw_input_index_is_rejected(self) -> None:
+        document = self._fixture()
+        document["records"][0]["raw_inputs"]["027"] = 21
+        keys = {(f.code, f.path, f.check) for f in self._validate(document)}
+        self.assertIn(("semantic", "records.0.raw_inputs.027", "raw_input_keys"), keys)
+        self.assertIn(("semantic", "records.0.raw_inputs", "raw_input_keys"), keys)
+
+    def test_aliased_key_cannot_bypass_the_neighbor_window(self) -> None:
+        # The M0.9 repro: one present neighbor, a clipped gap feature of 1.0 and
+        # an authoritative 80 m raw input under the alias "027" used to pass.
+        document = self._fixture()
+        record = document["records"][0]
+        record["feature_vector"][27] = 1.0
+        record["raw_inputs"]["027"] = 80
+        del record["raw_inputs"]["27"]
+        for i in range(33, 39):
+            record["feature_vector"][i] = 0
+        record["masks"]["neighbor_slots"] = [1, 0, 0, 0]
+        self.assertTrue(
+            any(f.check == "raw_input_keys" for f in self._validate(document)),
+            msg="the aliased 80 m probe was accepted",
+        )
+        # Control: the same 80 m gap under the canonical key is still a window
+        # failure, so the window itself did not get weaker.
+        control = self._fixture()
+        record = control["records"][0]
+        record["feature_vector"][27] = 1.0
+        record["raw_inputs"]["27"] = 80
+        for i in range(33, 39):
+            record["feature_vector"][i] = 0
+        record["masks"]["neighbor_slots"] = [1, 0, 0, 0]
+        self.assertTrue(
+            any(f.check == "neighbor_window" for f in self._validate(control)),
+            msg="the canonical 80 m probe was accepted",
+        )
+
+    # sol finding 6: the coefficient revision names the coefficient set
+    def test_foreign_coefficients_revision_is_rejected(self) -> None:
+        failures: list[voc.Failure] = []
+        cache = voc.SchemaCache()
+        context = voc.DocumentContext(
+            root=self.contracts.record_schema, base_dir=self.contracts.schemas_dir
+        )
+        record = self._fixture()["records"][0]
+        record["normalization"]["coefficients_revision"] = "foreign_v99"
+        voc.validate_node(
+            self.contracts.record_schema, record, "records.0", context, failures, cache
+        )
+        self.assertTrue(
+            any(
+                f.code == "const"
+                and f.path == "records.0.normalization.coefficients_revision"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_declared_coefficients_revision_is_accepted(self) -> None:
+        failures: list[voc.Failure] = []
+        cache = voc.SchemaCache()
+        context = voc.DocumentContext(
+            root=self.contracts.record_schema, base_dir=self.contracts.schemas_dir
+        )
+        record = self._fixture()["records"][0]
+        voc.validate_node(
+            self.contracts.record_schema, record, "records.0", context, failures, cache
+        )
+        self.assertEqual(failures, [])
+
+    # opus F7: the diagnostic neighbor_ids tie order
+    def _tie_document(self, ids: list[str] | None) -> dict:
+        document = self._fixture()
+        record = document["records"][0]
+        record["feature_vector"][27] = -0.5
+        record["feature_vector"][33] = 0.5
+        record["raw_inputs"]["27"] = -35
+        record["raw_inputs"]["33"] = 35
+        if ids is not None:
+            record["neighbor_ids"] = ids
+        return document
+
+    def test_neighbor_id_tie_order(self) -> None:
+        self.assertEqual(self._validate(self._tie_document(None)), [])
+        self.assertEqual(self._validate(self._tie_document(["ai.classic_2", "ai.classic_3"])), [])
+        failures = self._validate(self._tie_document(["ai.classic_3", "ai.classic_2"]))
+        self.assertTrue(
+            any(
+                f.check == "neighbor_ordering" and f.path == "records.0.neighbor_ids"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_neighbor_ids_length_must_match_present_slots(self) -> None:
+        failures = self._validate(self._tie_document(["ai.classic_2"]))
+        self.assertTrue(
+            any(
+                f.check == "neighbor_ordering" and f.path == "records.0.neighbor_ids"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_neighbor_ids_must_name_distinct_neighbors(self) -> None:
+        # One car cannot occupy two neighbor slots; a repeated stable ID is a
+        # contradiction even when the equal-gap tie order itself is satisfied.
+        failures = self._validate(
+            self._tie_document(["ai.classic_2", "ai.classic_2"])
+        )
+        self.assertTrue(
+            any(
+                f.check == "neighbor_ordering"
+                and f.path == "records.0.neighbor_ids"
+                and "repeats" in f.message
+                for f in failures
+            ),
+            msg=str(failures),
+        )
 
 
 class ValidatorMachineryTests(unittest.TestCase):

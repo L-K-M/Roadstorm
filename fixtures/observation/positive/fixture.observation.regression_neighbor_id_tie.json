@@ -1,0 +1,297 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.observation.regression_neighbor_id_tie",
+  "fixture_family": "regression",
+  "title": "Regression: neighbor tie-break by stable participant ID (equal absolute gaps)",
+  "description": "One 5 Hz observation that pins the second half of the OPPONENT_AI.md neighbor ordering rule ('sorted by absolute gap then stable participant ID'). Two neighbors are present with EQUAL absolute route gaps: slot 0 sits 35 m behind (feature 27 = -0.5) and slot 1 35 m ahead (feature 33 = +0.5), so the feature vector alone cannot order them. raw_inputs pins both gaps (-35, 35) as authoritative pre-normalization values and the record carries the optional diagnostic neighbor_ids list (ai.classic_2 then ai.classic_3, ascending), which is what makes the tie order checkable; the list is diagnostic only and never enters the 64-feature vector. Everything else mirrors the window regression fixture (Racer/Surge, Racer 12-tick age, valid history) so the only behavior under test is the tie-break. Status 'example': the surge style input is exercised to prove the shared contract admits it; no trained model is claimed to exist (observation_builder_revision is a placeholder and is listed in unknowns).",
+  "revision": "1.0.0",
+  "status": "example",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "participant_id": "ai.surge_2",
+    "difficulty": "racer",
+    "style": "surge",
+    "top_speed_m_s": 65.0,
+    "usable_half_width_m": 5.0,
+    "observation_builder_revision": "pending_m4_2_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.0.0",
+      "observation_layout_revision": "ai_shared_v1",
+      "feature_count": 64,
+      "observation_id": "obs.t001020.ai_surge_2",
+      "participant_id": "ai.surge_2",
+      "difficulty": "racer",
+      "style": "surge",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "sampled_tick": 1020,
+      "traffic_snapshot_tick": 1008,
+      "traffic_age_ticks": 12,
+      "feature_vector": [
+        0.8,
+        0.2,
+        0.05,
+        0.2,
+        0.3,
+        -0.15,
+        1,
+        1,
+        0,
+        0.4,
+        0.8,
+        1,
+        0.5,
+        0.5,
+        0.55,
+        0.1,
+        0.9,
+        0.35,
+        0.2,
+        0.55,
+        0.0,
+        0.9,
+        0.6,
+        -0.1,
+        0.5,
+        0.15,
+        0.85,
+        -0.5,
+        -0.3,
+        0.15,
+        0.0,
+        0.6,
+        1,
+        0.5,
+        0.2,
+        -0.05,
+        0.1,
+        0.6,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0.25,
+        0.1,
+        1,
+        0.5,
+        0.5,
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0.4,
+        0.7
+      ],
+      "raw_inputs": {
+        "0": 52,
+        "27": -35,
+        "33": 35,
+        "54": 1.5,
+        "55": 97.5
+      },
+      "masks": {
+        "neighbor_slots": [
+          1,
+          1,
+          0,
+          0
+        ],
+        "history_valid": 1
+      },
+      "reset": {
+        "reset_generation": 0,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": []
+      },
+      "normalization": {
+        "clip_min": -1,
+        "clip_max": 1,
+        "coefficients_revision": "ai_shared_v1_norm"
+      },
+      "fallback": {
+        "active": false,
+        "reason": null,
+        "defaults_applied": []
+      },
+      "occupancy_encounter_gap_m": null,
+      "neighbor_ids": [
+        "ai.classic_2",
+        "ai.classic_3"
+      ]
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style and participant_id match the fixture context."
+    },
+    {
+      "expectation_id": "expect.difficulty_hot",
+      "check": "difficulty_one_hot",
+      "path": "records.0",
+      "statement": "Exactly one difficulty one-hot is set and it is Racer (index 58)."
+    },
+    {
+      "expectation_id": "expect.style_hot",
+      "check": "style_one_hot",
+      "path": "records.0",
+      "statement": "The surge style input sets the Surge one-hot (index 60) and clears Switch (index 61)."
+    },
+    {
+      "expectation_id": "expect.neighbor_presence",
+      "check": "neighbor_presence",
+      "path": "records.0",
+      "statement": "Two neighbor slots are present (indices 32, 38) and two absent; absent slots 2 and 3 are fully zeroed and masks.neighbor_slots agrees."
+    },
+    {
+      "expectation_id": "expect.neighbor_order",
+      "check": "neighbor_ordering",
+      "path": "records.0",
+      "statement": "Present neighbors are sorted by ascending absolute route gap; the two neighbors tie at 35 m absolute gap, so the stable-participant-ID tie order (ai.classic_2 then ai.classic_3, carried in the diagnostic neighbor_ids list) decides the slot order."
+    },
+    {
+      "expectation_id": "expect.neighbor_window",
+      "check": "neighbor_window",
+      "path": "records.0",
+      "statement": "Both present neighbors sit inside the declared window on its edges: 35 m behind and 35 m ahead, both pinned by raw_inputs."
+    },
+    {
+      "expectation_id": "expect.declared_ranges",
+      "check": "feature_declared_ranges",
+      "path": "records.0",
+      "statement": "Every feature satisfies its feature_layout kind and declared range (0/1 booleans and one-hots, [0,1] fractions, widths and grip)."
+    },
+    {
+      "expectation_id": "expect.traffic_age",
+      "check": "traffic_age_arithmetic",
+      "path": "records.0",
+      "statement": "traffic_age_ticks equals sampled_tick minus traffic_snapshot_tick (1008 - 996 = 12)."
+    },
+    {
+      "expectation_id": "expect.difficulty_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Racer difficulty uses the 12-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.history",
+      "check": "history_mask",
+      "path": "records.0",
+      "statement": "With history_valid 1, the pass side is -1/0/1, the recent-contact flag is 0/1, and the attempt age and forward distance are non-negative."
+    },
+    {
+      "expectation_id": "expect.normalization",
+      "check": "normalization_consistency",
+      "path": "records.0",
+      "statement": "Every raw_inputs probe normalizes to the recorded feature value under the schema coefficients, including the -35 m and 35 m gap probes (gap / 70)."
+    },
+    {
+      "expectation_id": "expect.fallback",
+      "check": "fallback_defaults",
+      "path": "records.0",
+      "statement": "No safe diagnostic fallback is active, so no defaults are required."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' (occupancy_encounter_gap_m) has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.raw_input_keys",
+      "check": "raw_input_keys",
+      "path": "records.0",
+      "statement": "Every raw_inputs key is a canonical feature-index string naming each index at most once, so an aliased key (e.g. '027' for 27) cannot satisfy one check while bypassing another that looks the index up canonically."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry a numeric value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
+    }
+  ],
+  "comparison": {
+    "purpose": "Regression fixture: keep the declared neighbor window and per-feature kinds/ranges enforced without over-rejecting boundary values (OPPONENT_AI.md 'Shared schema version 1').",
+    "metrics": [
+      {
+        "name": "actor_parity_max_abs_error",
+        "description": "Python/GDScript actor-output parity over the observation corpus (extremes, masks, invalid-input rejection, normalization, difficulty/style inputs, clipping).",
+        "comparator": "lte",
+        "value": 0.0001,
+        "unit": "max abs error",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; this fixture executes no implementation and reports no measurements."
+  },
+  "unknowns": [
+    {
+      "path": "records.0.occupancy_encounter_gap_m",
+      "reason": "OPPONENT_AI.md evaluates corridor occupancy 'at the planned encounter' but does not fix the encounter distance, so the occupancy fractions cannot be tied to a route gap yet.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.observation_builder_revision",
+      "reason": "Placeholder only: no ObservationBuilder revision is ratified until M4.2 implements the shared interface.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.feature_vector",
+      "reason": "The current-vs-delayed split inside the history group (own lane targets 51,52 and own forward distance 55 treated as current; traffic-derived pass side 53, attempt age 54 and recent contact 56 treated as delayed) is an interpretation of OPPONENT_AI.md and must be confirmed when demonstrations are collected.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.usable_half_width_m",
+      "reason": "The usable-half-width convention is unratified and blocks dependent work: OPPONENT_AI.md normalizes feature 4 (lane offset) by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width' without defining the quantity, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m. The authored value here is road_width/2 (10 m section, 5.0 m half-width) as an illustrative value only The convention (road half-width versus the action-0 legal-corridor half-width) must be ratified before demonstrations are collected; this slice records the ambiguity and does not decide it.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:a9d8efa7167dce422776f4e92121f6bb76e78ce994351fcb6dc1b7e4fa8a9eec",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
+    "author": "pi coding agent (job 0bc309a1-9344-455f-8dca-93c23a7edc64)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-27",
+    "note": "Regression fixture for the stable-participant-ID neighbor tie order; no implementation is exercised by this file."
+  }
+}

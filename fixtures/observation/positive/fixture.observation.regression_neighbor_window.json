@@ -4,7 +4,7 @@
   "fixture_family": "regression",
   "title": "Regression: neighbor window boundaries (35 m behind, 70 m ahead)",
   "description": "One 5 Hz observation that pins the inclusive edges of the declared route-neighborhood window ($defs.constants: 70 m ahead, 35 m behind). Two neighbors are present: slot 0 sits exactly 35 m behind (feature 27 = -0.5) and slot 1 exactly 70 m ahead (feature 33 = 1.0), in ascending absolute-gap order (35 then 70). raw_inputs pins both gaps (-35, 70) so the window check reads authoritative pre-normalization values and cannot be fooled by clip saturation at the +70 m edge. Everything else mirrors the surge full-vector scenario (Racer/Surge, Racer 12-tick age, valid history) so the only new behavior under test is the window boundary. Status 'example': the surge style input is exercised to prove the shared contract admits it; no trained model is claimed to exist (observation_builder_revision is a placeholder and is listed in unknowns).",
-  "revision": "1.0.0",
+  "revision": "1.0.1",
   "status": "example",
   "units": {
     "length": "m",
@@ -140,7 +140,11 @@
         "reason": null,
         "defaults_applied": []
       },
-      "occupancy_encounter_gap_m": null
+      "occupancy_encounter_gap_m": null,
+      "neighbor_ids": [
+        "ai.classic_3",
+        "ai.classic_4"
+      ]
     }
   ],
   "expectations": [
@@ -221,6 +225,30 @@
       "check": "unknown_pairing",
       "path": "records",
       "statement": "Every null that means 'not yet determined' (occupancy_encounter_gap_m) has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.raw_input_keys",
+      "check": "raw_input_keys",
+      "path": "records.0",
+      "statement": "Every raw_inputs key is a canonical feature-index string naming each index at most once, so an aliased key (e.g. '027' for 27) cannot satisfy one check while bypassing another that looks the index up canonically."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry a numeric value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
+    },
+    {
+      "expectation_id": "expect.neighbor_ids",
+      "check": "neighbor_ordering",
+      "path": "records.0",
+      "statement": "The optional diagnostic neighbor_ids list carries one stable participant ID per present slot in slot order; the gaps differ (35 m behind then 70 m ahead), so no equal-gap tie order is required here."
     }
   ],
   "comparison": {
@@ -255,9 +283,15 @@
       "reason": "The current-vs-delayed split inside the history group (own lane targets 51,52 and own forward distance 55 treated as current; traffic-derived pass side 53, attempt age 54 and recent contact 56 treated as delayed) is an interpretation of OPPONENT_AI.md and must be confirmed when demonstrations are collected.",
       "blocking": true,
       "until": "M4.2"
+    },
+    {
+      "path": "context.usable_half_width_m",
+      "reason": "The usable-half-width convention is unratified and blocks dependent work: OPPONENT_AI.md normalizes feature 4 (lane offset) by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width' without defining the quantity, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m. The authored value here is road_width/2 (10 m section, 5.0 m half-width) as an illustrative value only The convention (road half-width versus the action-0 legal-corridor half-width) must be ratified before demonstrations are collected; this slice records the ambiguity and does not decide it.",
+      "blocking": true,
+      "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:e7fb577104733765afe7c3e4a2043389f758327a6c61a401e93d416040a1b443",
+  "content_hash": "sha256:82aad9f41eda6b2847e70d7aee4c17ac0d16e89678d0f7c1488c432c3d305e0f",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
     "author": "pi coding agent (job 74b35657-1cb2-47c1-8753-ed569921f41f)",

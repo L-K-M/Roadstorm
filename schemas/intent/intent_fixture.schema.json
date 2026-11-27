@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Roadstorm versioned tactical-intent fixture (schema version 1)",
-  "description": "Fixture contract for the TacticalIntent record contract in tactical_intent.schema.json, defined at M0.9 from docs/OPPONENT_AI.md ('Architecture', 'Shared schema version 1', 'Implementation and acceptance') and docs/BENCHMARKS.md ('AI metrics'). A fixture fixes one scenario (participant, road/car geometry, difficulty, style, producer) and carries one or more intent records sampled at the 5 Hz tactical cadence, plus the behavioral expectations the fixtures/intent validator checks semantically (decode consistency, label thresholds, cadence, age arithmetic, difficulty age, reset masking, safety deferral, correction materiality) and the documented initial acceptance metrics. Like handling_fixture.schema.json, this is a text contract: numeric values are authored initial values or documented targets, never measurements. A value that is not yet determined is JSON null and MUST be listed in 'unknowns'; the validator enforces that pairing for the null-meaning-undetermined fields. Companion vocabulary lives in ../common.schema.json. This fixture defines no model, weights, export or training interface; the learned-policy producer kind exists so the shared contract can be exercised, not because a trained model exists.",
-  "schema_version": "1.0.0",
+  "description": "Fixture contract for the TacticalIntent record contract in tactical_intent.schema.json, defined at M0.9 from docs/OPPONENT_AI.md ('Architecture', 'Shared schema version 1', 'Implementation and acceptance') and docs/BENCHMARKS.md ('AI metrics'). A fixture fixes one scenario (participant, road/car geometry, difficulty, style, producer) and carries one or more intent records sampled at the 5 Hz tactical cadence, plus the behavioral expectations the fixtures/intent validator checks semantically (decode consistency, pace decode consistency, label thresholds, commitment hold, executed drift preference, sampling cadence, age arithmetic, difficulty age, context agreement, reset masking, safety deferral, intervention window, emergency consistency, correction materiality, source-observation linkage) and the documented initial acceptance metrics. Like handling_fixture.schema.json, this is a text contract: numeric values are authored initial values or documented targets, never measurements. A value that is not yet determined is JSON null and MUST be listed in 'unknowns'; the validator enforces that pairing for the null-meaning-undetermined fields. A referenced observation record that the observation slice does not ship MUST be listed in 'illustrative_sources', so a broken reference stays distinguishable from an intentional illustration. Companion vocabulary lives in ../common.schema.json. This fixture defines no model, weights, export or training interface; the learned-policy producer kind exists so the shared contract can be exercised, not because a trained model exists.",
+  "schema_version": "1.1.0",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,8 +24,8 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0.0",
-      "description": "Contract revision identifier. A fixture whose schema_version differs is rejected, not silently migrated."
+      "const": "1.1.0",
+      "description": "Contract revision identifier. A fixture whose schema_version differs is rejected, not silently migrated. 1.1.0 matches tactical_intent.schema.json's 1.1.0 record revision (M0.9 independent schema checkpoint, 2026-11-27)."
     },
     "fixture_id": {
       "type": "string",
@@ -132,6 +132,19 @@
       "items": { "$ref": "../common.schema.json#/$defs/unknown_entry" },
       "description": "Every null in a record field whose null means 'not yet determined' (lateral.legal_corridor_half_width_m, lateral.decoded_offset_m, pace.speed_profile_interval_m_s, pace.target_speed_m_s, commitment.hold_window_s, interpolation.curve) must have a matching entry here, keyed by the dotted path including the record index, e.g. records.0.pace.target_speed_m_s. Entries may also record unratified decisions that have no null field."
     },
+    "illustrative_sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["observation_id", "reason"],
+        "properties": {
+          "observation_id": { "$ref": "../common.schema.json#/$defs/stable_id" },
+          "reason": { "type": "string", "minLength": 1 }
+        }
+      },
+      "description": "Observation IDs a record references as illustration although the observation slice ships no such record. The validator's source_observation check resolves every source_observation_id against the shipped positive observation fixtures; an ID that resolves must agree on participant, tick ordering, difficulty, style, traffic age, reset generation, history validity, route frame and road width, and an ID that does not resolve must be declared here. Declaring an ID that does resolve is itself a failure, so the list stays an honest record of deliberate gaps (for example the follow-on observation of a second 5 Hz record) rather than a way to skip verification."
+    },
     "content_hash": {
       "$ref": "../common.schema.json#/$defs/content_hash",
       "description": "SHA-256 over canonical JSON (sorted keys, compact separators, UTF-8) of this file with the content_hash member removed. Recomputed by the validator on every check."
@@ -151,14 +164,21 @@
         "check": {
           "enum": [
             "decode_consistency",
+            "pace_decode_consistency",
             "label_thresholds",
+            "commitment_hold",
+            "executed_drift_preference",
             "sampling_cadence",
             "age_arithmetic",
             "difficulty_age",
             "context_agreement",
             "reset_mask",
             "safety_deferral",
+            "intervention_window",
+            "emergency_consistency",
             "correction_materiality",
+            "correction_shape",
+            "source_observation",
             "min_commitment",
             "metric_status_honesty",
             "metric_shape",

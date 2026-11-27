@@ -4,7 +4,7 @@
   "fixture_family": "post_reset",
   "title": "Post-reset observation with masked history (Expert)",
   "description": "One 5 Hz observation assembled immediately after a participant reset at Expert difficulty. reset_generation has advanced to 2, masks.history_valid is 0 and every history feature (51-56) is masked to zero ('Preserve feature timestamps and reset history to zero/masked defaults'); post_reset_defaults_applied lists the reverted fields. Ego shows the post-reset state: low speed, grounded, respawn immunity active, and valid-progress flag 0 because the reset itself earns no progress. Neighbor traffic is still drawn from the delayed snapshot (one car 14 m ahead), because masking applies to own history, not to current race state. traffic_age_ticks is the Expert default 7 (sampled_tick 800, traffic_snapshot_tick 793). The exact masked default values are authored placeholders (zero), not specified values; see unknowns. Status 'provisional'.",
-  "revision": "1.0.0",
+  "revision": "1.0.1",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -207,6 +207,24 @@
       "check": "unknown_pairing",
       "path": "records",
       "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.raw_input_keys",
+      "check": "raw_input_keys",
+      "path": "records.0",
+      "statement": "Every raw_inputs key is a canonical feature-index string naming each index at most once, so an aliased key (e.g. '027' for 27) cannot satisfy one check while bypassing another that looks the index up canonically."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry a numeric value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
     }
   ],
   "comparison": {
@@ -241,9 +259,15 @@
       "reason": "The exact masked history default values (all zero here) and the post-reset ego defaults (low speed, immunity on, valid-progress 0) are authored placeholders; OPPONENT_AI.md specifies only zero/masked reset history defaults, not the surrounding ego defaults.",
       "blocking": true,
       "until": "M4.2"
+    },
+    {
+      "path": "context.usable_half_width_m",
+      "reason": "The usable-half-width convention is unratified and blocks dependent work: OPPONENT_AI.md normalizes feature 4 (lane offset) by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width' without defining the quantity, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m. The authored value here is road_width/2 (10 m section, 5.0 m half-width) as an illustrative value only The convention (road half-width versus the action-0 legal-corridor half-width) must be ratified before demonstrations are collected; this slice records the ambiguity and does not decide it.",
+      "blocking": true,
+      "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:987a04368b77b5078cbbb42b6ba2ef350f820e8867e2713d3ce7f09b00df7d2d",
+  "content_hash": "sha256:16ca51ab1d2ef022a8c19a58b16e21566f6612865dfc2a60d383a05f7689ec7a",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
     "author": "pi coding agent (job 8667d71d-5817-4955-b069-aed859c8d8f8)",

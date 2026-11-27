@@ -23,14 +23,19 @@ It does three jobs a plain JSON Syntax check cannot:
 2. Runs the semantic checks that make the contract meaningful rather than
    merely well-formed: difficulty/style one-hot encoding against the declared
    inputs, neighbor presence masks / absent-slot zeroing / present-as-prefix /
-   ascending-gap ordering, the declared 70 m ahead / 35 m behind neighbor
-   window, the declared per-feature kinds and ranges from feature_layout,
-   traffic-age arithmetic and the difficulty age, reset history masking
-   including the reset defaults list, normalization consistency of every
-   raw_inputs probe against the schema's coefficients and the fixture context,
-   safe-fallback defaults, context agreement, the null/unknowns pairing rule
-   (also for an omitted optional field), rejection of 'measured' metrics in a
-   fixture file, and the canonical content hash.
+   ascending-gap ordering (including the stable-participant-ID tie order when
+   the record carries the optional diagnostic neighbor_ids list), the declared
+   70 m ahead / 35 m behind neighbor window, the declared per-feature kinds and
+   ranges from feature_layout, traffic-age arithmetic and the difficulty age,
+   reset history masking including the reset defaults list, canonical
+   raw_inputs keys (a decimal index string naming each index at most once, so
+   an aliased key cannot satisfy one check while bypassing another),
+   normalization consistency of every raw_inputs probe against the schema's
+   coefficients and the fixture context, safe-fallback defaults, context
+   agreement, the null/unknowns pairing rule (also for an omitted optional
+   field), the acceptance-metric status/shape rules (comparator-bound
+   agreement and no 'measured' metric in a fixture file), and the canonical
+   content hash.
 3. Runs every ``fixtures/observation/negative/*.json`` fixture and requires it
    to fail with exactly the failure set declared in its ``.expected.json``
    sidecar, so each documented rejection stays rejected.
@@ -88,6 +93,20 @@ from typing import Any, Mapping, Sequence
 
 RECORD_SCHEMA_NAME = "observation_record.schema.json"
 FIXTURE_SCHEMA_NAME = "observation_fixture.schema.json"
+COMMON_SCHEMA_NAME = "common.schema.json"
+
+# Acceptance-metric vocabulary subsets (schemas/common.schema.json
+# $defs.acceptance_metric): threshold comparators carry a point value,
+# range/ratio_range carry ordered bounds, report carries no bound.
+THRESHOLD_COMPARATORS = ("eq", "lte", "gte", "lt", "gt")
+RANGE_COMPARATORS = ("range", "ratio_range")
+MEASURED_STATUS = "measured"
+
+# A canonical raw_inputs key: the decimal index string with no leading zeros,
+# sign or whitespace ("0", "1", ... "63"). Anything else ("027", " 27",
+# "+27", "27.0", "fast") is rejected, and two keys that int() to the same index
+# are a duplicate probe.
+RAW_INPUT_KEY_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
 
 # Record fields whose JSON null means "not yet determined": each null at one
 # of these paths requires a matching entry in the fixture's unknowns array.
@@ -110,8 +129,11 @@ IMPLEMENTED_CHECKS = frozenset(
         "difficulty_age",
         "history_mask",
         "normalization_consistency",
+        "raw_input_keys",
         "fallback_defaults",
         "unknown_pairing",
+        "metric_status_honesty",
+        "metric_shape",
     }
 )
 
@@ -428,6 +450,56 @@ def validate_node(
 
 
 @dataclasses.dataclass(frozen=True)
+class MetricVocabulary:
+    """The acceptance-metric vocabulary, read from schemas/common.schema.json."""
+
+    comparators: tuple[str, ...]
+    statuses: tuple[str, ...]
+
+    @property
+    def fixture_statuses(self) -> tuple[str, ...]:
+        """Statuses a fixture file may declare: everything except 'measured'."""
+        return tuple(status for status in self.statuses if status != MEASURED_STATUS)
+
+
+def load_metric_vocabulary(schemas_dir: Path) -> MetricVocabulary:
+    """Read the comparator/status vocabulary from the shared schema.
+
+    ``schemas_dir`` is the observation schema directory, so the shared
+    vocabulary lives one level up in ``schemas/common.schema.json``. Reading
+    it instead of restating it keeps this validator from drifting away from
+    the handling, intent and scenario slices that share
+    ``$defs.acceptance_metric`` and re-implement its ``allOf`` rules
+    semantically.
+    """
+    path = schemas_dir.parent / COMMON_SCHEMA_NAME
+    cache = SchemaCache()
+    document = cache.document(path)
+    defs = document.get("$defs")
+    metric = defs.get("acceptance_metric") if isinstance(defs, Mapping) else None
+    if not isinstance(metric, Mapping):
+        raise DocumentError(f"{path} has no $defs.acceptance_metric definition")
+    properties = metric.get("properties")
+    if not isinstance(properties, Mapping):
+        raise DocumentError(f"{path} $defs.acceptance_metric has no properties")
+
+    def enum_of(member: str) -> Any:
+        node = properties.get(member)
+        return node.get("enum") if isinstance(node, Mapping) else None
+
+    comparators = enum_of("comparator")
+    statuses = enum_of("status")
+    if not isinstance(comparators, list) or not comparators:
+        raise DocumentError(f"{path} acceptance_metric.comparator has no enum")
+    if not isinstance(statuses, list) or not statuses:
+        raise DocumentError(f"{path} acceptance_metric.status has no enum")
+    return MetricVocabulary(
+        comparators=tuple(str(item) for item in comparators),
+        statuses=tuple(str(item) for item in statuses),
+    )
+
+
+@dataclasses.dataclass(frozen=True)
 class ContractConstants:
     clip_min: float
     clip_max: float
@@ -446,9 +518,12 @@ class ContractConstants:
     presence_indices: tuple[int, ...]
     route_gap_indices: tuple[int, ...]
     history_indices: tuple[int, ...]
+    metric_vocabulary: MetricVocabulary
 
 
-def load_constants(record_schema: Mapping[str, Any]) -> ContractConstants:
+def load_constants(
+    record_schema: Mapping[str, Any], metric_vocabulary: MetricVocabulary
+) -> ContractConstants:
     props = record_schema["$defs"]["constants"]["properties"]
     ages = {
         difficulty: int(entry["const"])
@@ -518,6 +593,7 @@ def load_constants(record_schema: Mapping[str, Any]) -> ContractConstants:
         presence_indices=presence,
         route_gap_indices=route_gap,
         history_indices=history,
+        metric_vocabulary=metric_vocabulary,
     )
 
 
@@ -532,6 +608,48 @@ def _record_path(index: int, suffix: str = "") -> str:
 
 def _clip(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
+
+
+def _is_number(value: Any) -> bool:
+    """True for a JSON number; JSON booleans are not numbers here."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _metric_path(index: int, suffix: str = "") -> str:
+    return f"comparison.metrics.{index}" + (f".{suffix}" if suffix else "")
+
+
+def _metric_entries(fixture: Mapping[str, Any]) -> list[tuple[int, Mapping[str, Any]]]:
+    """The fixture's comparison.metrics entries as (index, metric) pairs."""
+    comparison = fixture.get("comparison")
+    if not isinstance(comparison, Mapping):
+        return []
+    metrics = comparison.get("metrics")
+    if not isinstance(metrics, list):
+        return []
+    return [
+        (index, metric)
+        for index, metric in enumerate(metrics)
+        if isinstance(metric, Mapping)
+    ]
+
+
+def _canonical_raw_probes(record: Mapping[str, Any]) -> dict[int, Any]:
+    """The record's raw_inputs entries keyed by feature index.
+
+    Only canonical keys are returned: a non-canonical key is rejected by
+    check_raw_input_keys, and the consumers here deliberately ignore it so one
+    defect produces one failure set instead of cascading. Callers therefore
+    never look an index up under an alias.
+    """
+    raw_inputs = record.get("raw_inputs")
+    if not isinstance(raw_inputs, Mapping):
+        return {}
+    return {
+        int(key): value
+        for key, value in raw_inputs.items()
+        if isinstance(key, str) and RAW_INPUT_KEY_RE.match(key)
+    }
 
 
 def check_context_agreement(
@@ -702,14 +820,36 @@ def check_neighbor_presence(
 def check_neighbor_ordering(
     fixture: Mapping[str, Any], constants: ContractConstants
 ) -> list[Failure]:
+    """Present neighbors are sorted by absolute route gap, then stable ID.
+
+    OPPONENT_AI.md sorts neighbor candidates 'by absolute gap then stable
+    participant ID'. The feature vector carries the gaps (clipped), so the gap
+    order is always checked. The stable-ID tie-break is checkable only when the
+    record carries the optional diagnostic neighbor_ids list; when it does, the
+    list must name one ID per present slot in slot order and equal absolute
+    gaps must appear in ascending stable-ID order. A pinned raw_inputs gap is
+    authoritative for the decoded magnitude, exactly as in
+    check_neighbor_window; otherwise the clipped feature value is all the
+    record expresses, so two features decoding equal are treated as a tie.
+    """
     failures: list[Failure] = []
+    gap_scale = float(constants.normalization_scales["neighbor_gap_scale_m"])
     for index, record in enumerate(fixture["records"]):
         vector = record["feature_vector"]
-        gaps = [
-            abs(vector[gap_idx])
-            for gap_idx, presence_idx in zip(constants.route_gap_indices, constants.presence_indices)
+        probes = _canonical_raw_probes(record)
+        present = [
+            slot
+            for slot, presence_idx in enumerate(constants.presence_indices)
             if vector[presence_idx] == 1
         ]
+        gaps: list[float] = []
+        for slot in present:
+            gap_idx = constants.route_gap_indices[slot]
+            raw = probes.get(gap_idx)
+            if _is_number(raw):
+                gaps.append(abs(float(raw)))
+            else:
+                gaps.append(abs(float(vector[gap_idx]) * gap_scale))
         for position in range(1, len(gaps)):
             if gaps[position] < gaps[position - 1] - TOLERANCE:
                 failures.append(
@@ -718,6 +858,64 @@ def check_neighbor_ordering(
                         _record_path(index),
                         "present neighbors are not sorted by ascending absolute route "
                         f"gap: {gaps}",
+                        check="neighbor_ordering",
+                    )
+                )
+                break
+        neighbor_ids = record.get("neighbor_ids")
+        if neighbor_ids is None:
+            continue
+        if not isinstance(neighbor_ids, list) or not all(
+            isinstance(item, str) for item in neighbor_ids
+        ):
+            # The record schema enforces this shape; kept defensive so a direct
+            # call cannot crash on a malformed record.
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "neighbor_ids"),
+                    "neighbor_ids must be an array of stable participant ID strings",
+                    check="neighbor_ordering",
+                )
+            )
+            continue
+        if len(neighbor_ids) != len(present):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "neighbor_ids"),
+                    f"neighbor_ids lists {len(neighbor_ids)} IDs but {len(present)} "
+                    "neighbor slots are present; the diagnostic list carries one ID "
+                    "per present slot, in slot order",
+                    check="neighbor_ordering",
+                )
+            )
+            continue
+        if len(set(neighbor_ids)) != len(neighbor_ids):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "neighbor_ids"),
+                    "neighbor_ids repeats a stable participant ID; each present slot "
+                    "names a different neighbor (a car cannot be its own neighbor "
+                    "twice)",
+                    check="neighbor_ordering",
+                )
+            )
+        for position in range(1, len(present)):
+            if (
+                abs(gaps[position] - gaps[position - 1]) <= TOLERANCE
+                and neighbor_ids[position] < neighbor_ids[position - 1]
+            ):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "neighbor_ids"),
+                        f"neighbor slots {position - 1} and {position} have equal "
+                        f"absolute route gap {gaps[position]:g} m but their diagnostic "
+                        f"IDs are out of order: {neighbor_ids[position - 1]!r} then "
+                        f"{neighbor_ids[position]!r}; OPPONENT_AI.md breaks absolute-gap "
+                        "ties by ascending stable participant ID",
                         check="neighbor_ordering",
                     )
                 )
@@ -734,7 +932,9 @@ def check_neighbor_window(
     $defs.constants, so it is enforced rather than merely documented. The gap
     feature is clip(gap / 70), so a gap decoded from the feature value alone is
     ambiguous only where clipping saturates it; when raw_inputs pins the
-    pre-normalization gap it is authoritative.
+    pre-normalization gap it is authoritative. Only canonically keyed probes
+    count: an aliased key is rejected by check_raw_input_keys and must not be
+    able to stand in for the canonical lookup here.
     """
     failures: list[Failure] = []
     ahead = constants.neighbor_ahead_m
@@ -742,13 +942,13 @@ def check_neighbor_window(
     gap_scale = float(constants.normalization_scales["neighbor_gap_scale_m"])
     for index, record in enumerate(fixture["records"]):
         vector = record["feature_vector"]
-        raw_inputs = record.get("raw_inputs") or {}
+        probes = _canonical_raw_probes(record)
         for slot, (gap_idx, presence_idx) in enumerate(
             zip(constants.route_gap_indices, constants.presence_indices)
         ):
             if vector[presence_idx] != 1:
                 continue
-            raw = raw_inputs.get(str(gap_idx))
+            raw = probes.get(gap_idx)
             if isinstance(raw, (int, float)) and not isinstance(raw, bool):
                 gap_m = float(raw)
                 source = "raw_inputs"
@@ -998,27 +1198,22 @@ def _resolve_scale(
 def check_normalization_consistency(
     fixture: Mapping[str, Any], constants: ContractConstants
 ) -> list[Failure]:
+    """Every raw_inputs probe must normalize to the recorded feature value.
+
+    Only canonically keyed probes are recomputed here; a non-canonical or
+    duplicated key is rejected by check_raw_input_keys, so this check never
+    resolves an index through an alias.
+    """
     failures: list[Failure] = []
     context = fixture["context"]
     feature_by_index = {f["index"]: f for f in constants.features}
     for index, record in enumerate(fixture["records"]):
         vector = record["feature_vector"]
-        raw_inputs = record.get("raw_inputs")
-        if not raw_inputs:
+        probes = _canonical_raw_probes(record)
+        if not probes:
             continue
-        for key, raw in raw_inputs.items():
-            try:
-                idx = int(key)
-            except (TypeError, ValueError):
-                failures.append(
-                    Failure(
-                        "semantic",
-                        _record_path(index, "raw_inputs"),
-                        f"raw_inputs key {key!r} is not a feature index",
-                        check="normalization_consistency",
-                    )
-                )
-                continue
+        for idx in sorted(probes):
+            raw = probes[idx]
             feature = feature_by_index.get(idx)
             if feature is None:
                 failures.append(
@@ -1042,12 +1237,12 @@ def check_normalization_consistency(
                     )
                 )
                 continue
-            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            if not _is_number(raw):
                 failures.append(
                     Failure(
                         "semantic",
                         _record_path(index, "raw_inputs"),
-                        f"raw_inputs[{key}] is not a number",
+                        f"raw_inputs[{idx}] is not a number",
                         check="normalization_consistency",
                     )
                 )
@@ -1078,6 +1273,57 @@ def check_normalization_consistency(
                         check="normalization_consistency",
                     )
                 )
+    return failures
+
+
+def check_raw_input_keys(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """raw_inputs keys must be canonical index strings, one probe per index.
+
+    The record schema declares raw_inputs keyed 'by the canonical decimal index
+    string'. JSON itself only forbids duplicate members, so "27" and "027" (or
+    " 27") are distinct members that int() to the same index; without this
+    check an aliased key could satisfy a check that normalizes keys with
+    int(key) while a check that looks the index up canonically falls back to
+    the clipped feature value - letting an authoritative out-of-window raw
+    input ride along with an in-window eligibility decision.
+    """
+    failures: list[Failure] = []
+    for index, record in enumerate(fixture["records"]):
+        raw_inputs = record.get("raw_inputs")
+        if not isinstance(raw_inputs, Mapping) or not raw_inputs:
+            continue
+        first_key_for_index: dict[int, str] = {}
+        for key in raw_inputs:
+            if not (isinstance(key, str) and RAW_INPUT_KEY_RE.match(key)):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, f"raw_inputs.{key}"),
+                        f"raw_inputs key {key!r} is not a canonical feature-index "
+                        "string (a decimal index with no leading zeros, sign or "
+                        "whitespace)",
+                        check="raw_input_keys",
+                    )
+                )
+            try:
+                parsed = int(key)
+            except (TypeError, ValueError):
+                continue
+            if parsed in first_key_for_index:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "raw_inputs"),
+                        f"raw_inputs keys {first_key_for_index[parsed]!r} and {key!r} "
+                        f"both name feature index {parsed}; each index may be probed "
+                        "at most once",
+                        check="raw_input_keys",
+                    )
+                )
+            else:
+                first_key_for_index[parsed] = key
     return failures
 
 
@@ -1161,35 +1407,145 @@ def check_unknown_pairing(
     return failures
 
 
-def check_comparison_metrics(fixture: Mapping[str, Any]) -> list[Failure]:
-    """A fixture file carries targets and requirements, never measured outcomes.
+def check_metric_status_honesty(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """A fixture file carries documented targets, never measured values.
 
-    observation_fixture.schema.json declares a metric with status 'measured'
-    invalid in a fixture file (common.schema.json's acceptance_metric enum
-    admits the value for evaluation records); this enforces the fixture-side
-    rule the schema cannot express without editing the shared vocabulary.
+    ``observation_fixture.schema.json`` (comparison.metrics) states that a
+    metric with status 'measured' is invalid in a fixture file; the shared
+    ``acceptance_metric`` vocabulary still allows 'measured' because
+    reference-run records need it. The fixture schema's rule lives only in
+    prose, so it is enforced here - the same split the handling, intent and
+    scenario slices enforce.
     """
+    legal = constants.metric_vocabulary.fixture_statuses
     failures: list[Failure] = []
-    metrics = fixture.get("comparison", {}).get("metrics", [])
-    if not isinstance(metrics, list):
-        return failures
-    for position, metric in enumerate(metrics):
-        if isinstance(metric, Mapping) and metric.get("status") == "measured":
+    for index, metric in _metric_entries(fixture):
+        status = metric.get("status")
+        if status == MEASURED_STATUS:
             failures.append(
                 Failure(
                     "semantic",
-                    f"comparison.metrics.{position}",
-                    f"metric {metric.get('name')!r} has status 'measured'; a fixture carries "
-                    "targets and requirements, never measured outcomes",
-                    check="comparison_metrics",
+                    _metric_path(index, "status"),
+                    "status 'measured' is invalid in a fixture file: fixtures carry "
+                    "documented targets and reporting requirements, never measured "
+                    "values; measured values belong to reference-run records and "
+                    "evaluation reports",
+                    check="metric_status_honesty",
                 )
             )
+        elif status not in legal:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _metric_path(index, "status"),
+                    f"status must be one of {list(legal)}, found {status!r}; a fixture "
+                    "carries documented targets and reporting requirements, never "
+                    "measured values",
+                    check="metric_status_honesty",
+                )
+            )
+    return failures
+
+
+def check_metric_shape(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """Enforce which bound members each comparator may carry.
+
+    The rules are the ``allOf`` clauses of ``schemas/common.schema.json``'s
+    ``$defs.acceptance_metric``: threshold comparators (eq, lte, gte, lt, gt)
+    require a numeric ``value`` and no range bounds; range/ratio_range require
+    numeric ``value_min``/``value_max`` (ordered) and no ``value``; ``report``
+    carries no bound at all. This validator's JSON Schema subset does not
+    evaluate ``if``/``then``/``allOf``, so without this check a fixture could
+    mix the point and range forms (or attach a threshold to a report) and
+    still validate - which is exactly the disagreement the M0.9 review found
+    between this slice's checker and any draft 2020-12 validator.
+    """
+    comparators = constants.metric_vocabulary.comparators
+    failures: list[Failure] = []
+    for index, metric in _metric_entries(fixture):
+        comparator = metric.get("comparator")
+        if comparator not in comparators:
+            # The schema enum already rejects this; keep the check defensive.
+            failures.append(
+                Failure(
+                    "semantic",
+                    _metric_path(index, "comparator"),
+                    f"comparator must be one of {list(comparators)}, found {comparator!r}",
+                    check="metric_shape",
+                )
+            )
+            continue
+        value = metric.get("value")
+        value_min = metric.get("value_min")
+        value_max = metric.get("value_max")
+        if comparator in THRESHOLD_COMPARATORS:
+            if not _is_number(value):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _metric_path(index, "value"),
+                        f"comparator {comparator!r} requires a numeric value",
+                        check="metric_shape",
+                    )
+                )
+            if value_min is not None or value_max is not None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _metric_path(index, "value_min"),
+                        "threshold comparators use value, not value_min/value_max",
+                        check="metric_shape",
+                    )
+                )
+        elif comparator in RANGE_COMPARATORS:
+            if not _is_number(value_min) or not _is_number(value_max):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _metric_path(index),
+                        f"comparator {comparator!r} requires numeric value_min and value_max",
+                        check="metric_shape",
+                    )
+                )
+            elif float(value_min) >= float(value_max):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _metric_path(index),
+                        "value_min must be smaller than value_max",
+                        check="metric_shape",
+                    )
+                )
+            if value is not None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _metric_path(index, "value"),
+                        "range comparators use value_min/value_max, not value",
+                        check="metric_shape",
+                    )
+                )
+        else:  # report
+            if value is not None or value_min is not None or value_max is not None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _metric_path(index, "value"),
+                        "a report metric carries no pass/fail bound",
+                        check="metric_shape",
+                    )
+                )
     return failures
 
 
 def check_expectations_declared(fixture: Mapping[str, Any]) -> list[Failure]:
     failures: list[Failure] = []
     record_count = len(fixture["records"])
+    metric_count = len(_metric_entries(fixture))
     for index, expectation in enumerate(fixture.get("expectations", [])):
         check = expectation.get("check")
         if check not in IMPLEMENTED_CHECKS:
@@ -1205,16 +1561,40 @@ def check_expectations_declared(fixture: Mapping[str, Any]) -> list[Failure]:
         path = expectation.get("path", "")
         if path == "records":
             continue
-        match = re.fullmatch(r"records\.(\d+)", path)
-        if not match or int(match.group(1)) >= record_count:
-            failures.append(
-                Failure(
-                    "semantic",
-                    f"expectations.{index}.path",
-                    f"path {path!r} does not reference a record in this fixture",
-                    check="expectation_implemented",
+        record_match = re.fullmatch(r"records\.(\d+)", path)
+        if record_match:
+            if int(record_match.group(1)) >= record_count:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        f"expectations.{index}.path",
+                        f"path {path!r} does not reference a record in this fixture",
+                        check="expectation_implemented",
+                    )
                 )
+            continue
+        if path in ("comparison", "comparison.metrics"):
+            continue
+        metric_match = re.fullmatch(r"comparison\.metrics\.(\d+)", path)
+        if metric_match:
+            if int(metric_match.group(1)) >= metric_count:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        f"expectations.{index}.path",
+                        f"path {path!r} does not reference a metric in this fixture",
+                        check="expectation_implemented",
+                    )
+                )
+            continue
+        failures.append(
+            Failure(
+                "semantic",
+                f"expectations.{index}.path",
+                f"path {path!r} does not reference a record or metric in this fixture",
+                check="expectation_implemented",
             )
+        )
     return failures
 
 
@@ -1253,6 +1633,7 @@ SEMANTIC_CHECKS = (
     check_traffic_age_arithmetic,
     check_difficulty_age,
     check_history_mask,
+    check_raw_input_keys,
     check_normalization_consistency,
     check_fallback_defaults,
     check_unknown_pairing,
@@ -1281,7 +1662,7 @@ def load_contracts(schemas_dir: Path) -> Contracts:
     return Contracts(
         fixture_schema=fixture_schema,
         record_schema=record_schema,
-        constants=load_constants(record_schema),
+        constants=load_constants(record_schema, load_metric_vocabulary(schemas_dir)),
         schemas_dir=schemas_dir,
     )
 
@@ -1303,7 +1684,8 @@ def validate_positive(path: Path, contracts: Contracts) -> list[Failure]:
         return failures
 
     failures.extend(check_expectations_declared(document))
-    failures.extend(check_comparison_metrics(document))
+    failures.extend(check_metric_status_honesty(document, contracts.constants))
+    failures.extend(check_metric_shape(document, contracts.constants))
     for check in SEMANTIC_CHECKS:
         failures.extend(check(document, contracts.constants))
     failures.extend(check_content_hash(document))

@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.commitment.interruption_reason",
+      "check": "commitment_hold"
+    }
+  ]
+}

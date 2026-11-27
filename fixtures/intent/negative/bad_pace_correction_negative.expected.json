@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.safety.corrections.1.proposed",
+      "check": "pace_decode_consistency"
+    }
+  ]
+}

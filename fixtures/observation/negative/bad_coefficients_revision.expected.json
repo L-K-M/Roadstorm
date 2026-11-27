@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "const",
+      "path": "records.0.normalization.coefficients_revision",
+      "check": null
+    }
+  ]
+}

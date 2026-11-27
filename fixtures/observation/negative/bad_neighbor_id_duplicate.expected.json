@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.neighbor_ids",
+      "check": "neighbor_ordering"
+    }
+  ]
+}

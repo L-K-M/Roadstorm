@@ -119,7 +119,27 @@ class ValidatorMachineryTests(unittest.TestCase):
         self.assertEqual(self.constants.lateral_margin_m, 0.5)
         self.assertEqual(self.constants.material_lane_change_car_widths, 0.1)
         self.assertEqual(self.constants.material_speed_change_fraction, 0.05)
+        self.assertEqual(self.constants.commitment_min_ticks, 24)
+        self.assertEqual(self.constants.safety_check_period_ticks, 1)
         self.assertEqual(dict(self.constants.traffic_age_ticks), {"rookie": 18, "racer": 12, "expert": 7})
+
+    def test_observation_sources_index_the_shipped_records(self) -> None:
+        # The source_observation check resolves against the shipped positive
+        # observation fixtures, read-only, and only those.
+        sources = self.contracts.observation_sources
+        self.assertEqual(self.contracts.unreadable_observations, ())
+        for observation_id in (
+            "obs.t000500.ai_classic_2",
+            "obs.t000800.ai_classic_4",
+            "obs.t000996.ai_surge_1",
+        ):
+            self.assertIn(observation_id, sources)
+        # Illustrative IDs the observation slice does not ship stay unresolvable.
+        self.assertNotIn("obs.t000512.ai_classic_2", sources)
+        self.assertNotIn("obs.t001008.ai_surge_1", sources)
+        # Every resolvable link is unique.
+        for observation_id, records in sources.items():
+            self.assertEqual(len(records), 1, msg=observation_id)
 
     def test_duplicate_json_members_are_rejected(self) -> None:
         import tempfile
@@ -129,6 +149,46 @@ class ValidatorMachineryTests(unittest.TestCase):
             path.write_text('{"a": 1, "a": 2}', encoding="utf-8")
             with self.assertRaises(vic.DocumentError):
                 vic.load_json(path)
+
+    def test_non_finite_json_is_rejected_at_parse(self) -> None:
+        # NaN/Infinity are Python json extensions, not JSON; an intent record
+        # carrying one must be refused instead of passing comparisons that are
+        # false for NaN (for example a NaN decoded pace target).
+        import tempfile
+
+        for literal in ("NaN", "Infinity", "-Infinity"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "nonfinite.json"
+                path.write_text('{"a": %s}' % literal, encoding="utf-8")
+                with self.assertRaises(vic.DocumentError, msg=literal):
+                    vic.load_json(path)
+
+    def test_evaluator_refuses_non_finite_numbers_in_memory(self) -> None:
+        failures: list[vic.Failure] = []
+        cache = vic.SchemaCache()
+        context = vic.DocumentContext(
+            root=self.contracts.record_schema, base_dir=self.contracts.schemas_dir
+        )
+        document = json.loads(
+            (POSITIVE_DIR / "fixture.intent.classic_wait_hold.json").read_text()
+        )
+        document["records"][0]["lateral"]["lateral_target_norm"] = float("nan")
+        vic.validate_node(
+            self.contracts.record_schema,
+            document["records"][0],
+            "records.0",
+            context,
+            failures,
+            cache,
+        )
+        self.assertTrue(
+            any(
+                f.code == "finite"
+                and f.path == "records.0.lateral.lateral_target_norm"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
 
     def test_content_hash_is_canonical_and_order_independent(self) -> None:
         first = {"b": 2, "a": 1, "content_hash": "sha256:" + "0" * 64}
@@ -283,6 +343,439 @@ class ValidatorMachineryTests(unittest.TestCase):
             with self.subTest(case=name):
                 failures = vic.validate_positive(self._mutated_positive(mutate), self.contracts)
                 self.assertEqual([(f.code, f.path, f.check) for f in failures], [expected])
+
+    def _run_check(self, check, base_name: str, mutate):
+        """Copy a positive fixture, mutate it, run one semantic check on it."""
+        document = json.loads(
+            (POSITIVE_DIR / base_name).read_text(encoding="utf-8")
+        )
+        mutate(document)
+        return check(document, self.constants)
+
+    def test_pace_decode_consistency_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+
+        def set_interval(document, low, high, target, note=None):
+            pace = document["records"][0]["pace"]
+            pace["speed_profile_interval_m_s"] = {"min": low, "max": high}
+            pace["target_speed_m_s"] = target
+            if note is not None:
+                pace["note"] = note
+
+        # A determined interval decodes the target: 20 + 0.5 x (60 - 20) = 40.
+        failures = self._run_check(
+            vic.check_pace_decode_consistency,
+            base,
+            lambda d: set_interval(d, 20, 60, 40.0),
+        )
+        self.assertEqual(failures, [])
+        # Inverted interval.
+        failures = self._run_check(
+            vic.check_pace_decode_consistency,
+            base,
+            lambda d: set_interval(d, 60, 20, 40.0),
+        )
+        self.assertTrue(
+            any("inverted" in f.message for f in failures), msg=str(failures)
+        )
+        # Wrong decode.
+        failures = self._run_check(
+            vic.check_pace_decode_consistency,
+            base,
+            lambda d: set_interval(d, 20, 60, 45.0),
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0].path, "records.0.pace.target_speed_m_s")
+        # Correction whose proposed value is not the pre-safety decode.
+        def wrong_correction_decode(document):
+            set_interval(document, 20, 60, 40.0)
+            document["records"][0]["safety"]["corrections"] = [
+                {
+                    "field": "pace.target_speed_m_s",
+                    "category": "physical_capability",
+                    "proposed": 45,
+                    "applied": 40,
+                    "material": True,
+                    "note": None,
+                }
+            ]
+
+        failures = self._run_check(
+            vic.check_pace_decode_consistency, base, wrong_correction_decode
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.safety.corrections.0.proposed"]
+        )
+        # Negative proposed/applied speed.
+        def negative_speed(document):
+            set_interval(document, 20, 60, 40.0)
+            document["records"][0]["safety"]["corrections"] = [
+                {
+                    "field": "pace.target_speed_m_s",
+                    "category": "physical_capability",
+                    "proposed": -10,
+                    "applied": 40,
+                    "material": True,
+                    "note": None,
+                }
+            ]
+
+        failures = self._run_check(
+            vic.check_pace_decode_consistency, base, negative_speed
+        )
+        self.assertTrue(
+            any("cannot be negative" in f.message for f in failures), msg=str(failures)
+        )
+        # A determined target without a ratified interval.
+        failures = self._run_check(
+            vic.check_pace_decode_consistency,
+            base,
+            lambda d: d["records"][0]["pace"].__setitem__("target_speed_m_s", 30.0),
+        )
+        self.assertEqual(len(failures), 1)
+        # A pace correction without a ratified interval.
+        failures = self._run_check(
+            vic.check_pace_decode_consistency,
+            base,
+            lambda d: d["records"][0]["safety"]["corrections"].append(
+                {
+                    "field": "pace.target_speed_m_s",
+                    "category": "road",
+                    "proposed": 30,
+                    "applied": 25,
+                    "material": True,
+                    "note": None,
+                }
+            ),
+        )
+        self.assertEqual(len(failures), 1)
+
+    def test_commitment_hold_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+
+        def commit_then_hold(document):
+            first = document["records"][0]["commitment"]
+            first["commitment_raw"] = 0.5
+            first["label"] = "commit_pass"
+            first["executed_label"] = "commit_pass"
+            first["commit_started_tick"] = 500
+            second = document["records"][1]["commitment"]
+            second["commitment_raw"] = 0.0
+            second["label"] = "wait"
+            second["executed_label"] = "commit_pass"
+            second["commit_started_tick"] = 500
+
+        # The proposed decode moved to wait but the 0.4 s minimum holds.
+        failures = self._run_check(vic.check_commitment_hold, base, commit_then_hold)
+        self.assertEqual(failures, [])
+
+        # Early lapse without a hazard interruption.
+        def commit_then_lapse(document):
+            commit_then_hold(document)
+            second = document["records"][1]["commitment"]
+            second["executed_label"] = "wait"
+            second["commit_started_tick"] = None
+
+        failures = self._run_check(vic.check_commitment_hold, base, commit_then_lapse)
+        self.assertEqual(
+            [(f.path, f.check) for f in failures],
+            [("records.1.commitment", "commitment_hold")],
+        )
+
+        # The same early release is legal when a hazard interrupted it.
+        def commit_then_interrupted_release(document):
+            commit_then_lapse(document)
+            second = document["records"][1]["commitment"]
+            second["interrupted"] = True
+            second["interruption_reason"] = "lead car moved left into the passing room"
+
+        failures = self._run_check(
+            vic.check_commitment_hold, base, commit_then_interrupted_release
+        )
+        self.assertEqual(failures, [])
+
+        # A commitment may only start from its own threshold decode.
+        failures = self._run_check(
+            vic.check_commitment_hold,
+            "fixture.intent.post_reset_defaults.json",
+            lambda d: d["records"][0]["commitment"].update(
+                {
+                    "commitment_raw": 0.0,
+                    "label": "wait",
+                    "executed_label": "commit_pass",
+                    "commit_started_tick": 800,
+                }
+            ),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.commitment.executed_label"]
+        )
+
+        # A restart inside the minimum is an early lapse of the old commitment.
+        def commit_then_restart(document):
+            commit_then_hold(document)
+            second = document["records"][1]["commitment"]
+            second["commitment_raw"] = 0.5
+            second["label"] = "commit_pass"
+            second["commit_started_tick"] = 512
+
+        failures = self._run_check(vic.check_commitment_hold, base, commit_then_restart)
+        self.assertEqual(
+            [f.path for f in failures], ["records.1.commitment"]
+        )
+
+        # Interruption and reason must agree in both directions.
+        for interrupted, reason in ((True, None), (False, "a hazard")):
+            failures = self._run_check(
+                vic.check_commitment_hold,
+                base,
+                lambda d, i=interrupted, r=reason: d["records"][0]["commitment"].update(
+                    {"interrupted": i, "interruption_reason": r}
+                ),
+            )
+            self.assertEqual(
+                [f.path for f in failures],
+                ["records.0.commitment.interruption_reason"],
+                msg=f"interrupted={interrupted} reason={reason}",
+            )
+
+    def test_executed_drift_preference_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+        # Outside the retain band the executed preference must match the label.
+        failures = self._run_check(
+            vic.check_executed_drift_preference,
+            base,
+            lambda d: d["records"][0]["drift"].__setitem__("executed_preference", "drift"),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.drift.executed_preference"]
+        )
+        # Retain with masked post-reset history resolves to 'none'.
+        failures = self._run_check(
+            vic.check_executed_drift_preference,
+            "fixture.intent.post_reset_defaults.json",
+            lambda d: d["records"][0]["drift"].__setitem__("executed_preference", "grip"),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.drift.executed_preference"]
+        )
+        # Retain with valid history keeps a prior drift/grip preference; 'none'
+        # is legal only when the reset masked the history.
+        failures = self._run_check(
+            vic.check_executed_drift_preference,
+            "fixture.intent.classic_fallback_substitution.json",
+            lambda d: d["records"][0]["drift"].__setitem__("executed_preference", "none"),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.drift.executed_preference"]
+        )
+
+    def test_correction_shape_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+
+        def duplicate_field(document, field):
+            correction = {
+                "field": field,
+                "category": "physical_capability",
+                "proposed": 40.0,
+                "applied": 40.0,
+                "material": False,
+                "note": None,
+            }
+            document["records"][0]["safety"]["corrections"] = [
+                dict(correction),
+                dict(correction),
+            ]
+
+        # One entry per corrected field: a second pace entry is rejected.
+        failures = self._run_check(
+            vic.check_correction_shape,
+            base,
+            lambda d: duplicate_field(d, "pace.target_speed_m_s"),
+        )
+        self.assertEqual(
+            [(f.path, f.check) for f in failures],
+            [("records.0.safety.corrections", "correction_shape")],
+        )
+        # The same rule covers lateral corrections.
+        failures = self._run_check(
+            vic.check_correction_shape,
+            base,
+            lambda d: duplicate_field(d, "lateral.decoded_offset_m"),
+        )
+        self.assertEqual(
+            [(f.path, f.check) for f in failures],
+            [("records.0.safety.corrections", "correction_shape")],
+        )
+        # Distinct fields remain legal.
+        def distinct_fields(document):
+            document["records"][0]["safety"]["corrections"] = [
+                {"field": "lateral.decoded_offset_m", "category": "road",
+                 "proposed": 3.65, "applied": 3.2, "material": True, "note": None},
+                {"field": "pace.target_speed_m_s", "category": "physical_capability",
+                 "proposed": 40.0, "applied": 40.0, "material": False, "note": None},
+            ]
+
+        failures = self._run_check(
+            vic.check_correction_shape, base, distinct_fields
+        )
+        self.assertEqual(failures, [])
+
+    def test_intervention_window_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+        failures = self._run_check(
+            vic.check_intervention_window,
+            base,
+            lambda d: d["records"][0]["safety"]["interventions"].__setitem__(
+                "ticks", [504, 506]
+            ),
+        )
+        self.assertEqual(failures, [])
+        for ticks in ([512], [499], [510, 505]):
+            failures = self._run_check(
+                vic.check_intervention_window,
+                base,
+                lambda d, t=ticks: d["records"][0]["safety"]["interventions"].__setitem__(
+                    "ticks", t
+                ),
+            )
+            self.assertEqual(
+                [f.path for f in failures],
+                ["records.0.safety.interventions.ticks"],
+                msg=str(ticks),
+            )
+
+    def test_emergency_consistency_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+
+        def substitute(document, kind, tick, persistent, reason="contact forced a reset"):
+            emergency = document["records"][0]["safety"]["emergency"]
+            emergency.update(
+                {
+                    "substituted": True,
+                    "kind": kind,
+                    "tick": tick,
+                    "persistent": persistent,
+                    "reason": reason,
+                }
+            )
+
+        # A fresh emergency_stop substitution is coherent.
+        failures = self._run_check(
+            vic.check_emergency_consistency,
+            base,
+            lambda d: substitute(d, "emergency_stop", 502, False),
+        )
+        self.assertEqual(failures, [])
+        # A Classic planner cannot fall back to Classic control.
+        failures = self._run_check(
+            vic.check_emergency_consistency,
+            base,
+            lambda d: substitute(d, "classic_fallback", 502, False, "invalid policy output"),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.safety.emergency.kind"]
+        )
+        # A learned producer may fall back to Classic control.
+        failures = self._run_check(
+            vic.check_emergency_consistency,
+            "fixture.intent.surge_commit_pass.json",
+            lambda d: substitute(d, "classic_fallback", 1000, False, "invalid policy output"),
+        )
+        self.assertEqual(failures, [])
+        # A kind without a substitution.
+        failures = self._run_check(
+            vic.check_emergency_consistency,
+            base,
+            lambda d: d["records"][0]["safety"]["emergency"].__setitem__(
+                "kind", "reset"
+            ),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.safety.emergency.kind"]
+        )
+        # Persistence must agree with the preceding intent.
+        def persistent_run(document, second_persistent):
+            for index, tick, persistent in ((0, 502, False), (1, 514, second_persistent)):
+                emergency = document["records"][index]["safety"]["emergency"]
+                emergency.update(
+                    {
+                        "substituted": True,
+                        "kind": "reset",
+                        "tick": tick,
+                        "persistent": persistent,
+                        "reason": "contact forced a reset",
+                    }
+                )
+
+        failures = self._run_check(
+            vic.check_emergency_consistency, base, lambda d: persistent_run(d, True)
+        )
+        self.assertEqual(failures, [])
+        failures = self._run_check(
+            vic.check_emergency_consistency, base, lambda d: persistent_run(d, False)
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.1.safety.emergency.persistent"]
+        )
+
+    def test_source_observation_rules(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+        # A mismatched traffic age breaks the link.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: d["records"][0].__setitem__("traffic_age_ticks", 12),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.0.traffic_age_ticks"]
+        )
+        # A road width that disagrees with observation feature 14 x 20 m.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: d["context"].__setitem__("road_width_m", 11.0),
+        )
+        self.assertEqual([f.path for f in failures], ["context.road_width_m"])
+        # Two records sharing one source observation.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: d["records"][1].__setitem__(
+                "source_observation_id", "obs.t000500.ai_classic_2"
+            ),
+        )
+        self.assertEqual(
+            [f.path for f in failures], ["records.1.source_observation_id"]
+        )
+        # An unresolvable source passes only when declared illustrative.
+        def declare(document):
+            document["records"][0]["source_observation_id"] = "obs.t000504.ai_classic_2"
+            document["illustrative_sources"] = list(
+                document.get("illustrative_sources") or []
+            ) + [
+                {
+                    "observation_id": "obs.t000504.ai_classic_2",
+                    "reason": "illustrative only",
+                }
+            ]
+
+        failures = self._run_check(vic.check_source_observation, base, declare)
+        self.assertEqual(failures, [])
+        # A source observation captured with the safe diagnostic fallback active
+        # carries safe-default features, so its road width is not compared.
+        def fallback_source(document):
+            record = document["records"][0]
+            record["participant_id"] = "ai.switch_3"
+            record["source_observation_id"] = "obs.t001200.ai_switch_3"
+            record["difficulty"] = "racer"
+            record["style"] = "switch"
+            record["traffic_age_ticks"] = 12
+            record["generated_tick"] = 1200
+            record["reset"]["history_valid"] = 0
+
+        failures = self._run_check(vic.check_source_observation, base, fallback_source)
+        self.assertEqual(failures, [])
 
     def test_expectation_path_may_reference_a_metric(self) -> None:
         document = {

@@ -18,28 +18,43 @@ It does three jobs a plain JSON Syntax check cannot:
 1. Validates every ``fixtures/intent/positive/*.json`` fixture against the
    fixture schema (which pulls in the record schema by ``$ref``) with a small
    standard-library JSON Schema evaluator - no third-party packages, no
-   installs, no network.
+   installs, no network. Documents are strict JSON: NaN, Infinity and
+   -Infinity are refused at parse time (they are Python json extensions, not
+   JSON), and the evaluator refuses non-finite numbers in memory. This keeps
+   an invalid pace target or decoded value from passing comparisons that are
+   false for NaN.
 2. Runs the semantic checks that make the contract meaningful rather than
    merely well-formed: lateral decode consistency against the documented
-   ``(road_width - car_width)/2 - 0.5 m`` corridor, commitment/drift label
-   thresholds, the 5 Hz sampling cadence, intent age arithmetic, the
-   difficulty traffic ages, reset masking, zero safety deferral, BENCHMARKS
-   correction materiality, the null/unknowns pairing rule, context
-   agreement, metric honesty (no measured status in a fixture file),
-   metric comparator shape (threshold vs range vs report bounds) and the
-   canonical content hash.
+   ``(road_width - car_width)/2 - 0.5 m`` corridor, pace decode consistency
+   (ordered interval, decoded target, nonnegative speed corrections checked
+   against the pre-safety decode), commitment/drift label thresholds, the
+   executed commitment state and its 0.4 s minimum with hazard interruption,
+   the executed drift preference, the 5 Hz sampling cadence, intent age
+   arithmetic, the difficulty traffic ages, reset masking, zero safety
+   deferral, the per-tick intervention window, emergency substitution
+   coherence, BENCHMARKS correction materiality, the source-observation
+   linkage into the shipped observation fixtures, the null/unknowns pairing
+   rule, context agreement, metric honesty (no measured status in a fixture
+   file), metric comparator shape (threshold vs range vs report bounds) and
+   the canonical content hash.
 3. Runs every ``fixtures/intent/negative/*.json`` fixture and requires it to
    fail with exactly the failure set declared in its ``.expected.json``
    sidecar, so each documented rejection stays rejected.
 
-Constants (5 Hz, 12-tick period, 0.4 s minimum commitment, +/-1/3 and
-+/-0.25 thresholds, 18/12/7 traffic ages, materiality thresholds) are read
-from the record schema's ``$defs.constants`` instead of being restated here,
-so the schema is the single source of truth. The metric comparator and
-status vocabulary is read from ``schemas/common.schema.json``'s
-``$defs.acceptance_metric`` for the same reason; only the
-threshold/range/report grouping is restated, because it is a rule
-(common.schema.json's ``allOf``) rather than vocabulary.
+Constants (5 Hz, 12-tick period, 0.4 s / 24-tick minimum commitment,
++/-1/3 and +/-0.25 thresholds, 18/12/7 traffic ages, materiality
+thresholds) are read from the record schema's ``$defs.constants`` instead of
+being restated here, so the schema is the single source of truth. The metric
+comparator and status vocabulary is read from
+``schemas/common.schema.json``'s ``$defs.acceptance_metric`` for the same
+reason; only the threshold/range/report grouping is restated, because it is a
+rule (common.schema.json's ``allOf``) rather than vocabulary.
+
+The ``source_observation`` check reads the shipped positive observation
+fixtures (``fixtures/observation/positive``) to resolve every
+``source_observation_id``. That slice is read-only here: this validator never
+writes to it and never assumes an observation record it does not find, so a
+later change to the observation slice only changes which references resolve.
 
 Deliberate limitations, mirroring tools/asset_manifest/manifest_validator.py:
 
@@ -56,6 +71,7 @@ Usage::
     python3 validate_intent_contract.py                 # validate everything
     python3 validate_intent_contract.py --update-hashes  # (re)write content_hash
     python3 validate_intent_contract.py --schemas DIR --positive DIR --negative DIR
+    python3 validate_intent_contract.py --observations DIR
 
 Exit codes: 0 = all fixtures valid and all negative fixtures rejected as
 expected; 1 = validation failures; 2 = a file could not be read/parsed or the
@@ -70,6 +86,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -100,14 +117,21 @@ NULL_REQUIRES_UNKNOWN = (
 IMPLEMENTED_CHECKS = frozenset(
     {
         "decode_consistency",
+        "pace_decode_consistency",
         "label_thresholds",
+        "commitment_hold",
+        "executed_drift_preference",
         "sampling_cadence",
         "age_arithmetic",
         "difficulty_age",
         "context_agreement",
         "reset_mask",
         "safety_deferral",
+        "intervention_window",
+        "emergency_consistency",
         "correction_materiality",
+        "correction_shape",
+        "source_observation",
         "min_commitment",
         "metric_status_honesty",
         "metric_shape",
@@ -175,6 +199,11 @@ def _reject_duplicate_members(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any
     return result
 
 
+def _reject_non_finite_constant(token: str) -> Any:
+    """Refuse NaN/Infinity/-Infinity, which Python's json accepts but JSON does not."""
+    raise DocumentError(f"{token} is not valid JSON (numbers must be finite)")
+
+
 def load_json(path: Path) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
@@ -183,7 +212,11 @@ def load_json(path: Path) -> Any:
     except UnicodeDecodeError as exc:
         raise DocumentError(f"{path} is not valid UTF-8: {exc}") from exc
     try:
-        return json.loads(text, object_pairs_hook=_reject_duplicate_members)
+        return json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_members,
+            parse_constant=_reject_non_finite_constant,
+        )
     except json.JSONDecodeError as exc:
         raise DocumentError(f"{path} is not valid JSON: {exc}") from exc
     except DocumentError as exc:
@@ -296,9 +329,11 @@ def validate_node(
 
     Supported keywords: $ref, type, const, enum, required,
     additionalProperties, properties, items, minItems, maxItems, minimum,
-    maximum, exclusiveMinimum, pattern, minLength. Annotation keywords
-    (title, description, examples, default, $schema, $defs, $comment) are
-    ignored.
+    maximum, exclusiveMinimum, pattern, minLength. Every number instance must
+    be finite: NaN/Infinity are not valid JSON and no comparison against them
+    can be trusted (a NaN decoded target would satisfy ``minimum`` and every
+    equality tolerance). Annotation keywords (title, description, examples,
+    default, $schema, $defs, $comment) are ignored.
     """
     if isinstance(schema, bool):
         if not schema:
@@ -391,18 +426,32 @@ def validate_node(
             )
 
     if isinstance(instance, (int, float)) and not isinstance(instance, bool):
-        if "minimum" in schema and instance < schema["minimum"]:
-            failures.append(Failure("minimum", path, f"below minimum {schema['minimum']}"))
-        if "maximum" in schema and instance > schema["maximum"]:
-            failures.append(Failure("maximum", path, f"above maximum {schema['maximum']}"))
-        if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+        if not math.isfinite(instance):
             failures.append(
                 Failure(
-                    "exclusiveMinimum",
+                    "finite",
                     path,
-                    f"not above exclusive minimum {schema['exclusiveMinimum']}",
+                    f"{instance!r} is not finite; JSON numbers must be finite "
+                    "(NaN/Infinity are not valid JSON)",
                 )
             )
+        else:
+            if "minimum" in schema and instance < schema["minimum"]:
+                failures.append(
+                    Failure("minimum", path, f"below minimum {schema['minimum']}")
+                )
+            if "maximum" in schema and instance > schema["maximum"]:
+                failures.append(
+                    Failure("maximum", path, f"above maximum {schema['maximum']}")
+                )
+            if "exclusiveMinimum" in schema and instance <= schema["exclusiveMinimum"]:
+                failures.append(
+                    Failure(
+                        "exclusiveMinimum",
+                        path,
+                        f"not above exclusive minimum {schema['exclusiveMinimum']}",
+                    )
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +474,8 @@ class ContractConstants:
     sampling_period_s: float
     intent_staleness_ticks: int
     commitment_min_s: float
+    commitment_min_ticks: int
+    safety_check_period_ticks: int
     commitment_follow_below: float
     commitment_commit_above: float
     drift_above: float
@@ -434,10 +485,19 @@ class ContractConstants:
     material_speed_change_fraction: float
     traffic_age_ticks: Mapping[str, int]
     metric_vocabulary: MetricVocabulary
+    # Not a numeric constant: the shipped positive observation records, keyed
+    # by observation_id, that the source_observation check resolves against.
+    # Loaded read-only from the observation slice; it is carried here so every
+    # semantic check keeps the (fixture, constants) signature.
+    observation_sources: Mapping[str, Sequence[Mapping[str, Any]]] = dataclasses.field(
+        default_factory=dict
+    )
 
 
 def load_constants(
-    record_schema: Mapping[str, Any], metric_vocabulary: MetricVocabulary
+    record_schema: Mapping[str, Any],
+    metric_vocabulary: MetricVocabulary,
+    observation_sources: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> ContractConstants:
     props = record_schema["$defs"]["constants"]["properties"]
     ages = {
@@ -450,6 +510,8 @@ def load_constants(
         sampling_period_s=float(props["sampling_period_s"]["const"]),
         intent_staleness_ticks=int(props["intent_staleness_ticks"]["const"]),
         commitment_min_s=float(props["commitment_min_s"]["const"]),
+        commitment_min_ticks=int(props["commitment_min_ticks"]["const"]),
+        safety_check_period_ticks=int(props["safety_check_period_ticks"]["const"]),
         commitment_follow_below=float(props["commitment_follow_below"]["const"]),
         commitment_commit_above=float(props["commitment_commit_above"]["const"]),
         drift_above=float(props["drift_above"]["const"]),
@@ -459,6 +521,7 @@ def load_constants(
         material_speed_change_fraction=float(props["material_speed_change_fraction"]["const"]),
         traffic_age_ticks=ages,
         metric_vocabulary=metric_vocabulary,
+        observation_sources=dict(observation_sources or {}),
     )
 
 
@@ -508,6 +571,42 @@ def load_metric_vocabulary(schemas_dir: Path) -> MetricVocabulary:
         comparators=tuple(str(item) for item in comparators),
         statuses=tuple(str(item) for item in statuses),
     )
+
+
+def load_observation_sources(
+    observations_dir: Path,
+) -> tuple[dict[str, list[Mapping[str, Any]]], list[str]]:
+    """Index the shipped positive observation records by observation_id.
+
+    The observation slice is read-only for this validator: only its positive
+    fixtures define valid records (its negative fixtures are deliberately
+    invalid and must never resolve a reference), and nothing here writes to
+    that directory. An unreadable or unparseable positive file is reported by
+    name instead of silently resolving to nothing, so a broken observation
+    fixture cannot quietly turn every reference to it into a declared gap.
+    """
+    index: dict[str, list[Mapping[str, Any]]] = {}
+    unreadable: list[str] = []
+    if not observations_dir.is_dir():
+        return index, unreadable
+    for path in sorted(observations_dir.glob("*.json")):
+        if path.name.endswith(".expected.json"):
+            continue
+        try:
+            document = load_json(path)
+        except DocumentError:
+            unreadable.append(path.name)
+            continue
+        if not isinstance(document, Mapping):
+            unreadable.append(path.name)
+            continue
+        records = document.get("records")
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, Mapping) and isinstance(record.get("observation_id"), str):
+                index.setdefault(record["observation_id"], []).append(record)
+    return index, unreadable
 
 
 # ---------------------------------------------------------------------------
@@ -663,6 +762,153 @@ def check_decode_consistency(
                     check="decode_consistency",
                 )
             )
+    return failures
+
+
+def check_pace_decode_consistency(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """Ordered pace interval, decoded target speed and speed-correction rules.
+
+    OPPONENT_AI.md action 1 maps ``(a+1)/2`` into the selected difficulty's
+    desired speed-profile interval, and action 2-style separation of proposed
+    and executed values applies to pace as well. The per-difficulty intervals
+    are tuned at M4.3, so every shipped fixture leaves them null; a record
+    that does fix an interval must then be internally consistent:
+
+    * the interval is ordered (min <= max);
+    * the uncorrected ``target_speed_m_s`` is ``min + pace_norm*(max-min)``;
+    * a pace correction's ``proposed`` is that same pre-safety decode and is
+      nonnegative, and its ``applied`` is nonnegative (a speed target cannot
+      be negative);
+    * the corrected ``target_speed_m_s`` is the correction's applied value.
+
+    A null interval forbids a determined target and any pace correction,
+    because the pre-safety decode does not exist yet.
+    """
+    failures: list[Failure] = []
+    for index, record in enumerate(fixture["records"]):
+        pace = record.get("pace") or {}
+        interval = pace.get("speed_profile_interval_m_s")
+        target = pace.get("target_speed_m_s")
+        pace_norm = pace.get("pace_norm")
+        if not _is_number(pace_norm):
+            continue  # the schema already bounds pace_norm; nothing to decode
+        corrections = [
+            (position, entry)
+            for position, entry in enumerate(
+                (record.get("safety") or {}).get("corrections") or []
+            )
+            if isinstance(entry, Mapping) and entry.get("field") == "pace.target_speed_m_s"
+        ]
+        if interval is None:
+            if target is not None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "pace.target_speed_m_s"),
+                        f"target speed {target} is determined but the difficulty "
+                        "speed-profile interval is null (unratified until M4.3)",
+                        check="pace_decode_consistency",
+                    )
+                )
+            for position, _entry in corrections:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, f"safety.corrections.{position}"),
+                        "a pace correction needs the pre-safety decode, which needs a "
+                        "determined speed-profile interval",
+                        check="pace_decode_consistency",
+                    )
+                )
+            continue
+        low = float(interval["min"])
+        high = float(interval["max"])
+        if low > high:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "pace.speed_profile_interval_m_s"),
+                    f"speed-profile interval is inverted: min {low} m/s is above "
+                    f"max {high} m/s",
+                    check="pace_decode_consistency",
+                )
+            )
+        decoded = low + float(pace_norm) * (high - low)
+        for position, entry in corrections:
+            proposed = entry.get("proposed")
+            applied = entry.get("applied")
+            if _is_number(proposed) and float(proposed) < 0:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, f"safety.corrections.{position}.proposed"),
+                        f"a speed target cannot be negative: proposed {proposed} m/s",
+                        check="pace_decode_consistency",
+                    )
+                )
+            elif _is_number(proposed) and abs(float(proposed) - decoded) > TOLERANCE:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, f"safety.corrections.{position}.proposed"),
+                        f"proposed {proposed} m/s is not the pre-safety decode "
+                        f"{decoded} m/s of pace_norm {pace_norm} into the interval "
+                        f"[{low}, {high}] m/s",
+                        check="pace_decode_consistency",
+                    )
+                )
+            if _is_number(applied) and float(applied) < 0:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, f"safety.corrections.{position}.applied"),
+                        f"a speed target cannot be negative: applied {applied} m/s",
+                        check="pace_decode_consistency",
+                    )
+                )
+            if target is None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "pace.target_speed_m_s"),
+                        "a pace correction was applied but target_speed_m_s is null",
+                        check="pace_decode_consistency",
+                    )
+                )
+            elif _is_number(applied) and abs(float(target) - float(applied)) > TOLERANCE:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "pace.target_speed_m_s"),
+                        f"target speed {target} does not match the applied correction "
+                        f"value {applied}",
+                        check="pace_decode_consistency",
+                    )
+                )
+        if not corrections:
+            if target is None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "pace.target_speed_m_s"),
+                        "the speed-profile interval is determined but target_speed_m_s "
+                        "is null",
+                        check="pace_decode_consistency",
+                    )
+                )
+            elif abs(float(target) - decoded) > TOLERANCE:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "pace.target_speed_m_s"),
+                        f"target speed {target} is not the decode "
+                        f"min + pace_norm x (max - min) = {decoded} m/s of the "
+                        f"interval [{low}, {high}] m/s",
+                        check="pace_decode_consistency",
+                    )
+                )
     return failures
 
 
@@ -860,6 +1106,39 @@ def check_correction_materiality(
     return failures
 
 
+def check_correction_shape(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """One correction entry per corrected field.
+
+    ``tactical_intent.schema.json`` describes ``safety.corrections`` as
+    "Safety-layer changes to the proposed intent, one entry per corrected
+    field". Two entries naming the same field would double-count one 5 Hz
+    intent's correction in BENCHMARKS.md telemetry, and the record cannot
+    represent two sequential corrections of one field anyway: a correction
+    carries no tick (tick-level exposure lives in interventions) and every
+    entry's applied value must equal the single decoded/executed field value.
+    """
+    failures: list[Failure] = []
+    for index, record in enumerate(fixture["records"]):
+        seen: set[str] = set()
+        for entry in record["safety"]["corrections"]:
+            field = entry["field"]
+            if field in seen:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.corrections"),
+                        f"field {field!r} has more than one correction entry; "
+                        "the contract allows one entry per corrected field",
+                        check="correction_shape",
+                    )
+                )
+            else:
+                seen.add(field)
+    return failures
+
+
 def check_min_commitment(
     fixture: Mapping[str, Any], constants: ContractConstants
 ) -> list[Failure]:
@@ -876,6 +1155,569 @@ def check_min_commitment(
                     check="min_commitment",
                 )
             )
+    return failures
+
+
+def check_commitment_hold(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """Executed commitment state, the 0.4 s minimum and hazard interruption.
+
+    ``commitment.label`` is the pure threshold decode of the proposed
+    ``commitment_raw``; ``commitment.executed_label`` and
+    ``commitment.commit_started_tick`` record what the safety layer and path
+    follower actually ran (OPPONENT_AI.md: 'Record the proposed intent,
+    ordinary difficulty decoding, safety changes and final commands
+    separately'). The rules:
+
+    * a commitment that starts at a record matches that record's proposed
+      decode and starts at that record's generated_tick;
+    * an executing commit_pass carries a non-null commit_started_tick at or
+      before its generated_tick, and every other state carries null;
+    * an executing commit_pass may not lapse before commitment_min_ticks
+      (0.4 s) unless the record is interrupted, and a restart inside the
+      minimum is an early lapse too;
+    * an interruption requires a reason, and a reason requires an
+      interruption.
+
+    Fixture records are one participant's 5 Hz intent sequence, so the
+    cross-record rules compare consecutive records.
+    """
+    min_ticks = constants.commitment_min_ticks
+    failures: list[Failure] = []
+    previous: Mapping[str, Any] | None = None
+    for index, record in enumerate(fixture["records"]):
+        commitment = record.get("commitment") or {}
+        executed = commitment.get("executed_label")
+        start = commitment.get("commit_started_tick")
+        label = commitment.get("label")
+        generated = record.get("generated_tick")
+        interrupted = bool(commitment.get("interrupted"))
+        reason = commitment.get("interruption_reason")
+        if executed == "commit_pass":
+            if start is None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "commitment.commit_started_tick"),
+                        "executed_label is commit_pass but commit_started_tick is null",
+                        check="commitment_hold",
+                    )
+                )
+            elif _is_number(generated) and int(start) > int(generated):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "commitment.commit_started_tick"),
+                        f"commit_started_tick {start} is after this intent's "
+                        f"generated_tick {generated}",
+                        check="commitment_hold",
+                    )
+                )
+        elif start is not None:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "commitment.commit_started_tick"),
+                    f"commit_started_tick {start} is set but executed_label is "
+                    f"{executed!r}, not commit_pass",
+                    check="commitment_hold",
+                )
+            )
+        if interrupted and not reason:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "commitment.interruption_reason"),
+                    "the commitment is interrupted but interruption_reason is null",
+                    check="commitment_hold",
+                )
+            )
+        if not interrupted and reason is not None:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "commitment.interruption_reason"),
+                    "interruption_reason is set but the commitment is not interrupted",
+                    check="commitment_hold",
+                )
+            )
+        previous_commitment = (previous.get("commitment") or {}) if previous is not None else {}
+        previous_executed = previous_commitment.get("executed_label")
+        previous_start = previous_commitment.get("commit_started_tick")
+        continuing = executed == "commit_pass" and previous_start is not None and start == previous_start
+        if previous_executed == "commit_pass" and previous_start is not None and _is_number(generated):
+            if not continuing:
+                elapsed = int(generated) - int(previous_start)
+                if elapsed < min_ticks and not interrupted:
+                    failures.append(
+                        Failure(
+                            "semantic",
+                            _record_path(index, "commitment"),
+                            f"the pass commitment lapsed after {elapsed} ticks "
+                            f"({elapsed / 60:.3f} s), before the "
+                            f"{constants.commitment_min_s} s minimum, without a "
+                            "hazard interruption",
+                            check="commitment_hold",
+                        )
+                    )
+                if executed == "commit_pass":
+                    # A restart: the previous commitment ended here and a new one
+                    # begins at this decision tick.
+                    if start is None or int(start) != int(generated):
+                        failures.append(
+                            Failure(
+                                "semantic",
+                                _record_path(index, "commitment.commit_started_tick"),
+                                f"a restarted commitment must begin at this intent's "
+                                f"generated_tick {generated}, not {start}",
+                                check="commitment_hold",
+                            )
+                        )
+                    if executed != label:
+                        failures.append(
+                            Failure(
+                                "semantic",
+                                _record_path(index, "commitment.executed_label"),
+                                "a commitment that starts at this record must match the "
+                                "threshold decode of commitment_raw",
+                                check="commitment_hold",
+                            )
+                        )
+        elif executed == "commit_pass" and _is_number(generated):
+            if start is None or int(start) != int(generated):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "commitment.commit_started_tick"),
+                        f"a new commitment must begin at this intent's generated_tick "
+                        f"{generated}, not {start}",
+                        check="commitment_hold",
+                    )
+                )
+            if executed != label:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "commitment.executed_label"),
+                        "a commitment that starts at this record must match the "
+                        "threshold decode of commitment_raw; the hold rule applies "
+                        "only to a commitment that is already executing",
+                        check="commitment_hold",
+                    )
+                )
+        previous = record
+    return failures
+
+
+def check_executed_drift_preference(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """The executed drift preference after 'retain' is resolved.
+
+    ``drift.label`` records the decode band; ``drift.executed_preference``
+    records the preference actually executed. Outside the retain band the
+    two must agree. Inside it, 'retain' keeps the prior preference, except
+    when the reset masked the history (history_valid 0 or
+    post_reset_defaults_applied): then there is no prior preference and the
+    executed value is 'none'.
+    """
+    failures: list[Failure] = []
+    for index, record in enumerate(fixture["records"]):
+        drift = record.get("drift") or {}
+        label = drift.get("label")
+        executed = drift.get("executed_preference")
+        reset = record.get("reset") or {}
+        masked = bool(reset.get("post_reset_defaults_applied")) or int(
+            reset.get("history_valid", 1)
+        ) == 0
+        if label in ("drift", "grip") and executed != label:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "drift.executed_preference"),
+                    f"drift label {label!r} decodes outside the retain band, so the "
+                    f"executed preference is {label!r}, not {executed!r}",
+                    check="executed_drift_preference",
+                )
+            )
+        elif label == "retain":
+            if masked:
+                if executed != "none":
+                    failures.append(
+                        Failure(
+                            "semantic",
+                            _record_path(index, "drift.executed_preference"),
+                            "retain with masked post-reset history has no prior preference "
+                            f"to keep, so the executed preference is 'none', not {executed!r}",
+                            check="executed_drift_preference",
+                        )
+                    )
+            elif executed == "none":
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "drift.executed_preference"),
+                        "retain keeps the prior drift/grip preference while the history is "
+                        "valid; 'none' is legal only when the reset masked the history",
+                        check="executed_drift_preference",
+                    )
+                )
+    return failures
+
+
+def check_intervention_window(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """Per-tick safety exposure stays inside the intent's hold window.
+
+    ``safety.interventions.ticks`` lists the 60 Hz ticks at which immediate
+    per-tick safety overrode this intent. They must be ascending and distinct
+    and lie in ``[generated_tick, generated_tick + period_ticks)``, the window
+    this 5 Hz intent covers, so tick-level exposure reconciles with the
+    per-intent counting BENCHMARKS.md prescribes.
+    """
+    period = constants.sampling_period_ticks
+    failures: list[Failure] = []
+    for index, record in enumerate(fixture["records"]):
+        ticks = (record.get("safety") or {}).get("interventions", {}).get("ticks")
+        generated = record.get("generated_tick")
+        if not isinstance(ticks, list) or not _is_number(generated):
+            continue
+        window_end = int(generated) + period
+        previous_tick: int | None = None
+        for tick in ticks:
+            if not isinstance(tick, int) or isinstance(tick, bool):
+                continue
+            if previous_tick is not None and tick <= previous_tick:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.interventions.ticks"),
+                        f"intervention ticks must be ascending and distinct; tick "
+                        f"{tick} follows {previous_tick}",
+                        check="intervention_window",
+                    )
+                )
+            if tick < int(generated) or tick >= window_end:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.interventions.ticks"),
+                        f"intervention tick {tick} is outside this intent's hold "
+                        f"window [{int(generated)}, {window_end})",
+                        check="intervention_window",
+                    )
+                )
+            previous_tick = tick
+    return failures
+
+
+def check_emergency_consistency(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """Emergency substitution/reset and Classic-fallback telemetry coherence.
+
+    ``safety.emergency`` is where tick-linked replacement evidence lives,
+    separate from the per-field corrections and from the 5 Hz intent identity
+    used for deduplication:
+
+    * substituted is true exactly when kind is set;
+    * a substitution carries a reason and a tick inside this intent's hold
+      window;
+    * classic_fallback replaces a learned or cloning-only producer, never a
+      Classic planner;
+    * persistent is true exactly when the immediately preceding intent of this
+      participant carries the same-kind substitution.
+    """
+    period = constants.sampling_period_ticks
+    failures: list[Failure] = []
+    previous: Mapping[str, Any] | None = None
+    for index, record in enumerate(fixture["records"]):
+        emergency = (record.get("safety") or {}).get("emergency") or {}
+        substituted = bool(emergency.get("substituted"))
+        kind = emergency.get("kind")
+        tick = emergency.get("tick")
+        persistent = bool(emergency.get("persistent"))
+        reason = emergency.get("reason")
+        generated = record.get("generated_tick")
+        if substituted != (kind is not None):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "safety.emergency.kind"),
+                    f"substituted is {substituted!r} but kind is {kind!r}; the two "
+                    "must agree",
+                    check="emergency_consistency",
+                )
+            )
+        if substituted:
+            if not reason:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.reason"),
+                        "an emergency substitution requires a reason",
+                        check="emergency_consistency",
+                    )
+                )
+            if kind == "classic_fallback" and (record.get("producer") or {}).get(
+                "kind"
+            ) == "classic_planner":
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.kind"),
+                        "a Classic planner cannot fall back to Classic control; "
+                        "classic_fallback replaces a learned or cloning-only producer",
+                        check="emergency_consistency",
+                    )
+                )
+            if tick is None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.tick"),
+                        "an emergency substitution requires the tick it took effect",
+                        check="emergency_consistency",
+                    )
+                )
+            elif _is_number(generated) and not (
+                int(generated) <= int(tick) < int(generated) + period
+            ):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.tick"),
+                        f"substitution tick {tick} is outside this intent's hold "
+                        f"window [{int(generated)}, {int(generated) + period})",
+                        check="emergency_consistency",
+                    )
+                )
+            previous_emergency = (
+                (previous.get("safety") or {}).get("emergency") or {}
+                if previous is not None
+                else {}
+            )
+            continues = bool(previous_emergency.get("substituted")) and (
+                previous_emergency.get("kind") == kind
+            )
+            if persistent != continues:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.persistent"),
+                        f"persistent is {persistent!r} but the previous intent "
+                        f"{'continues' if continues else 'does not continue'} the "
+                        f"same {kind!r} substitution",
+                        check="emergency_consistency",
+                    )
+                )
+        else:
+            if tick is not None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.tick"),
+                        "tick is set but nothing was substituted",
+                        check="emergency_consistency",
+                    )
+                )
+            if reason is not None:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.reason"),
+                        "reason is set but nothing was substituted",
+                        check="emergency_consistency",
+                    )
+                )
+            if persistent:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "safety.emergency.persistent"),
+                        "persistent is true but nothing was substituted",
+                        check="emergency_consistency",
+                    )
+                )
+        previous = record
+    return failures
+
+
+def check_source_observation(
+    fixture: Mapping[str, Any], constants: ContractConstants
+) -> list[Failure]:
+    """Every intent's source observation resolves and agrees.
+
+    ``source_observation_id`` names a record of the accepted shared
+    observation contract. When the ID resolves to a shipped positive
+    observation record, the intent must agree with it on participant,
+    difficulty, style, delayed traffic age, reset generation, history
+    validity, route frame and the section road width (observation feature 14
+    x 20 m), and the intent's generated_tick may not precede the
+    observation's sampled_tick. An ID that does not resolve is legal only
+    when the fixture declares it in illustrative_sources, and declaring an ID
+    that does resolve is itself a failure, so a broken reference stays
+    distinguishable from an intentional illustration. Within one fixture each
+    record uses its own source observation.
+
+    When the source observation ran with the safe diagnostic fallback active
+    its features are safe defaults rather than measurements, so the road-width
+    comparison is skipped for it.
+    """
+    sources = constants.observation_sources
+    declared: dict[str, Mapping[str, Any]] = {}
+    for entry in fixture.get("illustrative_sources") or []:
+        if isinstance(entry, Mapping) and isinstance(entry.get("observation_id"), str):
+            declared[entry["observation_id"]] = entry
+    failures: list[Failure] = []
+    context = fixture.get("context") or {}
+    road_width = context.get("road_width_m")
+    seen: dict[str, int] = {}
+    for index, record in enumerate(fixture["records"]):
+        source_id = record.get("source_observation_id")
+        if not isinstance(source_id, str):
+            continue
+        matches = sources.get(source_id, [])
+        if len(matches) > 1:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "source_observation_id"),
+                    f"source observation {source_id!r} is ambiguous: it appears in "
+                    f"{len(matches)} shipped observation records",
+                    check="source_observation",
+                )
+            )
+            continue
+        if not matches:
+            if source_id in declared:
+                continue
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "source_observation_id"),
+                    f"source observation {source_id!r} does not resolve to a shipped "
+                    "observation record and is not declared in illustrative_sources",
+                    check="source_observation",
+                )
+            )
+            continue
+        if source_id in declared:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "source_observation_id"),
+                    f"source observation {source_id!r} is declared illustrative but "
+                    "resolves to a shipped observation record; remove the declaration",
+                    check="source_observation",
+                )
+            )
+            continue
+        if source_id in seen:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "source_observation_id"),
+                    f"source observation {source_id!r} is already used by "
+                    f"records.{seen[source_id]}; each 5 Hz intent is computed from "
+                    "its own observation",
+                    check="source_observation",
+                )
+            )
+            continue
+        seen[source_id] = index
+        observation = matches[0]
+        pairs = (
+            ("participant_id", record.get("participant_id"), observation.get("participant_id")),
+            ("difficulty", record.get("difficulty"), observation.get("difficulty")),
+            ("style", record.get("style"), observation.get("style")),
+            (
+                "traffic_age_ticks",
+                record.get("traffic_age_ticks"),
+                observation.get("traffic_age_ticks"),
+            ),
+        )
+        for field, actual, expected in pairs:
+            if actual != expected:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, field),
+                        f"{field} is {actual!r} but the source observation "
+                        f"{source_id!r} records {expected!r}",
+                        check="source_observation",
+                    )
+                )
+        observation_reset = observation.get("reset") or {}
+        observation_masks = observation.get("masks") or {}
+        record_reset = record.get("reset") or {}
+        if record_reset.get("reset_generation") != observation_reset.get("reset_generation"):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "reset.reset_generation"),
+                    f"reset_generation {record_reset.get('reset_generation')!r} is not "
+                    f"the source observation's {observation_reset.get('reset_generation')!r}",
+                    check="source_observation",
+                )
+            )
+        if record_reset.get("history_valid") != observation_masks.get("history_valid"):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "reset.history_valid"),
+                    f"history_valid {record_reset.get('history_valid')!r} is not the "
+                    f"source observation's {observation_masks.get('history_valid')!r}",
+                    check="source_observation",
+                )
+            )
+        observation_frame = observation.get("road_frame") or {}
+        record_frame = record.get("road_frame") or {}
+        for axis in ("forward", "right", "up"):
+            if record_frame.get(axis) != observation_frame.get(axis):
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, f"road_frame.{axis}"),
+                        f"road_frame.{axis} is {record_frame.get(axis)!r} but the source "
+                        f"observation records {observation_frame.get(axis)!r}",
+                        check="source_observation",
+                    )
+                )
+        generated = record.get("generated_tick")
+        sampled = observation.get("sampled_tick")
+        if _is_number(generated) and _is_number(sampled) and int(generated) < int(sampled):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "generated_tick"),
+                    f"generated_tick {generated} precedes the source observation's "
+                    f"sampled_tick {sampled}",
+                    check="source_observation",
+                )
+            )
+        fallback = observation.get("fallback") or {}
+        if not fallback.get("active"):
+            features = observation.get("feature_vector") or []
+            if (
+                _is_number(road_width)
+                and len(features) > 14
+                and _is_number(features[14])
+            ):
+                observed_width = float(features[14]) * 20.0
+                if abs(float(road_width) - observed_width) > TOLERANCE:
+                    failures.append(
+                        Failure(
+                            "semantic",
+                            "context.road_width_m",
+                            f"context road width {road_width} m does not match the "
+                            f"source observation's feature-14 road width "
+                            f"{observed_width} m",
+                            check="source_observation",
+                        )
+                    )
     return failures
 
 
@@ -1129,13 +1971,20 @@ def check_content_hash(fixture: Mapping[str, Any]) -> list[Failure]:
 SEMANTIC_CHECKS = (
     check_context_agreement,
     check_decode_consistency,
+    check_pace_decode_consistency,
     check_label_thresholds,
+    check_commitment_hold,
+    check_executed_drift_preference,
     check_sampling_cadence,
     check_age_arithmetic,
     check_difficulty_age,
     check_reset_mask,
     check_safety_deferral,
+    check_intervention_window,
+    check_emergency_consistency,
     check_correction_materiality,
+    check_correction_shape,
+    check_source_observation,
     check_min_commitment,
     check_metric_status_honesty,
     check_metric_shape,
@@ -1154,19 +2003,27 @@ class Contracts:
     record_schema: Mapping[str, Any]
     constants: ContractConstants
     schemas_dir: Path
+    observation_sources: Mapping[str, Sequence[Mapping[str, Any]]]
+    unreadable_observations: Sequence[str] = ()
 
 
-def load_contracts(schemas_dir: Path) -> Contracts:
+def load_contracts(schemas_dir: Path, observations_dir: Path | None = None) -> Contracts:
     cache = SchemaCache()
     fixture_schema = cache.document(schemas_dir / FIXTURE_SCHEMA_NAME)
     record_schema = cache.document(schemas_dir / RECORD_SCHEMA_NAME)
     if not isinstance(fixture_schema, Mapping) or not isinstance(record_schema, Mapping):
         raise DocumentError("schema documents must be JSON objects")
+    if observations_dir is None:
+        # schemas/intent -> <repo>/fixtures/observation
+        observations_dir = schemas_dir.parents[1] / "fixtures" / "observation" / "positive"
+    observation_sources, unreadable = load_observation_sources(observations_dir)
     return Contracts(
         fixture_schema=fixture_schema,
         record_schema=record_schema,
-        constants=load_constants(record_schema, load_metric_vocabulary(schemas_dir)),
+        constants=load_constants(record_schema, load_metric_vocabulary(schemas_dir), observation_sources),
         schemas_dir=schemas_dir,
+        observation_sources=observation_sources,
+        unreadable_observations=tuple(unreadable),
     )
 
 
@@ -1313,6 +2170,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--negative", type=Path, default=here / "negative", help="directory of invalid fixtures"
     )
     parser.add_argument(
+        "--observations",
+        type=Path,
+        default=here.parent / "observation" / "positive",
+        help="directory of valid observation fixtures the source_observation check "
+        "resolves source_observation_id against (read-only)",
+    )
+    parser.add_argument(
         "--update-hashes",
         action="store_true",
         help="recompute and write content_hash for positive fixtures, then exit",
@@ -1325,10 +2189,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        contracts = load_contracts(args.schemas)
+        contracts = load_contracts(args.schemas, args.observations)
     except DocumentError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    for name in contracts.unreadable_observations:
+        print(
+            f"warning: observation fixture {name} could not be read; references to "
+            "its records cannot resolve",
+            file=sys.stderr,
+        )
 
     problems = 0
 

@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.raw_inputs.027",
+      "check": "raw_input_keys"
+    }
+  ]
+}

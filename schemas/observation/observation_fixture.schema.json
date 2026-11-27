@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Roadstorm versioned AI-observation fixture (schema version 1)",
-  "description": "Fixture contract for the shared AIObservation record contract in observation_record.schema.json, defined at M0.9 from docs/OPPONENT_AI.md ('Architecture', 'Shared schema version 1', 'Training approach', 'Implementation and acceptance') and docs/BENCHMARKS.md ('AI metrics'). A fixture fixes one scenario (participant, difficulty, style, tick, per-car top speed, per-section usable half-width, observation-builder revision) and carries one or more observation records, plus the behavioral expectations the fixtures/observation validator checks semantically (context agreement, difficulty/style one-hot encoding, the declared per-feature kinds and ranges, neighbor presence masks, ordering and the 70 m ahead / 35 m behind window, traffic-age arithmetic and the difficulty age, reset history masking including the substituted-defaults list, normalization consistency, fallback defaults, null/unknowns pairing including an omitted optional field) and the documented initial acceptance metrics. Like handling_fixture.schema.json and intent_fixture.schema.json, this is a text contract: numeric feature values are authored illustrative normalizations, never measurements. A value that is not yet determined is JSON null and MUST be listed in 'unknowns'; the validator enforces that pairing for the null-meaning-undetermined fields. Companion vocabulary lives in ../common.schema.json. This fixture defines no model, weights, export or training interface; the learned-style input exists so the shared contract can be exercised, not because a trained model exists.",
+  "description": "Fixture contract for the shared AIObservation record contract in observation_record.schema.json, defined at M0.9 from docs/OPPONENT_AI.md ('Architecture', 'Shared schema version 1', 'Training approach', 'Implementation and acceptance') and docs/BENCHMARKS.md ('AI metrics'). A fixture fixes one scenario (participant, difficulty, style, tick, per-car top speed, per-section usable half-width, observation-builder revision) and carries one or more observation records, plus the behavioral expectations the fixtures/observation validator checks semantically (context agreement, difficulty/style one-hot encoding, the declared per-feature kinds and ranges, neighbor presence masks, ordering and the 70 m ahead / 35 m behind window, traffic-age arithmetic and the difficulty age, reset history masking including the substituted-defaults list, normalization consistency including canonical raw_inputs keys, fallback defaults, null/unknowns pairing including an omitted optional field, the optional diagnostic neighbor_ids list, and the acceptance-metric status and shape rules) and the documented initial acceptance metrics. Like handling_fixture.schema.json and intent_fixture.schema.json, this is a text contract: numeric feature values are authored illustrative normalizations, never measurements. A value that is not yet determined is JSON null and MUST be listed in 'unknowns'; the validator enforces that pairing for the null-meaning-undetermined fields. Companion vocabulary lives in ../common.schema.json. This fixture defines no model, weights, export or training interface; the learned-style input exists so the shared contract can be exercised, not because a trained model exists.",
   "schema_version": "1.0.0",
   "type": "object",
   "additionalProperties": false,
@@ -89,7 +89,7 @@
         "usable_half_width_m": {
           "type": "number",
           "minimum": 0,
-          "description": "Per-section usable road half-width used to normalize feature 4 (lane offset / usable half-width). Authored illustrative value; 0 is permitted only for the zero-usable-width safe-fallback case, which the validator requires to set fallback.active."
+          "description": "Per-section usable road half-width used to normalize feature 4 (lane offset / usable half-width). Authored illustrative value; 0 is permitted only for the zero-usable-width safe-fallback case, which the validator requires to set fallback.active. WHICH half-width this names is unratified and is a blocking unknown recorded in every fixture's unknowns: OPPONENT_AI.md says 'usable half-width' without defining it, while its action-0 decode derives the narrower legal corridor (road_width - car_width)/2 - 0.5 m, and history features 51-52 are 'divided by their then-usable half-width' under the same undetermined convention. The shipped fixtures author road_width/2 (10 m -> 5.0, 12 m -> 6.0) as an illustrative value only; the convention must be ratified before demonstrations are collected, and this slice does not decide it."
         },
         "observation_builder_revision": {
           "type": "string",
@@ -163,15 +163,18 @@
             "difficulty_age",
             "history_mask",
             "normalization_consistency",
+            "raw_input_keys",
             "fallback_defaults",
-            "unknown_pairing"
+            "unknown_pairing",
+            "metric_status_honesty",
+            "metric_shape"
           ],
-          "description": "Semantic check implemented by fixtures/observation/validate_observation_contract.py."
+          "description": "Semantic check implemented by fixtures/observation/validate_observation_contract.py. neighbor_ordering also covers the optional diagnostic neighbor_ids list (present-slot count and the stable-ID tie order); metric_status_honesty and metric_shape apply to comparison.metrics and mirror the acceptance_metric allOf rules in ../common.schema.json that this slice's JSON Schema subset does not evaluate."
         },
         "path": {
           "type": "string",
-          "pattern": "^records(\\.[0-9]+)?$",
-          "description": "Record the expectation applies to, e.g. records.0; 'records' applies to the whole sequence."
+          "pattern": "^(records(\\.[0-9]+)?|comparison(\\.metrics(\\.[0-9]+)?)?)$",
+          "description": "What the expectation applies to, e.g. records.0; 'records' applies to the whole sequence; 'comparison' or 'comparison.metrics' applies to the metric list and 'comparison.metrics.N' to one metric."
         },
         "statement": {
           "type": "string",

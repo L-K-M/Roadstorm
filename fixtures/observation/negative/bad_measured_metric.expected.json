@@ -2,8 +2,8 @@
   "expected_failures": [
     {
       "code": "semantic",
-      "path": "comparison.metrics.4",
-      "check": "comparison_metrics"
+      "path": "comparison.metrics.4.status",
+      "check": "metric_status_honesty"
     }
   ]
 }

@@ -1,0 +1,459 @@
+{
+  "schema_version": "1.1.0",
+  "fixture_id": "fixture.intent.hazard_interrupted_commit",
+  "fixture_family": "commit_pass",
+  "title": "Hazard-interrupted pass commitment on a Classic planner",
+  "description": "Two consecutive 5 Hz intents from a classic_planner participant on a 10 m section at Rookie difficulty, matching the referenced observation obs.t000500.ai_classic_2 (a clear 10 m straight). The first intent commits to a right-side pass (commitment_raw 0.5, executed_label commit_pass starting at tick 500) and per-tick safety overrides the commands at tick 506 when the lead car moves left and closes the passing room. The second intent, 12 ticks later, records the hazard interruption: the executed commitment ends after 12 ticks (0.2 s), before the 0.4 s minimum, which is legal only because interrupted is true with a reason. This is the counterpart to the held commitment in fixture.intent.surge_commit_pass: a commitment may be held past the proposal, and it may be ended early only by a hazard. The second record's source_observation_id (obs.t000512.ai_classic_2) is an illustrative reference to an observation record that is not shipped as an observation fixture, so only this fixture's first record has a participant/tick pairing that can be verified against the observation slice; the ID follows the observation contract's obs.t<tick>.<participant> convention and nothing further is claimed about it.",
+  "revision": "1.0.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "road_width_m": 10.0,
+    "car_width_m": 1.7,
+    "difficulty": "rookie",
+    "style": "none",
+    "producer_kind": "classic_planner",
+    "producer_revision": "pending_m4_2_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.1.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.classic_commit.t000500",
+      "participant_id": "ai.classic_2",
+      "source_observation_id": "obs.t000500.ai_classic_2",
+      "producer": {
+        "kind": "classic_planner",
+        "producer_revision": "pending_m4_2_ratification"
+      },
+      "difficulty": "rookie",
+      "style": "none",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 500,
+      "sampled_tick": 504,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 18,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": 0.6,
+        "legal_corridor_half_width_m": 3.65,
+        "decoded_offset_m": 2.19,
+        "note": "Corridor half-width is (10.0 - 1.7)/2 - 0.5 m = 3.65 m; 0.6 x 3.65 m = 2.19 m, legal with no correction."
+      },
+      "pace": {
+        "pace_norm": 0.7,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": null
+      },
+      "commitment": {
+        "commitment_raw": 0.5,
+        "label": "commit_pass",
+        "executed_label": "commit_pass",
+        "commit_started_tick": 500,
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": "0.5 is above the +1/3 commit threshold; the commitment starts at this intent's generated_tick 500."
+      },
+      "drift": {
+        "drift_raw": -0.5,
+        "label": "grip",
+        "executed_preference": "grip",
+        "note": "Below -0.25, so the preference is grip."
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "interventions": {
+          "ticks": [
+            506
+          ],
+          "note": "Per-tick safety overrode the commands at tick 506 when the lead car moved left into the passing room; the 5 Hz intent fields themselves needed no correction."
+        },
+        "emergency": {
+          "substituted": false,
+          "kind": null,
+          "tick": null,
+          "persistent": false,
+          "reason": null
+        },
+        "note": null
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    },
+    {
+      "schema_version": "1.1.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.classic_commit.t000512",
+      "participant_id": "ai.classic_2",
+      "source_observation_id": "obs.t000512.ai_classic_2",
+      "producer": {
+        "kind": "classic_planner",
+        "producer_revision": "pending_m4_2_ratification"
+      },
+      "difficulty": "rookie",
+      "style": "none",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 512,
+      "sampled_tick": 516,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 18,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": 0.3,
+        "legal_corridor_half_width_m": 3.65,
+        "decoded_offset_m": 1.095,
+        "note": "0.3 x 3.65 m = 1.095 m, back toward the racing line; legal with no correction."
+      },
+      "pace": {
+        "pace_norm": 0.6,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": null
+      },
+      "commitment": {
+        "commitment_raw": 0.0,
+        "label": "wait",
+        "executed_label": "wait",
+        "commit_started_tick": null,
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": true,
+        "interruption_reason": "the lead car moved left at tick 506 and closed the passing room; the hazard ended the pass commitment after 12 ticks, before the 0.4 s minimum",
+        "note": "12 ticks (0.2 s) since the commit at tick 500, inside the 0.4 s minimum; the release is legal only because a hazard interrupted it."
+      },
+      "drift": {
+        "drift_raw": -0.5,
+        "label": "grip",
+        "executed_preference": "grip",
+        "note": null
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "interventions": {
+          "ticks": [],
+          "note": null
+        },
+        "emergency": {
+          "substituted": false,
+          "kind": null,
+          "tick": null,
+          "persistent": false,
+          "reason": null
+        },
+        "note": null
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.decode_legal",
+      "check": "decode_consistency",
+      "path": "records.0",
+      "statement": "The decoded lateral target equals the raw decode 2.19 m and stays inside the corridor."
+    },
+    {
+      "expectation_id": "expect.decode_legal_interrupted",
+      "check": "decode_consistency",
+      "path": "records.1",
+      "statement": "The interrupted intent's decode 1.095 m is also consistent."
+    },
+    {
+      "expectation_id": "expect.commit_start",
+      "check": "commitment_hold",
+      "path": "records.0",
+      "statement": "A commitment that starts at a record matches that record's threshold decode and begins at its generated_tick 500."
+    },
+    {
+      "expectation_id": "expect.commit_interrupted_release",
+      "check": "commitment_hold",
+      "path": "records.1",
+      "statement": "The commitment is released after 12 ticks (0.2 s), before the 0.4 s minimum, which is legal only because interrupted is true and interruption_reason names the hazard."
+    },
+    {
+      "expectation_id": "expect.commit_label",
+      "check": "label_thresholds",
+      "path": "records.1",
+      "statement": "commitment_raw 0.0 decodes to wait and drift_raw -0.5 decodes to grip."
+    },
+    {
+      "expectation_id": "expect.executed_drift",
+      "check": "executed_drift_preference",
+      "path": "records.0",
+      "statement": "drift_raw -0.5 decodes outside the retain band, so the executed preference is grip."
+    },
+    {
+      "expectation_id": "expect.intervention_window",
+      "check": "intervention_window",
+      "path": "records.0",
+      "statement": "The single per-tick override tick 506 lies inside the first intent's hold window [500, 512) and is ascending and distinct."
+    },
+    {
+      "expectation_id": "expect.emergency_none",
+      "check": "emergency_consistency",
+      "path": "records",
+      "statement": "A hazard interruption is not an emergency substitution: substituted stays false with a null kind, tick and reason and persistent false."
+    },
+    {
+      "expectation_id": "expect.pace_decode",
+      "check": "pace_decode_consistency",
+      "path": "records",
+      "statement": "The rookie speed-profile interval is null (unratified until M4.3), so no target speed is determined and no pace correction may appear."
+    },
+    {
+      "expectation_id": "expect.cadence",
+      "check": "sampling_cadence",
+      "path": "records",
+      "statement": "Consecutive intents are 12 ticks apart at the 5 Hz tactical rate on a 60 Hz tick."
+    },
+    {
+      "expectation_id": "expect.age",
+      "check": "age_arithmetic",
+      "path": "records.0",
+      "statement": "intent_age_ticks equals sampled_tick minus generated_tick."
+    },
+    {
+      "expectation_id": "expect.age_interrupted",
+      "check": "age_arithmetic",
+      "path": "records.1",
+      "statement": "The interrupted intent's age arithmetic is consistent."
+    },
+    {
+      "expectation_id": "expect.rookie_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Rookie difficulty uses the 18-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.rookie_age_interrupted",
+      "check": "difficulty_age",
+      "path": "records.1",
+      "statement": "The second intent carries the same Rookie traffic age."
+    },
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style, producer kind and revision match the fixture context; Classic-only style is 'none'."
+    },
+    {
+      "expectation_id": "expect.context_interrupted",
+      "check": "context_agreement",
+      "path": "records.1",
+      "statement": "The second record also matches the fixture context."
+    },
+    {
+      "expectation_id": "expect.deferral",
+      "check": "safety_deferral",
+      "path": "records.0",
+      "statement": "Hazard checks are never deferred while a tactical intent is held."
+    },
+    {
+      "expectation_id": "expect.source_link",
+      "check": "source_observation",
+      "path": "records.0",
+      "statement": "The first intent's source observation obs.t000500.ai_classic_2 resolves and agrees on participant, tick, difficulty, style, traffic age, reset generation, history validity, route frame and road width."
+    },
+    {
+      "expectation_id": "expect.source_illustrative",
+      "check": "source_observation",
+      "path": "records.1",
+      "statement": "The second intent's source observation is declared illustrative because the observation slice ships no such record."
+    },
+    {
+      "expectation_id": "expect.min_commit",
+      "check": "min_commitment",
+      "path": "records.0",
+      "statement": "The intent carries the 0.4 s minimum commitment constant."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the initial acceptance targets for the hazard-interruption path of the shared commitment semantics, plus the standing intervention targets.",
+    "metrics": [
+      {
+        "name": "material_corrections_fraction",
+        "description": "Material road/collision corrections per proposed 5 Hz intent, material per BENCHMARKS.md.",
+        "comparator": "lt",
+        "value": 0.05,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "emergency_replacements_fraction",
+        "description": "Emergency safety substitutions per proposed 5 Hz intent.",
+        "comparator": "lt",
+        "value": 0.01,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements."
+  },
+  "illustrative_sources": [
+    {
+      "observation_id": "obs.t000512.ai_classic_2",
+      "reason": "The observation slice ships no obs.t000512.ai_classic_2 record; the interrupted intent's source observation is illustrative only and follows the observation contract's obs.t<tick>.<participant> convention. Nothing further is claimed about it."
+    }
+  ],
+  "unknowns": [
+    {
+      "path": "records.0.pace.speed_profile_interval_m_s",
+      "reason": "The rookie desired speed-profile interval is tuned at M4.3 and is not numerically specified.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.speed_profile_interval_m_s",
+      "reason": "Same unratified interval as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.pace.target_speed_m_s",
+      "reason": "Target speed cannot be decoded until the difficulty interval is ratified.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.target_speed_m_s",
+      "reason": "Same unratified decoding as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.commitment.hold_window_s",
+      "reason": "The short anti-jitter commitment window length is not numerically specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.commitment.hold_window_s",
+      "reason": "Same unratified window length as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.interpolation.curve",
+      "reason": "The interpolation curve is not specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.interpolation.curve",
+      "reason": "Same unratified curve as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.producer_revision",
+      "reason": "Placeholder only: no Classic planner revision exists until M4.2 implements the shared interface.",
+      "blocking": false,
+      "until": "M4.2"
+    },
+    {
+      "path": "intent_age_ticks",
+      "reason": "Required behavior for a stale intent (at or beyond 12 ticks) is not specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.interventions.ticks",
+      "reason": "The hold window [generated_tick, generated_tick + period_ticks) is this contract's modeling decision for tick-level safety exposure; OPPONENT_AI.md does not say whether a record exported at sampled_tick inside the window must truncate its intervention list.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.emergency.kind",
+      "reason": "The emergency kind vocabulary (emergency_stop, reset, classic_fallback) is provisional until the intervention categories are preregistered before evaluation (OPPONENT_AI.md 'Implementation and acceptance'); the metric itself is a later measured run.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:d0c215834ffefbbf515f3060a7f574ae224c288842a5962c64412236ec14ecf9",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
+    "author": "pi coding agent (job 13001f38-b8b9-42bc-a930-99c85ccfb04c)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-27",
+    "note": "Authored at the M0.9 independent schema checkpoint to exercise the hazard-interruption exception to the 0.4 s minimum commitment; no implementation is exercised by this file."
+  }
+}

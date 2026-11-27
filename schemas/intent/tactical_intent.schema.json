@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Roadstorm TacticalIntent record (intent schema version 1)",
-  "description": "Machine-readable contract for the TacticalIntent that a Classic planner or a Roadstormer policy produces and the shared safety layer and path follower consume (docs/OPPONENT_AI.md 'Architecture' steps 2-4; the 'AIObservation/TacticalIntent' row of docs/TECHNICAL_DESIGN.md 'Content contracts': version, ordered shape/fields, road frame, masks, observation age, normalization/action decoding, personality/difficulty and reset defaults, defined before M4.2). This is a text contract defined at M0.9. It requires no working AI implementation and defines no model, weights, export, training or inference interface; those are ratified separately at M4B and are deliberately absent here. Every field, bound, age rule and reset rule below restates semantics specified in docs/OPPONENT_AI.md; values that document leaves undetermined are null in instances and MUST be listed in the enclosing fixture's 'unknowns' (see intent_fixture.schema.json).",
-  "schema_version": "1.0.0",
+  "description": "Machine-readable contract for the TacticalIntent that a Classic planner or a Roadstormer policy produces and the shared safety layer and path follower consume (docs/OPPONENT_AI.md 'Architecture' steps 2-4; the 'AIObservation/TacticalIntent' row of docs/TECHNICAL_DESIGN.md 'Content contracts': version, ordered shape/fields, road frame, masks, observation age, normalization/action decoding, personality/difficulty and reset defaults, defined before M4.2). This is a text contract defined at M0.9. It requires no working AI implementation and defines no model, weights, export, training or inference interface; those are ratified separately at M4B and are deliberately absent here. Every field, bound, age rule and reset rule below restates semantics specified in docs/OPPONENT_AI.md; values that document leaves undetermined are null in instances and MUST be listed in the enclosing fixture's 'unknowns' (see intent_fixture.schema.json). Revision 1.1.0 (M0.9 independent schema checkpoint, 2026-11-27) records the checkpoint's required changes before the M2.7 ratification: the proposed decode and the executed state are now separate members (commitment.executed_label, commitment.commit_started_tick, drift.executed_preference), the pace interval and decoded target are tied together, speed corrections are nonnegative and checked against the pre-safety decode, and tick-level safety exposure plus emergency substitution/fallback telemetry have a defined home (safety.interventions, safety.emergency).",
+  "schema_version": "1.1.0",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -31,8 +31,8 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0.0",
-      "description": "Contract revision. A record whose schema_version differs is rejected, not silently migrated; a contract change requires a new version and a recorded decision."
+      "const": "1.1.0",
+      "description": "Contract revision. A record whose schema_version differs is rejected, not silently migrated; a contract change requires a new version and a recorded decision. 1.0.0 was the initial M0.9 draft; 1.1.0 is the revision taken at the independent M0.9 schema checkpoint (2026-11-27) that split the proposed decode from the executed state and added the pace-decode, tick-intervention and emergency-telemetry rules; the decision is recorded in fixtures/intent/README.md."
     },
     "intent_layout_revision": {
       "const": "tactical_intent_v1",
@@ -162,12 +162,12 @@
             "min": { "type": "number", "minimum": 0 },
             "max": { "type": "number", "minimum": 0 }
           },
-          "description": "The difficulty's desired speed-profile interval the pace decodes into. The per-difficulty intervals are tuned at M4.3 and are not numerically specified by OPPONENT_AI.md, so this is null until ratified; a null requires a matching unknowns entry."
+          "description": "The difficulty's desired speed-profile interval the pace decodes into, in m/s. The interval is ordered: min <= max (an inverted interval is rejected semantically, because JSON Schema cannot compare two members of one object). The per-difficulty intervals are tuned at M4.3 and are not numerically specified by OPPONENT_AI.md, so this is null until ratified; a null requires a matching unknowns entry and forbids a determined target_speed_m_s and any pace correction."
         },
         "target_speed_m_s": {
           "type": ["number", "null"],
           "minimum": 0,
-          "description": "Decoded target speed in m/s when the difficulty interval is known. null until the speed-profile intervals are ratified; a null requires a matching unknowns entry."
+          "description": "Decoded target speed in m/s after the safety layer, recorded separately from the proposed pace_norm as OPPONENT_AI.md requires ('Record the proposed intent, ordinary difficulty decoding, safety changes and final commands separately'). When no pace correction exists it equals the pre-safety decode min + pace_norm x (max - min) of the interval above; when a pace correction exists it equals that correction's applied value. null until the speed-profile intervals are ratified; a null requires a matching unknowns entry."
         },
         "note": { "type": ["string", "null"] }
       }
@@ -175,7 +175,7 @@
     "commitment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["label", "commitment_raw", "min_commitment_s", "interrupted"],
+      "required": ["label", "commitment_raw", "min_commitment_s", "interrupted", "executed_label", "commit_started_tick"],
       "properties": {
         "commitment_raw": {
           "type": "number",
@@ -185,7 +185,16 @@
         },
         "label": {
           "enum": ["follow", "wait", "commit_pass"],
-          "description": "Decoded commitment: below -1/3 follow, -1/3 through +1/3 wait/hold, above +1/3 commit to a legal pass. The wait band includes both thresholds."
+          "description": "Decoded commitment: below -1/3 follow, -1/3 through +1/3 wait/hold, above +1/3 commit to a legal pass. The wait band includes both thresholds. This is the pure threshold decode of the proposed commitment_raw and may differ from the executed state below while a commitment is held."
+        },
+        "executed_label": {
+          "enum": ["follow", "wait", "commit_pass"],
+          "description": "The decoded/executed commitment the safety layer and path follower actually ran, recorded separately from the proposed decode in 'label' (OPPONENT_AI.md: 'Record the proposed intent, ordinary difficulty decoding, safety changes and final commands separately'). A commitment that starts at a record must match that record's proposed decode; afterwards the executed label stays commit_pass for at least min_commitment_s (0.4 s = 24 ticks at 60 Hz) even when the proposal has moved back into the wait band, and only a hazard interruption may end it earlier."
+        },
+        "commit_started_tick": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "60 Hz tick at which the executing commit_pass began; it equals the generated_tick of the intent that started the commitment. Non-null exactly when executed_label is commit_pass, and null (not applicable, not undetermined) otherwise."
         },
         "min_commitment_s": {
           "const": 0.4,
@@ -198,16 +207,16 @@
         },
         "interrupted": {
           "type": "boolean",
-          "description": "true when a hazard interrupted the held commitment. A held tactical intent never suspends hazard checks."
+          "description": "true when a hazard interrupted the held commitment. A held tactical intent never suspends hazard checks. An interruption is the only reason an executing commit_pass may lapse before the 0.4 s minimum."
         },
-        "interruption_reason": { "type": ["string", "null"] },
+        "interruption_reason": { "type": ["string", "null"], "description": "The hazard that interrupted or overrode the held commitment. Required non-null when interrupted is true; null when interrupted is false." },
         "note": { "type": ["string", "null"] }
       }
     },
     "drift": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["drift_raw", "label"],
+      "required": ["drift_raw", "label", "executed_preference"],
       "properties": {
         "drift_raw": {
           "type": "number",
@@ -217,7 +226,11 @@
         },
         "label": {
           "enum": ["drift", "grip", "retain"],
-          "description": "Decoded drift preference: above +0.25 drift, below -0.25 grip, retain the preference between thresholds. The follower still enforces legal drift entry conditions; the label never grants them."
+          "description": "Decoded drift preference: above +0.25 drift, below -0.25 grip, retain the preference between thresholds. The follower still enforces legal drift entry conditions; the label never grants them. 'retain' is the decode band, not the preference actually retained; executed_preference carries that."
+        },
+        "executed_preference": {
+          "enum": ["drift", "grip", "none"],
+          "description": "The executed drift preference after 'retain' is resolved: drift or grip when the label decodes outside the retain band, the retained prior preference while inside it, and 'none' when retain has no prior preference to keep because the reset masked the history (reset.history_valid 0 / post_reset_defaults_applied). The follower still enforces legal entry conditions; this value never grants them."
         },
         "note": { "type": ["string", "null"] }
       }
@@ -245,7 +258,7 @@
     "safety": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_deferral_ticks", "corrections"],
+      "required": ["max_deferral_ticks", "corrections", "interventions", "emergency"],
       "properties": {
         "max_deferral_ticks": {
           "const": 0,
@@ -254,7 +267,46 @@
         "corrections": {
           "type": "array",
           "items": { "$ref": "#/$defs/correction" },
-          "description": "Safety-layer changes to the proposed intent, one entry per corrected field. The safety layer constrains the intent to the road, available passing room, contact rules and physical capability (OPPONENT_AI.md 'Architecture' step 3). Empty when the proposal was already legal."
+          "description": "Safety-layer changes to the proposed intent, one entry per corrected field. The safety layer constrains the intent to the road, available passing room, contact rules and physical capability (OPPONENT_AI.md 'Architecture' step 3). Empty when the proposal was already legal. A correction belongs to this 5 Hz intent and is counted once per intent by intent identity (BENCHMARKS.md 'AI metrics'); the tick-level exposure of per-tick safety lives in interventions, and wholesale replacement lives in emergency."
+        },
+        "interventions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ticks"],
+          "properties": {
+            "ticks": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 0 },
+              "description": "Ascending, distinct 60 Hz ticks inside this intent's hold window [generated_tick, generated_tick + sampling.period_ticks) at which the immediate per-tick safety layer replaced or overrode the intent's commands. BENCHMARKS.md counts one intent corrected on several 60 Hz ticks once (by intent identity) and reports tick-level exposure beside that count; this array is that exposure. Empty when per-tick safety never overrode the held intent."
+            },
+            "note": { "type": ["string", "null"] }
+          },
+          "description": "Tick-level safety exposure for this intent. Immediate hazard safety runs at every 60 Hz simulation tick (OPPONENT_AI.md 'Architecture'), so overrides can happen between the 5 Hz decisions; recording their ticks keeps the per-tick and per-intent views reconcilable without duplicating the intent identity used for 5 Hz deduplication."
+        },
+        "emergency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["substituted", "kind", "tick", "persistent", "reason"],
+          "properties": {
+            "substituted": {
+              "type": "boolean",
+              "description": "true when the safety layer replaced the proposed intent wholesale instead of correcting a field: the emergency substitution/reset and the safe-Classic fallback that OPPONENT_AI.md counts separately from ordinary corrections ('emergency substitution/reset is separate'; 'Invalid output or missing weights triggers a visible diagnostic and safe Classic control')."
+            },
+            "kind": {
+              "enum": ["emergency_stop", "reset", "classic_fallback", null],
+              "description": "Which replacement ran: an emergency stop/reset substitution, or a safe Classic control fallback for a learned/cloning-only producer (persistent replacement by Classic counts as a learned failure per BENCHMARKS.md). Non-null exactly when substituted is true. The kind vocabulary is provisional until the intervention categories are preregistered before evaluation (OPPONENT_AI.md 'Implementation and acceptance'); see the fixture unknowns."
+            },
+            "tick": {
+              "type": ["integer", "null"],
+              "minimum": 0,
+              "description": "60 Hz tick inside this intent's hold window at which the substitution took effect for this intent; for a persistent substitution it is the tick inside the current window, not the original one. Non-null exactly when substituted is true."
+            },
+            "persistent": {
+              "type": "boolean",
+              "description": "true when this substitution continues the same-kind substitution of the immediately preceding intent of this participant (a run of substitutions, such as a stuck Classic fallback). false for a fresh substitution and whenever nothing is substituted."
+            },
+            "reason": { "type": ["string", "null"], "description": "The fault or hazard that forced the replacement. Required non-null when substituted is true; null when substituted is false." }
+          }
         },
         "note": { "type": ["string", "null"] }
       }
@@ -309,6 +361,8 @@
         "sampling_period_s",
         "intent_staleness_ticks",
         "commitment_min_s",
+        "commitment_min_ticks",
+        "safety_check_period_ticks",
         "commitment_follow_below",
         "commitment_commit_above",
         "drift_above",
@@ -327,6 +381,14 @@
           "description": "An intent at or beyond this age marks a missed 5 Hz update; the required stale-intent behavior is unratified."
         },
         "commitment_min_s": { "const": 0.4 },
+        "commitment_min_ticks": {
+          "const": 24,
+          "description": "The 0.4 s minimum commitment expressed in 60 Hz ticks (0.4 x 60). An executing commit_pass may not lapse before this many ticks unless a hazard interrupted it."
+        },
+        "safety_check_period_ticks": {
+          "const": 1,
+          "description": "Immediate hazard safety runs at every 60 Hz simulation tick, so the safety layer's per-tick override cadence is one tick; the 5 Hz tactical intent never suspends it."
+        },
         "commitment_follow_below": {
           "const": -0.3333333333333333,
           "description": "Exactly -1/3: commitment_raw below this is 'follow'."
@@ -393,6 +455,21 @@
     "correction": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["field"],
+            "properties": { "field": { "const": "pace.target_speed_m_s" } }
+          },
+          "then": {
+            "properties": {
+              "proposed": { "type": "number", "minimum": 0 },
+              "applied": { "type": "number", "minimum": 0 }
+            }
+          },
+          "description": "A speed target cannot be negative, so a pace.target_speed_m_s correction carries nonnegative proposed/applied values. The intent slice's JSON Schema subset does not evaluate allOf/if/then, so fixtures/intent/validate_intent_contract.py enforces the same rule semantically (pace_decode_consistency); a full draft 2020-12 validator rejects it at the schema layer."
+        }
+      ],
       "required": ["field", "category", "proposed", "applied", "material"],
       "properties": {
         "field": {
@@ -405,11 +482,11 @@
         },
         "proposed": {
           "type": "number",
-          "description": "Pre-safety decoded value in the field's units (for lateral: lateral_target_norm times the corridor half-width)."
+          "description": "Pre-safety decoded value in the field's units: for lateral, lateral_target_norm times the corridor half-width; for pace, min + pace_norm x (max - min) of the speed-profile interval. A pace correction with a negative proposed value is invalid."
         },
         "applied": {
           "type": "number",
-          "description": "Post-safety value actually handed to the path follower."
+          "description": "Post-safety value actually handed to the path follower. A pace correction with a negative applied value is invalid."
         },
         "material": {
           "type": "boolean",

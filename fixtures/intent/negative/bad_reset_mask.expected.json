@@ -4,6 +4,11 @@
       "code": "semantic",
       "path": "records.0.reset",
       "check": "reset_mask"
+    },
+    {
+      "code": "semantic",
+      "path": "records.0.reset.history_valid",
+      "check": "source_observation"
     }
   ]
 }

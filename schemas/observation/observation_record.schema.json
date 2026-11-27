@@ -105,7 +105,12 @@
     "raw_inputs": {
       "type": "object",
       "additionalProperties": { "type": "number" },
-      "description": "OPTIONAL. Pre-normalization physical values for a representative subset of ratio features, keyed by the decimal index string (e.g. \"0\", \"27\"). The validator recomputes clip(raw <op> scale) from $defs.constants and the fixture context and requires it to equal feature_vector[index] within tolerance. Absent when the record does not pin raw sensor values (e.g. a safe-fallback record)."
+      "description": "OPTIONAL. Pre-normalization physical values for a representative subset of ratio features, keyed by the canonical decimal index string (e.g. \"0\", \"27\"). The validator recomputes clip(raw <op> scale) from $defs.constants and the fixture context and requires it to equal feature_vector[index] within tolerance. Absent when the record does not pin raw sensor values (e.g. a safe-fallback record). Keys MUST be canonical: a decimal index with no leading zeros, sign or whitespace, naming each index at most once. The validator rejects a non-canonical key and two keys that name the same index, so an aliased key (e.g. \"027\" for 27) can no longer satisfy one check while bypassing another that looks the index up canonically."
+    },
+    "neighbor_ids": {
+      "type": "array",
+      "items": { "$ref": "../common.schema.json#/$defs/stable_id" },
+      "description": "OPTIONAL, DIAGNOSTIC ONLY. Stable participant IDs of the present neighbors, one per slot whose presence mask is 1, in slot order (an absent slot contributes no entry, so the array length equals the number of present neighbors). The list never enters the 64-element feature_vector and no normalization, model input or decoder reads it. OPPONENT_AI.md sorts neighbor candidates 'by absolute gap then stable participant ID'; the vector alone cannot express that tie-break, so a record may carry the IDs here, and the validator then enforces both the list length against the present-slot count and the tie order (equal absolute route gaps require ascending stable IDs). A record that omits the field keeps the documented limitation that an equal-gap tie cannot be verified."
     },
     "masks": {
       "type": "object",
@@ -155,9 +160,8 @@
         "clip_min": { "const": -1 },
         "clip_max": { "const": 1 },
         "coefficients_revision": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Revision of the normalization coefficients (the /20, /pi, x100, /0.12, /70 ... divisors/multipliers in $defs.constants). Clipping/padding rules and every normalization coefficient ship with the model (OPPONENT_AI.md); a coefficient change is a new revision."
+          "$ref": "#/$defs/constants/properties/coefficients_revision",
+          "description": "Revision of the normalization coefficients (the /20, /pi, x100, /0.12, /70 ... divisors/multipliers in $defs.constants). It MUST equal the revision declared in $defs.constants, which names the one coefficient set this contract knows: the validator recomputes normalizations with those coefficients only for records that declare that revision, so a record naming any other revision is rejected instead of being silently checked against - or trained with - the wrong coefficients. Clipping/padding rules and every normalization coefficient ship with the model (OPPONENT_AI.md); a coefficient change is a new revision string plus a new schema_version, recorded as a decision."
         }
       }
     },
@@ -206,7 +210,7 @@
       { "index": 1, "group": "ego", "name": "ego_lateral_speed", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "lateral_speed_scale_m_s", "normalization": "lateral speed / 20 m/s", "range": [-1, 1] },
       { "index": 2, "group": "ego", "name": "ego_heading_error", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "heading_error_scale_rad", "normalization": "heading error / pi", "range": [-1, 1] },
       { "index": 3, "group": "ego", "name": "ego_slip_angle", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "slip_angle_scale_rad", "normalization": "slip / pi", "range": [-1, 1] },
-      { "index": 4, "group": "ego", "name": "ego_lane_offset", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "usable_half_width_m", "normalization": "lane offset / usable half-width", "range": [-1, 1] },
+      { "index": 4, "group": "ego", "name": "ego_lane_offset", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "usable_half_width_m", "normalization": "lane offset / usable half-width (convention unratified; see $defs.constants.normalization_scales)", "range": [-1, 1] },
       { "index": 5, "group": "ego", "name": "ego_yaw_rate", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "yaw_rate_scale_rad_s", "normalization": "yaw rate / pi rad/s", "range": [-1, 1] },
       { "index": 6, "group": "ego", "name": "ego_grounded", "kind": "boolean", "snapshot": "current", "scale_ref": null, "normalization": "grounded flag", "range": [0, 1] },
       { "index": 7, "group": "ego", "name": "ego_drift_active", "kind": "boolean", "snapshot": "current", "scale_ref": null, "normalization": "drift active flag", "range": [0, 1] },
@@ -253,8 +257,8 @@
       { "index": 48, "group": "neighbor", "name": "neighbor3_rel_lateral_speed", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_rel_lateral_speed_scale_m_s", "normalization": "relative lateral speed / 20 m/s", "range": [-1, 1] },
       { "index": 49, "group": "neighbor", "name": "neighbor3_width", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "neighbor_width_scale_m", "normalization": "width / 3 m", "range": [0, 1] },
       { "index": 50, "group": "neighbor", "name": "neighbor3_presence", "kind": "boolean", "snapshot": "delayed", "scale_ref": null, "normalization": "presence mask", "range": [0, 1] },
-      { "index": 51, "group": "history", "name": "history_lane_target_0p2s", "kind": "already_normalized", "snapshot": "current", "scale_ref": null, "normalization": "own executed normalized lane target at 0.2 s ago (recorded normalized value)", "range": [-1, 1] },
-      { "index": 52, "group": "history", "name": "history_lane_target_0p6s", "kind": "already_normalized", "snapshot": "current", "scale_ref": null, "normalization": "own executed normalized lane target at 0.6 s ago (recorded normalized value)", "range": [-1, 1] },
+      { "index": 51, "group": "history", "name": "history_lane_target_0p2s", "kind": "already_normalized", "snapshot": "current", "scale_ref": null, "normalization": "own executed normalized lane target at 0.2 s ago (recorded normalized value; its 'then-usable half-width' divisor is the unratified usable-half-width convention, see $defs.constants.normalization_scales)", "range": [-1, 1] },
+      { "index": 52, "group": "history", "name": "history_lane_target_0p6s", "kind": "already_normalized", "snapshot": "current", "scale_ref": null, "normalization": "own executed normalized lane target at 0.6 s ago (recorded normalized value; its 'then-usable half-width' divisor is the unratified usable-half-width convention, see $defs.constants.normalization_scales)", "range": [-1, 1] },
       { "index": 53, "group": "history", "name": "history_previous_pass_side", "kind": "signed_enum", "snapshot": "delayed", "scale_ref": null, "normalization": "previous pass side (-1/0/1)", "range": [-1, 1] },
       { "index": 54, "group": "history", "name": "history_seconds_since_attempt", "kind": "ratio_divide", "snapshot": "delayed", "scale_ref": "history_attempt_age_scale_s", "normalization": "seconds since last attempt / 3", "range": [0, 1] },
       { "index": 55, "group": "history", "name": "history_forward_distance_3s", "kind": "ratio_divide", "snapshot": "current", "scale_ref": "history_forward_distance_scale_m", "normalization": "valid forward distance over last 3 s / 195 m", "range": [0, 1] },
@@ -309,6 +313,7 @@
         "neighbor_slot_count",
         "history_recent_window_s",
         "traffic_age_ticks_by_difficulty",
+        "coefficients_revision",
         "normalization_scales"
       ],
       "properties": {
@@ -341,10 +346,14 @@
             "expert": { "const": 7 }
           }
         },
+        "coefficients_revision": {
+          "const": "ai_shared_v1_norm",
+          "description": "The one revision whose coefficients this block defines. normalization.coefficients_revision $refs this member, so the coefficient set and its revision name cannot drift apart: a record declaring any other revision is rejected rather than validated against these scales. The listed values are provisional; changing one is a new revision string plus a new schema_version recorded as a decision."
+        },
         "normalization_scales": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Fixed normalization divisors/multipliers from the OPPONENT_AI.md feature table. top_speed_m_s (index 0) and usable_half_width_m (index 4) are per-car/per-section and are supplied by the fixture context, not fixed here.",
+          "description": "Fixed normalization divisors/multipliers from the OPPONENT_AI.md feature table. top_speed_m_s (index 0) and usable_half_width_m (index 4) are per-car/per-section and are supplied by the fixture context, not fixed here. The usable-half-width CONVENTION itself is unratified and is a blocking unknown: OPPONENT_AI.md normalizes index 4 by the 'usable half-width' and divides history lane targets 51-52 'by its then-usable half-width', while its action-0 decode derives a narrower legal corridor of (road_width - car_width)/2 - 0.5 m; the sources never say which quantity 'usable half-width' names. The fixtures author road_width/2 as an illustrative value (10 m road -> 5.0 m, 12 m road -> 6.0 m) and every fixture carrying the value lists the ambiguity in its unknowns. The convention must be ratified before demonstrations are collected; it is not decided here.",
           "required": [
             "lateral_speed_scale_m_s",
             "heading_error_scale_rad",

@@ -1,10 +1,10 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "fixture_id": "fixture.intent.negative_commit_label",
   "fixture_family": "wait_hold",
   "title": "NEGATIVE fixture: commitment label is not one of follow/wait/commit_pass",
   "description": "Deliberately invalid variant used by fixtures/intent/validate_intent_contract.py to keep this rejection rejected. Defect: commitment label is not one of follow/wait/commit_pass. Derived from fixture.intent.classic_wait_hold; everything except the named defect is valid.",
-  "revision": "1.1.0",
+  "revision": "1.2.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -23,7 +23,7 @@
   },
   "records": [
     {
-      "schema_version": "1.0.0",
+      "schema_version": "1.1.0",
       "intent_layout_revision": "tactical_intent_v1",
       "intent_id": "intent.classic_wait.t000500",
       "participant_id": "ai.classic_2",
@@ -67,12 +67,15 @@
         "hold_window_s": null,
         "interrupted": false,
         "interruption_reason": null,
-        "note": "0.0 is inside the -1/3 through +1/3 wait band."
+        "note": "0.0 is inside the -1/3 through +1/3 wait band.",
+        "executed_label": "wait",
+        "commit_started_tick": null
       },
       "drift": {
         "drift_raw": -0.5,
         "label": "grip",
-        "note": "Below -0.25, so the preference is grip."
+        "note": "Below -0.25, so the preference is grip.",
+        "executed_preference": "grip"
       },
       "interpolation": {
         "enabled": true,
@@ -83,7 +86,18 @@
       "safety": {
         "max_deferral_ticks": 0,
         "corrections": [],
-        "note": null
+        "note": null,
+        "interventions": {
+          "ticks": [],
+          "note": null
+        },
+        "emergency": {
+          "substituted": false,
+          "kind": null,
+          "tick": null,
+          "persistent": false,
+          "reason": null
+        }
       },
       "reset": {
         "reset_generation": 0,
@@ -99,7 +113,7 @@
       }
     },
     {
-      "schema_version": "1.0.0",
+      "schema_version": "1.1.0",
       "intent_layout_revision": "tactical_intent_v1",
       "intent_id": "intent.classic_wait.t000512",
       "participant_id": "ai.classic_2",
@@ -143,12 +157,15 @@
         "hold_window_s": null,
         "interrupted": false,
         "interruption_reason": null,
-        "note": "0.2 is still inside the wait band."
+        "note": "0.2 is still inside the wait band.",
+        "executed_label": "wait",
+        "commit_started_tick": null
       },
       "drift": {
         "drift_raw": -0.4,
         "label": "grip",
-        "note": null
+        "note": null,
+        "executed_preference": "grip"
       },
       "interpolation": {
         "enabled": true,
@@ -159,7 +176,18 @@
       "safety": {
         "max_deferral_ticks": 0,
         "corrections": [],
-        "note": null
+        "note": null,
+        "interventions": {
+          "ticks": [],
+          "note": null
+        },
+        "emergency": {
+          "substituted": false,
+          "kind": null,
+          "tick": null,
+          "persistent": false,
+          "reason": null
+        }
       },
       "reset": {
         "reset_generation": 0,
@@ -343,15 +371,33 @@
       "reason": "Required behavior for a stale intent (at or beyond 12 ticks) is not specified.",
       "blocking": true,
       "until": "M4.2"
+    },
+    {
+      "path": "safety.interventions.ticks",
+      "reason": "The hold window [generated_tick, generated_tick + period_ticks) is this contract's modeling decision for tick-level safety exposure; OPPONENT_AI.md does not say whether a record exported at sampled_tick inside the window must truncate its intervention list.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.emergency.kind",
+      "reason": "The emergency kind vocabulary (emergency_stop, reset, classic_fallback) is provisional until the intervention categories are preregistered before evaluation (OPPONENT_AI.md 'Implementation and acceptment'); the metric itself is a later measured run.",
+      "blocking": true,
+      "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:4b972cfc6bdb6718e19d93b3e354d9483cfbaa60e0dd93fafe30f4826301fad2",
+  "illustrative_sources": [
+    {
+      "observation_id": "obs.t000512.ai_classic_2",
+      "reason": "The observation slice ships no obs.t000512.ai_classic_2 record; this 5 Hz intent's source observation is illustrative only and follows the observation contract's obs.t<tick>.<participant> convention. Nothing further is claimed about it."
+    }
+  ],
+  "content_hash": "sha256:9adc32e5df8a0fd81ef2fc6ede41fbedb9117c06626452882dc8b5376d8a15d5",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
     "author": "pi coding agent (job 8cfeb70f-e5b3-4cac-8b4c-83a933d0970b)",
     "model": "stepfun-ai-step-plan/step-5-preview",
     "provider": "stepfun",
     "date_utc": "2026-11-26",
-    "note": "Negative fixture authored at M0.9; expects rejection, not execution."
+    "note": "Negative fixture authored at M0.9; expects rejection, not execution. Revised for contract revision 1.1.0 at the M0.9 independent schema checkpoint (job 13001f38-b8b9-42bc-a930-99c85ccfb04c, 2026-11-27)."
   }
 }

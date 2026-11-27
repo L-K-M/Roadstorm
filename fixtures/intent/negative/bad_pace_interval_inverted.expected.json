@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.0.pace.speed_profile_interval_m_s",
+      "check": "pace_decode_consistency"
+    }
+  ]
+}
