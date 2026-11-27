@@ -33,6 +33,7 @@ is implemented or claimed here.
 | `tests/contract_entry.gd` | entry point for the independent focused contract tests |
 | `tests/contract_driver.gd` | independent contract tests with their own `SceneTree.physics_frame` counting and negative controls |
 | `tests/run_contract_tests.py` | runs the contract tests in an isolated copy (temp dir, XDG/TMPDIR redirected, no `HOME` reassignment, bounded timeout), with `--pacing fixed\|default\|max` and optional `--expect-checks N`; fails closed on reported failures even if the child exits 0 |
+| `tests/run_frame_alignment_mutation.py` | negative control: priority-0 coordinator mutation with the numeric priority assertion excluded, proving the behavioural frame-alignment checks catch the misalignment the `1..n` sequence check cannot |
 | `tests/inject_failure_fake_godot.sh` | test double emitting a well-formed failing report with exit 0, for the runner fail-closed check |
 | `compare_modes.py` | runs accelerated/real-time throughput checks and a per-tick trace digest comparison across three pacing modes |
 | `.gitignore` | ignores the generated `.godot/` cache |
@@ -63,15 +64,24 @@ godot --headless --max-fps 60 --path tools/tick_probe \
 
 # Independent focused contract tests (isolated copy, XDG/TMPDIR redirected, <=30 s).
 # Run them under every pacing mode: --pacing fixed|default|max.
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 135
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 135
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 135
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 137
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 137
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 137
 
 # Runner must fail closed when a well-formed report says checks failed but the
-# child exits 0 (must exit 1):
-FAKE_CHECKS=133 FAKE_FAILED=1 python3 tools/tick_probe/tests/run_contract_tests.py \
+# child exits 0 (must exit 1). FAKE_CHECKS matches the pinned contract count so
+# the documented command reaches the reported-failure branch, not the count
+# mismatch:
+FAKE_CHECKS=137 FAKE_FAILED=1 python3 tools/tick_probe/tests/run_contract_tests.py \
     --godot tools/tick_probe/tests/inject_failure_fake_godot.sh \
-    --pacing fixed --expect-checks 135; echo $?   # 1
+    --pacing fixed --expect-checks 137; echo $?   # 1
+
+# Behavioural ordering negative control: coordinator priority set to 0 with the
+# numeric priority assertion excluded. The script exits 0 only when the mutated
+# run fails the callback-frame alignment checks while the 1..12 sequence and
+# callback-count checks still pass:
+python3 tools/tick_probe/tests/run_frame_alignment_mutation.py \
+    --pacing fixed --pacing default --pacing max --expect-checks 137
 
 # Dynamic server-step regression (strict isolated runner)
 python3 tools/tick_probe/tests/run_n1_tests.py --pacing fixed --expect-checks 76
@@ -99,7 +109,7 @@ Exit code `0` means every check passed, `1` means at least one failed.
 `TICK_PROBE_DEBUG=1` additionally prints per-substep query/commit diagnostics.
 
 The broad structural suite currently has **108 checks**; the independent
-contract suite has **135 checks** and passes under `--fixed-fps 60`, default
+contract suite has **137 checks** and passes under `--fixed-fps 60`, default
 and `--max-fps 60` pacing. Recorded totals and outputs live under `evidence/`.
 
 ## Coordinator contract
@@ -282,10 +292,18 @@ yields 13 steps and fails. Zero-budget/terminal/reset/reentrancy paths
 unchanged.
 
 **Callback ordering.** All simulation work is inside the coordinator, which
-owns tree pause. During the n tick iterations, nodes ordered before and after
-the coordinator receive all n `_physics_process` callbacks. The publication
-callback pauses first, so later-ordered nodes do not run in that extra
-publication iteration; this is callback delivery only and adds no server step.
+owns tree pause. During the n tick iterations, nodes the coordinator outranks
+receive all n `_physics_process` callbacks. The committed tests place
+default-priority observers both earlier and later in the tree and check two
+independent properties: each observer sees the actual consecutive sequence
+`1..n`, and each observed tick's `Engine.get_physics_frames()` value equals the
+coordinator's recorded frame for that SAME logical tick. The sequence alone is
+not sufficient: a pausable observer ordered before the coordinator still reads
+`1..n` one iteration late, which the frame pairing catches. The numeric
+priority comparison remains a separate configuration check, not the behavioural
+gate. The publication callback pauses first, so nodes the coordinator outranks
+do not run in that extra publication iteration; this is callback delivery only
+and adds no server step.
 
 **Observation freshness.** `step_finished` is published only from the
 post-final-server-step callback; the observation is rebuilt there, so the
@@ -300,21 +318,39 @@ step is added. `compare_modes.py` records this overhead and its realtime
 ceiling (`sim / (sim + requests/60)`, about 0.923× for 50 requests); the
 documented 0.5–2.0 acceptance band is unchanged.
 
-**Callback priority and the remaining idle window.** The coordinator uses
-`process_physics_priority = -1000`, below ordinary default-priority observers,
-for this scene. This is not a global guarantee: a node with an even lower
-priority (or the same priority ordered earlier) still runs first. Committed
-ordering tests place default-priority observers both earlier and later in the
-tree and require the actual consecutive sequence `1..n` at their unpaused
-callbacks.
+**Callback priority and the remaining idle/publication windows.** The
+coordinator uses `process_physics_priority = -1000`, below ordinary
+default-priority observers, for this scene. This is not a global guarantee: a
+node with an even lower priority (or the same priority ordered earlier) still
+runs first, and priority is scene-local rather than globally unbeatable.
+
+Two intervals remain around publication, and M1 integrations must account for
+both:
+
+* **Idle gap between the final tick and the publication callback.** A normal
+  request leaves the tree unpaused through the final tick's physics-server
+  step; the coordinator pauses in its next physics callback. If the engine
+  reaches idle processing between those two physics iterations, a pausable
+  `_process` callback, idle timer, tween or animation can advance after the
+  last logical tick and before `step_finished`. The physics-priority fix does
+  not close this interval.
+* **Publication iteration.** A pausable node whose `process_physics_priority`
+  is lower than the coordinator's, or equal and ordered earlier in the tree,
+  runs before the coordinator in the publication iteration while the tree is
+  still unpaused, so it observes an unpaused iteration with no logical tick.
+  Nodes the coordinator outranks are paused by the time their
+  `_physics_process` is reached and see no such callback. Idle `_process`
+  scheduling is separate from physics priority, so there is no blanket
+  guarantee that every pausable node avoids an extra unpaused callback.
 
 During waiting the tree is paused, so pausable `_process`, timers, tweens and
-animations do not advance. The publication iteration pauses in the coordinator
-physics callback before idle processing, so pausable nodes never observe an
-unpaused simulation step without a logical tick. The remaining window belongs
-to `PROCESS_MODE_ALWAYS` nodes: they can run in the publication iteration with
-`SceneTree.paused == true`, outside coordinator authority. Simulation state
-itself stays inside the coordinator; such nodes must not mutate it.
+animations do not advance. `PROCESS_MODE_ALWAYS` nodes can also run in the
+publication iteration with `SceneTree.paused == true`, outside coordinator
+authority. Simulation state itself stays inside the coordinator; such nodes
+must not mutate it. An M1 bridge/motor that must not advance after the final
+tick has to enforce that itself (for example by gating on
+`is_publication_pending()` or an explicit episode phase) rather than relying
+on tree pause or physics priority alone.
 
 **Completion-callback safety.** Publication state is armed before any
 completion observer runs, `begin_step()` refuses reentry while a completion
@@ -418,13 +454,24 @@ frozen trailing callback never advanced `tick_count`.
 
 ## Evidence
 
-- `evidence/2026-11-27-apple-m4-max-jolt-phase-followup/` — **current**:
+- `evidence/2026-11-27-apple-m4-max-jolt-frame-alignment/` — **current**:
+  correction of both `b5c4f99` reviews: behavioural callback-frame alignment
+  assertions for the earlier/later default-priority observers plus a targeted
+  priority=0 negative mutation with the numeric assertion excluded, precise
+  idle-gap/publication-window M1 integration constraints, corrected
+  `FAKE_CHECKS`/repeat-runner defaults/errata/provenance docs, refreshed
+  137-check contract / 76-check N1 / 70-check repeat / 108-check structural
+  evidence.
+- `evidence/2026-11-27-apple-m4-max-jolt-phase-followup/` — historical:
   follow-up hardening against both `8b7146b` pass reviews: scene-local
   `process_physics_priority=-1000` plus committed consecutive-tick sequence
   assertions, deterministic physics-ordered motion-bound injection, returned
   `requested_ticks` and dynamic-change hard-gate checks, inter-callback
   `_pending_publish` regression, precise errata, refreshed 135-check contract /
-  76-check N1 / 70-check repeat evidence.
+  76-check N1 / 70-check repeat evidence. Raw outputs and source bindings are
+  preserved; the two documentation corrections requested by the `b5c4f99`
+  reviews (nonexistent repeat file names in `errata.md`, stale README hash in
+  `provenance.json`) are recorded in the current directory.
 - `evidence/2026-11-27-apple-m4-max-jolt-phase-alignment/` — historical:
   measured pre-fix phase shift (integrations 0..11 for a 12-tick request,
   L12 never integrated), corrected per-tick pairing (1..n) and
@@ -595,7 +642,18 @@ phase-alignment directory remains byte-identical historical candidate evidence.
 Engine:
 Godot 4.7.2-stable (official). No third-party assets or network services.
 
+The frame-alignment correction responds to both `b5c4f99` reviews: it adds a
+behavioural callback-frame alignment gate (observer `Engine.get_physics_frames()`
+versus the coordinator's frame for the same logical tick), demonstrates with a
+priority-0 mutation that the older `1..n` sequence assertion cannot detect the
+misalignment, documents the idle/publication windows as M1 integration
+constraints, corrects the `FAKE_CHECKS` example and the repeat runner default,
+and fixes the phase-followup errata references and provenance README hash
+without rewriting raw outputs or rebinding that candidate's source hashes.
+Hashes bind this worktree and the new outputs in
+`evidence/2026-11-27-apple-m4-max-jolt-frame-alignment/manifest.sha256`.
+
 The cold-start evidence manifest records the tested files at commit `8a5615c`.
 Later documentation-only corrections changed example counts; the current
-pinned examples are contract 135, strict N1 76 and repeat hard gate 70. Old
+pinned examples are contract 137, strict N1 76 and repeat hard gate 70. Old
 evidence directories retain their original recorded counts unchanged.

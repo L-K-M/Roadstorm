@@ -1,0 +1,22 @@
+mode          ticks    wall_s     ticks/s   speedup             final_z
+accelerated     600     0.171      3499.2     58.32       -99.999641418
+realtime        600    10.900        55.0      0.92       -99.999641418
+INFO: 50 activation/publication boundary iterations expected (0.833s, zero server steps); realtime ceiling ~0.923, observed 0.917
+PASS accelerated: consumed 600 logical ticks
+PASS accelerated: physics delta stayed 1/60 s
+PASS accelerated: shape-cast prediction error below 0.01 m (0.000000000 m)
+PASS realtime: consumed 600 logical ticks
+PASS realtime: physics delta stayed 1/60 s
+PASS realtime: shape-cast prediction error below 0.01 m (0.000000000 m)
+PASS fidelity: accelerated and real-time final positions agree (|dz|=0.000e+00 m)
+PASS fidelity: accumulated command-trace error matches across pacing modes
+PASS pacing: accelerated mode is meaningfully faster than wall clock (58.3x)
+PASS pacing: real-time mode tracks wall clock (0.917x)
+
+intermediate-state trace (contact / termination / reset-replay / motion-bound)
+PASS trace fidelity: accelerated vs realtime per-tick digests match within 1e-06 (max |diff|=0.000e+00, mismatches=0)
+  max |diff| vs realtime: 0.000e+00
+PASS trace fidelity: accelerated vs default per-tick digests match within 1e-06 (max |diff|=0.000e+00, mismatches=0)
+  max |diff| vs default: 0.000e+00
+
+COMPARISON PASS

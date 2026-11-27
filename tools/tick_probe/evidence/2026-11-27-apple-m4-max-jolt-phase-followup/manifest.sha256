@@ -33,7 +33,7 @@ a05eeb8f4c068d534e6ba8f56da54f71c7213a741ce60a7773022ae5d38f0b58  evidence/2026-
 53b8578eb73941c9a3f4a6ff65bdf2d93732077501847d942848ead7e744d0e8  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/contract-max/contract-tests.json
 398213ea5d2b767e96aa07decd8217358e66de5f943dbcdb17137b9550496fd4  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/contract-max/contract-tests.txt
 fe0e7c65de01c2c6c10ac1074b4e7178458a7f68eb2e5742e429f3265e9dc7b6  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/contract-max/run.txt
-b83b6d51fb15d8c28ea85385f05c38f478f46b4c7fd8640de627d18e19bf3438  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/errata.md
+ddb118eb0ac40133300850d1a3c1c0b2fa120b4d38aea0dd41159d62c99187bc  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/errata.md
 099212d50ba41fab9a6ccde6e3c884db74a253a9b07951952b9eb78f389624e6  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/exit-code-selftest.txt
 c7dfba271f1354f3c6e96e99c6f4117343fb34e7d89187be3d4ec00ebdd2ac9c  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/mutation-pubguard.txt
 d0bf56e772fe18691d2227cc4255bd55347db362b8954a8f18f20d1208c13e36  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/mutation-publish.txt
@@ -41,7 +41,7 @@ d0bf56e772fe18691d2227cc4255bd55347db362b8954a8f18f20d1208c13e36  evidence/2026-
 8beb6d6c7bd3247094ce6b3f0512a16538295820e4c96567258657d80c70efc8  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/n1-default.txt
 8455d5d4644cc0ad36338cb2256ebc361dde6470e7ed89674d409afaa7018aa3  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/n1-fixed.txt
 7134a1105373daaf1810ebb95047c5428c3e018e02b5225420071a5ae99c32eb  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/n1-max.txt
-de6a1b98c35677277c899000c2da27832dd4dd694bbf14f98523c7af72084af4  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/provenance.json
+d1dfdff92b0d6603b90afd91e73dc4a4ab74731daad055fcae81777333b39fd1  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/provenance.json
 e0367a0dbc1ff69d428e656368362e369bbe8a825f500e02a62fce6d6f0b9994  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/repeat-default.txt
 931a6794aa27fa2c0149758abb14dc2562ddd6b53177f8a14ea4eae4ec9a7ff4  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/repeat-fixed.txt
 402cd3ebf6db87d81736d56a8cbf21ba2b231bd75175af75a975581ae5b0fe5c  evidence/2026-11-27-apple-m4-max-jolt-phase-followup/repeat-max.txt

@@ -6,7 +6,7 @@ REPEAT_TOTAL reconciliation, and fail-closed on reported failures.
 
 Usage:
     python3 tools/tick_probe/tests/run_repeat_tests.py --pacing fixed \
-        --expect-checks 54
+        --expect-checks 70
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def main() -> int:
     parser.add_argument("--project", default=None)
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--pacing", choices=["fixed", "default", "max"], default="fixed")
-    parser.add_argument("--expect-checks", type=int, default=54)
+    parser.add_argument("--expect-checks", type=int, default=70)
     args = parser.parse_args()
 
     project = Path(args.project).resolve() if args.project else Path(__file__).resolve().parent.parent

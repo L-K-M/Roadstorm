@@ -1,0 +1,112 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+PASS pinned engine is Godot 4.7.2
+PASS pinned 3D physics backend is Jolt Physics
+PASS negative-control: 12 unacked calls consumed zero logical ticks
+PASS negative-control: unacked calls did not move the body
+PASS negative-control: call arithmetic alone is not evidence of motion
+PASS open: waiting between requests consumed zero logical ticks
+PASS open: every nonterminal request consumed exactly 12 ticks
+PASS open: five requests stayed nonterminal
+PASS open: total logical ticks is 60
+PASS open: 60 ticks moved the body the commanded 10 m
+PASS open: shape-cast prediction matches committed motion below 0.01 m
+PASS open: explicit simulated transform matches committed body position
+PASS open: ground query reported support on every tick
+PASS open: physics delta stayed fixed at 1/60 s
+PASS bypass: 12 direct physics calls consumed zero logical ticks
+PASS bypass: direct calls still moved the body 2 m outside tick accounting
+PASS termination: terminal kind is terminated
+PASS termination: stopped early at tick 6
+PASS termination: only 6 ticks accumulated
+PASS termination: car stopped on the crossing tick
+PASS termination: later request consumes zero ticks
+PASS termination: episode stays terminated
+PASS termination: no motion after terminal
+PASS truncation: first request full and nonterminal
+PASS truncation: second request full and nonterminal
+PASS truncation: partial final request returns the 6 remaining ticks
+PASS truncation: post-truncation request consumes zero ticks
+PASS truncation: total ticks capped at 30
+PASS truncation: 30 ticks moved the commanded 5 m
+PASS zero-budget: max_ticks=0 consumes zero ticks and starts truncated
+PASS zero-budget: no unintended tick or motion at cap 0
+PASS zero-budget: later requests stay zero-tick truncated
+PASS zero-budget: negative cap is treated as zero, not one tick
+PASS zero-budget: max_ticks=1 executes exactly one tick
+PASS zero-budget: one-tick boundary accounted exactly once
+PASS work-envelope: speed at the 4 m/tick bound completed 12 ticks
+PASS work-envelope: no bounded-work failure at the supported speed
+PASS work-envelope: substep cap respected at the bound
+PASS work-envelope: 250 m/s refused with motion_bound and zero elapsed ticks
+PASS work-envelope: refused command moved nothing
+PASS work-envelope: residual deficit recorded explicitly
+PASS work-envelope: reverse over-speed is also refused
+PASS work-envelope: mid-request step accepted
+PASS work-envelope: mid-request over-speed refused
+PASS work-envelope: mid-request refusal keeps elapsed and tick count
+PASS work-envelope: refusal happened inside the request
+PASS wait-guard: reset leaves the authoritative world frozen
+PASS wait-guard: ambient body falls while the world is deliberately running
+PASS wait-guard: reset re-freezes the waiting world
+PASS wait-guard: engine physics frames continued while frozen after reset
+PASS wait-guard: independent body did not drift after reset
+PASS wait-guard: zero logical ticks after reset
+PASS wait-guard: zero-tick request is a nonterminal zero step
+PASS wait-guard: zero-tick request leaves the world frozen
+PASS wait-guard: independent body did not drift after a zero-tick request
+PASS wait-guard: zero logical ticks after a zero-tick request
+PASS wait-guard: exhausted-budget request is zero-tick truncated
+PASS wait-guard: exhausted-budget request freezes the world
+PASS wait-guard: independent body did not drift after an exhausted-budget request
+PASS begin-step: first request accepted
+PASS begin-step: overlapping request refused
+PASS begin-step: first request accounting survived the overlap attempt
+PASS begin-step: negative budget refused
+PASS begin-step: negative refusal changed no accounting
+PASS begin-step: request after refusals accepted
+PASS begin-step: untaken-result overlap refused
+PASS begin-step: untaken refusal changed no accounting
+PASS begin-step: pending result still readable after a refusal
+PASS api-edge: one-tick cap reaches a consumed terminal result
+PASS api-edge: negative request refused after consumed terminal
+PASS api-edge: negative terminal request published no result
+PASS api-edge: negative terminal request changed no tick
+PASS api-edge: zero-tick signal snapshot is empty, nonterminal and frozen
+PASS api-edge: zero-tick request is an empty nonterminal step
+PASS api-edge: zero-tick request leaves the world frozen
+PASS api-edge: cap-0 reset observation starts truncated
+PASS api-edge: cap-0 request stays zero-tick truncated
+PASS reset: tick counter cleared
+PASS reset: take_result exposes no pre-reset result
+PASS reset: no pending result survives reset
+PASS reset: pose restored exactly
+PASS reset: rotation restored
+PASS reset: RNG history cleared
+PASS reset: event queue cleared
+PASS reset: distance/substep counters cleared
+PASS reset: episode open and world frozen for waiting
+PASS reset: works while waiting and leaves the world frozen
+PASS replay: identical command trace reproduces the exact transform
+PASS replay: rotation reproduced exactly
+PASS replay: seeded RNG stream reproduced exactly
+PASS replay: event count reproduced
+PASS replay: distance and substep totals reproduced
+PASS wall: request completed 12 ticks without terminal
+PASS wall: car stopped at the wall face instead of the naive chord
+PASS wall: no tick endpoint tunneled through the wall
+PASS wall: shape-cast prediction tracked committed contact motion below 0.01 m
+PASS wall: movement subdivision respected the 0.25 m cap
+PASS max-speed: request completed 12 ticks
+PASS max-speed: 65 m/s car stopped at the wall, not through it
+PASS max-speed: per-substep displacement stayed within 0.25 m
+PASS max-speed: subdivision was actually exercised
+PASS wait: zero logical ticks while frozen
+PASS wait: probe car did not move while frozen
+PASS wait: engine frames continued while the world was frozen
+PASS wait: stepping resumed with exactly 12 ticks
+PASS freeze: ambient rigid body falls under normal stepping
+PASS freeze: SceneTree.paused stops an autonomous rigid body
+PASS freeze: Engine.time_scale=0 holds an autonomous rigid body within 1e-5 m
+PROBE_RESULT {"checks_failed":0,"checks_total":108,"environment":{"character_body_safe_margin_m":0.08,"engine_major":4,"engine_max_fps":60,"engine_minor":7,"engine_pacing":"max-fps","engine_patch":2,"engine_string":"4.7.2-stable (official)","max_supported_speed_mps":240.0,"max_tick_travel_m":4.0,"os":"macOS","physics_engine_allowed":["DEFAULT","Jolt Physics","GodotPhysics3D","Dummy"],"physics_engine_setting":"Jolt Physics","physics_ticks_per_second":60,"processor_count":14,"processor_name":"Apple M4 Max","rendering_method_setting":"forward_plus","requested_pacing":"max","swept_cast_margin_m":0.0},"failures":[],"label":"local","limitations":["Headless dummy display/audio drivers; no rendering, input or audio claims.","Accelerated pacing uses --fixed-fps (engine disables real-time synchronization); real-time pacing uses --max-fps 60 and depends on host load.","Godot/Jolt same-host determinism is measured; cross-platform byte determinism is not claimed.","The probe car uses CharacterBody3D explicit displacement like the planned motor; it is not the full M1 motor, AI, contacts, multi-car reset or renderer. A one-car open-road/wall trace is not a full simulation claim.","The coordinator advances exactly 1/60 s per logical tick and does not use the engine delta parameter; structural scenarios assert that the delivered physics delta stays 1/60 s rather than clamping or adapting to a different delta.","The coordinator owns SceneTree.paused for the probe world: it freezes the tree after reset, after every finished request, after zero-tick requests and in exhausted-budget returns; only begin_step() with a positive budget unfreezes it. Other nodes must not write SceneTree.paused while the probe runs.","A commanded per-tick displacement above MAX_SUBSTEPS * SUBSTEP_MAX_LEN (4.0 m, 240 m/s) is refused with terminal motion_bound; speeds within the envelope are subdivided into <=0.25 m substeps.","take_result() consumes the pending result and returns an empty Dictionary when none is pending; reset clears any stored result so a prior episode result cannot be read back.","GDScript cannot query the active 3D physics backend at runtime (PhysicsServer3D is opaque and this build prints no backend line even with --verbose); the backend pin is verified by the physics/3d/physics_engine setting value above plus the explicit backend-contrast run recorded in the evidence directory."],"mode":"structural","scenarios":{"api_edges":{"cap0_reset_terminal":"truncated","negative_after_terminal_refused":true,"zero_tick_signal_frozen":true},"begin_step_refusals":{"first_elapsed_ticks":12,"refusals":3,"third_elapsed_ticks":12},"bounded_work_envelope":{"boundary_elapsed_ticks":12,"boundary_motion_bound_violations":0,"max_supported_speed_mps":240.0,"max_tick_travel_m":4.0,"mid_request_elapsed_ticks":2,"mid_request_terminal":"motion_bound","over_speed_deficit_m":0.166666666666667,"over_speed_terminal":"motion_bound","reverse_terminal":"motion_bound"},"bypass_calls":{"body_displacement_m":1.99999976158142,"direct_calls":12,"logical_ticks":0},"early_termination":{"elapsed_ticks":6,"final_z_m":-1.0,"later_request_elapsed_ticks":0,"requested_ticks":12,"terminal":"terminated"},"max_speed_no_tunnel":{"actual_stop_z_m":-0.599701285362244,"contact_plane_z_m":-0.6,"max_substep_len_m":0.25,"naive_one_tick_z_m":-1.08333333333333,"naive_request_z_m":-13.0,"speed_mps":65.0,"total_substeps":14,"wall_face_z_m":-2.5},"open_fidelity":{"actual_z_m":-10.0,"delta_max":0.0166666666666667,"delta_min":0.0166666666666667,"expected_z_m":-10.0,"max_commit_discrepancy_m":0.0,"max_prediction_error_m":0.0,"max_test_move_error_m":0.0,"request_elapsed_ticks":[12,12,12,12,12],"tick_count":60,"unacked_call_count":12,"unacked_claimed_distance_m":2.0},"reset_replay":{"commanded_distance_m":4.0,"event_count_first_run":24,"event_count_replay":24,"exact_rng_stream_match":true,"exact_transform_match":true,"ticks_per_replay":24},"truncation":{"final_z_m":-4.99999952316284,"max_ticks":30,"sequence":[{"elapsed_ticks":12,"terminal":"none"},{"elapsed_ticks":12,"terminal":"none"},{"elapsed_ticks":6,"terminal":"truncated"},{"elapsed_ticks":0,"terminal":"truncated"}]},"wait_freeze":{"ambient_time_scale_drift_m":0.0,"ambient_y_after_fall":8.83404922485352,"driver_frames_during_wait":60,"frozen_engine_physics_frames":122,"resumed_elapsed_ticks":12,"ticks_after_wait":12,"ticks_before_wait":12},"wait_guard":{"exhausted_budget_froze_world":true,"reset_froze_world":true,"zero_tick_froze_world":true},"wall_swept_motion":{"actual_stop_z_m":-1.09974813461304,"contact_plane_z_m":-1.1,"max_prediction_error_m":0.000162363052368164,"max_substep_len_m":0.16666667163372,"minimum_tick_end_z_m":-1.09974813461304,"naive_chord_z_m":-2.0,"test_move_recovery_artifact_m":0.0696332156658173,"total_substeps":12,"wall_face_z_m":-3.0},"zero_tick_budget":{"cap_0_elapsed_ticks":0,"cap_0_terminal":"truncated","negative_cap_elapsed_ticks":0,"one_tick_cap_elapsed_ticks":1}},"schema":"roadstorm.tick_probe.report.v1"}
+CHECKS_TOTAL=108 CHECKS_FAILED=0

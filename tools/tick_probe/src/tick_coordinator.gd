@@ -88,6 +88,12 @@ var max_commit_discrepancy := 0.0
 var total_substeps := 0
 var max_substep_len := 0.0
 var tick_log: Array[Dictionary] = []
+## Bounded diagnostic pairing of each committed logical tick with the engine
+## physics-frame counter seen in that same callback. Deliberately kept separate
+## from tick_log so unstable engine frame IDs never enter the compared per-tick
+## trace digest. Tests use it to prove callback ordering behaviourally.
+var tick_engine_frames: Array[int] = []
+var _tick_engine_frames_base := 1
 ## Loud failure bookkeeping for the bounded substep envelope. A nonzero
 ## violation count means a command could not be applied within the work cap;
 ## the affected request ends with terminal "motion_bound".
@@ -214,6 +220,8 @@ func _reset_state() -> void:
 	total_substeps = 0
 	max_substep_len = 0.0
 	tick_log.clear()
+	tick_engine_frames.clear()
+	_tick_engine_frames_base = 1
 	motion_bound_violations = 0
 	last_motion_bound_deficit_m = 0.0
 	begin_step_refusals = 0
@@ -417,6 +425,12 @@ func _physics_process(delta: float) -> void:
 	_step_elapsed += 1
 	_budget -= 1
 	commanded_distance += speed_mps * DT
+	# Diagnostic only: pair this logical tick with the engine frame counter
+	# observed in the committing callback. Kept out of tick_log/trace digests.
+	tick_engine_frames.append(Engine.get_physics_frames())
+	if tick_engine_frames.size() > MAX_TICK_LOG:
+		tick_engine_frames.pop_front()
+	_tick_engine_frames_base = tick_count - tick_engine_frames.size() + 1
 
 	var terminal := "none"
 	if _is_finite(finish_z) and body.global_position.z <= finish_z:
@@ -598,6 +612,16 @@ func _emit_result(requested_ticks: int, elapsed_ticks: int, terminal: String) ->
 ## refused and reset()/configure() cancel the pending publication.
 func is_publication_pending() -> bool:
 	return _pending_publish
+
+
+## Engine physics-frame counter recorded when the given 1-based logical tick was
+## committed. Returns -1 when the tick is outside the retained diagnostic
+## window. Never part of tick_log or any compared trace digest.
+func get_tick_engine_frame(tick: int) -> int:
+	var index := tick - _tick_engine_frames_base
+	if index < 0 or index >= tick_engine_frames.size():
+		return -1
+	return tick_engine_frames[index]
 
 
 ## Dispatch step_finished under the completion-callback guard so a listener

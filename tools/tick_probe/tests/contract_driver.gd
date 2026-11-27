@@ -71,10 +71,14 @@ func _on_step_finished(result: Dictionary) -> void:
 	}
 
 
-## The coordinator runs before ordinary default-priority observers. Both an
-## earlier- and a later-in-tree observer must see the actual consecutive
-## logical sequence 1..n at their unpaused callbacks, with no tick-0 phantom
-## and no extra publication-iteration callback.
+## The coordinator runs before ordinary default-priority observers in this
+## scene. Both an earlier- and a later-in-tree observer must see the actual
+## consecutive logical sequence 1..n at their unpaused callbacks, with no
+## tick-0 phantom and no extra publication-iteration callback. A consecutive
+## sequence alone is not discriminating: a pausable observer ordered before the
+## coordinator can still read 1..n one iteration late. Each observer therefore
+## also records Engine.get_physics_frames() beside every observed tick, and
+## those frames must equal the coordinator's frame for that SAME logical tick.
 func _test_callback_ordering() -> void:
 	await _configure(10.0)
 	coord.reset()
@@ -94,7 +98,7 @@ func _test_callback_ordering() -> void:
 	for t in range(1, 13):
 		expected.append(t)
 	_check(before.tick_sequence == expected,
-		"ordering: node before the coordinator sees consecutive ticks 1..12",
+		"ordering: earlier-in-tree default-priority node sees consecutive ticks 1..12",
 		"sequence=%s" % str(before.tick_sequence))
 	_check(after.tick_sequence == expected,
 		"ordering: later-in-tree node sees consecutive ticks 1..12",
@@ -102,8 +106,33 @@ func _test_callback_ordering() -> void:
 	_check(before.unpaused_physics_callbacks == 12 and after.unpaused_physics_callbacks == 12,
 		"ordering: no phantom or extra publication iteration reached either observer",
 		"before=%d after=%d" % [before.unpaused_physics_callbacks, after.unpaused_physics_callbacks])
+	_check(_observer_frames_align(before),
+		"ordering: earlier-in-tree observer callback frames align with coordinator tick frames",
+		"observer=%s coordinator=%s" % [str(before.tick_frame_sequence), str(_coord_tick_frames(12))])
+	_check(_observer_frames_align(after),
+		"ordering: later-in-tree observer callback frames align with coordinator tick frames",
+		"observer=%s coordinator=%s" % [str(after.tick_frame_sequence), str(_coord_tick_frames(12))])
 	before.queue_free()
 	after.queue_free()
+
+
+func _coord_tick_frames(count: int) -> Array[int]:
+	var frames: Array[int] = []
+	for tick in range(1, count + 1):
+		frames.append(coord.get_tick_engine_frame(tick))
+	return frames
+
+
+func _observer_frames_align(observer) -> bool:
+	if observer.tick_sequence.size() != observer.tick_frame_sequence.size():
+		return false
+	for i in observer.tick_sequence.size():
+		var tick := int(observer.tick_sequence[i])
+		if tick < 1 or coord.get_tick_engine_frame(tick) < 0:
+			return false
+		if int(observer.tick_frame_sequence[i]) != coord.get_tick_engine_frame(tick):
+			return false
+	return true
 
 
 ## F1: a positive request made from a later-ordered physics callback must not

@@ -22,7 +22,7 @@
   },
   "engine": "4.7.2.stable.official.ed1daf0bf",
   "evidence_sha256": {
-    "README.md": "f8dfa0e6267d0fee632d23dad4741f3bf5e19f4e22e755c95e5dcad115ed3def",
+    "README.md": "03de7713f4f383e1fb18f1948b613f10bc99b26d9948f1ed1d7582edd942e634",
     "compare-modes.txt": "a05eeb8f4c068d534e6ba8f56da54f71c7213a741ce60a7773022ae5d38f0b58",
     "contract-default/contract-tests.json": "53b8578eb73941c9a3f4a6ff65bdf2d93732077501847d942848ead7e744d0e8",
     "contract-default/contract-tests.txt": "398213ea5d2b767e96aa07decd8217358e66de5f943dbcdb17137b9550496fd4",
@@ -33,7 +33,7 @@
     "contract-max/contract-tests.json": "53b8578eb73941c9a3f4a6ff65bdf2d93732077501847d942848ead7e744d0e8",
     "contract-max/contract-tests.txt": "398213ea5d2b767e96aa07decd8217358e66de5f943dbcdb17137b9550496fd4",
     "contract-max/run.txt": "fe0e7c65de01c2c6c10ac1074b4e7178458a7f68eb2e5742e429f3265e9dc7b6",
-    "errata.md": "b83b6d51fb15d8c28ea85385f05c38f478f46b4c7fd8640de627d18e19bf3438",
+    "errata.md": "ddb118eb0ac40133300850d1a3c1c0b2fa120b4d38aea0dd41159d62c99187bc",
     "exit-code-selftest.txt": "099212d50ba41fab9a6ccde6e3c884db74a253a9b07951952b9eb78f389624e6",
     "mutation-pubguard.txt": "c7dfba271f1354f3c6e96e99c6f4117343fb34e7d89187be3d4ec00ebdd2ac9c",
     "mutation-publish.txt": "d0bf56e772fe18691d2227cc4255bd55347db362b8954a8f18f20d1208c13e36",
