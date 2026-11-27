@@ -61,7 +61,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 - [ ] M0.6 Record machines/OS/controllers, provisional renderer and capture methods. Inventory visual/audio/control review capabilities; make M3's representative tests authoritative for renderer selection.
 - [ ] M0.7 Establish `docs/STATUS.md`, an evidence directory, decision records, and task ownership for collaborating agents.
 - [x] M0.8 Build a minimal coordinator/query/reset probe: twelve logical ticks per nonterminal training-style request, early stop with elapsed-tick count on termination/truncation, zero advancement while waiting, complete reset and measured accelerated-versus-real-time fidelity before the motor depends on it.
-- [ ] M0.9 Create versioned handling/AI/reference/scenario schemas and fixture configurations from BENCHMARKS; schema definitions do not require a working AI implementation yet.
+- [x] M0.9 Create versioned handling/AI/reference/scenario schemas and fixture configurations from BENCHMARKS; schema definitions do not require a working AI implementation yet. Definition-only decision and deferred semantics: [M0.9 schema decision](docs/evidence/m09-definition-decision-20261127.md).
 
 **Acceptance:** a second agent can follow the setup guide, import, run the boot scene, execute a passing and a failing check, and export a desktop smoke build. The license inventory identifies the runtime separately from original project material. No dependency or creative input has unknown terms. Record missing target hardware explicitly; an untested platform does not become verified through a successful export.
 
