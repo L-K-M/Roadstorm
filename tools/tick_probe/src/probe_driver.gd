@@ -68,6 +68,8 @@ func _collect_environment() -> void:
 		"physics_ticks_per_second": ProjectSettings.get_setting("physics/common/physics_ticks_per_second"),
 		"swept_cast_margin_m": CoordinatorScript.CAST_QUERY_MARGIN,
 		"character_body_safe_margin_m": CoordinatorScript.SAFE_MARGIN,
+		"max_tick_travel_m": CoordinatorScript.MAX_TICK_TRAVEL_M,
+		"max_supported_speed_mps": CoordinatorScript.MAX_SUPPORTED_SPEED_MPS,
 		"physics_engine_setting": str(ProjectSettings.get_setting("physics/3d/physics_engine")),
 		"physics_engine_allowed": _physics_engine_allowed(),
 		"rendering_method_setting": str(ProjectSettings.get_setting("rendering/renderer/rendering_method")),
@@ -133,6 +135,8 @@ func _run_structural() -> void:
 	await _scenario_bypass_calls()
 	await _scenario_early_termination()
 	await _scenario_truncation()
+	await _scenario_zero_tick_budget()
+	await _scenario_bounded_work_envelope()
 	await _scenario_reset_replay()
 	await _scenario_wall_swept_motion()
 	await _scenario_max_speed_no_tunnel()
@@ -143,18 +147,23 @@ func _scenario_open_fidelity() -> void:
 	await _configure(10.0)
 	var obs0: Dictionary = coord.reset()
 
-	# Contrast: a motor-function counter that never asks the coordinator to
-	# step the world. Twelve calls claim 2 m of travel; the world must not move.
-	var fake_calls := 12
-	var fake_distance := fake_calls * 10.0 * DT
+	# Negative control: a plain call counter that never asks the coordinator to
+	# step the world. Twelve unacked calls must not advance the world or the
+	# tick budget. The arithmetic below is only a claimed distance; it is not
+	# measured motion and is not evidence that any motor ran.
+	var unacked_calls := 12
+	var unacked_claimed_m := unacked_calls * 10.0 * DT
 	await _wait_frames(30)
 	var obs_fake = coord.observe()
-	_check(coord.tick_count == 0, "counter-only: 12 motor calls consumed zero logical ticks",
+	_check(coord.tick_count == 0,
+		"negative-control: 12 unacked calls consumed zero logical ticks",
 		"tick_count=%d" % coord.tick_count)
-	_check(obs_fake.position[2] == obs0.position[2], "counter-only: body did not move",
+	_check(obs_fake.position[2] == obs0.position[2],
+		"negative-control: unacked calls did not move the body",
 		"z0=%.9f z1=%.9f" % [obs0.position[2], obs_fake.position[2]])
-	_check(fake_distance > 0.0, "counter-only: counter alone claims travel",
-		"claimed=%.6f m" % fake_distance)
+	_check(unacked_claimed_m > 0.0,
+		"negative-control: call arithmetic alone is not evidence of motion",
+		"claimed=%.6f m" % unacked_claimed_m)
 
 	# Five training-style requests of twelve ticks each.
 	var elapsed_list: Array[int] = []
@@ -200,8 +209,8 @@ func _scenario_open_fidelity() -> void:
 		"min=%.9f max=%.9f" % [coord.delta_min, coord.delta_max])
 
 	scenario_report["open_fidelity"] = {
-		"fake_counter_ticks": fake_calls,
-		"fake_counter_distance_m": fake_distance,
+		"unacked_call_count": unacked_calls,
+		"unacked_claimed_distance_m": unacked_claimed_m,
 		"request_elapsed_ticks": elapsed_list,
 		"tick_count": coord.tick_count,
 		"expected_z_m": expected_z,
@@ -297,6 +306,99 @@ func _scenario_truncation() -> void:
 	}
 
 
+func _scenario_zero_tick_budget() -> void:
+	# Explicit exhausted-budget semantics: max_ticks <= 0 means zero ticks are
+	# ever executed, so no physics callback may advance the world.
+	await _configure(10.0, INF, 0)
+	coord.reset()
+	var z0: float = coord.body.global_position.z
+	var r: Dictionary = await _step(12)
+	_check(int(r.elapsed_ticks) == 0 and str(r.terminal) == "truncated",
+		"zero-budget: max_ticks=0 consumes zero ticks and starts truncated",
+		"elapsed=%d terminal=%s" % [int(r.elapsed_ticks), str(r.terminal)])
+	_check(coord.tick_count == 0 and coord.body.global_position.z == z0,
+		"zero-budget: no unintended tick or motion at cap 0",
+		"ticks=%d z_delta=%.9f" % [coord.tick_count, coord.body.global_position.z - z0])
+	var later: Dictionary = await _step(12)
+	_check(int(later.elapsed_ticks) == 0 and str(later.terminal) == "truncated",
+		"zero-budget: later requests stay zero-tick truncated")
+
+	await _configure(10.0, INF, -5)
+	coord.reset()
+	var rn: Dictionary = await _step(12)
+	_check(int(rn.elapsed_ticks) == 0 and str(rn.terminal) == "truncated",
+		"zero-budget: negative cap is treated as zero, not one tick",
+		"elapsed=%d terminal=%s" % [int(rn.elapsed_ticks), str(rn.terminal)])
+
+	# Boundary control: a one-tick budget executes exactly one tick.
+	await _configure(10.0, INF, 1)
+	coord.reset()
+	var rb: Dictionary = await _step(12)
+	_check(int(rb.elapsed_ticks) == 1 and str(rb.terminal) == "truncated",
+		"zero-budget: max_ticks=1 executes exactly one tick",
+		"elapsed=%d terminal=%s" % [int(rb.elapsed_ticks), str(rb.terminal)])
+	_check(coord.tick_count == 1,
+		"zero-budget: one-tick boundary accounted exactly once",
+		"ticks=%d" % coord.tick_count)
+
+	scenario_report["zero_tick_budget"] = {
+		"cap_0_elapsed_ticks": int(r.elapsed_ticks),
+		"cap_0_terminal": str(r.terminal),
+		"negative_cap_elapsed_ticks": int(rn.elapsed_ticks),
+		"one_tick_cap_elapsed_ticks": int(rb.elapsed_ticks),
+	}
+
+
+func _scenario_bounded_work_envelope() -> void:
+	# The work cap implies MAX_SUBSTEPS * SUBSTEP_MAX_LEN per tick. A command at
+	# that bound must succeed; above it the coordinator fails closed instead of
+	# silently dropping the unapplied remainder.
+	await _configure(CoordinatorScript.MAX_SUPPORTED_SPEED_MPS, INF, 1000000)
+	coord.reset()
+	var boundary: Dictionary = await _step(12)
+	var boundary_violations: int = coord.motion_bound_violations
+	_check(str(boundary.terminal) == "none" and int(boundary.elapsed_ticks) == 12,
+		"work-envelope: speed at the 4 m/tick bound completed 12 ticks",
+		"elapsed=%d terminal=%s" % [int(boundary.elapsed_ticks), str(boundary.terminal)])
+	_check(boundary_violations == 0,
+		"work-envelope: no bounded-work failure at the supported speed",
+		"violations=%d" % boundary_violations)
+	_check(max_substep_ok(), "work-envelope: substep cap respected at the bound",
+		"max_substep=%.6f" % coord.max_substep_len)
+
+	await _configure(250.0, INF, 1000000)
+	coord.reset()
+	var z0: float = coord.body.global_position.z
+	var over: Dictionary = await _step(12)
+	_check(str(over.terminal) == "motion_bound" and int(over.elapsed_ticks) == 0,
+		"work-envelope: 250 m/s refused with motion_bound and zero elapsed ticks",
+		"elapsed=%d terminal=%s" % [int(over.elapsed_ticks), str(over.terminal)])
+	_check(coord.tick_count == 0 and coord.body.global_position.z == z0,
+		"work-envelope: refused command moved nothing",
+		"ticks=%d z_delta=%.9f" % [coord.tick_count, coord.body.global_position.z - z0])
+	_check(coord.motion_bound_violations >= 1 and coord.last_motion_bound_deficit_m > 0.0,
+		"work-envelope: residual deficit recorded explicitly",
+		"violations=%d deficit=%.9f m" % [coord.motion_bound_violations, coord.last_motion_bound_deficit_m])
+	var over_deficit: float = coord.last_motion_bound_deficit_m
+
+	await _configure(-250.0, INF, 1000000)
+	coord.reset()
+	var reverse: Dictionary = await _step(12)
+	_check(str(reverse.terminal) == "motion_bound" and int(reverse.elapsed_ticks) == 0,
+		"work-envelope: reverse over-speed is also refused",
+		"elapsed=%d terminal=%s" % [int(reverse.elapsed_ticks), str(reverse.terminal)])
+
+	scenario_report["bounded_work_envelope"] = {
+		"max_tick_travel_m": CoordinatorScript.MAX_TICK_TRAVEL_M,
+		"max_supported_speed_mps": CoordinatorScript.MAX_SUPPORTED_SPEED_MPS,
+		"boundary_elapsed_ticks": int(boundary.elapsed_ticks),
+		"boundary_motion_bound_violations": boundary_violations,
+		"over_speed_terminal": str(over.terminal),
+		"over_speed_deficit_m": over_deficit,
+		"reverse_terminal": str(reverse.terminal),
+	}
+
+
 func _scenario_reset_replay() -> void:
 	await _configure(10.0)
 	var initial: Dictionary = coord.reset()
@@ -312,6 +414,11 @@ func _scenario_reset_replay() -> void:
 	coord.reset()
 	var after_reset = coord.observe()
 	_check(coord.tick_count == 0, "reset: tick counter cleared")
+	var stale_result: Dictionary = coord.take_result()
+	_check(stale_result.is_empty(),
+		"reset: take_result exposes no pre-reset result",
+		"keys=%s" % str(stale_result.keys()))
+	_check(not coord.has_pending_result(), "reset: no pending result survives reset")
 	_check(after_reset.position == initial.position, "reset: pose restored exactly")
 	_check(is_equal_approx(rad_to_deg(coord.body.global_rotation.y), rad_to_deg(coord.initial_transform.basis.get_euler().y)),
 		"reset: rotation restored")
@@ -551,7 +658,11 @@ func _finish() -> void:
 			"Headless dummy display/audio drivers; no rendering, input or audio claims.",
 			"Accelerated pacing uses --fixed-fps (engine disables real-time synchronization); real-time pacing uses --max-fps 60 and depends on host load.",
 			"Godot/Jolt same-host determinism is measured; cross-platform byte determinism is not claimed.",
-			"The probe car uses CharacterBody3D explicit displacement like the planned motor; it is not the full M1 motor, AI, contacts or renderer.",
+			"The probe car uses CharacterBody3D explicit displacement like the planned motor; it is not the full M1 motor, AI, contacts, multi-car reset or renderer. A one-car open-road/wall trace is not a full simulation claim.",
+			"The coordinator advances exactly 1/60 s per logical tick and does not use the engine delta parameter; structural scenarios assert that the delivered physics delta stays 1/60 s rather than clamping or adapting to a different delta.",
+			"The coordinator owns SceneTree.paused for the probe world: begin_step() and reset() clear an externally set pause so the authoritative world cannot be left frozen by another subsystem. Other nodes must not write SceneTree.paused while the probe runs.",
+			"A commanded per-tick displacement above MAX_SUBSTEPS * SUBSTEP_MAX_LEN (4.0 m, 240 m/s) is refused with terminal motion_bound; speeds within the envelope are subdivided into <=0.25 m substeps.",
+			"take_result() consumes the pending result and returns an empty Dictionary when none is pending; reset clears any stored result so a prior episode result cannot be read back.",
 			"GDScript cannot query the active 3D physics backend at runtime (PhysicsServer3D is opaque and this build prints no backend line even with --verbose); the backend pin is verified by the physics/3d/physics_engine setting value above plus the explicit backend-contrast run recorded in the evidence directory.",
 		],
 	}

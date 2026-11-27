@@ -1,0 +1,34 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+PASS frame-account: request 1 consumed exactly 1 logical ticks
+PASS frame-account: independent physics-frame count matches logical ticks
+PASS frame-account: request 7 consumed exactly 7 logical ticks
+PASS frame-account: independent physics-frame count matches logical ticks
+PASS frame-account: request 12 consumed exactly 12 logical ticks
+PASS frame-account: independent physics-frame count matches logical ticks
+PASS frame-account: request 13 consumed exactly 13 logical ticks
+PASS frame-account: independent physics-frame count matches logical ticks
+PASS frozen: engine physics frames continued while waiting
+PASS frozen: zero logical advancement and no motion while waiting
+PASS stale-result: first step returned 12 ticks
+PASS stale-result: take_result after reset returns empty
+PASS stale-result: reset cleared the pending-result flag
+PASS stale-result: reset discards an untaken pending result
+PASS zero-budget: cap 0 emits a zero-tick truncated result without awaiting a frame
+PASS zero-budget: cap 0 executed no tick and moved nothing
+PASS zero-budget: cap 0 consumed no engine physics frame
+PASS zero-budget: still zero ticks after further engine frames
+PASS zero-budget: negative cap behaves as zero, not one tick
+PASS zero-budget: one-tick boundary executes exactly one tick
+PASS work-boundary: supported speed completes 12 ticks without refusal
+PASS work-boundary: substep length stayed within the cap
+PASS work-envelope: over-bound speed is refused explicitly
+PASS work-envelope: refused command advanced no tick and moved nothing
+PASS work-envelope: residual deficit is recorded, not silently dropped
+PASS work-envelope: reverse over-bound speed is refused too
+PASS bypass-negative: direct physics calls consumed zero logical ticks
+PASS bypass-negative: direct calls still moved the body outside tick accounting
+PASS pause-ownership: begin_step clears an externally set pause
+PASS pause-ownership: stepping proceeds after clearing the external pause
+TEST_RESULT {"checks_failed":0,"checks_total":30,"failures":[],"schema":"roadstorm.tick_probe.contract.v1"}
+TESTS_TOTAL=30 TESTS_FAILED=0

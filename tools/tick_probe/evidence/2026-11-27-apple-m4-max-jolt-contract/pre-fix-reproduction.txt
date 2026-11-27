@@ -1,0 +1,7 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+STALE pending_before_reset=false tick_count_after_reset=0 take_after_reset={"elapsed_ticks":12,"observation":{"grounded":true,"position":[0.0,0.5,-1.99999976158142],"progress_m":1.99999976158142,"rotation_y_deg":0.0,"schema":"roadstorm.tick_probe.obs.v1","sim_time":0.2,"terminal":"none","tick":12},"requested_ticks":12,"schema":"roadstorm.tick_probe.step.v1","sim_time":0.2,"terminal":"none","tick_count":12}
+MAXTICKS0 elapsed=1 terminal=truncated coord_ticks=1 z_delta=-0.16666667163372 ext_frames=1 coord_frames=1
+MAXTICKS_NEG elapsed=1 terminal=truncated coord_ticks=1 z_delta=-0.16666667163372
+BOUND250 elapsed=12 terminal=none coord_ticks=12 moved_m=48.0 commanded_m=50.0 substeps=192 max_substep=0.25
+REPRO_DONE

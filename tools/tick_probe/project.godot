@@ -16,7 +16,10 @@ common/physics_ticks_per_second=60
 ; review/implementation/m0-five-jobs-opus-0bbb2f75-c3eb-47f5-9d89-771bce087012.md).
 ; The probe must exercise the same backend the game will use.
 3d/physics_engine="Jolt Physics"
-common/physics_interpolation=false
+; Match the main game's authoritative-world configuration: fixed 60 Hz ticks with
+; visual interpolation enabled. Interpolation does not change physics state;
+; the probe reads physics transforms in _physics_process.
+common/physics_interpolation=true
 3d/default_gravity=9.8
 
 [debug]

@@ -15,6 +15,16 @@ extends Node3D
 ##   * reset restores pose, rotation, counters, RNG stream, events and stats;
 ##   * every tick uses a nonmutating swept query before the single committed
 ##     CharacterBody3D.move_and_collide() call, and records the discrepancy.
+##   * a scenario budget max_ticks <= 0 starts the episode already truncated:
+##     requests consume zero ticks and report terminal "truncated";
+##   * a commanded per-tick displacement above the bounded substep envelope is
+##     refused loudly with terminal "motion_bound"; the remainder is never
+##     dropped silently.
+##
+## Pause ownership: this coordinator is the sole owner of SceneTree.paused for
+## the probe world. begin_step() and reset() clear any externally-set pause so
+## the authoritative world is never left frozen by another subsystem. Other
+## nodes must not write SceneTree.paused while the probe is running.
 
 signal step_finished(result: Dictionary)
 
@@ -26,6 +36,13 @@ const SAFE_MARGIN := 0.08
 ## safe_margin is unchanged; only the nonmutating predictor casts the real hull.
 const CAST_QUERY_MARGIN := 0.0
 const MAX_SUBSTEPS := 16
+## Hard per-tick displacement envelope: MAX_SUBSTEPS * SUBSTEP_MAX_LEN.
+## A tick longer than this cannot be applied faithfully within the work cap.
+const MAX_TICK_TRAVEL_M := SUBSTEP_MAX_LEN * MAX_SUBSTEPS
+const MAX_SUPPORTED_SPEED_MPS := MAX_TICK_TRAVEL_M / DT
+## Slack for the floating-point comparison against the envelope; the physics
+## tick itself is checked to stay at DT by the driver.
+const MOTION_BOUND_EPSILON_M := 1e-6
 const SEED := 20261126
 const MAX_TICK_LOG := 20000
 
@@ -58,6 +75,11 @@ var max_commit_discrepancy := 0.0
 var total_substeps := 0
 var max_substep_len := 0.0
 var tick_log: Array[Dictionary] = []
+## Loud failure bookkeeping for the bounded substep envelope. A nonzero
+## violation count means a command could not be applied within the work cap;
+## the affected request ends with terminal "motion_bound".
+var motion_bound_violations := 0
+var last_motion_bound_deficit_m := 0.0
 
 var _budget := 0
 var _requested_ticks := 0
@@ -151,11 +173,16 @@ func _reset_state() -> void:
 	total_substeps = 0
 	max_substep_len = 0.0
 	tick_log.clear()
+	motion_bound_violations = 0
+	last_motion_bound_deficit_m = 0.0
 	_budget = 0
 	_requested_ticks = 0
 	_step_elapsed = 0
 	_freeze = false
 	_pending_result = false
+	# Reset must not leave a pre-reset step result retrievable through
+	# take_result(); an empty dict is the explicit "no result" value.
+	_result = {}
 	rng.seed = SEED
 
 
@@ -181,6 +208,13 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> void:
 	if episode_terminal != "none":
 		_emit_result(requested_ticks, 0, episode_terminal)
 		return
+	if max_ticks <= 0:
+		# Exhausted-budget semantics: a non-positive scenario cap allows zero
+		# ticks, so the episode starts (and stays) truncated. No physics callback
+		# is allowed to advance the world.
+		episode_terminal = "truncated"
+		_emit_result(requested_ticks, 0, "truncated")
+		return
 	_requested_ticks = maxi(0, requested_ticks)
 	_budget = _requested_ticks
 	_step_elapsed = 0
@@ -195,8 +229,14 @@ func has_pending_result() -> bool:
 	return _pending_result
 
 
+## Consume the pending result. Returns an empty Dictionary when no result is
+## pending (before the first request, after reset, or on a second call); a
+## prior episode's result can never be exposed through this API.
 func take_result() -> Dictionary:
+	var had_pending := _pending_result
 	_pending_result = false
+	if not had_pending or _result.is_empty():
+		return {}
 	var result := {}
 	for key in ["schema", "requested_ticks", "elapsed_ticks", "terminal", "tick_count", "sim_time", "observation"]:
 		result[key] = _result[key]
@@ -220,12 +260,22 @@ func observe() -> Dictionary:
 func _physics_process(delta: float) -> void:
 	# A freeze requested by the previous tick must hold even if the engine
 	# delivers one more callback before SceneTree.paused takes effect.
-	if _freeze or _budget <= 0 or episode_terminal != "none":
+	if _freeze or _budget <= 0 or episode_terminal != "none" or tick_count >= max_ticks:
 		return
 	if delta_min < 0.0 or delta < delta_min:
 		delta_min = delta
 	if delta > delta_max:
 		delta_max = delta
+	# Fail closed on a command the bounded work cap cannot apply. The old
+	# behaviour subdivided up to MAX_SUBSTEPS * SUBSTEP_MAX_LEN (4 m) and then
+	# silently dropped the remainder; measured at 250 m/s that moved 48 m while
+	# reporting 50 m commanded. Refuse the tick instead of truncating silently.
+	var commanded_travel := absf(speed_mps) * DT
+	if commanded_travel > MAX_TICK_TRAVEL_M + MOTION_BOUND_EPSILON_M:
+		motion_bound_violations += 1
+		last_motion_bound_deficit_m = commanded_travel - MAX_TICK_TRAVEL_M
+		_finish_step("motion_bound")
+		return
 	_execute_tick(delta)
 	tick_count += 1
 	_step_elapsed += 1
@@ -252,6 +302,7 @@ func _execute_tick(_delta: float) -> void:
 	var substeps := 0
 	var worst_pred_error := 0.0
 	var grounded := false
+	var contact_stopped := false
 
 	while remaining.length() > 1e-9 and substeps < MAX_SUBSTEPS:
 		var seg_len: float = minf(remaining.length(), SUBSTEP_MAX_LEN)
@@ -312,7 +363,16 @@ func _execute_tick(_delta: float) -> void:
 		substeps += 1
 		max_substep_len = maxf(max_substep_len, seg_len)
 		if collision and actual_travel.length() < seg_len - 1e-6:
+			contact_stopped = true
 			break
+
+	# Defence in depth: the pre-tick envelope check already refuses commands
+	# above MAX_TICK_TRAVEL_M. If a collision did not stop the motion and the
+	# work cap still leaves a remainder, record it loudly rather than dropping
+	# it silently (contact-limited shortfalls are physical, not violations).
+	if not contact_stopped and remaining.length() > MOTION_BOUND_EPSILON_M:
+		motion_bound_violations += 1
+		last_motion_bound_deficit_m = maxf(last_motion_bound_deficit_m, remaining.length())
 
 	grounded = _probe_grounded()
 	_last_grounded = grounded

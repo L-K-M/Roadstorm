@@ -9,24 +9,30 @@ before the M1 motor depends on them:
 - **zero logical advancement while waiting** for the trainer;
 - **complete reset** of pose, clocks, RNG stream, events and counters;
 - **query/physics fidelity**: a nonmutating swept shape cast predicts the
-  committed `CharacterBody3D.move_and_collide()` motion, and a counter-only
-  "motor" that never steps the world is shown not to move the body;
-- **accelerated versus real-time** execution of the same command trace.
+  committed `CharacterBody3D.move_and_collide()` motion;
+- **accelerated versus real-time** execution of the same command trace;
+- an **explicit bounded work envelope** that refuses commands it cannot apply
+  instead of silently dropping the remainder.
 
 The authoritative actor is a real `CharacterBody3D` in a real Godot physics
 world (**Jolt**, pinned explicitly in both `project.godot` files — the same
 backend the game project selects), moved by explicit displacement once per
-accepted substep, the API shape TECHNICAL_DESIGN.md prescribes. It is not the full M1 motor, AI, contact
-resolver or training bridge; it proves the engine mechanics those will rely on.
+accepted substep, the API shape TECHNICAL_DESIGN.md prescribes. It is **not**
+the full M1 motor, AI, contact resolver, multi-car reset or training bridge; a
+one-car open-road/wall trace is not a full-simulation claim. No actual motor
+is implemented or claimed here.
 
 ## Files
 
 | Path | Role |
 | --- | --- |
-| `project.godot` | minimal self-contained project, 60 Hz physics, no main scene, `3d/physics_engine="Jolt Physics"` pinned |
+| `project.godot` | minimal self-contained project, 60 Hz physics, no main scene, `3d/physics_engine="Jolt Physics"` pinned, `common/physics_interpolation=true` matching the game |
 | `src/tick_probe.gd` | headless entry point (`SceneTree` script) |
-| `src/probe_driver.gd` | scenarios, assertions, JSON report, exit codes |
+| `src/probe_driver.gd` | broad structural scenarios, assertions, JSON report, exit codes |
 | `src/tick_coordinator.gd` | logical-tick owner: budget, freeze gate, reset, swept movement, queries |
+| `tests/contract_entry.gd` | entry point for the independent focused contract tests |
+| `tests/contract_driver.gd` | independent contract tests with their own `SceneTree.physics_frame` counting and negative controls |
+| `tests/run_contract_tests.py` | runs the contract tests in an isolated copy (temp dir, private `HOME`/`TMPDIR`, bounded timeout) |
 | `compare_modes.py` | runs accelerated and real-time traces and compares them |
 | `.gitignore` | ignores the generated `.godot/` cache |
 
@@ -34,7 +40,8 @@ resolver or training bridge; it proves the engine mechanics those will rely on.
 
 - Godot **4.7.2 Standard** editor or runtime on `PATH` (M0.1 pinned version).
   The probe fails if the engine is not 4.7.2.
-- Python 3 standard library only for `compare_modes.py`.
+- Python 3 standard library only for `compare_modes.py` and
+  `run_contract_tests.py`.
 
 No packages are installed and no network service is used.
 
@@ -43,7 +50,7 @@ No packages are installed and no network service is used.
 From the repository root:
 
 ```sh
-# Structural scenarios, deterministic locked stepping (1 frame = 1 physics tick)
+# Broad structural scenarios, deterministic locked stepping (1 frame = 1 physics tick)
 godot --headless --fixed-fps 60 --path tools/tick_probe \
     --script res://src/tick_probe.gd -- mode=structural
 
@@ -52,6 +59,9 @@ godot --headless --path tools/tick_probe \
     --script res://src/tick_probe.gd -- mode=structural
 godot --headless --max-fps 60 --path tools/tick_probe \
     --script res://src/tick_probe.gd -- mode=structural
+
+# Independent focused contract tests (isolated copy, private HOME/TMPDIR, <=30 s)
+python3 tools/tick_probe/tests/run_contract_tests.py
 
 # Accelerated vs real-time fidelity and throughput (600 ticks each)
 python3 tools/tick_probe/compare_modes.py
@@ -63,11 +73,15 @@ echo $?   # 1
 ```
 
 Each run prints `PASS`/`FAIL` lines and one machine-readable
-`PROBE_RESULT <json>` line. Exit code `0` means every check passed, `1` means
-at least one failed. `TICK_PROBE_DEBUG=1` additionally prints per-substep
-query/commit diagnostics.
+`PROBE_RESULT <json>` (or `TEST_RESULT <json>` for the contract suite) line.
+Exit code `0` means every check passed, `1` means at least one failed.
+`TICK_PROBE_DEBUG=1` additionally prints per-substep query/commit diagnostics.
 
-## What is checked
+The broad structural suite currently has **73 checks**; the independent
+contract suite has **30 checks**. Recorded totals and outputs live under
+`evidence/`.
+
+## Coordinator contract
 
 **Pinned backend.** The probe fails unless `physics/3d/physics_engine` reads
 back `"Jolt Physics"`, and records the engine's allowed values for the setting
@@ -81,17 +95,18 @@ GodotPhysics3D bit-for-bit.
 
 **Twelve ticks per request.** Five sequential requests of 12 ticks each consume
 exactly 12, 12, 12, 12, 12 ticks and 60 total, with a five-frame trainer wait
-between requests that consumes zero ticks. A fake motor-function counter
-that records twelve calls without asking the coordinator to step leaves
-`tick_count == 0`, the body at its start pose, and claims 2 m of travel.
-Conversely, twelve direct `move_and_collide()` calls made outside any
-coordinator tick do move the body 2 m while `tick_count` stays at zero. Call
-count alone is therefore neither necessary nor sufficient evidence of twelve
-correct world steps; the coordinator's tick accounting is authoritative.
+between requests that consumes zero ticks. The independent contract suite
+repeats this for requests of 1, 7, 12 and 13 and compares each logical count
+against its own count of `SceneTree.physics_frame` callbacks, not against
+`tick_count`.
 
-**Bypass contrast.** Twelve direct physics calls outside the coordinator move
-the body 1.9999998 m but consume zero logical ticks, so world motion without
-tick accounting is explicitly detected rather than assumed away.
+**Negative controls (no motor claim).** Twelve calls that never ask the
+coordinator to step leave `tick_count == 0` and the body at its start pose; the
+call log's arithmetic distance is a claim, not measured motion and not evidence
+that any motor ran. Conversely, twelve direct `move_and_collide()` calls made
+outside any coordinator tick do move the body 2 m while `tick_count` stays at
+zero. Call count alone is neither necessary nor sufficient evidence of twelve
+correct world steps; the coordinator's tick accounting is authoritative.
 
 **Termination and truncation.** With a finish plane at z = -0.9 m and 10 m/s,
 one request returns `elapsed_ticks = 6`, `terminal = terminated`; a later
@@ -99,10 +114,32 @@ request returns 0 ticks and cannot move the car. With a 30-tick scenario cap,
 requests return `(12, none)`, `(12, none)`, `(6, truncated)`, `(0, truncated)`
 and the total stays at 30 ticks.
 
-**Reset.** After 24 ticks, reset clears tick/distance/substep counters, RNG
-history, events, terminal state and stats, restores the exact pose, works while
-frozen, and a replayed 24-tick trace reproduces the transform, rotation, RNG
-draw sequence, event count and distance totals bit-for-bit.
+**Zero/negative tick budget.** `max_ticks` is the total number of logical ticks
+an episode may execute. `max_ticks <= 0` has explicit exhausted-budget
+semantics: the episode starts `truncated`, every request returns
+`elapsed_ticks = 0` with `terminal = "truncated"`, and **no** physics callback
+advances the world. This closes the old off-by-one where `max_ticks = 0`
+executed one unintended tick. `max_ticks = 1` executes exactly one tick.
+Negative caps behave as zero, not as one tick.
+
+**Bounded work envelope.** One tick can apply at most
+`MAX_SUBSTEPS * SUBSTEP_MAX_LEN = 16 * 0.25 = 4.0 m`, i.e. a supported speed of
+`MAX_TICK_TRAVEL_M / DT = 240 m/s`. At the boundary the probe completes 12
+ticks and keeps every substep at or below 0.25 m. Above the boundary the
+coordinator fails closed: the request returns `elapsed_ticks = 0` and
+`terminal = "motion_bound"`, the body does not move, and
+`motion_bound_violations` / `last_motion_bound_deficit_m` record the refused
+remainder. Forward and reverse over-speed are both refused. Previously a
+250 m/s command silently moved only 48 m of the commanded 50 m (192 substeps);
+that residual can no longer be dropped without an explicit failure.
+
+**Reset and result consumption.** After 24 ticks, reset clears tick/distance/
+substep counters, RNG history, events, terminal state and stats, restores the
+exact pose, works while frozen, and a replayed 24-tick trace reproduces the
+transform, rotation, RNG draw sequence, event count and distance totals
+bit-for-bit. Reset also clears the stored step result. `take_result()`
+consumes the pending result and returns an empty `Dictionary` when none is
+pending, so a prior episode's result cannot be read back through the API.
 
 **Waiting.** The coordinator freezes the tree between requests. During an
 explicit 60-frame trainer wait, `tick_count` and the body pose do not change
@@ -142,13 +179,28 @@ Under `--fixed-fps 60` rendered frames equal physics ticks (600/600); under
 `--max-fps 60` the two can differ slightly (602 frames for 600 ticks), which is
 why logical ticks are counted from physics callbacks, not frames.
 
+## Process pause ownership
+
+The coordinator is the **sole owner of `SceneTree.paused` for the probe world**.
+`begin_step()` and `reset()` clear any externally-set pause before stepping, so
+another subsystem cannot leave the authoritative world frozen; the coordinator
+freezes the tree after each finished request and unfreezes on the next
+`begin_step()`. Other nodes must not write `SceneTree.paused` while the probe
+is running. The contract suite checks both directions: it sets an external
+pause, verifies `begin_step()` clears it, and then requires the requested 12
+ticks to execute.
+
 ## Measured limitations (do not overread)
 
 - Headless dummy display/audio drivers: **no rendering, input, audio or
   windowing claim**. `rendering_method_setting` is the project default and is
   irrelevant to these results.
-- The probe validates **same-host determinism**. Cross-platform byte equality
-  is not claimed.
+- **This is a one-car mechanics probe, not the full M1 motor or a full
+  simulation.** There is no actual motor function, AI, vehicle-to-vehicle
+  contact resolver, multi-car reset (velocities/gates/timers/contacts),
+  interactive invocation or training bridge here. Those claims stay open for
+  M1+.
+- **Same-host determinism.** Cross-platform byte equality is not claimed.
 - **Backend identity cannot be directly verified from inside the engine.**
   `PhysicsServer3D` is opaque from GDScript and this build logs no backend
   line, so no run can name the active backend. The pin is the
@@ -177,6 +229,14 @@ why logical ticks are counted from physics callbacks, not frames.
   behaviors of this build, not a cross-version guarantee. The coordinator's own
   freeze gate is what enforces zero logical ticks; the engine-level freeze
   prevents autonomous bodies from drifting while waiting.
+- The coordinator advances exactly `DT = 1/60 s` per logical tick and
+  deliberately does not read the `delta` argument of `_physics_process()`.
+  Structural scenarios assert that the delivered physics delta stays exactly
+  1/60 s rather than clamping or adapting to a different delta. A future
+  variable-delta mode must change this contract and its evidence together.
+- Commands above the 4.0 m/tick envelope are refused (`motion_bound`); they are
+  not clamped, because silently dropping the remainder was the original bug.
+  Speeds within the envelope are subdivided into substeps of at most 0.25 m.
 - Accelerated speedup is host-dependent. The comparison requires at least 2x
   and a real-time factor within 0.5-2.0 so a harness mistake (for example
   passing `--fixed-fps` to both runs) fails loudly.
@@ -184,12 +244,23 @@ why logical ticks are counted from physics callbacks, not frames.
   `1e-4 m + 1e-6 m/tick` (float32 accumulation; the measured residual is 0.36 mm
   over 100 m). The two pacing modes must agree with each other within 1 um;
   recorded runs matched exactly (`|dz| = 0`).
+- The probe project matches the game's fixed 60 Hz tick and
+  `physics_interpolation=true`; the renderer setting still differs
+  (`forward_plus` vs `gl_compatibility`), which is irrelevant under headless
+  dummy rendering but means the probe is not a full-config copy of the game.
 
 ## Evidence
 
-- `evidence/2026-11-26-apple-m4-max-jolt/` — current runs under the pinned Jolt
-  backend, including the backend pin check, the GodotPhysics3D contrast run,
-  the margin characterization and the exit-code self-test.
+- `evidence/2026-11-27-apple-m4-max-jolt-contract/` — **current**: broad
+  structural runs (fixed-fps, default, max-fps 60), the independent contract
+  suite, accelerated-vs-real-time comparison, injected-failure exit-code test,
+  the pre-fix reproduction of the three audit findings, and `manifest.sha256`
+  binding each result to the exact probe source/test hashes and base candidate
+  commit.
+- `evidence/2026-11-26-apple-m4-max-jolt/` — historical: backend-pinned probe
+  before the tick/reset/bound fixes, including the backend pin check, the
+  GodotPhysics3D contrast run, the margin characterization and the exit-code
+  self-test.
 - `evidence/2026-11-26-apple-m4-max/` — **superseded**: the original runs made
   with backend `DEFAULT` (shown by the contrast run to be GodotPhysics3D on
   this build). Retained only as the pre-pin record.
@@ -201,5 +272,15 @@ Roadstorm Racer! M0.8 job on 26 November 2026, against input revision
 `0ea596a4fa85ade19375e130313f020ed6010619`. Backend pinning, the backend check,
 the margin-0 cast correction and the re-recorded Jolt evidence were produced
 by a StepFun 5 Preview agent for the M0.8 backend-correction job
-(`9725ba2c-802a-4115-9aeb-337b1dca99c8`) on 26 November 2026. Engine: Godot
-4.7.2-stable (official). No third-party assets or network services.
+(`9725ba2c-802a-4115-9aeb-337b1dca99c8`) on 26 November 2026.
+
+The tick/reset/bound audit-response fixes (stale result after reset,
+`max_ticks <= 0` off-by-one, explicit 4 m/tick motion-bound refusal, independent
+frame-counting contract tests, pause-ownership documentation and hash-bound
+evidence) were produced for the M0.8 audit-response job against candidate
+`55b04cec80fc842d1f40b5ac393a8a6492f112f3`, following the independent audit
+report at
+`work/agents/1b8fe3ed-3088-4847-a0e1-ea1676abc013/m08-probe-audit/REPORT.md`.
+Exact file hashes for the fixed revision are recorded in the current evidence
+directory's `manifest.sha256`. Engine: Godot 4.7.2-stable (official). No
+third-party assets or network services.
