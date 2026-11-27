@@ -1,0 +1,6 @@
+Pre-fix strict N1 (private copy, old 14-check driver):
+- max pacing: 1/30 failed in first sample; 13/60 failed in second sample (10 k=1 control failures, 4 k=12, one run had both)
+- fixed pacing: 0/40 failed
+- default pacing: 0/40 failed
+Every failure was the continuous cold-control check; all request-step checks passed in every run.
+Full metric distributions: post3/pre metrics retained under scratch-maxn1/metrics (not part of repo evidence).

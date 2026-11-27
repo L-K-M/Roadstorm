@@ -1,0 +1,5 @@
+Post-fix repeated strict-N1 runs (private copy, 21-check driver):
+- max: 60 runs, 0 failures; warmed control samples=120, server_steps_delta==engine_pf_delta in 120/120; cold diagnostic k=1 deltas ['0', '1'], k=12 deltas ['11', '12']
+- fixed: 40 runs, 0 failures; warmed control samples=80, server_steps_delta==engine_pf_delta in 80/80; cold diagnostic k=1 deltas ['0'], k=12 deltas ['11']
+- default: 40 runs, 0 failures; warmed control samples=80, server_steps_delta==engine_pf_delta in 80/80; cold diagnostic k=1 deltas ['0'], k=12 deltas ['11']
+Request scenarios (single 1/12/24, repeated 12) passed in every run.

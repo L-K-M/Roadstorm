@@ -1,0 +1,7 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+ACC_REENTRY begin_inside_accounting=false result_elapsed=12 result_ticks=12 live_ticks=12 pending=false
+FIN_REENTRY begin_inside_finished=false result_elapsed=12 result_ticks=12 live_ticks=12 pending=false
+RESET_ACC pending_after=false stale_result={  } live_ticks=0 paused=true
+RESET_FIN pending_after=false stale_result={  } live_ticks=0 paused=true
+EDGE_REPRO_DONE

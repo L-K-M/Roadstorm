@@ -1,0 +1,7 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+ACC_REENTRY begin_inside_accounting=true result_elapsed=12 result_ticks=12 live_ticks=12 pending=false
+FIN_REENTRY begin_inside_finished=false result_elapsed=12 result_ticks=12 live_ticks=12 pending=false
+RESET_ACC pending_after=true stale_result={ "schema": "roadstorm.tick_probe.step.v1", "requested_ticks": 1, "elapsed_ticks": 1, "terminal": "none", "tick_count": 1, "sim_time": 0.01666666666667, "observation": { "schema": "roadstorm.tick_probe.obs.v1", "tick": 1, "sim_time": 0.01666666666667, "position": [0.0, 0.5, -0.16666667163372], "rotation_y_deg": 0.0, "grounded": true, "progress_m": 0.16666667163372, "terminal": "none" } } live_ticks=0 paused=true
+RESET_FIN pending_after=false stale_result={  } live_ticks=0 paused=true
+EDGE_REPRO_DONE

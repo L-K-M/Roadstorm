@@ -54,6 +54,9 @@ const MAX_SUPPORTED_SPEED_MPS := MAX_TICK_TRAVEL_M / DT
 const MOTION_BOUND_EPSILON_M := 1e-6
 const SEED := 20261126
 const MAX_TICK_LOG := 20000
+## Physics-server callback order is tree order; the coordinator uses a small
+## PROCESS_MODE_ALWAYS pause-enforcer helper ordered before ordinary world
+## nodes so the one post-request pause iteration does not reach them.
 
 # Scenario configuration, set by the driver before reset().
 var speed_mps := 10.0
@@ -100,18 +103,25 @@ var _step_elapsed := 0
 var _freeze := false
 var _pending_result := false
 var _result := {}
-## True between a normal request's final physics callback and the idle-phase
-## emission below. The physics server must integrate the final tick before the
-## tree pauses; pausing inside the physics callback would suppress that step.
+## True between a normal request's final physics callback and the next-
+## physics-callback pause/emission below. The physics server must integrate the
+## final tick before the tree pauses; pausing inside the physics callback would
+## suppress that step.
 var _emit_scheduled := false
-var _deferred_terminal := "none"
+var _emit_armed_pf := -1
 var _deferred_result := {}
+## >0 while a completion signal is being dispatched. begin_step() refuses
+## reentry during that window; reset() marks the publication cancelled.
+var _completion_callbacks := 0
+var _completion_reset := false
+var _pause_enforcer: Node
 var _last_grounded := true
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	rng.seed = SEED
+	_ensure_pause_enforcer()
 	_build_world()
 	initial_transform = body.transform
 	get_tree().physics_frame.connect(_on_engine_physics_frame)
@@ -138,6 +148,7 @@ func configure(p_speed_mps: float, p_finish_z: float, p_max_ticks: int, p_wall_f
 	max_ticks = p_max_ticks
 	wall_face_z = p_wall_face_z
 	_reset_state()
+	_ensure_pause_enforcer()
 	_build_world()
 	initial_transform = body.transform
 
@@ -176,6 +187,10 @@ func _build_world() -> void:
 
 
 func _reset_state() -> void:
+	if _completion_callbacks > 0:
+		# A synchronous observer called reset() during a completion signal;
+		# cancel any not-yet-published or scheduled result.
+		_completion_reset = true
 	tick_count = 0
 	commanded_distance = 0.0
 	rng_draws.clear()
@@ -204,7 +219,7 @@ func _reset_state() -> void:
 	_freeze = false
 	_pending_result = false
 	_emit_scheduled = false
-	_deferred_terminal = "none"
+	_emit_armed_pf = -1
 	_deferred_result = {}
 	# Reset must not leave a pre-reset step result retrievable through
 	# take_result(); an empty dict is the explicit "no result" value.
@@ -240,6 +255,8 @@ func set_frozen(frozen: bool) -> void:
 func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 	if requested_ticks < 0:
 		return _refuse_begin_step("negative requested_ticks")
+	if _completion_callbacks > 0:
+		return _refuse_begin_step("completion callback in progress")
 	if _emit_scheduled:
 		return _refuse_begin_step("result awaiting emission")
 	if _pending_result:
@@ -272,6 +289,33 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 	if _freeze or get_tree().paused:
 		set_frozen(false)
 	return true
+
+
+## Called by the pause-enforcer helper at the start of the post-request
+## iteration (or as a fallback from this node's own physics callback).
+func request_deferred_pause() -> void:
+	if not _emit_scheduled:
+		return
+	# The coordinator arms during the final tick's own physics callback. Wait
+	# for a strictly later engine frame so that tick's server step still runs;
+	# a helper ordered after the coordinator in the same frame would otherwise
+	# pause too early.
+	if Engine.get_physics_frames() <= _emit_armed_pf:
+		return
+	_emit_scheduled = false
+	get_tree().paused = true
+	_result = _deferred_result
+	_pending_result = true
+	_emit_finished(_result)
+
+
+func _ensure_pause_enforcer() -> void:
+	if _pause_enforcer != null and is_instance_valid(_pause_enforcer):
+		return
+	var enforcer_script: GDScript = load("res://src/pause_enforcer.gd")
+	_pause_enforcer = enforcer_script.new()
+	_pause_enforcer.coordinator = self
+	add_child(_pause_enforcer)
 
 
 func _refuse_begin_step(reason: String) -> bool:
@@ -331,11 +375,8 @@ func _physics_process(delta: float) -> void:
 	# preserves one server step per logical tick even when the engine catches up
 	# with several physics iterations in one frame.
 	if _emit_scheduled:
-		_emit_scheduled = false
-		get_tree().paused = true
-		_result = _deferred_result
-		_pending_result = true
-		step_finished.emit(_result)
+		if _pause_enforcer == null:
+			request_deferred_pause()
 		return
 	# A freeze requested by the previous tick must hold even if the engine
 	# delivers one more callback before SceneTree.paused takes effect.
@@ -516,23 +557,42 @@ func _finish_step(terminal: String, defer_pause: bool = false) -> void:
 		events.append({"tick": tick_count, "kind": terminal})
 	_freeze = true
 	var result := _build_result(_requested_ticks, _step_elapsed, terminal)
-	# Accounting observers sample here, at the final logical tick, before the
-	# pause callback adds an engine callback of its own.
-	step_accounted.emit(result)
+	# Arm all publication state BEFORE dispatching observers. A synchronous
+	# step_accounted listener must see a completed, non-reentrant state and a
+	# reset() from such a listener must cancel the publication.
 	if defer_pause:
-		# Stay unpaused for this iteration so the final tick's physics-server
-		# step runs; pause and publish on the next physics callback.
 		_emit_scheduled = true
-		_deferred_terminal = terminal
+		_emit_armed_pf = Engine.get_physics_frames()
 		_deferred_result = result
+	else:
+		_result = result
+		_pending_result = true
+	_completion_callbacks += 1
+	step_accounted.emit(result)
+	_completion_callbacks -= 1
+	if _completion_reset:
+		_completion_reset = false
+		return
+	if defer_pause:
 		return
 	get_tree().paused = true
-	_result = result
-	_pending_result = true
-	step_finished.emit(_result)
+	_emit_finished(_result)
 
 
 func _emit_result(requested_ticks: int, elapsed_ticks: int, terminal: String) -> void:
 	_result = _build_result(requested_ticks, elapsed_ticks, terminal)
 	_pending_result = true
-	step_finished.emit(_result)
+	_emit_finished(_result)
+
+
+## Dispatch step_finished under the completion-callback guard so a listener
+## cannot reenter begin_step()/reset() into a half-published completion.
+func _emit_finished(result: Dictionary) -> void:
+	# Rebuild the observation at emission time, after the final tick's physics
+	# server step, so consumers never read pre-step dynamic state.
+	result["observation"] = observe()
+	_completion_callbacks += 1
+	step_finished.emit(result)
+	_completion_callbacks -= 1
+	if _completion_reset:
+		_completion_reset = false

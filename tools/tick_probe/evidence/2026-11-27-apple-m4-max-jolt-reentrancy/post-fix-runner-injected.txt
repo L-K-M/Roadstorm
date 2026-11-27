@@ -1,0 +1,4 @@
+ERROR: probe reported 1 failed check(s); failing closed regardless of child exit
+TEST_RESULT {"schema":"roadstorm.tick_probe.contract.v1","checks_total":85,"checks_failed":1,"failures":["injected reported failure"]}
+TESTS_TOTAL=85 TESTS_FAILED=1
+PACING=fixed CONTRACT_TESTS_TOTAL=85 CONTRACT_TESTS_FAILED=1

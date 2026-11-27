@@ -1,0 +1,26 @@
+ERROR: N1 probe reported 1 failed check(s); failing closed regardless of child exit
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=1 signal_pf_delta=2 first_integ_pf=7 paused=true
+PASS n1: single_1 request #1 integrates exactly 1 server steps
+PASS n1: single_1 request #1 accounts at least one pause callback beyond its ticks
+PASS n1: single_1 observed velocity matches the last counted integration
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=9 paused=true
+PASS n1: single_12 request #1 integrates exactly 12 server steps
+PASS n1: single_12 request #1 accounts at least one pause callback beyond its ticks
+PASS n1: single_12 observed velocity matches the last counted integration
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=23 paused=true
+PASS n1: repeated_12 request #1 integrates exactly 12 server steps
+PASS n1: repeated_12 request #1 accounts at least one pause callback beyond its ticks
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=23 paused=true
+PASS n1: repeated_12 request #2 integrates exactly 12 server steps
+PASS n1: repeated_12 request #2 accounts at least one pause callback beyond its ticks
+PASS n1: repeated_12 observed velocity matches the last counted integration
+N1_METRIC continuous_cold_control k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+PASS n1: continuous cold control shows a one-iteration callback lag (1 frames)
+N1_METRIC continuous_cold_control k=12 server_steps_delta=12 engine_pf_delta=13 first_integ_pf=50
+FAIL n1: continuous cold control shows a one-iteration callback lag (12 frames) | server_steps_delta=12 expected<=k-1=11
+PASS n1: frozen waiting integrates no server step and moves no body
+N1_RESULT {"checks_failed":1,"checks_total":14,"failures":["FAIL n1: continuous cold control shows a one-iteration callback lag (12 frames) | server_steps_delta=12 expected<=k-1=11"],"schema":"roadstorm.tick_probe.n1.v1"}
+N1_TOTAL=14 N1_FAILED=1
+PACING=max N1_TESTS_TOTAL=14 N1_TESTS_FAILED=1

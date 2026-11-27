@@ -649,9 +649,11 @@ func _scenario_api_edges() -> void:
 	await _configure(10.0)
 	coord.reset()
 	var accepted_zero: bool = coord.begin_step(0)
-	_check(accepted_zero and signal_paused,
-		"api-edge: zero-tick signal observed with the world frozen",
-		"accepted=%s paused_at_signal=%s" % [str(accepted_zero), str(signal_paused)])
+	_check(accepted_zero and bool(signal_snapshot.get("paused", false))
+		and int(signal_snapshot.get("elapsed_ticks", -1)) == 0
+		and str(signal_snapshot.get("terminal", "")) == "none",
+		"api-edge: zero-tick signal snapshot is empty, nonterminal and frozen",
+		"accepted=%s snapshot=%s" % [str(accepted_zero), str(signal_snapshot)])
 	var zero: Dictionary = coord.take_result()
 	_check(int(zero.elapsed_ticks) == 0 and str(zero.terminal) == "none",
 		"api-edge: zero-tick request is an empty nonterminal step")

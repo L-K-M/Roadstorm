@@ -1,0 +1,4 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+F1F3 n=12 elapsed=12 ticks=12 server_steps_end=12 acc_steps=11 fin_steps=12 acc_y=999.821228027 fin_y=999.788879395 obs_before_cb=13 obs_after_cb=12
+F1F3_DONE

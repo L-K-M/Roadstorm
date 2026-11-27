@@ -123,6 +123,12 @@ def main() -> int:
             (out_dir / "contract-tests.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         failed = report.get("checks_failed", 1)
         print(f"PACING={args.pacing} CONTRACT_TESTS_TOTAL={reported_total} CONTRACT_TESTS_FAILED={failed}")
+        # A well-formed report that reports failures is authoritative even if
+        # the child process exited 0 (for example a harness or script bug).
+        if failed != 0:
+            print(f"ERROR: probe reported {failed} failed check(s); failing closed regardless of child exit",
+                  file=sys.stderr)
+            return 1
         return proc.returncode
     except subprocess.TimeoutExpired as exc:
         partial = ""

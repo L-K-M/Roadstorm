@@ -1,0 +1,35 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=1 signal_pf_delta=2 first_integ_pf=5 paused=true
+PASS n1: single_1 request #1 integrates exactly 1 server steps
+PASS n1: single_1 request #1 accounts at least one pause callback beyond its ticks
+PASS n1: single_1 observed velocity matches the last counted integration
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=7 paused=true
+PASS n1: single_12 request #1 integrates exactly 12 server steps
+PASS n1: single_12 request #1 accounts at least one pause callback beyond its ticks
+PASS n1: single_12 observed velocity matches the last counted integration
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=24 signal_pf_delta=25 first_integ_pf=20 paused=true
+PASS n1: single_24 request #1 integrates exactly 24 server steps
+PASS n1: single_24 request #1 accounts at least one pause callback beyond its ticks
+PASS n1: single_24 observed velocity matches the last counted integration
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=45 paused=true
+PASS n1: repeated_12 request #1 integrates exactly 12 server steps
+PASS n1: repeated_12 request #1 accounts at least one pause callback beyond its ticks
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=45 paused=true
+PASS n1: repeated_12 request #2 integrates exactly 12 server steps
+PASS n1: repeated_12 request #2 accounts at least one pause callback beyond its ticks
+PASS n1: repeated_12 observed velocity matches the last counted integration
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+PASS n1: warmed control body was activated before the measured window
+PASS n1: warmed continuous control delivered at least one engine iteration
+PASS n1: warmed continuous control integrates exactly once per delivered engine iteration
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+PASS n1: warmed control body was activated before the measured window
+PASS n1: warmed continuous control delivered at least one engine iteration
+PASS n1: warmed continuous control integrates exactly once per delivered engine iteration
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=95
+PASS n1: frozen waiting integrates no server step and moves no body
+N1_RESULT {"checks_failed":0,"checks_total":21,"failures":[],"schema":"roadstorm.tick_probe.n1.v1"}
+N1_TOTAL=21 N1_FAILED=0
+PACING=max N1_TESTS_TOTAL=21 N1_TESTS_FAILED=0

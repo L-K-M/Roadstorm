@@ -1,0 +1,90 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+PASS frame-account: request 1 consumed exactly 1 logical ticks
+PASS frame-account: step_accounted boundary reports exactly 1 accounted ticks
+PASS frame-account: independent physics-frame tally at step_accounted matches logical ticks
+PASS frame-account: trailing frozen callback advanced no logical tick
+PASS frame-account: request 7 consumed exactly 7 logical ticks
+PASS frame-account: step_accounted boundary reports exactly 7 accounted ticks
+PASS frame-account: independent physics-frame tally at step_accounted matches logical ticks
+PASS frame-account: trailing frozen callback advanced no logical tick
+PASS frame-account: request 12 consumed exactly 12 logical ticks
+PASS frame-account: step_accounted boundary reports exactly 12 accounted ticks
+PASS frame-account: independent physics-frame tally at step_accounted matches logical ticks
+PASS frame-account: trailing frozen callback advanced no logical tick
+PASS frame-account: request 13 consumed exactly 13 logical ticks
+PASS frame-account: step_accounted boundary reports exactly 13 accounted ticks
+PASS frame-account: independent physics-frame tally at step_accounted matches logical ticks
+PASS frame-account: trailing frozen callback advanced no logical tick
+PASS frozen: engine physics frames continued while waiting
+PASS frozen: zero logical advancement and no motion while waiting
+PASS stale-result: first step returned 12 ticks
+PASS stale-result: take_result after reset returns empty
+PASS stale-result: reset cleared the pending-result flag
+PASS stale-result: reset discards an untaken pending result
+PASS zero-budget: cap 0 emits a zero-tick truncated result without awaiting a frame
+PASS zero-budget: cap 0 executed no tick and moved nothing
+PASS zero-budget: cap 0 consumed no engine physics frame
+PASS zero-budget: still zero ticks after further engine frames
+PASS zero-budget: negative cap behaves as zero, not one tick
+PASS zero-budget: one-tick boundary executes exactly one tick
+PASS work-boundary: supported speed completes 12 ticks without refusal
+PASS work-boundary: substep length stayed within the cap
+PASS work-envelope: over-bound speed is refused explicitly
+PASS work-envelope: refused command advanced no tick and moved nothing
+PASS work-envelope: residual deficit is recorded, not silently dropped
+PASS work-envelope: reverse over-bound speed is refused too
+PASS wait-guard: reset leaves the authoritative world frozen
+PASS wait-guard: control body falls while the world is deliberately running
+PASS wait-guard: engine physics frames continued while frozen after reset
+PASS wait-guard: independent body did not drift after reset
+PASS wait-guard: zero logical ticks after reset
+PASS wait-guard: zero-tick request is a nonterminal zero step
+PASS wait-guard: zero-tick request leaves the world frozen
+PASS wait-guard: independent body did not drift after a zero-tick request
+PASS wait-guard: zero logical ticks after a zero-tick request
+PASS wait-guard: exhausted-budget request is zero-tick truncated
+PASS wait-guard: exhausted-budget request freezes the world
+PASS wait-guard: independent body did not drift after an exhausted-budget request
+PASS dynamic-steps: first one-tick request integrates exactly one server step
+PASS dynamic-steps: first request publishes while frozen
+PASS dynamic-steps: 12-tick request integrates exactly 12 server steps (#1)
+PASS dynamic-steps: request completion publishes while frozen (#1)
+PASS dynamic-steps: 12-tick request integrates exactly 12 server steps (#2)
+PASS dynamic-steps: request completion publishes while frozen (#2)
+PASS dynamic-steps: frozen wait adds no server steps
+PASS dynamic-steps: frozen wait has zero body drift
+PASS begin-step: first request accepted
+PASS begin-step: overlapping request refused
+PASS begin-step: first request accounting survived the overlap attempt
+PASS begin-step: negative budget refused
+PASS begin-step: negative refusal changed no accounting
+PASS begin-step: request after refusals accepted
+PASS begin-step: untaken-result overlap refused
+PASS begin-step: untaken refusal changed no accounting
+PASS begin-step: pending result still readable after a refusal
+PASS completion-callback: begin_step refused inside step_accounted
+PASS completion-callback: accounting reentry did not hijack the result
+PASS completion-callback: begin_step refused inside step_finished
+PASS completion-callback: finished reentry did not disturb the result
+PASS completion-callback: reset in step_accounted leaves no stale result
+PASS completion-callback: reset in step_accounted restores tick 0/frozen
+PASS completion-callback: reset in step_finished leaves no stale result
+PASS completion-callback: reset in step_finished restores tick 0/frozen
+PASS api-edge: one-tick cap reaches a consumed terminal result
+PASS api-edge: negative request refused after consumed terminal
+PASS api-edge: negative terminal request published no result
+PASS api-edge: negative terminal request changed no tick
+PASS api-edge: last signal still belongs to the consumed step
+PASS api-edge: zero-tick signal observed with the world frozen
+PASS api-edge: zero-tick signal carries an empty nonterminal result
+PASS api-edge: zero-tick request leaves the frozen waiting state
+PASS api-edge: cap-0 reset observation starts truncated
+PASS api-edge: cap-0 request stays zero-tick truncated
+PASS bypass-negative: direct physics calls consumed zero logical ticks
+PASS bypass-negative: direct calls still moved the body outside tick accounting
+PASS pause-ownership: begin_step clears an externally set pause
+PASS pause-ownership: stepping proceeds after clearing the external pause
+TEST_RESULT {"checks_failed":0,"checks_total":85,"failures":[],"schema":"roadstorm.tick_probe.contract.v1"}
+TESTS_TOTAL=85 TESTS_FAILED=0
+PACING=fixed CONTRACT_TESTS_TOTAL=85 CONTRACT_TESTS_FAILED=0

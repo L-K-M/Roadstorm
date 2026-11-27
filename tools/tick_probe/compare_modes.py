@@ -207,6 +207,17 @@ def main() -> int:
             f"{data['final_z_m']:>20.9f}"
         )
 
+    # F2: the deferred pause costs one extra engine iteration per request.
+    # Record the expected real-time factor ceiling without changing the
+    # documented 0.5-2.0 acceptance band.
+    pause_overhead_s = args.requests * DT
+    realtime_factor_ceiling = realtime["sim_seconds"] / (realtime["sim_seconds"] + pause_overhead_s)
+    print(
+        f"INFO: pause overhead expected {args.requests} extra engine frames "
+        f"({pause_overhead_s:.3f}s); realtime speedup ceiling ~{realtime_factor_ceiling:.3f}, "
+        f"observed {realtime['speedup_vs_wall_clock']:.3f}"
+    )
+
     for name, data in (("accelerated", accelerated), ("realtime", realtime)):
         check(data["elapsed_ticks"] == expected_ticks, f"{name}: consumed {expected_ticks} logical ticks")
         check(abs(data["delta_min"] - DT) < 1e-6 and abs(data["delta_max"] - DT) < 1e-6,

@@ -9,11 +9,14 @@ extends Node
 
 const CoordinatorScript := preload("res://src/tick_coordinator.gd")
 const CountingBody := preload("res://tests/counting_body.gd")
+const CallbackObserver := preload("res://tests/callback_observer.gd")
 
 var coord
 var ext_physics_frames := 0
 var last_signal := {}
 var last_accounting := {}
+var completion_probe := ""
+var completion_probe_reentry: bool = false
 var failures: Array[String] = []
 var checks := 0
 
@@ -25,6 +28,8 @@ func _ready() -> void:
 	get_tree().root.add_child(coord)
 	coord.step_finished.connect(_on_step_finished)
 	coord.step_accounted.connect(_on_step_accounted)
+	coord.step_accounted.connect(_on_step_accounted_probe)
+	coord.step_finished.connect(_on_step_finished_probe)
 	await get_tree().process_frame
 	await _test_frame_accounting()
 	await _test_frozen_zero_advance()
@@ -34,6 +39,9 @@ func _ready() -> void:
 	await _test_wait_guard()
 	await _test_dynamic_server_steps()
 	await _test_begin_step_refusals()
+	await _test_completion_callback_reentrancy()
+	await _test_callback_ordering()
+	await _test_motion_bound_server_steps()
 	await _test_api_edges()
 	await _test_bypass_negative_control()
 	await _test_pause_ownership()
@@ -57,6 +65,63 @@ func _on_step_finished(result: Dictionary) -> void:
 		"elapsed_ticks": int(result.elapsed_ticks),
 		"terminal": str(result.terminal),
 	}
+
+
+## F1: the pause-enforcer pauses before ordinary later-in-tree nodes, so the
+## one post-request pause iteration does not reach them. A node ordered before
+## the coordinator subtree still sees the extra callback and is documented as
+## requiring tick gating.
+func _test_callback_ordering() -> void:
+	await _configure(10.0)
+	coord.reset()
+	var root := get_tree().root
+	var before := CallbackObserver.new()
+	root.add_child(before)
+	root.move_child(before, 0)
+	var after := CallbackObserver.new()
+	root.add_child(after)
+	await _step(12)
+	_check(after.physics_callbacks == 12,
+		"ordering: node after the coordinator sees exactly the logical tick callbacks",
+		"after=%d" % after.physics_callbacks)
+	_check(before.physics_callbacks == 13,
+		"ordering: node before the coordinator sees the one pause callback (documented exposure)",
+		"before=%d" % before.physics_callbacks)
+	before.queue_free()
+	after.queue_free()
+
+
+## A refused over-envelope command must integrate no physics-server step.
+func _test_motion_bound_server_steps() -> void:
+	await _configure(250.0)
+	coord.reset()
+	var dyn: RigidBody3D = _spawn_counting_body()
+	var result: Dictionary = await _step(12)
+	_check(str(result.terminal) == "motion_bound" and int(result.elapsed_ticks) == 0,
+		"motion-bound: refusal returns zero elapsed ticks",
+		"terminal=%s elapsed=%d" % [str(result.terminal), int(result.elapsed_ticks)])
+	_check(dyn.server_steps == 0 and coord.tick_count == 0,
+		"motion-bound: refusal integrates no physics-server step",
+		"server_steps=%d ticks=%d" % [dyn.server_steps, coord.tick_count])
+	dyn.queue_free()
+
+
+## Completion-callback reentrancy probes: while armed, a synchronous listener
+## attempts begin_step()/reset() from inside step_accounted/step_finished.
+func _on_step_accounted_probe(_result: Dictionary) -> void:
+	match completion_probe:
+		"accounting_begin":
+			completion_probe_reentry = coord.begin_step(2)
+		"accounting_reset":
+			coord.reset()
+
+
+func _on_step_finished_probe(_result: Dictionary) -> void:
+	match completion_probe:
+		"finished_begin":
+			completion_probe_reentry = coord.begin_step(2)
+		"finished_reset":
+			coord.reset()
 
 
 ## Accounting boundary at the final logical tick (before the pause callback).
@@ -143,6 +208,13 @@ func _step(requested: int) -> Dictionary:
 func _wait_pending_and_take() -> Dictionary:
 	await _wait_pending()
 	return coord.take_result()
+
+
+func _wait_pending_and_take_bounded(max_frames: int = 400) -> void:
+	var guard := 0
+	while not coord.has_pending_result() and guard < max_frames:
+		await get_tree().process_frame
+		guard += 1
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +516,10 @@ func _test_dynamic_server_steps() -> void:
 	await _configure(10.0)
 	coord.reset()
 	var dyn: RigidBody3D = _spawn_counting_body()
+	var emission_steps: Array[int] = []
+	var emission_observer = func(_result: Dictionary) -> void:
+		emission_steps.append(dyn.server_steps)
+	coord.step_finished.connect(emission_observer)
 	for i in 2:
 		var before: int = dyn.server_steps
 		var result: Dictionary = await _step(12)
@@ -453,6 +529,10 @@ func _test_dynamic_server_steps() -> void:
 			"server_steps_delta=%d elapsed=%d" % [delta, int(result.elapsed_ticks)])
 		_check(bool(last_signal.get("paused", false)),
 			"dynamic-steps: request completion publishes while frozen (#%d)" % (i + 1))
+		_check(emission_steps.size() > i and emission_steps[i] == 12 * (i + 1),
+			"dynamic-steps: step_finished observes the post-server-step count (#%d)" % (i + 1),
+			"observed=%s expected=%d" % [str(emission_steps), 12 * (i + 1)])
+	coord.step_finished.disconnect(emission_observer)
 
 	var s_wait: int = dyn.server_steps
 	var y_wait: float = dyn.global_position.y
@@ -465,6 +545,72 @@ func _test_dynamic_server_steps() -> void:
 		"dynamic-steps: frozen wait has zero body drift",
 		"y=%.9f->%.9f" % [y_wait, dyn.global_position.y])
 	dyn.queue_free()
+
+
+## Synchronous completion listeners must not reenter begin_step() or leave a
+## stale result after reset(). The coordinator arms publication state before
+## dispatching observers and cancels it if reset() runs during dispatch.
+func _test_completion_callback_reentrancy() -> void:
+	# begin_step() from step_accounted is refused; original result still valid.
+	await _configure(10.0)
+	coord.reset()
+	completion_probe = "accounting_begin"
+	completion_probe_reentry = true
+	coord.begin_step(1)
+	await _wait_pending_and_take_bounded()
+	var r1: Dictionary = coord.take_result()
+	_check(not completion_probe_reentry,
+		"completion-callback: begin_step refused inside step_accounted",
+		"accepted=%s" % str(completion_probe_reentry))
+	_check(int(r1.get("elapsed_ticks", -1)) == 1 and int(r1.get("tick_count", -1)) == 1,
+		"completion-callback: accounting reentry did not hijack the result",
+		"elapsed=%s ticks=%s live=%d" % [r1.get("elapsed_ticks"), r1.get("tick_count"), coord.tick_count])
+	completion_probe = ""
+
+	# begin_step() from step_finished is refused; pending result survives.
+	await _configure(10.0)
+	coord.reset()
+	completion_probe = "finished_begin"
+	completion_probe_reentry = true
+	coord.begin_step(1)
+	await _wait_pending_and_take_bounded()
+	var r2: Dictionary = coord.take_result()
+	_check(not completion_probe_reentry,
+		"completion-callback: begin_step refused inside step_finished",
+		"accepted=%s" % str(completion_probe_reentry))
+	_check(int(r2.get("elapsed_ticks", -1)) == 1 and int(r2.get("tick_count", -1)) == 1,
+		"completion-callback: finished reentry did not disturb the result")
+	completion_probe = ""
+
+	# reset() inside step_accounted cancels the old result completely.
+	await _configure(10.0)
+	coord.reset()
+	completion_probe = "accounting_reset"
+	coord.begin_step(1)
+	await _wait_physics_frames(5)
+	var pending_after_acc: bool = coord.has_pending_result()
+	var stale_acc: Dictionary = coord.take_result()
+	_check(not pending_after_acc and stale_acc.is_empty(),
+		"completion-callback: reset in step_accounted leaves no stale result",
+		"pending=%s keys=%s" % [str(pending_after_acc), str(stale_acc.keys())])
+	_check(coord.tick_count == 0 and get_tree().paused,
+		"completion-callback: reset in step_accounted restores tick 0/frozen")
+	completion_probe = ""
+
+	# reset() inside step_finished also cancels publication.
+	await _configure(10.0)
+	coord.reset()
+	completion_probe = "finished_reset"
+	coord.begin_step(1)
+	await _wait_physics_frames(5)
+	var pending_after_fin: bool = coord.has_pending_result()
+	var stale_fin: Dictionary = coord.take_result()
+	_check(not pending_after_fin and stale_fin.is_empty(),
+		"completion-callback: reset in step_finished leaves no stale result",
+		"pending=%s keys=%s" % [str(pending_after_fin), str(stale_fin.keys())])
+	_check(coord.tick_count == 0 and get_tree().paused,
+		"completion-callback: reset in step_finished restores tick 0/frozen")
+	completion_probe = ""
 
 
 ## API edge regressions: negative requests are refused even on a consumed

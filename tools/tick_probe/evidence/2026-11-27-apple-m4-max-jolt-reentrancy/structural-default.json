@@ -1,0 +1,169 @@
+{
+  "checks_failed": 0,
+  "checks_total": 108,
+  "environment": {
+    "character_body_safe_margin_m": 0.08,
+    "engine_major": 4,
+    "engine_max_fps": 0,
+    "engine_minor": 7,
+    "engine_pacing": "unbounded",
+    "engine_patch": 2,
+    "engine_string": "4.7.2-stable (official)",
+    "max_supported_speed_mps": 240.0,
+    "max_tick_travel_m": 4.0,
+    "os": "macOS",
+    "physics_engine_allowed": [
+      "DEFAULT",
+      "Jolt Physics",
+      "GodotPhysics3D",
+      "Dummy"
+    ],
+    "physics_engine_setting": "Jolt Physics",
+    "physics_ticks_per_second": 60,
+    "processor_count": 14,
+    "processor_name": "Apple M4 Max",
+    "rendering_method_setting": "forward_plus",
+    "requested_pacing": "default",
+    "swept_cast_margin_m": 0.0
+  },
+  "failures": [],
+  "label": "local",
+  "limitations": [
+    "Headless dummy display/audio drivers; no rendering, input or audio claims.",
+    "Accelerated pacing uses --fixed-fps (engine disables real-time synchronization); real-time pacing uses --max-fps 60 and depends on host load.",
+    "Godot/Jolt same-host determinism is measured; cross-platform byte determinism is not claimed.",
+    "The probe car uses CharacterBody3D explicit displacement like the planned motor; it is not the full M1 motor, AI, contacts, multi-car reset or renderer. A one-car open-road/wall trace is not a full simulation claim.",
+    "The coordinator advances exactly 1/60 s per logical tick and does not use the engine delta parameter; structural scenarios assert that the delivered physics delta stays 1/60 s rather than clamping or adapting to a different delta.",
+    "The coordinator owns SceneTree.paused for the probe world: it freezes the tree after reset, after every finished request, after zero-tick requests and in exhausted-budget returns; only begin_step() with a positive budget unfreezes it. Other nodes must not write SceneTree.paused while the probe runs.",
+    "A commanded per-tick displacement above MAX_SUBSTEPS * SUBSTEP_MAX_LEN (4.0 m, 240 m/s) is refused with terminal motion_bound; speeds within the envelope are subdivided into <=0.25 m substeps.",
+    "take_result() consumes the pending result and returns an empty Dictionary when none is pending; reset clears any stored result so a prior episode result cannot be read back.",
+    "GDScript cannot query the active 3D physics backend at runtime (PhysicsServer3D is opaque and this build prints no backend line even with --verbose); the backend pin is verified by the physics/3d/physics_engine setting value above plus the explicit backend-contrast run recorded in the evidence directory."
+  ],
+  "mode": "structural",
+  "scenarios": {
+    "api_edges": {
+      "cap0_reset_terminal": "truncated",
+      "negative_after_terminal_refused": true,
+      "zero_tick_signal_frozen": true
+    },
+    "begin_step_refusals": {
+      "first_elapsed_ticks": 12,
+      "refusals": 3,
+      "third_elapsed_ticks": 12
+    },
+    "bounded_work_envelope": {
+      "boundary_elapsed_ticks": 12,
+      "boundary_motion_bound_violations": 0,
+      "max_supported_speed_mps": 240.0,
+      "max_tick_travel_m": 4.0,
+      "mid_request_elapsed_ticks": 2,
+      "mid_request_terminal": "motion_bound",
+      "over_speed_deficit_m": 0.166666666666667,
+      "over_speed_terminal": "motion_bound",
+      "reverse_terminal": "motion_bound"
+    },
+    "bypass_calls": {
+      "body_displacement_m": 1.99999976158142,
+      "direct_calls": 12,
+      "logical_ticks": 0
+    },
+    "early_termination": {
+      "elapsed_ticks": 6,
+      "final_z_m": -1.0,
+      "later_request_elapsed_ticks": 0,
+      "requested_ticks": 12,
+      "terminal": "terminated"
+    },
+    "max_speed_no_tunnel": {
+      "actual_stop_z_m": -0.599701285362244,
+      "contact_plane_z_m": -0.6,
+      "max_substep_len_m": 0.25,
+      "naive_one_tick_z_m": -1.08333333333333,
+      "naive_request_z_m": -13.0,
+      "speed_mps": 65.0,
+      "total_substeps": 14,
+      "wall_face_z_m": -2.5
+    },
+    "open_fidelity": {
+      "actual_z_m": -10.0,
+      "delta_max": 0.0166666666666667,
+      "delta_min": 0.0166666666666667,
+      "expected_z_m": -10.0,
+      "max_commit_discrepancy_m": 0.0,
+      "max_prediction_error_m": 0.0,
+      "max_test_move_error_m": 0.0,
+      "request_elapsed_ticks": [
+        12,
+        12,
+        12,
+        12,
+        12
+      ],
+      "tick_count": 60,
+      "unacked_call_count": 12,
+      "unacked_claimed_distance_m": 2.0
+    },
+    "reset_replay": {
+      "commanded_distance_m": 4.0,
+      "event_count_first_run": 24,
+      "event_count_replay": 24,
+      "exact_rng_stream_match": true,
+      "exact_transform_match": true,
+      "ticks_per_replay": 24
+    },
+    "truncation": {
+      "final_z_m": -4.99999952316284,
+      "max_ticks": 30,
+      "sequence": [
+        {
+          "elapsed_ticks": 12,
+          "terminal": "none"
+        },
+        {
+          "elapsed_ticks": 12,
+          "terminal": "none"
+        },
+        {
+          "elapsed_ticks": 6,
+          "terminal": "truncated"
+        },
+        {
+          "elapsed_ticks": 0,
+          "terminal": "truncated"
+        }
+      ]
+    },
+    "wait_freeze": {
+      "ambient_time_scale_drift_m": 0.0,
+      "ambient_y_after_fall": 9.82132720947266,
+      "driver_frames_during_wait": 60,
+      "frozen_engine_physics_frames": 50,
+      "resumed_elapsed_ticks": 12,
+      "ticks_after_wait": 12,
+      "ticks_before_wait": 12
+    },
+    "wait_guard": {
+      "exhausted_budget_froze_world": true,
+      "reset_froze_world": true,
+      "zero_tick_froze_world": true
+    },
+    "wall_swept_motion": {
+      "actual_stop_z_m": -1.09974813461304,
+      "contact_plane_z_m": -1.1,
+      "max_prediction_error_m": 0.000162363052368164,
+      "max_substep_len_m": 0.16666667163372,
+      "minimum_tick_end_z_m": -1.09974813461304,
+      "naive_chord_z_m": -2.0,
+      "test_move_recovery_artifact_m": 0.0696332156658173,
+      "total_substeps": 12,
+      "wall_face_z_m": -3.0
+    },
+    "zero_tick_budget": {
+      "cap_0_elapsed_ticks": 0,
+      "cap_0_terminal": "truncated",
+      "negative_cap_elapsed_ticks": 0,
+      "one_tick_cap_elapsed_ticks": 1
+    }
+  },
+  "schema": "roadstorm.tick_probe.report.v1"
+}
