@@ -1835,11 +1835,14 @@ ci_export_build() {
 	CI_RUN_NAME="export-$_slug"
 	# ci_init_report ran before dispatch and therefore used the generic command
 	# name. Give the already-written report the same preset-specific name as the
-	# logs so two presets can never share an evidence file.
+	# logs so two presets can never share an evidence file. Publication is
+	# create-only: ln refuses a pre-existing regular file or dangling symlink
+	# instead of replacing prior evidence, and the successful link leaves one
+	# inode behind both names so the parent/worker handoff stays coherent.
 	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
 		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ] && [ ! -L "$_new_report" ]; then
-			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
+		if ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
+			CI_REPORT="$_new_report"
 		fi
 	fi
 
@@ -1990,10 +1993,12 @@ ci_export_build_inner() {
 	_slug="$(ci_preset_slug "$_preset")"
 	[ -n "$_slug" ] || _slug="preset"
 	CI_RUN_NAME="export-$_slug"
+	# Same create-only publication as the outer path: a direct __export-inner
+	# call must not replace an existing report path either.
 	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
 		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ] && [ ! -L "$_new_report" ]; then
-			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
+		if ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
+			CI_REPORT="$_new_report"
 		fi
 	fi
 	case "$_out" in
@@ -2006,11 +2011,22 @@ ci_export_build_inner() {
 	_pck="$_pck_dir/$_pck_base.pck"
 
 	# Reserved lock namespace must be rejected even for a direct worker call.
+	# Check each path separately, exactly like the outer path: concatenating the
+	# lowercased names lets an output ending in .ci-lock hide behind a sidecar
+	# suffix that does not (e.g. out=name.ci-lock, pck=name.pck), so the
+	# combined string no longer ends in .ci-lock and the guard would bypass.
 	_out_lower="$(printf '%s' "$_out" | tr '[:upper:]' '[:lower:]')"
 	_pck_lower="$(printf '%s' "$_pck" | tr '[:upper:]' '[:lower:]')"
-	case "$_out_lower$_pck_lower" in
+	case "$_out_lower" in
 		*.ci-lock)
-			ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out$_pck (choose another output name)"
+			ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out (choose another output name)"
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+			return "$CI_FAIL"
+		;;
+	esac
+	case "$_pck_lower" in
+		*.ci-lock)
+			ci_fail "export --export: sidecar destination is inside the reserved .ci-lock lock namespace: $_pck (choose another output name)"
 			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
 			return "$CI_FAIL"
 		;;

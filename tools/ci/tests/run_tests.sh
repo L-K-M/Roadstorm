@@ -297,6 +297,56 @@ expect_contains "verify-engine says not to extract on mismatch" 1 "DO NOT extrac
 	ci verify-engine --archive "$STUB"
 
 # ---------------------------------------------------------------------------
+# 4b. Exclusive report publication: the preset-specific report rename must be
+#     create-only. ln(2) is the publication primitive, so a destination that is
+#     already a regular file or a dangling symlink is preserved exactly and the
+#     caller keeps its prior report pointer instead of losing it.
+# ---------------------------------------------------------------------------
+PUB_DIR="$WORK_DIR/report-publish"
+rm -rf "$PUB_DIR"; mkdir -p "$PUB_DIR"
+printf 'attempt body\n' >"$PUB_DIR/source.txt"
+
+# A pre-existing regular file at the final name survives byte-exact.
+printf 'foreign bytes\n' >"$PUB_DIR/final-regular.txt"
+_ok=no
+if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-regular.txt"; then
+	:
+elif [ "$(cat "$PUB_DIR/final-regular.txt")" = "foreign bytes" ] &&
+	[ "$(cat "$PUB_DIR/source.txt")" = "attempt body" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: publishing onto an existing regular report preserves it -> $_ok"
+
+# A dangling symlink at the final name survives link-exact.
+ln -s "$PUB_DIR/absent-target" "$PUB_DIR/final-dangling.txt"
+_ok=no
+if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-dangling.txt"; then
+	:
+elif [ -L "$PUB_DIR/final-dangling.txt" ] && [ ! -e "$PUB_DIR/final-dangling.txt" ] &&
+	[ "$(readlink "$PUB_DIR/final-dangling.txt")" = "$PUB_DIR/absent-target" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: publishing onto a dangling symlink preserves it -> $_ok"
+
+# Success leaves one inode behind both names, so either handoff pointer sees
+# later verdict lines.
+rm -f "$PUB_DIR/final-new.txt"
+_ok=no
+if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-new.txt"; then
+	printf 'verdict=PASS\n' >>"$PUB_DIR/final-new.txt"
+	if grep -q '^verdict=PASS$' "$PUB_DIR/source.txt"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	fi
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: a published report stays coherent through both names -> $_ok"
+
+# ---------------------------------------------------------------------------
 # 5. Viewport helpers: the capture-resolution fix depends on them.
 # ---------------------------------------------------------------------------
 VP_OK="$WORK_DIR/viewport-ok.godot"
@@ -2556,6 +2606,33 @@ EOF
 	fi
 	log "case $CASES_RUN: a destination inside the .ci-lock namespace is rejected before the engine -> $_ok"
 
+	# Direct __export-inner call: the reserved-namespace guard must check each
+	# path separately. The worker previously concatenated the lowercased main
+	# and sidecar names, so an output ending .ci-lock with a derived .pck
+	# sidecar slipped past the guard. Prove refusal happens before any lock
+	# file, project copy or engine invocation.
+	DI_CWD="$CONC/direct-inner-ns"
+	rm -rf "$DI_CWD"; mkdir -p "$DI_CWD"
+	DI_DEST="$DI_CWD/namespace-direct.exe.ci-lock"
+	DI_PCK="$DI_CWD/namespace-direct.exe.pck"
+	rm -f "$CONC/ns-ready"
+	( export TMPDIR="$CONC/tmp-di"; ci_rel_at_home "$DI_CWD" "$CONC/home-na" "$SPROJ" --godot "$NS_GODOT" \
+		--out "$CONC/out-direct-inner" __export-inner "Linux x86-64" release "$DI_DEST" ) >"$CONC/direct-inner.log" 2>&1
+	_di_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_di_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/direct-inner.log" &&
+		[ ! -e "$CONC/ns-ready" ] && [ ! -e "$DI_DEST" ] && [ ! -L "$DI_DEST" ] &&
+		[ ! -e "$DI_DEST.ci-lock" ] && [ ! -e "$DI_PCK" ] &&
+		[ ! -d "$CONC/out-direct-inner/attempts" ] &&
+		grep -rq 'reason=lock-namespace' "$CONC/out-direct-inner/reports" 2>/dev/null; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a direct __export-inner namespace destination is refused before locks, writes or engine -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  di_rc=$_di_rc dest=$([ -e "$DI_DEST" ] && echo present || echo absent) lock=$([ -e "$DI_DEST.ci-lock" ] && echo present || echo absent) ready=$([ -e "$CONC/ns-ready" ] && echo present || echo absent)" >&2; sed 's/^/  | /' "$CONC/direct-inner.log" >&2; }
+
 	# Cooperating held-engine control: while another normal export holds its
 	# engine seam, the rejected namespace destination must still not be used.
 	NS_HOLD="$CONC/godot-ns-hold"
@@ -2818,6 +2895,45 @@ EOF
 	fi
 	log "case $CASES_RUN: a failed preset rename keeps one visible report path for parent and worker -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  div_rc=$_div_rc islink=$([ -L "$_RENAMED" ] && echo y || echo n) generic=$_GENERIC" >&2; grep -n "report:" "$CONC/div.log" | sed 's/^/  | /' >&2; }
+
+	# Force the destination to appear at publication time. Shimming ln lets the
+	# suite claim the final per-attempt report name just before ci.sh publishes
+	# it: a create-only publication must fail closed and leave the sentinel
+	# bytes, while the old check-then-mv sequence would call mv and replace them.
+	RACE_LN="$CONC/shim-ln-race"
+	rm -rf "$RACE_LN"; mkdir -p "$RACE_LN"
+	_real_ln="$(command -v ln)"
+	cat >"$RACE_LN/ln" <<EOF
+#!/bin/sh
+case "\$2" in
+	*/export-linux-x86-64-20260101T000000Z-C01152.txt)
+		printf 'sentinel-race\n' >"\$2" 2>/dev/null
+		;;
+esac
+exec "$_real_ln" "\$@"
+EOF
+	chmod +x "$RACE_LN/ln"
+	RACE_OUT="$CONC/report-race"
+	rm -rf "$RACE_OUT" "$CONC/racecwd"; mkdir -p "$RACE_OUT/reports" "$CONC/racecwd"
+	RACE_GENERIC="$RACE_OUT/reports/export-20260101T000000Z-C01152.txt"
+	RACE_RENAMED="$RACE_OUT/reports/export-linux-x86-64-20260101T000000Z-C01152.txt"
+	( export PATH="$SHIM_FIXED:$RACE_LN:$PATH" TMPDIR="$CONC/tmp-race"; ci_rel_at_home "$CONC/racecwd" "$CONC/home-ia" "$SPROJ" \
+		--godot "$DIV_GODOT" --out "$RACE_OUT" export --export "Linux x86-64" --out "$CONC/racecwd/package" ) >"$CONC/race.log" 2>&1
+	_race_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_race_rc" -ne 0 ] &&
+		[ "$(cat "$RACE_RENAMED" 2>/dev/null)" = "sentinel-race" ] &&
+		[ -s "$RACE_GENERIC" ] &&
+		grep -q 'attempt-id: 20260101T000000Z-C01152' "$RACE_GENERIC" &&
+		grep -q '^export result=fail .*reason=no-output' "$RACE_GENERIC" &&
+		grep -q "^\[ci\] report: $RACE_GENERIC$" "$CONC/race.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a report path claimed at publication time is not replaced -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  race_rc=$_race_rc renamed=$(cat "$RACE_RENAMED" 2>/dev/null)" >&2; sed 's/^/  | /' "$CONC/race.log" >&2; }
 
 	# A pre-existing symlink at the lock path is refused and never followed.
 	LOCK_SYM_CWD="$CONC/lock-symlink"

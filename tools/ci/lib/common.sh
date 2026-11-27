@@ -1109,6 +1109,23 @@ ci_new_evidence_file() {
 	mktemp "$_nef_dir/ci-evidence.XXXXXX" 2>/dev/null
 }
 
+# ci_publish_report_exclusive <source> <final-name> : publish an existing report
+# at its final per-attempt name WITHOUT replacing anything already there.
+# ln(2) is create-only: it fails, leaving the destination byte/link-exact, when
+# a regular file, directory or dangling symlink occupies the name. The source is
+# deliberately kept after a successful link, so both pathnames resolve to one
+# inode: a parent/worker handoff through either name keeps reading the same
+# report. Returns 0 when publication succeeded (or source == final-name),
+# nonzero when it did not.
+ci_publish_report_exclusive() {
+	_pre_src="$1"
+	_pre_dst="$2"
+	[ -n "$_pre_src" ] && [ -n "$_pre_dst" ] || return 1
+	[ -f "$_pre_src" ] || return 1
+	[ "$_pre_src" = "$_pre_dst" ] && return 0
+	ln "$_pre_src" "$_pre_dst" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Small utilities
 # ---------------------------------------------------------------------------
