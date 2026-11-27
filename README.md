@@ -1,5 +1,10 @@
 # Roadstorm Racer!
 
+> [!IMPORTANT]
+> LLM disclosure: This codebase was written with substantial help from large language models: AI coding agents working from the [`AGENTS.md`](AGENTS.md) brief in this repo.
+
+**Latest release:** v<!-- version -->0.1.0<!-- /version --> · [Releases](https://github.com/L-K-M/Roadstorm/releases)
+
 An original, colorful arcade racer inspired by the energy of early polygonal racing games: generous drifting, memorable roads, lively scenery, assertive opponents, and four-player local split-screen.
 
 The project is at the planning stage. No playable game or build system has been implemented yet.
