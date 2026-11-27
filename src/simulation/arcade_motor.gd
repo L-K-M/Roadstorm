@@ -19,7 +19,9 @@ extends RefCounted
 ##   * the design's reverse transition (road-plane speed magnitude at/below
 ##     1 m/s after a 0.3 s brake hold, docs/GAME_DESIGN.md:11) using explicit
 ##     tuning values, with throttle taking deterministic priority over brake;
-##   * basic speed-scaled grip yaw and exponential lateral damping.
+##   * grip yaw proportional to post-force signed longitudinal speed (forward
+##     travel steers normally, reverse inverts the yaw, zero longitudinal
+##     projection gives no yaw) and exponential lateral damping.
 ##
 ## Deferred seams are documented on `CarState`: drift, surface modifiers,
 ## transmission/gear selection, surge, drafting, contact immunity and route
@@ -66,7 +68,7 @@ class SpeedAccelerationPoint extends RefCounted:
 ##   * `braking_acceleration_m_s2`: maximum brake deceleration;
 ##   * `drag_aerodynamic`: deceleration contribution `k * |v|^2`;
 ##   * `drag_rolling`: constant deceleration contribution;
-##   * `yaw_gain_grip`: yaw rate per unit steer per m/s of ground speed;
+##   * `yaw_gain_grip`: yaw rate per unit steer per m/s of signed forward speed;
 ##   * `max_yaw_rate_rad_s`: absolute yaw-rate cap (`INF` disables the cap);
 ##   * `lateral_damping_grip_per_s`: exponential lateral-velocity decay rate;
 ##   * `reverse_trigger_speed_m_s`: brake becomes reverse at or below this speed;
@@ -315,13 +317,16 @@ static func propose(
 			forward_speed = velocity_pre_drag.dot(forward)
 			lateral_speed = velocity_pre_drag.dot(right)
 
-	# Basic grip yaw on post-force ground speed: speed-scaled steer authority
-	# with an optional absolute cap. Airborne cars receive no yaw in this slice;
-	# momentum is preserved.
+	# Basic grip yaw on the post-force signed longitudinal speed: steer
+	# authority follows the travel direction, so right steer turns the nose
+	# right while moving forward and left while reversing. The value is the
+	# signed forward component in the pre-rotation nose frame, not a projection
+	# of the rotated world velocity. A zero forward projection supplies no yaw
+	# even when lateral speed is nonzero. Airborne cars receive no yaw in this
+	# slice; momentum is preserved.
 	var yaw_rate := 0.0
 	if state_in.grounded:
-		var ground_speed := Vector2(forward_speed, lateral_speed).length()
-		yaw_rate = command.steer * tuning.yaw_gain_grip * ground_speed
+		yaw_rate = command.steer * tuning.yaw_gain_grip * forward_speed
 		if not is_inf(tuning.max_yaw_rate_rad_s):
 			yaw_rate = clampf(
 				yaw_rate, -tuning.max_yaw_rate_rad_s, tuning.max_yaw_rate_rad_s

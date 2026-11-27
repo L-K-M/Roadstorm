@@ -42,6 +42,7 @@ const CASE_IDS := [
 	"reverse_road_speed",
 	"reverse_top_speed",
 	"steering_symmetry",
+	"signed_longitudinal_steering",
 	"lateral_damping",
 	"input_immutability",
 	"deterministic_replay",
@@ -135,6 +136,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_reverse_top_speed()
 		"steering_symmetry":
 			_case_steering_symmetry()
+		"signed_longitudinal_steering":
+			_case_signed_longitudinal_steering()
 		"lateral_damping":
 			_case_lateral_damping()
 		"input_immutability":
@@ -416,6 +419,107 @@ func _case_steering_symmetry() -> void:
 	d.check_close(last_left.position_m.y, last_right.position_m.y, 1e-7, "equal forward displacement")
 	measurements["left_final_heading_rad"] = last_left.heading_rad
 	measurements["right_final_heading_rad"] = last_right.heading_rad
+
+
+func _case_signed_longitudinal_steering() -> void:
+	# Explicit yaw-only tuning: unit yaw gain, no force, drag or damping, so
+	# one tick of steer 1 at signed forward speed v gives yaw v*DT.
+	var tuning = d.make_tuning(
+		[[0.0, 9.0], [20.0, 0.0]], 0.0, 0.0, 0.0, 1.0, INF, 0.0, 1.0, 0.3, 0.0, 0.0
+	)
+	var right = DriverCommandScript.create(1.0, 0.0, 0.0, 0.0)
+	var expected_full := 10.0 * ArcadeMotorScript.DT
+
+	var forward = d.make_state(Vector2.ZERO, Vector2(0.0, 10.0))
+	var forward_proposal = d.advance(forward, right, tuning)
+	d.check(forward_proposal != null, "forward steering produced a proposal")
+	if forward_proposal != null:
+		d.check_close(
+			forward_proposal.yaw_delta_rad,
+			expected_full,
+			1e-12,
+			"right steer while moving forward yaws the nose right"
+		)
+		d.check(
+			forward_proposal.state.heading_rad > forward.heading_rad,
+			"positive yaw increases heading while moving forward"
+		)
+
+	var backward = d.make_state(Vector2.ZERO, Vector2(0.0, -10.0))
+	var backward_proposal = d.advance(backward, right, tuning)
+	d.check(backward_proposal != null, "backward steering produced a proposal")
+	if backward_proposal != null:
+		d.check_close(
+			backward_proposal.yaw_delta_rad,
+			-expected_full,
+			1e-12,
+			"right steer while reversing yaws the nose left"
+		)
+		d.check(
+			backward_proposal.state.heading_rad < backward.heading_rad,
+			"negative yaw decreases heading while reversing"
+		)
+		# The rear points opposite the nose; a left-rotating nose in reverse
+		# swings the rear right (positive road-plane x).
+		d.check(
+			-sin(backward_proposal.state.heading_rad) > 0.0,
+			"left-rotating nose in reverse puts the rear to the right"
+		)
+		if forward_proposal != null:
+			d.check_close(
+				forward_proposal.yaw_delta_rad,
+				-backward_proposal.yaw_delta_rad,
+				1e-12,
+				"equal forward and backward magnitudes give mirrored yaw"
+			)
+			d.check_close(
+				forward_proposal.state.heading_rad - forward.heading_rad,
+				-(backward_proposal.state.heading_rad - backward.heading_rad),
+				1e-12,
+				"equal forward and backward magnitudes give mirrored heading delta"
+			)
+
+	# Zero forward projection: lateral travel alone must not yaw, even with
+	# full right steer.
+	var lateral = d.make_state(Vector2.ZERO, Vector2(10.0, 0.0))
+	var lateral_proposal = d.advance(lateral, right, tuning)
+	d.check(lateral_proposal != null, "lateral steering produced a proposal")
+	if lateral_proposal != null:
+		d.check_close(
+			lateral_proposal.yaw_delta_rad,
+			0.0,
+			1e-12,
+			"pure lateral motion supplies no steering yaw"
+		)
+		d.check_close(
+			lateral_proposal.state.heading_rad,
+			lateral.heading_rad,
+			1e-12,
+			"pure lateral motion does not rotate the car"
+		)
+
+	# A small positive longitudinal component keeps the normal sign and scales
+	# linearly toward zero.
+	var slow_forward = d.make_state(Vector2.ZERO, Vector2(0.0, 1.0))
+	var slow_proposal = d.advance(slow_forward, right, tuning)
+	d.check(slow_proposal != null, "slow forward steering produced a proposal")
+	if slow_proposal != null:
+		d.check_close(
+			slow_proposal.yaw_delta_rad,
+			1.0 * ArcadeMotorScript.DT,
+			1e-12,
+			"small forward speed still steers right proportionally"
+		)
+
+	measurements["forward_yaw_delta_rad"] = (
+		forward_proposal.yaw_delta_rad if forward_proposal != null else null
+	)
+	measurements["backward_yaw_delta_rad"] = (
+		backward_proposal.yaw_delta_rad if backward_proposal != null else null
+	)
+	measurements["lateral_yaw_delta_rad"] = (
+		lateral_proposal.yaw_delta_rad if lateral_proposal != null else null
+	)
 
 
 func _case_lateral_damping() -> void:
