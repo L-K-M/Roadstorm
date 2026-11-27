@@ -96,11 +96,11 @@ SHA-256 is the authoritative captured artifact.
   platform) and "模型及API技术服务" (model and API technical services); the
   route `step-5-preview` is invoked as an API route (base URL
   `https://api.stepfun.ai/step_plan/v1`, per non-secret provider metadata).
-- **Not confirmed for the account:** whether the specific "Step Plan"
-  (`step_plan`) endpoint and the specific account are governed by *this* user
-  agreement versus a separate Step Plan / service-level agreement, and which
-  version the account accepted. The account/auth file contains credentials and
-  was **not** inspected (per privacy boundary).
+- The owner confirmed on 2026-11-27 that this Pi account uses the standard
+  public provider agreement; no enterprise or custom arrangement was identified.
+  Whether this exact public document governs the `step_plan` endpoint, and the
+  revision accepted by the account, are still unconfirmed. The account/auth
+  file contains credentials and was **not** inspected.
 
 ## Unknowns / limitations
 
@@ -108,9 +108,9 @@ SHA-256 is the authoritative captured artifact.
   "服务规则" (service rules, preamble), 《开放平台管理规则及公约》 (Open Platform
   Management Rules and Convention, §2.2.10), and 《StepFun开放平台隐私政策》
   (Privacy Policy, §6.1).
-- Account acceptance, account type (individual vs enterprise), plan, legal
-  entity, and the governing endpoint-specific agreement for the actual route are
-  all **unknown** without inspecting the (forbidden) account configuration.
+- Standard public agreement type is owner-confirmed. The accepted revision,
+  plan, legal entity, and governing endpoint-specific document remain
+  unverified.
 - Governing law is PRC; interaction with the project's dedication intent is a
   legal question outside this record.
 - Glosses are the recorder's paraphrase of Chinese originals, not an official
@@ -121,8 +121,9 @@ SHA-256 is the authoritative captured artifact.
 ## Status
 
 **OPEN / BLOCKING — document located and quoted, conditions unresolved.**
-Applicability to the specific account/endpoint, terms version acceptance, and
-the §5.3/§6.5 default licenses' compatibility with public-domain dedication are
-not established. Do not treat `pi-stepfun` outputs as cleared for
+The public agreement type is owner-confirmed; endpoint document applicability,
+accepted revision, incorporated documents, labeling conditions and the
+§5.3/§6.5 default licenses' compatibility with public-domain dedication remain
+unresolved. Do not treat `pi-stepfun` outputs as cleared for
 shipping/dedication until the owner/authorized reviewer resolves these and links
 the instrument in [`../OWNER_AUTHORITY.md`](../OWNER_AUTHORITY.md).

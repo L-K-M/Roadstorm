@@ -105,10 +105,10 @@ SHA-256 is the authoritative captured artifact.
 - Subject-matter match is plausible: the page is the API Platform Terms of Use
   and the route `longcat/LongCat-2.5` is an API route (base URL
   `https://api.longcat.chat/openai/v1`, per non-secret provider metadata).
-- **Not confirmed for the account:** which terms version the specific account
-  accepted, the account type (Individual vs Enterprise — relevant to §4.3), and
-  whether any separate written/enterprise arrangement exists. The account/auth
-  file contains credentials and was **not** inspected (per privacy boundary).
+- The owner confirmed on 2026-11-27 that this Pi account uses the standard
+  public provider agreement; no enterprise or custom arrangement was identified.
+  The exact revision accepted by the account is still unconfirmed. The
+  account/auth file contains credentials and was **not** inspected.
 
 ## Unknowns / limitations
 
@@ -116,9 +116,8 @@ SHA-256 is the authoritative captured artifact.
 - The page incorporates by reference documents **not retrieved here**: the
   "LongCat AI User Service Agreement" and the "LongCat AI Platform Privacy
   Policy." Conflict rule stated: this Platform Agreement prevails over others.
-- Account acceptance, account type, plan, legal entity for the actual route, and
-  existence of any training-restriction arrangement are all **unknown** without
-  inspecting the (forbidden) account configuration.
+- Standard public agreement type is owner-confirmed. The exact accepted
+  revision, plan, and legal entity for the actual route remain unverified.
 - Governing law is Singapore; interaction with PRC/other law and with the
   project's dedication intent is a legal question outside this record.
 - A single fetch is one point-in-time capture; re-verify on any route/terms
@@ -127,8 +126,9 @@ SHA-256 is the authoritative captured artifact.
 ## Status
 
 **OPEN / BLOCKING — document located and quoted, conditions unresolved.**
-Applicability to the specific account, terms version, and the §4.3 default
-license's compatibility with public-domain dedication are not established. Do
+The public agreement type is owner-confirmed; exact accepted revision,
+incorporated documents, labeling conditions and the §4.3 default license's
+compatibility with public-domain dedication remain unresolved. Do
 not treat `pi-longcat` outputs as cleared for shipping/dedication until the
 owner/authorized reviewer resolves these and links the instrument in
 [`../OWNER_AUTHORITY.md`](../OWNER_AUTHORITY.md).

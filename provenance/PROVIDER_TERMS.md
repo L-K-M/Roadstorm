@@ -1,6 +1,6 @@
 # Provider-terms intake
 
-Status: **OPEN — no provider/service terms entry has been verified.** Public candidate documents for the Claude Code and native Codex reviewer routes were captured on 2026-11-27; their account applicability remains unknown. On
+Status: **OPEN — no provider/service terms entry has been fully verified.** The owner confirmed on 2026-11-27 that both Pi authoring routes use standard public provider agreements, with no enterprise or custom agreement identified. This establishes the account agreement type, but does not identify the exact accepted revision, resolve incorporated documents, or establish output-dedication compatibility. Public candidate documents for the Claude Code and native Codex reviewer routes were captured on 2026-11-27; their account applicability remains unknown. On
 2026-11-26 the two observed routes below had their official primary-source
 terms located and captured as bounded snapshots, but locating a document is not
 verification: account/version applicability and output-dedication compatibility
@@ -28,8 +28,8 @@ verifies terms or clears rights.
 
 | Route ID | Service / API route | Model(s) observed | Terms document, version, date | Input-rights basis | Output redistribution / dedication compatibility | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
-| `pi-longcat` | LongCat (Meituan); base URL `https://api.longcat.chat/openai/v1`; accessed through the local Pi harness | `longcat/LongCat-2.5` | LongCat AI Platform Terms of Use (part of LongCat AI User Service Agreement); operator Beijing Kuxun Interactive Technology Co., Ltd.; **no printed version/date**; retrieved 2026-11-26 — [intake](provider_terms/pi-longcat/INTAKE.md) | §3.9/§4.2: user warrants rights to submit; user retains IP in Input and Output (§4.2, subject to law + agreement) | §4.2 user retains output IP, **but** §4.3 grants LongCat a free/worldwide/transferable/sublicensable license to Input+Output by default (training/improvement excluded only via enterprise/written arrangement); §3.3 AI-labeling on distribution. **Conditions unresolved.** | **OPEN / BLOCKING** — document located & quoted; account version + dedication compatibility unresolved |
-| `pi-stepfun` | StepFun (Step Plan); base URL `https://api.stepfun.ai/step_plan/v1`; invoked through Pi with `--provider stepfun --model step-5-preview` | `step-5-preview` | StepFun开放平台用户协议 (Open Platform User Agreement); operator 上海阶跃星辰智能科技; stated effective 2026-04-08; retrieved 2026-11-26 — [intake](provider_terms/pi-stepfun/INTAKE.md) | §2.1.3: input rights remain with you/original author; §5.2 output IP belongs to you/rights-holder under law (within law) | §5.2 assigns output IP to user, **but** §5.3 + §6.5 grant StepFun broad default licenses over uploaded content/data (incl. "improve the large-model service"); §2.2.4 AI-labeling on redistribution. **Conditions unresolved.** | **OPEN / BLOCKING** — document located & quoted; account/endpoint + dedication compatibility unresolved |
+| `pi-longcat` | LongCat (Meituan); base URL `https://api.longcat.chat/openai/v1`; accessed through the local Pi harness | `longcat/LongCat-2.5` | LongCat AI Platform Terms of Use (part of LongCat AI User Service Agreement); operator Beijing Kuxun Interactive Technology Co., Ltd.; **no printed version/date**; retrieved 2026-11-26 — [intake](provider_terms/pi-longcat/INTAKE.md). Owner reports standard public agreement, no custom route (2026-11-27). | §3.9/§4.2: user warrants rights to submit; user retains IP in Input and Output (§4.2, subject to law + agreement) | §4.2 user retains output IP, **but** §4.3 grants LongCat a free/worldwide/transferable/sublicensable license to Input+Output by default; §3.3 AI-labeling on distribution. **Conditions unresolved.** | **OPEN / BLOCKING** — public agreement type owner-confirmed; accepted revision, incorporated terms, labeling and dedication compatibility unresolved |
+| `pi-stepfun` | StepFun (Step Plan); base URL `https://api.stepfun.ai/step_plan/v1`; invoked through Pi with `--provider stepfun --model step-5-preview` | `step-5-preview` | StepFun开放平台用户协议 (Open Platform User Agreement); operator 上海阶跃星辰智能科技; stated effective 2026-04-08; retrieved 2026-11-26 — [intake](provider_terms/pi-stepfun/INTAKE.md). Owner reports standard public agreement, no custom route (2026-11-27). | §2.1.3: input rights remain with you/original author; §5.2 output IP belongs to you/rights-holder under law (within law) | §5.2 assigns output IP to user, **but** §5.3 + §6.5 grant StepFun broad default licenses over uploaded content/data (incl. "improve the large-model service"); §2.2.4 AI-labeling on redistribution. **Conditions unresolved.** | **OPEN / BLOCKING** — public agreement type owner-confirmed; endpoint/version, incorporated terms, labeling and dedication compatibility unresolved |
 
 Observed task references at preparation time:
 
@@ -40,8 +40,10 @@ Observed task references at preparation time:
 - `pi-stepfun`: job `9390c59e-cae3-4e4e-baba-d86618c7a2ed` (M0 shell).
 
 The local service names and base URLs come from the environment's non-secret
-Pi provider metadata. They are not license terms. Account type, plan, legal
-entity, and terms version are deliberately not inferred. The local auth file
+Pi provider metadata. They are not license terms. The owner subsequently
+confirmed standard public agreements for both routes, without naming a custom
+route or instrument. Plan, legal entity, and accepted terms revision are not
+inferred. The local auth file
 contains credentials and was not copied or inspected for content.
 
 ## Reviewer/checkpoint routes observed in committed repository material
