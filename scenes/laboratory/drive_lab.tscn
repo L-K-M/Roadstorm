@@ -1,0 +1,9 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/laboratory/drive_lab.gd" id="1_drive_lab"]
+[ext_resource type="PackedScene" path="res://scenes/laboratory/handling_lab.tscn" id="2_handling_lab"]
+
+[node name="DriveLab" type="Node3D"]
+script = ExtResource("1_drive_lab")
+
+[node name="HandlingLab" parent="." instance=ExtResource("2_handling_lab")]
