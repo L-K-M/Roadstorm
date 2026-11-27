@@ -113,9 +113,11 @@ SHA-256 is the authoritative captured artifact.
 ## Unknowns / limitations
 
 - No printed version number or effective/"last updated" date on the page.
-- The page incorporates by reference documents **not retrieved here**: the
-  "LongCat AI User Service Agreement" and the "LongCat AI Platform Privacy
-  Policy." Conflict rule stated: this Platform Agreement prevails over others.
+- The page incorporates the LongCat AI User Service Agreement and LongCat AI
+  Platform Privacy Policy. Both were subsequently retrieved and analyzed in
+  [INCORPORATED.md](INCORPORATED.md). The general agreement contains a
+  commercial-use restriction whose interaction with API outputs is unresolved;
+  the API agreement states that it prevails on conflict.
 - Standard public agreement type is owner-confirmed. The exact accepted
   revision, plan, and legal entity for the actual route remain unverified.
 - Governing law is Singapore; interaction with PRC/other law and with the

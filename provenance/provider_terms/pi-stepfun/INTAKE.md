@@ -104,10 +104,12 @@ SHA-256 is the authoritative captured artifact.
 
 ## Unknowns / limitations
 
-- The page incorporates by reference documents **not retrieved here**: the
-  "服务规则" (service rules, preamble), 《开放平台管理规则及公约》 (Open Platform
-  Management Rules and Convention, §2.2.10), and 《StepFun开放平台隐私政策》
-  (Privacy Policy, §6.1).
+- The page incorporates "服务规则" (service rules, preamble), 《开放平台管理规则及
+  公约》 (Open Platform Management Rules and Convention, §2.2.10), and
+  《StepFun开放平台隐私政策》 (Privacy Policy, §6.1). The latter two were subsequently
+  retrieved and analyzed in [INCORPORATED.md](INCORPORATED.md); the general
+  reference to service rules and any separate Step Plan terms remains open.
+  The user agreement itself has commercial-output-use language in §1.1.6.
 - Standard public agreement type is owner-confirmed. The accepted revision,
   plan, legal entity, and governing endpoint-specific document remain
   unverified.

@@ -46,6 +46,20 @@ route or instrument. Plan, legal entity, and accepted terms revision are not
 inferred. The local auth file
 contains credentials and was not copied or inspected for content.
 
+### Incorporated public documents and commercial-use issue (2026-11-27)
+
+The [LongCat general terms](provider_terms/pi-longcat/INCORPORATED.md) and
+[StepFun management rules](provider_terms/pi-stepfun/INCORPORATED.md) were
+retrieved from the official sites and stored with SHA-256 hashes. LongCat's
+general Terms of Use §II.4 and §VI.2 contain non-commercial-use language; its
+API terms prevail on conflict but do not expressly state whether that language
+is displaced for API outputs. StepFun's open-platform user agreement §1.1.6
+says generated outputs should not be used for commercial purposes. Both routes
+also have AI-labeling duties. These clauses create a material unresolved
+question for a project whose Unlicense/CC0 dedication permits unrestricted
+commercial use. Output ownership and a broad license to the provider do not
+by themselves answer it. **Neither route is cleared for release.**
+
 ## Reviewer/checkpoint routes observed in committed repository material
 
 Committed reports under [`review/`](../review/) self-identify the authoring
