@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.initial_state.per_participant_state.2.ahead_slot",
+      "check": "initial_state_agreement"
+    }
+  ]
+}

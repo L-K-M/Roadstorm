@@ -42,7 +42,7 @@ budgets), and is an authored initial contract, not a measurement.
 | `positive/fixture.scenario.arcade_rush_standing_start.json` | reference_lap_capture | 1 planned standing-start record | seeds 4201/4202; medal thresholds null because they derive from the flying-lap median; Arcade Rush factors 1.20/1.10/1.02 as documented targets |
 | `positive/fixture.scenario.tactical_window_slower_lead.json` | slower_lead_straight_pass | 1 planned flying record (matched reference) | status `example`: Classic/cloning-only/learned producers are unratified; the compared producers are `comparison.arms` (`classic`, `cloning_only`, `surge`, `switch`) that each run the single `evaluated` slot in a separate execution; 30 m/s entry and 10 m gap are authored and fixed for the evaluated slot in `initial_state.per_participant_state`; the shared history is `replay_from_seed`; the cloning-only arm is pinned by `driver.producer_revision`; three exclusion rules with count 0; the clean-pace-ratio window is recorded as the two threshold metrics 0.90/1.10, and the AI-metric targets (heavy-contact bound, >=99% completion, evaluation timeout) are recorded as documented initial targets |
 
-The `negative/` directory holds 41 deliberately broken variants, each with an
+The `negative/` directory holds 43 deliberately broken variants, each with an
 `.expected.json` sidecar pinning its exact failure set: schema-level defects
 (`bad_schema_version`, `bad_extra_property`, `bad_seed_missing`,
 `bad_exclusion_negative_count`) and semantic defects (`bad_family_mismatch`,
@@ -73,8 +73,10 @@ another car), `bad_classic_arm_style_surge`, `bad_learned_arm_no_style`,
 `bad_arm_duplicate_producer` (one producer under two arm IDs),
 `bad_tactical_solo_evaluated` (no fixed context car),
 `bad_course_revision_drift` (scenario and record course revisions differ),
-`bad_duplicate_slot`, `bad_duplicate_record_id` and
-`bad_duplicate_unknown_path`.
+`bad_duplicate_slot`, `bad_duplicate_record_id`, `bad_duplicate_unknown_path`,
+`bad_ahead_slot_self_reference` (a participant names itself as its own car
+ahead), and `bad_pose_same_position_different_motion` (equal named-relative
+position with differing speed/heading).
 
 On 2026-11-27 the M0.9 integration pass removed a second, undeclared defect
 from `bad_exclusion_negative_count.json`: it still carried the pre-remediation

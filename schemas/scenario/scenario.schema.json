@@ -415,7 +415,7 @@
         "ahead_slot": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]*$",
-          "description": "Slot of the car ahead that forward_gap_m is measured to. Optional because existing single-car-follow authoring does not need it, but required to make two relative poses comparable: without a shared named reference, identical (gap, lateral offset, speed, heading) tuples can be a legal convoy spaced through different predecessors. The pose-identity check only compares entries that name the same declared participant ahead."
+          "description": "Slot of a different car ahead that forward_gap_m is measured to; a participant may not name itself (the validator rejects direct self-reference). Optional because existing single-car-follow authoring does not need it, but required to make two relative poses comparable: without a shared named reference, identical (gap, lateral offset, speed, heading) tuples can be a legal convoy spaced through different predecessors. The pose-identity check only compares entries that name the same declared participant ahead; mutual references between distinct cars are not restricted because a closed course has no absolute predecessor ordering."
         },
         "forward_gap_m": {
           "type": ["number", "null"],
@@ -437,7 +437,7 @@
         },
         "note": { "type": "string", "minLength": 1 }
       },
-      "description": "One participant's authored initial state. The evaluated slot carries the matched initial state every arm starts from, so one authored state serves all compared runs; fixed context participants carry their own. Two entries are only flagged as sharing a pose when they name the same ahead_slot and agree on every pose member: a relative gap is otherwise measured against each participant's own predecessor, so an identical tuple can describe a legal convoy. Entries without a shared named reference are not compared."
+      "description": "One participant's authored initial state. The evaluated slot carries the matched initial state every arm starts from, so one authored state serves all compared runs; fixed context participants carry their own. Two entries are only flagged as sharing a place when they name the same ahead_slot and both author equal forward_gap_m and lateral_offset_m numbers: that fixes one route-frame position at t0, while differing speed or heading does not move a car. A null or absent gap or lateral position is undetermined and is never treated as equal. Without a shared named reference, equal positions can be a legal convoy and are not compared."
     },
     "initial_commands": {
       "type": "object",

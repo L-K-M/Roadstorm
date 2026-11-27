@@ -174,10 +174,11 @@ ARM_STYLE_RULES = {
     "learned_policy": frozenset({"surge", "switch"}),
 }
 
-# The initial-state members that locate a participant on the road. Two
-# simultaneous participants of one execution must not declare the same values
-# for all of them.
-POSE_MEMBERS = ("forward_gap_m", "lateral_offset_m", "speed_m_s", "heading_offset_deg")
+# The relative-position members that fix a participant's route-frame place
+# behind its named predecessor: signed forward gap and lateral offset. Speed
+# and heading do not move a car at t0, so they are deliberately excluded from
+# the co-location key; including them would let provably co-located cars pass.
+POSE_POSITION_MEMBERS = ("forward_gap_m", "lateral_offset_m")
 
 # Metric vocabulary, mirroring schemas/handling/validate_fixtures.py so the
 # scenario and handling contracts check comparison metrics identically.
@@ -1257,6 +1258,18 @@ def check_initial_state_agreement(
                         check="initial_state_agreement",
                     )
                 )
+            elif ahead == slot:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        f"scenario.initial_state.per_participant_state.{position}.ahead_slot",
+                        f"participant {slot!r} names itself as the car ahead; "
+                        "ahead_slot must name a different participant, while "
+                        "circular predecessor ordering between distinct cars is "
+                        "not restricted here",
+                        check="initial_state_agreement",
+                    )
+                )
         missing = [slot for slot in matched if slot not in seen]
         if missing and tactical:
             failures.append(
@@ -1701,37 +1714,47 @@ def check_tactical_context_required(
 def check_participant_pose_distinctness(
     document: Mapping[str, Any], constants: ContractConstants | None = None
 ) -> list[Failure]:
-    """Two entries naming the same car ahead may not declare the same relative pose.
+    """Two entries naming the same car ahead may not occupy the same relative position.
 
     A participant's ``forward_gap_m`` is measured to the car ahead, so two
-    entries only describe the same physical place when they name the same
-    ``ahead_slot`` and agree on every relative pose member (forward gap,
-    lateral offset, speed, heading offset). Without a shared named reference,
-    identical tuples can be a legal convoy whose members follow different
-    predecessors, so they are not comparable; and near-equal tuples are never
-    treated as a collision because the contract fixes no absolute position
-    frame, tolerance or car-footprint geometry. The open reference-frame
-    question is recorded in schemas/scenario/README.md.
+    entries only describe the same place when they name the same
+    ``ahead_slot`` and agree on both relative-position members: signed forward
+    gap and lateral offset. Speed and heading do not move a car at t0 and are
+    therefore not part of the key. Both position members must be authored
+    numbers; an absent or null gap/lateral position means the place is
+    undetermined, so such entries are not compared rather than assumed equal.
+    Without a shared named reference, identical positions can be a legal
+    convoy whose members follow different predecessors, so they are not
+    comparable either. Near-equal positions are never treated as a collision
+    because the contract fixes no absolute frame, tolerance or footprint
+    geometry; that remains recorded in schemas/scenario/README.md.
     """
     failures: list[Failure] = []
     scenario = document["scenario"]
     initial = scenario.get("initial_state", {})
     entries = initial.get("per_participant_state") or []
-    authored: list[tuple[str, int, str | None, tuple[Any, ...]]] = []
+    authored: list[tuple[str, int, str | None, tuple[float, float]]] = []
     for position, entry in enumerate(entries):
         slot = entry.get("slot")
         if slot is None:
             continue
-        signature = tuple(entry.get(member) for member in POSE_MEMBERS)
-        if all(value is None for value in signature):
+        signature = tuple(entry.get(member) for member in POSE_POSITION_MEMBERS)
+        if not all(_is_number(value) for value in signature):
             continue
         ahead = entry.get("ahead_slot")
-        authored.append((slot, position, ahead if isinstance(ahead, str) else None, signature))
+        authored.append(
+            (
+                slot,
+                position,
+                ahead if isinstance(ahead, str) else None,
+                (float(signature[0]), float(signature[1])),
+            )
+        )
     for first in range(len(authored)):
-        slot_a, _position_a, ahead_a, signature_a = authored[first]
+        slot_a, _position_a, ahead_a, position_a = authored[first]
         for second in range(first + 1, len(authored)):
-            slot_b, position_b, ahead_b, signature_b = authored[second]
-            if signature_a != signature_b:
+            slot_b, position_b, ahead_b, position_b_value = authored[second]
+            if position_a != position_b_value:
                 continue
             if ahead_a is None or ahead_a != ahead_b:
                 continue
@@ -1739,10 +1762,11 @@ def check_participant_pose_distinctness(
                 Failure(
                     "semantic",
                     f"scenario.initial_state.per_participant_state.{position_b}.slot",
-                    f"participants {slot_a!r} and {slot_b!r} both sit at the same "
-                    f"relative pose behind {ahead_a!r} (forward gap, lateral "
-                    "offset, speed and heading offset all equal), so they are "
-                    "co-located rather than distinguishable cars",
+                    f"participants {slot_a!r} and {slot_b!r} both sit at forward gap "
+                    f"{position_a[0]} m and lateral offset {position_a[1]} m "
+                    f"behind {ahead_a!r}; differing speed or heading does not move "
+                    "a car at t0, so they are co-located rather than "
+                    "distinguishable cars",
                     check="participant_pose_distinctness",
                 )
             )

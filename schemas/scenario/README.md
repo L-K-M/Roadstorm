@@ -69,7 +69,7 @@ comparison") and the ReferenceRun/Scenario row of
 | `reference_run.schema.json` | Versioned benchmark reference record contract (the measured-evidence half), schema version 1.0.0. |
 | `scenario_fixture.schema.json` | Fixture wrapper: one scenario plus the reference records it depends on, expectations, targets, unknowns, hash. |
 | `../../fixtures/scenario/validate_scenario_contract.py` | Standard-library validator: schema evaluation, semantic checks, negative-fixture sidecars. Also usable as a library. |
-| `../../fixtures/scenario/tests/test_validate_scenario_contract.py` | `unittest` suite: shipped artifacts validate, 41 deliberately broken copies are rejected with specific finding codes, and the measured-record accounting and remediation rules are exercised on synthetic data. |
+| `../../fixtures/scenario/tests/test_validate_scenario_contract.py` | `unittest` suite: shipped artifacts validate, 43 deliberately broken copies are rejected with specific finding codes, and the measured-record accounting and remediation rules are exercised on synthetic data. |
 | `../../fixtures/scenario/positive/*.json` | Three authored fixtures: the two planned reference captures and one tactical opportunity window. |
 | `../../fixtures/scenario/negative/*.json` (+ `.expected.json`) | Deliberately broken variants, each pinned to its exact failure set. |
 
@@ -189,13 +189,17 @@ The central honesty rule, enforced by the validator:
   (they key `per_participant_state` and `evaluated_slot`), embedded reference
   `record_id`s are unique (linkage resolves by ID), and each null has exactly
   one `unknowns` explanation.
-* **Participant pose identity.** Two `per_participant_state` entries are
-  rejected as one pose only when they name the same `ahead_slot` and agree on
-  every relative pose member (forward gap, lateral offset, speed and heading
-  offset): identical relative poses behind one named car are provably
-  co-located. Entries that author no pose member, or that do not share a named
-  reference, are not compared - without one, an identical tuple can be a legal
-  convoy spaced through different predecessors (see Recorded decisions).
+* **Participant position identity.** Two `per_participant_state` entries
+  are rejected as one place only when they name the same `ahead_slot` and
+  both author equal `forward_gap_m` and `lateral_offset_m` numbers: that
+  fixes one route-frame position at t0, while differing speed or heading does
+  not move a car. A null or absent gap/lateral position is undetermined and
+  never treated as equal. `ahead_slot` must name a different participant;
+  direct self-reference is rejected, while mutual references between distinct
+  cars remain legal because a closed course has no absolute predecessor
+  ordering. Entries without a shared named reference are not compared -
+  without one, equal positions can be a legal convoy spaced through
+  different predecessors (see Recorded decisions).
 * **Driver revision pinning.** A `cloning_only_policy` driver - on a
   participant or on a comparison arm - must carry `driver.producer_revision`,
   because no dependencies member pins that producer and OPPONENT_AI evaluates
@@ -318,10 +322,16 @@ is recorded here so the schema claim stays honest about its scope.
 ## Recorded decisions
 
 * **Pose identity requires a shared named reference.** Each
-  `per_participant_state.forward_gap_m` is that participant's gap to the car
-  ahead, so two entries do not share an absolute position frame unless they
-  name the same `ahead_slot`. With a shared reference, identical relative pose
-  members prove the cars occupy one place; without it, an identical tuple can
+  `per_participant_state.forward_gap_m` is that participant's gap to a
+  different car ahead, so two entries do not share an absolute position frame
+  unless they name the same `ahead_slot`. Position means the pair
+  `(forward_gap_m, lateral_offset_m)`: with a shared reference, equal signed
+  gap and lateral offset prove the cars occupy one place at t0, while speed
+  and heading do not move a car and are excluded from the key. Both position
+  members must be authored numbers; a null/absent value is undetermined, not
+  equal. Direct self-reference is impossible and rejected; mutual references
+  between distinct cars are allowed because a closed course has no absolute
+  predecessor ordering. Without a shared reference, equal positions can
   describe a legal convoy whose members follow different predecessors.
   `lateral_offset_m` is centerline-relative but cannot establish longitudinal
   separation on its own, and the contract fixes no tolerance or car-footprint

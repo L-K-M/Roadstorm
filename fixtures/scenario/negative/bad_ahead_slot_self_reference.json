@@ -1,0 +1,614 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "fixture.scenario.negative_ahead_slot_self_reference",
+  "fixture_family": "slower_lead_straight_pass",
+  "title": "NEGATIVE fixture: a participant names itself as the car ahead",
+  "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the traffic_1 per-participant entry sets ahead_slot to its own slot (traffic_1), while forward_gap_m is a positive 10 m gap to that named predecessor. A car cannot be its own predecessor. Direct self-reference is rejected; mutual references between distinct cars are not restricted because a closed course has no absolute predecessor ordering. Derived from fixture.scenario.tactical_window_slower_lead; everything else is identical to the base.",
+  "revision": "1.2.0",
+  "status": "example",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "scenario": {
+    "schema_version": "1.0.0",
+    "scenario_id": "scenario.tactical.slower_lead_straight",
+    "scenario_family": "slower_lead_straight_pass",
+    "title": "Slower-lead straight-pass opportunity window on Riviera Run",
+    "description": "One evaluated slot approaches a slower-leading car on the same straight from a matched initial state and history, at Racer difficulty with Standard assists on the balanced starter at stock loadout. Four producers are compared in that slot as separate runs of this scenario: Classic, the behavioral-cloning-only producer, Surge and Switch. The lead is slower through difficulty, not through a different car or loadout. The matched initial state is fixed for the evaluated slot in initial_state.per_participant_state, and initial_state.history names how the shared pre-window history is established.",
+    "revision": "1.2.0",
+    "status": "example",
+    "units": {
+      "length": "m",
+      "speed": "m/s",
+      "time": "s"
+    },
+    "course": {
+      "course_id": "course.riviera_run",
+      "course_revision": null
+    },
+    "dependencies": {
+      "engine_revision": "4.7.2.stable.official.ed1daf0bf",
+      "physics_backend": "jolt",
+      "handling_revision": null,
+      "calibration_driver_revision": null,
+      "classic_planner_revision": null,
+      "learned_policy_revision": null,
+      "reference_line_revision": null,
+      "metric_version": "benchmarks_metrics_v1"
+    },
+    "participants": [
+      {
+        "slot": "lead",
+        "role": "slower_lead",
+        "car_id": "car.balanced_starter",
+        "loadout": "stock",
+        "assists": "standard",
+        "driver": {
+          "kind": "classic_planner",
+          "difficulty": "rookie",
+          "note": "The slower lead; its pace comes from the Rookie difficulty setting, not a different car."
+        }
+      },
+      {
+        "slot": "evaluated",
+        "role": "evaluated",
+        "car_id": "car.balanced_starter",
+        "loadout": "stock",
+        "assists": "standard"
+      },
+      {
+        "slot": "traffic_1",
+        "role": "traffic",
+        "car_id": "car.balanced_starter",
+        "loadout": "stock",
+        "assists": "standard",
+        "driver": {
+          "kind": "scripted"
+        }
+      }
+    ],
+    "comparison": {
+      "evaluated_slot": "evaluated",
+      "arms": [
+        {
+          "arm_id": "classic",
+          "driver": {
+            "kind": "classic_planner",
+            "difficulty": "racer",
+            "style": "none",
+            "note": "Classic racer arm; the baseline the learned producers are compared against."
+          }
+        },
+        {
+          "arm_id": "cloning_only",
+          "driver": {
+            "kind": "cloning_only_policy",
+            "difficulty": "racer",
+            "style": "none",
+            "producer_revision": null,
+            "note": "Behavioral-cloning-only producer, evaluated separately so PPO must demonstrate useful learning beyond its teacher (docs/OPPONENT_AI.md). producer_revision pins this producer; no dependencies member does, so cloning-only and the PPO-trained policy are told apart by revision rather than by convention."
+          }
+        },
+        {
+          "arm_id": "surge",
+          "driver": {
+            "kind": "learned_policy",
+            "difficulty": "racer",
+            "style": "surge",
+            "note": "PPO-trained Roadstormer with the Surge style label; pinned by dependencies.learned_policy_revision."
+          }
+        },
+        {
+          "arm_id": "switch",
+          "driver": {
+            "kind": "learned_policy",
+            "difficulty": "racer",
+            "style": "switch",
+            "note": "PPO-trained Roadstormer with the Switch style label; pinned by dependencies.learned_policy_revision."
+          }
+        }
+      ],
+      "note": "Each arm is a separate execution of this scenario: the same seed, the same evaluated-slot initial state and the same shared history, with exactly one arm's car on the track at a time. Arms are runs of one slot, never simultaneous participants, so the compared producers cannot be traffic for each other and their histories stay matched (BENCHMARKS 'Tactical comparison')."
+    },
+    "initial_state": {
+      "start_mode": "rolling",
+      "description": "The evaluated slot starts the same distance behind the slower lead on the straight, at matched speed and lateral offset, with a two-second shared history before the window opens; every arm starts from this one authored state. The per-participant entries fix the initial states; the single-participant members are the evaluated slot's matched values and must agree with its entry.",
+      "entry_speed_m_s": 30,
+      "forward_gap_m": 10,
+      "lateral_offset_m": 0,
+      "note": "Authored initial values; BENCHMARKS specifies the warm-up and window, not the entry speed or gap.",
+      "per_participant_state": [
+        {
+          "slot": "lead",
+          "lateral_offset_m": 0,
+          "note": "The slower lead; its pace comes from the Rookie difficulty setting, not a different car. Its speed at the window is not authored: the window begins from the recorded scenario seed, so the lead's speed is replay output, not configuration."
+        },
+        {
+          "slot": "evaluated",
+          "forward_gap_m": 10,
+          "lateral_offset_m": 0,
+          "speed_m_s": 30,
+          "heading_offset_deg": 0,
+          "note": "The matched initial state every compared arm starts from; the lead and the evaluated slot are distinguishable by forward gap, speed and heading, so no two simultaneous participants share a pose.",
+          "ahead_slot": "lead"
+        },
+        {
+          "slot": "traffic_1",
+          "ahead_slot": "traffic_1",
+          "forward_gap_m": 10,
+          "lateral_offset_m": 2.0,
+          "speed_m_s": 28.0,
+          "heading_offset_deg": 0
+        }
+      ],
+      "initial_commands": {
+        "source": "none",
+        "note": "No authored command schedule applies: each participant's own driver produces its commands from the matched initial state and history. A scripted proxy family would instead pin an authored schedule or a controller revision."
+      },
+      "history": {
+        "source": "replay_from_seed",
+        "note": "The shared pre-window history is established by replaying the recorded scenario seed for the fixed two-second warm-up, so every compared arm sees the same history. A stored scenario snapshot is used instead only if measured repeatability needs one (BENCHMARKS 'Tactical comparison')."
+      }
+    },
+    "protocol": {
+      "tick_rate_hz": 60,
+      "handover_max_position_m": 0.1,
+      "handover_max_speed_m_s": 0.1,
+      "history_warmup_s": 2.0,
+      "opportunity_window_s": 3.0
+    },
+    "seeds": {
+      "race_seed": 7301,
+      "scenario_seed": 7302,
+      "note": "The opportunity window begins from the recorded scenario seed (BENCHMARKS 'Tactical comparison'); every arm replays the same seeds."
+    },
+    "required_telemetry": [
+      "driver_commands",
+      "tactical_intents",
+      "safety_corrections",
+      "safety_interventions",
+      "contacts",
+      "participant_poses",
+      "gate_crossings",
+      "race_rng_state"
+    ],
+    "reference": {
+      "record_id": "reference.balanced_starter.riviera_flying",
+      "revision": "1.0.0",
+      "kind": "flying_lap_set"
+    },
+    "exclusions": [
+      {
+        "rule_id": "encounter_ended_early",
+        "reason": "The encounter ended before the three-second window elapsed; the window lasts up to three seconds or until the encounter ends.",
+        "count": 0
+      },
+      {
+        "rule_id": "handover_mismatch",
+        "reason": "Initial-state handover exceeded the 0.10 m / 0.10 m/s tolerance; the window is excluded and counted before results.",
+        "count": 0
+      },
+      {
+        "rule_id": "contact_invalidated",
+        "reason": "A contact or reset invalidated the window before counting.",
+        "count": 0
+      }
+    ]
+  },
+  "reference_records": [
+    {
+      "schema_version": "1.0.0",
+      "record_id": "reference.balanced_starter.riviera_flying",
+      "kind": "flying_lap_set",
+      "status": "planned",
+      "title": "Planned flying-lap reference record, balanced starter, Riviera Run",
+      "description": "The same planned record instance as fixture.scenario.reference_capture_flying, embedded so this matched comparison is self-contained: the evaluated slot matches the reference by car, loadout, assists, course and reference revision. Results stay absent until capture tooling measures them, including the retained car/loadout/assist/track/handling hashes.",
+      "revision": "1.0.0",
+      "subject": {
+        "car_id": "car.balanced_starter",
+        "car_display_name": "Comet",
+        "loadout": "stock",
+        "assists": "standard"
+      },
+      "course": {
+        "course_id": "course.riviera_run",
+        "course_revision": null
+      },
+      "driver": {
+        "kind": "calibration_driver",
+        "traffic_free": true,
+        "driver_revision": null,
+        "reference_line_revision": null
+      },
+      "dependencies": {
+        "engine_revision": "4.7.2.stable.official.ed1daf0bf",
+        "physics_backend": "jolt",
+        "handling_revision": null,
+        "metric_version": "benchmarks_metrics_v1",
+        "platform": null
+      },
+      "capture_protocol": {
+        "warmup_laps": null,
+        "required_clean_laps": 5,
+        "traffic_free": true,
+        "rejection_criteria": [
+          "contact",
+          "reset",
+          "missed_gate",
+          "invalid_progress",
+          "numerical_error"
+        ]
+      },
+      "results": {
+        "laps": [],
+        "statistics": {
+          "median_s": null,
+          "min_s": null,
+          "max_s": null
+        },
+        "speed_samples": [],
+        "hashes": {
+          "car_hash": null,
+          "loadout_hash": null,
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
+        }
+      },
+      "seeds": {
+        "race_seed": 4101,
+        "scenario_seed": 4102
+      },
+      "derived_thresholds": {
+        "bronze_multiplier": 1.25,
+        "silver_multiplier": 1.12,
+        "gold_multiplier": 1.05,
+        "bronze_s": null,
+        "silver_s": null,
+        "gold_s": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.family",
+      "check": "family_agreement",
+      "path": "",
+      "statement": "The fixture family equals the enclosed scenario's family."
+    },
+    {
+      "expectation_id": "expect.window",
+      "check": "window_protocol",
+      "path": "scenario",
+      "statement": "A tactical family carries the fixed two-second history warm-up and the three-second opportunity window."
+    },
+    {
+      "expectation_id": "expect.telemetry",
+      "check": "telemetry_required",
+      "path": "scenario",
+      "statement": "The scenario declares the tactical telemetry minimum: commands, intents, safety corrections, tick-level safety interventions, contacts, poses, gate crossings and race RNG state."
+    },
+    {
+      "expectation_id": "expect.linkage",
+      "check": "reference_linkage",
+      "path": "scenario",
+      "statement": "The reference member resolves to the embedded planned record and the evaluated participant agrees with it on car, loadout, assists and course."
+    },
+    {
+      "expectation_id": "expect.initial_state",
+      "check": "initial_state_agreement",
+      "path": "scenario",
+      "statement": "The per-participant entries name real slots without duplicates, the evaluated slot carries a matched initial state that agrees with the single-participant members, and the history source and initial-command source are consistent."
+    },
+    {
+      "expectation_id": "expect.comparison_arms",
+      "check": "comparison_arms",
+      "path": "scenario",
+      "statement": "Exactly one participant is evaluated, its producers are comparison.arms run as separate executions of the same scenario, the arms are distinguishable, and the evaluated slot carries no driver of its own."
+    },
+    {
+      "expectation_id": "expect.pose_distinctness",
+      "check": "participant_pose_distinctness",
+      "path": "scenario",
+      "statement": "The lead and the evaluated slot declare different initial poses, so no two simultaneous participants share a pose and the compared producers never run as co-located cars."
+    },
+    {
+      "expectation_id": "expect.producer_pinning",
+      "check": "driver_revision_pinning",
+      "path": "scenario",
+      "statement": "The cloning-only arm pins its producer by driver.producer_revision, so cloning-only and the PPO-trained policy are distinguished by revision rather than by convention."
+    },
+    {
+      "expectation_id": "expect.planned_no_results",
+      "check": "evidence_status",
+      "path": "reference_records.0",
+      "statement": "The embedded reference record is planned and carries no results."
+    },
+    {
+      "expectation_id": "expect.nulls",
+      "check": "null_unknown_pairing",
+      "path": "",
+      "statement": "Every null (unratified producer and course revisions, unmeasured results, hashes and thresholds) has a matching unknowns entry."
+    },
+    {
+      "expectation_id": "expect.metrics",
+      "check": "metric_status_honesty",
+      "path": "",
+      "statement": "The pace-ratio window, matched-window count and difference target are documented initial targets, not measurements."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "",
+      "statement": "Every comparison metric uses the documented comparator vocabulary: threshold comparators carry a numeric value and no range bounds."
+    },
+    {
+      "expectation_id": "expect.measured_evidence",
+      "check": "measured_evidence_completeness",
+      "path": "reference_records.0",
+      "statement": "Once capture tooling measures the embedded record it must retain speed samples, the car/loadout/assist/track/handling hashes and four sector splits per clean lap, as BENCHMARKS and TECHNICAL_DESIGN require."
+    },
+    {
+      "expectation_id": "expect.hash",
+      "check": "content_hash",
+      "path": "",
+      "statement": "The content hash recomputes over canonical JSON with the content_hash member removed."
+    }
+  ],
+  "comparison": {
+    "purpose": "Record the documented initial acceptance targets for the slower-lead straight-pass family across the compared Classic, cloning-only, Surge and Switch arms.",
+    "metrics": [
+      {
+        "name": "clean_pace_ratio_min",
+        "description": "Lower bound of the clean pace ratio (learned median lap time divided by the matched Classic median lap time, BENCHMARKS 'AI metrics'): the learned driver may be at most about 11% slower. The two bounds are recorded separately so faster and slower violations are both reported.",
+        "comparator": "gte",
+        "value": 0.9,
+        "unit": "ratio",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "clean_pace_ratio_max",
+        "description": "Upper bound of the clean pace ratio: the learned driver may be at most 10% faster. BENCHMARKS reports both faster and slower violations and warns against reading a faster bot as automatically interesting, or quietly tightening the window to an unproved +/-3%.",
+        "comparator": "lte",
+        "value": 1.1,
+        "unit": "ratio",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "matched_windows_per_pair",
+        "description": "Matched opportunity windows per producer pair at final acceptance (BENCHMARKS 'Tactical comparison'); about 50 windows are labelled first in a pilot.",
+        "comparator": "gte",
+        "value": 200,
+        "unit": "windows",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "semantic_difference_fraction",
+        "description": "Target fraction of meaningful differences in the preregistered semantic categories per pair.",
+        "comparator": "gte",
+        "value": 0.25,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "handover_position_tolerance_m",
+        "description": "Maximum initial-position handover difference between matched starts.",
+        "comparator": "lte",
+        "value": 0.1,
+        "unit": "m",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "handover_speed_tolerance_m_s",
+        "description": "Maximum initial-speed handover difference between matched starts.",
+        "comparator": "lte",
+        "value": 0.1,
+        "unit": "m/s",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "heavy_contact_relative_allowance",
+        "description": "Relative term of the heavy-contact bound (BENCHMARKS 'AI metrics'): the learned rate must be at most Classic rate + max(0.1 * Classic rate, 0.05 heavy contacts per participant-race). The allowance stays visible rather than hiding a near-zero denominator. A heavy contact is a car-car contact whose resolver impulse changes either car's road-plane velocity by at least 3 m/s, or causes a reset within two seconds; repeated contacts for the same pair within 0.5 seconds are coalesced, and wall contacts are reported separately.",
+        "comparator": "eq",
+        "value": 0.1,
+        "unit": "fraction of Classic rate",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "heavy_contact_absolute_allowance",
+        "description": "Absolute term of the same heavy-contact bound: 0.05 heavy contacts per participant-race. Rates and counts are reported with 95% intervals by whole independent race/scenario seed, difficulty, course and model.",
+        "comparator": "eq",
+        "value": 0.05,
+        "unit": "heavy contacts per participant-race",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "completion_rate_target",
+        "description": "Completion means a legal finish before the evaluation timeout with production finish deadlines disabled. Target at least 99% aggregate AI entries and separately at least 99% for each of Surge and Switch on each course/difficulty using that style's own starts; persistent replacement by Classic counts as a learned failure, not a successful learned finish.",
+        "comparator": "gte",
+        "value": 0.99,
+        "unit": "fraction of entries",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "evaluation_timeout_multiple",
+        "description": "The evaluation timeout is max(3 * reference event time, reference event time + 300 seconds); this metric records the reference-event multiple.",
+        "comparator": "eq",
+        "value": 3,
+        "unit": "x reference event time",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "evaluation_timeout_margin_s",
+        "description": "The additive term of the same evaluation timeout, in seconds.",
+        "comparator": "eq",
+        "value": 300,
+        "unit": "s",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements. Cloning-only is evaluated separately so PPO must demonstrate useful learning beyond its teacher, and a separate useful-maneuver/pace review must pass; maximizing disagreement alone is insufficient."
+  },
+  "unknowns": [
+    {
+      "path": "scenario.course.course_revision",
+      "reason": "Course content is authored at M2; no course revision exists yet.",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "scenario.dependencies.handling_revision",
+      "reason": "Motor/car/surface handling is implemented and frozen at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "scenario.dependencies.calibration_driver_revision",
+      "reason": "The CalibrationDriver is built at M1.7.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "scenario.dependencies.classic_planner_revision",
+      "reason": "No Classic planner implementation exists before M4.2.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "scenario.dependencies.learned_policy_revision",
+      "reason": "No learned policy exists before M4B.",
+      "blocking": true,
+      "until": "M4B"
+    },
+    {
+      "path": "scenario.dependencies.reference_line_revision",
+      "reason": "The authored line and conservative speed profile are calibrated at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "scenario.comparison.arms.1.driver.producer_revision",
+      "reason": "The cloning-only producer implementation is unratified before M4B; its revision is assigned when the producer is frozen.",
+      "blocking": true,
+      "until": "M4B"
+    },
+    {
+      "path": "reference_records.0.course.course_revision",
+      "reason": "Same unratified course revision as the scenario.",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.driver.driver_revision",
+      "reason": "The CalibrationDriver revision is assigned at M1.7.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.driver.reference_line_revision",
+      "reason": "The reference line and speed profile revision is assigned at M1.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.dependencies.handling_revision",
+      "reason": "Handling is frozen at M1; the captured revision is recorded then.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.dependencies.platform",
+      "reason": "The capture host/OS is recorded by the capture tooling when the first measured record is produced.",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.capture_protocol.warmup_laps",
+      "reason": "BENCHMARKS requires warm-up before the recorded laps but does not fix a count.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.median_s",
+      "reason": "No flying lap has been measured; the median is produced by capture tooling.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.min_s",
+      "reason": "No flying lap has been measured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.statistics.max_s",
+      "reason": "No flying lap has been measured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.car_hash",
+      "reason": "The car definition hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.loadout_hash",
+      "reason": "The loadout hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.assist_hash",
+      "reason": "The assist set hash is computed when the measured record is captured.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.bronze_s",
+      "reason": "1.25 x the measured flying-lap median; the median does not exist yet.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.silver_s",
+      "reason": "1.12 x the measured flying-lap median; the median does not exist yet.",
+      "blocking": true,
+      "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.derived_thresholds.gold_s",
+      "reason": "1.05 x the measured flying-lap median; the median does not exist yet.",
+      "blocking": true,
+      "until": "M1.7"
+    }
+  ],
+  "content_hash": "sha256:b676c55cece29009397f8e170270d931becf9ea6704515bd149af0356937f41f",
+  "provenance": {
+    "source_contract": "docs/BENCHMARKS.md; docs/OPPONENT_AI.md; docs/GAME_DESIGN.md",
+    "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-26",
+    "note": "Negative fixture authored at the 2026-11-27 Sol follow-up to pin rejection of an explicit self-referential ahead_slot while preserving legitimate equal-gap convoys."
+  }
+}

@@ -405,17 +405,18 @@ class MeasuredRecordAccountingTests(unittest.TestCase):
         # GAME_DESIGN stores interpolated crossings as integer microseconds and
         # rounds Arcade Rush budgets to milliseconds; with the coarser
         # documented millisecond granularity, four independent splits plus the
-        # lap total can disagree by up to (4 + 1) x 0.5 ms = 2.5 ms. A 2.4 ms
-        # discrepancy stays legal.
+        # lap total can disagree by up to (4 + 1) x 0.5 ms = 2.5 ms. These
+        # whole-millisecond splits sum to 40.002 s against a 40 s lap (2 ms),
+        # inside the derived envelope.
         document = build_measured_record()
         lap = document["reference_records"][0]["results"]["laps"][0]
-        lap["sector_splits_s"] = [10.0006] * 4
+        lap["sector_splits_s"] = [10.001, 10.001, 10.001, 9.999]
         self.assertEqual(run_record_checks(document, self.contracts), [])
 
     def test_sector_split_sum_beyond_rounding_bound_is_rejected(self) -> None:
         # A systematic error above the derived rounding envelope - including a
         # full one-tick sector mistake - is rejected.
-        for first_sector in (10.0026, 10.0167):
+        for first_sector in (10.003, 10.017):
             document = build_measured_record()
             lap = document["reference_records"][0]["results"]["laps"][0]
             lap["sector_splits_s"] = [first_sector, 10.0, 10.0, 10.0]
@@ -765,6 +766,96 @@ class InitialStateAgreementTests(unittest.TestCase):
                 for f in failures
             ),
             msg=str(failures),
+        )
+
+    def test_ahead_slot_must_not_name_the_same_participant(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"].append(
+            {
+                "slot": "traffic_1",
+                "role": "traffic",
+                "car_id": "car.balanced_starter",
+                "loadout": "stock",
+                "assists": "standard",
+                "driver": {"kind": "scripted"},
+            }
+        )
+        document["scenario"]["initial_state"]["per_participant_state"].append(
+            {
+                "slot": "traffic_1",
+                "ahead_slot": "traffic_1",
+                "forward_gap_m": 10,
+                "lateral_offset_m": 2.0,
+                "speed_m_s": 28.0,
+                "heading_offset_deg": 0,
+            }
+        )
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "initial_state_agreement"
+                and f.path.endswith(".per_participant_state.2.ahead_slot")
+                and "itself" in f.message
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_equal_gap_convoy_with_distinct_named_predecessors_passes(self) -> None:
+        # Both cars declare the same relative tuple, but each follows a
+        # different named car: a legal evenly spaced convoy, not co-location.
+        document = json.loads(json.dumps(self.document))
+        for slot, ahead in (("merge_a", "lead"), ("merge_b", "evaluated")):
+            document["scenario"]["participants"].append(
+                {
+                    "slot": slot,
+                    "role": "traffic",
+                    "car_id": "car.balanced_starter",
+                    "loadout": "stock",
+                    "assists": "standard",
+                    "driver": {"kind": "scripted"},
+                }
+            )
+            document["scenario"]["initial_state"]["per_participant_state"].append(
+                {
+                    "slot": slot,
+                    "ahead_slot": ahead,
+                    "forward_gap_m": 20,
+                    "lateral_offset_m": 3.0,
+                    "speed_m_s": 25.0,
+                    "heading_offset_deg": 0,
+                }
+            )
+        self.assertEqual(self._check(document), [])
+        self.assertEqual(vsc.check_participant_pose_distinctness(document), [])
+
+    def test_mutual_predecessor_references_are_not_banned(self) -> None:
+        # A closed course has no absolute predecessor ordering, so mutual
+        # names between distinct cars are not rejected here.
+        document = json.loads(json.dumps(self.document))
+        for slot, ahead in (("merge_a", "merge_b"), ("merge_b", "merge_a")):
+            document["scenario"]["participants"].append(
+                {
+                    "slot": slot,
+                    "role": "traffic",
+                    "car_id": "car.balanced_starter",
+                    "loadout": "stock",
+                    "assists": "standard",
+                    "driver": {"kind": "scripted"},
+                }
+            )
+            document["scenario"]["initial_state"]["per_participant_state"].append(
+                {
+                    "slot": slot,
+                    "ahead_slot": ahead,
+                    "forward_gap_m": 10,
+                    "lateral_offset_m": 0,
+                    "speed_m_s": 30,
+                    "heading_offset_deg": 0,
+                }
+            )
+        self.assertEqual(
+            [f for f in self._check(document) if f.path.endswith("ahead_slot")], []
         )
 
     def test_per_participant_slot_must_not_repeat(self) -> None:
@@ -1130,18 +1221,60 @@ class ParticipantPoseDistinctnessTests(unittest.TestCase):
         entries.append({"slot": "traffic_2", "note": "pose not authored"})
         self.assertEqual(self._check(document), [])
 
-    def test_heading_alone_distinguishes_two_participants(self) -> None:
-        document = json.loads(json.dumps(self.document))
-        entries = document["scenario"]["initial_state"]["per_participant_state"]
-        entries.append(
-            {
-                "slot": "traffic_1",
-                "forward_gap_m": 10,
-                "lateral_offset_m": 0,
-                "speed_m_s": 30,
-                "heading_offset_deg": 5,
-            }
+    def test_shared_reference_with_equal_position_but_different_motion_is_rejected(self) -> None:
+        # Position at t0 is fixed by the named predecessor, forward gap and
+        # lateral offset. Speed and heading do not move a car, so they cannot
+        # make a same-position pair distinguishable.
+        for overridden in (
+            {"speed_m_s": 29.0},
+            {"heading_offset_deg": 5.0},
+            {"speed_m_s": 29.0, "heading_offset_deg": 5.0},
+        ):
+            document = self._add_traffic(
+                json.loads(json.dumps(self.document)), ahead_slot="lead", **overridden
+            )
+            failures = self._check(document)
+            self.assertTrue(
+                any(
+                    f.check == "participant_pose_distinctness"
+                    and f.path == "scenario.initial_state.per_participant_state.2.slot"
+                    for f in failures
+                ),
+                msg=f"{overridden}: {failures}",
+            )
+
+    def test_same_position_without_shared_reference_is_not_compared(self) -> None:
+        # Different predecessors mean the two equal positions are not one
+        # place; this remains a legal convoy authoring.
+        document = self._add_traffic(
+            json.loads(json.dumps(self.document)), ahead_slot="evaluated"
         )
+        self.assertEqual(self._check(document), [])
+
+    def test_undetermined_gap_is_not_treated_as_equal(self) -> None:
+        # A null/absent gap means the relative position is unknown, so it
+        # must not be assumed equal to another undetermined entry.
+        document = json.loads(json.dumps(self.document))
+        for slot in ("traffic_1", "traffic_2"):
+            document["scenario"]["participants"].append(
+                {
+                    "slot": slot,
+                    "role": "traffic",
+                    "car_id": "car.balanced_starter",
+                    "loadout": "stock",
+                    "assists": "standard",
+                    "driver": {"kind": "scripted"},
+                }
+            )
+            document["scenario"]["initial_state"]["per_participant_state"].append(
+                {
+                    "slot": slot,
+                    "ahead_slot": "lead",
+                    "lateral_offset_m": 3.5,
+                    "speed_m_s": 25,
+                    "heading_offset_deg": 0,
+                }
+            )
         self.assertEqual(self._check(document), [])
 
 
