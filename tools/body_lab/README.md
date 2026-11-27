@@ -1,0 +1,82 @@
+# M1.1 motor/body adapter laboratory
+
+Private one-car flat-ground laboratory for the `MotorBodyAdapter` seam between
+the pure `ArcadeMotor` and one real `CharacterBody3D` in a Godot/Jolt world.
+
+## Scope
+
+This proves one 60 Hz integration tick at a time:
+
+- the motor proposal is computed from immutable inputs;
+- a nonmutating body-motion prediction precedes the single accepted
+  `move_and_collide()` commit per substep;
+- invalid command/tuning/state/config/dt and over-envelope travel are refused
+  with the body and caller state untouched;
+- CarState x maps to world +X, CarState y to world -Z, and positive heading
+  points the nose toward +X;
+- a frontal or oblique thick static wall produces no tunneling at 65 m/s and
+  leaves no inward normal velocity in the committed state;
+- repeated fixed-60 Hz callbacks reproduce bit-identical traces.
+
+It does not implement ground adhesion, jumps, drift, reset, surfaces,
+multi-car contacts, controls or full car tuning. It makes no M1 acceptance
+claim.
+
+## Files
+
+| Path | Role |
+| --- | --- |
+| `body_lab_entry.gd` | headless `SceneTree` entry point |
+| `body_lab_driver.gd` | scenarios, assertions, JSON result lines |
+| `body_lab_checks.gd` | assertion collectors and explicit laboratory fixtures |
+| `body_lab_world.gd` | deterministic ground/wall/body staging |
+| `run_body_lab.sh` | private staging, bounded import/run, log gate |
+
+The adapter itself is `src/simulation/motor_body_adapter.gd`.
+
+## Run
+
+```sh
+tools/body_lab/run_body_lab.sh \
+  --godot work/agents/coordinator/toolchain-m01/prefix/editor/Godot.app/Contents/MacOS/Godot \
+  --timeout 180
+```
+
+Options: `--project DIR`, `--case ID` (or `BODY_LAB_CASE`), `--keep-scratch`.
+The runner copies only `project.godot`, `src`, `scenes`, `assets` and
+`tools/body_lab` into a temporary stage, imports there, and runs the entry with
+`--headless --fixed-fps 60`. The live checkout's `.godot/` cache is never
+touched. Every engine invocation is bounded by the watchdog, and success
+requires a `SLICE_SUMMARY` line containing `"pass":true`.
+
+These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
+`tools/smoke/` only).
+
+## Measured assumptions
+
+- Pinned engine: Godot 4.7.2 Jolt, 60 Hz physics, `--fixed-fps 60` so one
+  physics callback equals one 1/60 s tick.
+- Support plane: flat +Y. Road-to-world mapping is fixed and heading
+  independent; heading only rotates the nose frame.
+- Hull: axis-aligned `BoxShape3D`, default 1.8 x 1.0 x 3.8 m. `Config` requires
+  the actual shape to match its documented envelope.
+- Sweep margin 0: on this engine a zero-margin `cast_motion` safe fraction
+  reproduces the committed `move_and_collide()` travel; a nonzero margin stops
+  the prediction early. `test_move` is recorded as a secondary diagnostic
+  because it carries a depenetration/recovery offset near contacts.
+- Default work cap: 16 substeps x 0.25 m = 4.0 m/tick (240 m/s), so a 65 m/s
+  tick (1.083 m) is applied as five swept substeps against a 2 m thick wall.
+  A constrained config demonstrates refusal above the cap.
+- Absolute work bounds: `max_substeps` must be 1..32 and one substep at most
+  1.0 m (below the 2 m lab wall and 3.8 m hull). The envelope product is
+  required finite. `envelope_epsilon_m` may not exceed 1e-3 of a substep or
+  1e-3 m absolute; `contact_stop_epsilon_m` may not exceed 1e-3 of a substep;
+  sweep/commit margins may not exceed one substep. These bounds close the
+  reported bypass where one substep plus a large epsilon returned COMMITTED
+  after applying only part of a no-contact displacement. Any unapplied travel
+  beyond the tight epsilon is now refused unless a genuine collision stopped
+  the sweep; that case is reported through `remainder_m` and
+  `contact_limited_remainder`.
+- Wall response: remove the inward normal component (restitution 0) and retain
+  the configured tangential fraction (1.0). Deflection shaping, restitution
+  tuning, depenetration and multi-car response remain M1.4 work.
