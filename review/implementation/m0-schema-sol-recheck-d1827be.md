@@ -1,0 +1,35 @@
+# M0.9 independent schema recheck
+
+**Verdict — changes required.** The fixture suites and standalone draft 2020-12 schema checks pass. The new source-observation check confuses lookahead road width with local decode geometry and accepts a source 20 seconds older than its decision. Two distinct decisions can also share the same ID used for safety accounting.
+
+| Item | Review scope |
+| --- | --- |
+| Reviewer | GPT-6.2 Sol, native OpenAI Codex |
+| Candidate | `d1827be92bec746696090929a069af95e1d7b0a3` |
+| Base | `aee182260272ccd3d63d829968d13a339cd75556` |
+| Review date | 2026-11-27, Europe/Zurich |
+| Files | `schemas/**`, `fixtures/**`, contract provisions in `docs/BENCHMARKS.md`, `docs/TECHNICAL_DESIGN.md`, and `docs/OPPONENT_AI.md`, checkpoint rules in `plan/IMPLEMENTATION.md`, and my historical `m0-schema-sol-aee1822.md` |
+
+## Ranked findings
+
+1. **High · Source linkage rejects valid variable-width roads.** The intent fixture uses the [road width of the scenario section](../../schemas/intent/intent_fixture.schema.json#L77) to calculate lateral clearance. [The link check](../../fixtures/intent/validate_intent_contract.py#L1702) requires that width to equal decoded feature 14, which is [width 20 m ahead](../../schemas/observation/observation_record.schema.json#L223). I changed the post-reset fixture to a 12 m local width with the corresponding 4.6 m lateral half-corridor, leaving the source observation's 10 m lookahead unchanged. Draft validation accepted the rehashed case, and the only Python failure was the source-width equality. Replace the equality with a check using actual local geometry if an authoritative local width is available, or leave width to the decode and geometry checks. Add a fixture in which the two widths differ. [Observation and action definitions](../../docs/OPPONENT_AI.md#L39)
+2. **High · Source linkage permits arbitrary extra delay while reporting the original difficulty age.** [The check](../../fixtures/intent/validate_intent_contract.py#L1690) only rejects generation before the source sample. I advanced the post-reset intent's generated/export ticks by 1,200, from 800/803 to 2000/2003, preserving the correct export age and unchanged source ID. Both validators accepted an intent claiming Expert's seven-tick traffic age from a source sampled 20 seconds earlier. Require the source sample to match the generation tick for the present synchronous contract. If a later design explicitly supports a delay, bound it and reconcile effective traffic age at decision time with the source's traffic snapshot tick. The current contract calls ego/road data current and only delays traffic. [Intent traffic age](../../schemas/intent/tactical_intent.schema.json#L105) · [Decision and reaction schedule](../../docs/OPPONENT_AI.md#L62)
+3. **Medium · Two distinct decisions can share the ID used for intervention deduplication.** I gave both decisions in the two-record Classic fallback fixture the same `intent_id` and rehashed it. Both validators accepted it. [The ID](../../schemas/intent/tactical_intent.schema.json#L41) represents an intent record, and [the intervention contract](../../schemas/intent/tactical_intent.schema.json#L270) uses intent identity to count each 5 Hz proposal once. Reject collisions between distinct proposals within a fixture and specify the identity scope that standalone telemetry will use. The same probe also found the illustrative-source exception permits two decisions to use one declared source because [it exits before tracking previously used IDs](../../fixtures/intent/validate_intent_contract.py#L1594). Check repeated source use before the exception to uphold the fixture's documented uniqueness rule.
+4. **Medium · Measured lap accounting accepts sector splits inconsistent with the lap time.** I used the existing synthetic measured test builder and set the first 40 s clean lap's four sectors to 100 s each. [The record-level accounting checks run by the project tests](../../fixtures/scenario/tests/test_validate_scenario_contract.py#L140) returned no failures. [The validator checks split count](../../fixtures/scenario/validate_scenario_contract.py#L965) and overall statistics independently. Validate that retained sector durations sum to each clean lap's time within a tolerance consistent with the capture format. This matters to the future standing-start records because Arcade Rush derives its budgets from those same durations. This probe did not turn authored planned fixtures into measured evidence. [Reference evidence requirements](../../docs/BENCHMARKS.md#L7) · [Sector budget formula](../../schemas/scenario/reference_run.schema.json#L391)
+
+## Recheck evidence
+
+I exported the candidate with `git archive d1827be` into the ignored `work/agents/sol-schema-2-20261127/snapshot/` after confirming Git ignores the path. Commands ran from that snapshot with per-suite Python cache prefixes under its parent. The two scratch scripts and generated, rehashed mutants are under `work/agents/sol-schema-2-20261127/`.
+
+| Command | Result |
+| --- | --- |
+| `bash schemas/handling/run_tests.sh` | 59 tests pass. Eight fixtures and their schema pass with zero warnings. |
+| `bash fixtures/observation/run_tests.sh` | 37 tests pass. All 44 fixture cases behave as declared. |
+| `bash fixtures/intent/run_tests.sh` | 27 tests pass. All 49 fixture cases behave as declared. |
+| `bash fixtures/scenario/run_tests.sh` | 78 tests pass. All 44 fixture cases behave as declared. |
+| `env PYTHONPYCACHEPREFIX=../cache-probe python3 ../probe.py` | Reproduced all findings. Mutants are `current-width-differs-from-lookahead.json`, `source-observation-20-seconds-stale.json`, `duplicate-intent-id.json` and `duplicate-illustrative-source.json`. The sector-split case uses an in-memory synthetic measured record. |
+| `node ../ajv.cjs` | Ajv from the local Cline bundle validates all 11 schema documents and all 22 positive fixtures. Among the 123 negatives in the observation, intent and scenario fixture trees, 3 fail strict JSON parsing, 32 fail the wrapper schema and 88 pass the wrapper schema and are rejected by the fixture checker. Handling mutations are exercised separately by the handling runner. All four rehashed intent mutants pass draft validation. |
+
+The historical pace decode and negative-speed findings are covered by passing regressions for inverted intervals, wrong decoded targets, and invalid or inconsistent corrections. The observation checker rejects the historical alias and coefficient-revision cases. The draft now has per-tick intervention and emergency fields and requires both track and handling hashes. The intent documentation records the stricter Python handling of decimal-form integer tokens. The narrower observation linkage and identity failures above remain.
+
+This review verifies authored fixture contracts and synthetic arithmetic checks. Runtime scheduling, reset behavior, observation Float32 parity, captured reference evidence, actual intervention metrics, AI behavior, and hardware/perceptual checks remain unverified. The schema checkpoint and M0 remain open.
