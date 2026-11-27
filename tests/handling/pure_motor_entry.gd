@@ -157,6 +157,14 @@ func _run_case(case_id: String) -> Dictionary:
 	return result
 
 
+## First tick (1-based) whose state reports reverse engaged, or -1.
+func _first_engaged_tick(states: Array) -> int:
+	for index in range(states.size()):
+		if states[index].reverse_engaged:
+			return index + 1
+	return -1
+
+
 func _run_intentional_failure() -> Dictionary:
 	d = PureMotorDriverScript.new()
 	measurements = {"intentional": true}
@@ -1120,40 +1128,70 @@ func _case_reverse_road_speed() -> void:
 			]
 		)
 
-	# Exact threshold boundary with zero forces keeps the speed fixed: exactly
-	# 1 m/s in either travel direction engages after the hold, just above does
-	# not engage at all.
-	var at_limit_forward = d.trace_states(
+	# Strict threshold boundary with zero forces keeps the speed fixed at its
+	# initial value, so these probes isolate the comparison itself: exactly
+	# 1 m/s in either travel direction must not even accumulate hold, just below
+	# must wait the full configured uninterrupted hold, and just above never
+	# engages.
+	var offset := 1e-6
+	var boundary_hold_ticks := int(
+		ceil((inert.reverse_hold_time_s - 1e-9) / ArcadeMotorScript.DT)
+	)
+	var exact_forward = d.trace_states(
 		d.make_state(Vector2.ZERO, Vector2(0.0, 1.0)), brake_command, inert, 60
 	)
-	var at_limit_backward = d.trace_states(
+	var exact_backward = d.trace_states(
 		d.make_state(Vector2.ZERO, Vector2(0.0, -1.0)), brake_command, inert, 60
 	)
-	var above_limit = d.trace_states(
-		d.make_state(Vector2.ZERO, Vector2(0.0, 1.0 + 1e-6)), brake_command, inert, 60
+	var below_forward = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 1.0 - offset)), brake_command, inert, 60
 	)
-	var at_forward_tick := -1
-	var at_backward_tick := -1
-	for index in range(60):
-		if at_forward_tick < 0 and at_limit_forward[index].reverse_engaged:
-			at_forward_tick = index + 1
-		if at_backward_tick < 0 and at_limit_backward[index].reverse_engaged:
-			at_backward_tick = index + 1
-	d.check(at_forward_tick > 0, "exactly 1 m/s forward engages reverse")
-	d.check(at_backward_tick > 0, "exactly 1 m/s backward engages reverse")
+	var below_backward = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, -(1.0 - offset))), brake_command, inert, 60
+	)
+	var above_forward = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 1.0 + offset)), brake_command, inert, 60
+	)
+	var above_backward = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, -(1.0 + offset))), brake_command, inert, 60
+	)
+
+	var exact_forward_max_hold := 0.0
+	for state in exact_forward:
+		d.check(not state.reverse_engaged, "exactly +1 m/s forward never engages reverse")
+		exact_forward_max_hold = maxf(exact_forward_max_hold, state.reverse_hold_s)
+	var exact_backward_max_hold := 0.0
+	for state in exact_backward:
+		d.check(not state.reverse_engaged, "exactly -1 m/s backward never engages reverse")
+		exact_backward_max_hold = maxf(exact_backward_max_hold, state.reverse_hold_s)
+	d.check(exact_forward_max_hold == 0.0, "exactly +1 m/s forward accumulates no reverse hold")
+	d.check(exact_backward_max_hold == 0.0, "exactly -1 m/s backward accumulates no reverse hold")
+
+	var below_forward_tick := _first_engaged_tick(below_forward)
+	var below_backward_tick := _first_engaged_tick(below_backward)
 	d.check(
-		not above_limit[-1].reverse_engaged,
-		"just above 1 m/s never engages reverse"
+		below_forward_tick == boundary_hold_ticks,
+		"just below +1 m/s engages only after the configured hold (tick %d, expected %d)" % [
+			below_forward_tick, boundary_hold_ticks
+		]
 	)
-	if at_forward_tick > 0:
-		d.check(at_forward_tick >= min_ticks, "1 m/s engagement waits for the full hold")
+	d.check(
+		below_backward_tick == boundary_hold_ticks,
+		"just below -1 m/s engages only after the configured hold (tick %d, expected %d)" % [
+			below_backward_tick, boundary_hold_ticks
+		]
+	)
+	d.check(not above_forward[-1].reverse_engaged, "just above +1 m/s never engages reverse")
+	d.check(not above_backward[-1].reverse_engaged, "just above -1 m/s never engages reverse")
 
 	measurements["road_speed_engaged_tick"] = engaged_tick
 	measurements["road_speed_at_engagement_mps"] = engagement_previous_speed
 	measurements["backward_decel_gate_open_tick"] = gate_open_tick
 	measurements["backward_decel_engaged_tick"] = decel_engaged_tick
-	measurements["exact_limit_forward_tick"] = at_forward_tick
-	measurements["exact_limit_backward_tick"] = at_backward_tick
+	measurements["boundary_exact_forward_max_hold_s"] = exact_forward_max_hold
+	measurements["boundary_exact_backward_max_hold_s"] = exact_backward_max_hold
+	measurements["boundary_below_forward_tick"] = below_forward_tick
+	measurements["boundary_below_backward_tick"] = below_backward_tick
 
 
 func _case_reverse_top_speed() -> void:

@@ -16,8 +16,8 @@ extends RefCounted
 ##     deferred: the kernel accepts exactly one curve and does not read the
 ##     handling resource);
 ##   * braking, aerodynamic/rolling drag and coasting;
-##   * the design's reverse transition (road-plane speed magnitude at/below
-##     1 m/s after a 0.3 s brake hold, docs/GAME_DESIGN.md:11) using explicit
+##   * the design's reverse transition (road-plane speed magnitude strictly
+##     below 1 m/s after a 0.3 s brake hold, docs/GAME_DESIGN.md:11) using explicit
 ##     tuning values, with throttle taking deterministic priority over brake;
 ##   * grip yaw proportional to post-force signed longitudinal speed (forward
 ##     travel steers normally, reverse inverts the yaw, zero longitudinal
@@ -38,7 +38,7 @@ const DT := 1.0 / 60.0
 const DT_TOLERANCE_S := 1e-6
 
 ## Design bounds from docs/GAME_DESIGN.md:11: braking becomes reverse only
-## at or below 1 m/s and only after at least a 0.3 s brake hold. Tuning may
+## strictly below 1 m/s and only after at least a 0.3 s brake hold. Tuning may
 ## narrow these bounds but never widen them.
 const REVERSE_TRIGGER_SPEED_MAX_M_S := 1.0
 const REVERSE_HOLD_TIME_MIN_S := 0.3
@@ -71,9 +71,9 @@ class SpeedAccelerationPoint extends RefCounted:
 ##   * `yaw_gain_grip`: yaw rate per unit steer per m/s of signed forward speed;
 ##   * `max_yaw_rate_rad_s`: absolute yaw-rate cap (`INF` disables the cap);
 ##   * `lateral_damping_grip_per_s`: exponential lateral-velocity decay rate;
-##   * `reverse_trigger_speed_m_s`: brake becomes reverse at or below this speed;
-##     bounded to [0, 1] by docs/GAME_DESIGN.md:11;
-##   * `reverse_hold_time_s`: required brake hold at/below the trigger speed;
+##   * `reverse_trigger_speed_m_s`: brake becomes reverse strictly below this
+##     speed; bounded to [0, 1] by docs/GAME_DESIGN.md:11;
+##   * `reverse_hold_time_s`: required brake hold below the trigger speed;
 ##     must be at least 0.3 s by docs/GAME_DESIGN.md:11;
 ##   * `reverse_acceleration_m_s2` and `reverse_top_speed_m_s`: explicit reverse
 ##     drive parameters (the game design does not fix a reverse top speed).
@@ -254,7 +254,7 @@ static func propose(
 		# Reverse transition. Throttle has deterministic priority over brake:
 		# it both blocks engagement and leaves an already engaged reverse, so
 		# simultaneous legal input cannot cycle the flag. New engagement needs
-		# the brake alone and a road-plane speed magnitude at/below the
+		# the brake alone and a road-plane speed magnitude strictly below the
 		# design-bounded trigger for the configured hold. Magnitude admits the
 		# signed-speed case that previously let any backward motion start
 		# reverse; lateral-dominant travel at road speed stays above the bound.
@@ -262,7 +262,7 @@ static func propose(
 			if (
 				command.brake > 0.0
 				and command.throttle <= 0.0
-				and state_in.speed_m_s() <= tuning.reverse_trigger_speed_m_s
+				and state_in.speed_m_s() < tuning.reverse_trigger_speed_m_s
 			):
 				reverse_hold_s += dt
 				if reverse_hold_s >= tuning.reverse_hold_time_s:
