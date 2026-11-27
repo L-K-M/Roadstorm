@@ -26,6 +26,13 @@ command.
 | OI-11 | StepFun route notation in [`PROVIDER_TERMS.md`](PROVIDER_TERMS.md) | The register describes the Pi StepFun route as "invoked as `stepfun/step-5-preview` through Pi", a spelling that is ambiguous with the OpenRouter model ID of the same name; the observed route is Pi provider `stepfun`, model `step-5-preview` (session evidence for jobs `9390c59e`, `a04dc96f`, `a67680d9`). That file is owned by the provider-terms job and was not corrected here | Nothing directly; risks registering the wrong route's terms | The provider-terms job rewrites the row as "pi provider `stepfun`, model `step-5-preview`" and keeps the OpenRouter alternative (`openrouter` / `stepfun/step-5-preview`) distinct |
 | OI-12 | Reviewer/checkpoint route terms and review-report material scope | Committed `review/` reports were produced by routes (Devin `swe-2-1-max`, OpenCode `zai-coding-plan/glm-5.4`, Mistral Large 4 via Pi, Claude Opus 5.5 as a Claude Code agent and via provider `venice`, OpenAI Codex `gpt-6.2-sol`, and Codex plan-review agents of unknown model) whose provider/account terms are not captured or verified; each is registered in [`PROVIDER_TERMS.md`](PROVIDER_TERMS.md) as UNKNOWN/BLOCKING. Whether review reports count as dedicated "project material" for the register's shipping scope (vs. review evidence) is itself an open policy decision | Treating any affected review output as cleared project material; T15 public-domain claims for that output | Each reviewer route's terms captured and marked VERIFIED / COMPATIBLE-WITH-CONDITIONS, plus an explicit recorded decision on review-report material scope |
 
+On 2026-11-27 the owner directed continued use of LongCat and StepFun for the
+public-domain-intended project despite the recorded public-term restrictions,
+on the view that generated output is uncopyrightable. That direction governs
+implementation work. It does not supply a provider waiver, establish the
+accepted agreement revision, or close OI-02/OI-03; see
+[`PROVIDER_TERMS.md`](PROVIDER_TERMS.md). No provider was contacted.
+
 ## Not open
 
 - Root Unlicense preservation: `LICENSE` is unchanged relative to input revision

@@ -60,6 +60,23 @@ question for a project whose Unlicense/CC0 dedication permits unrestricted
 commercial use. Output ownership and a broad license to the provider do not
 by themselves answer it. **Neither route is cleared for release.**
 
+### Owner direction on continued use (2026-11-27)
+
+The owner instructed the implementation team to continue using LongCat and
+StepFun for this public-domain-intended project, asserting that their output is
+not copyrightable and may be used in public-domain projects. This authorizes
+continued development and local verification; it is not a provider waiver or
+evidence of the accepted agreement revision. The [U.S. Copyright Office's
+2025 copyrightability report](https://www.copyright.gov/ai/Copyright-and-Artificial-Intelligence-Part-2-Copyrightability-Report.pdf)
+says purely AI-generated material lacks U.S. copyright protection, while human
+creative contributions can be protected case by case. That copyrightability
+question does not establish how the [LongCat general
+terms](https://longcat.chat/privacy/en/user-service/) or [StepFun open-platform
+agreement](https://platform.stepfun.com/legal/user-agreement.html) apply to this
+account's service use and output. Keep OI-02/OI-03 and the release-rights gate
+open; do not claim unrestricted rights or provider permission from the owner's
+instruction alone. No provider was contacted.
+
 ## Reviewer/checkpoint routes observed in committed repository material
 
 Committed reports under [`review/`](../review/) self-identify the authoring
