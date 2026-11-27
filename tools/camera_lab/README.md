@@ -27,8 +27,11 @@ and above the target, near chase is closer, and hood sits ahead of the target
 origin at dash height. All offsets, look points and FOVs are provisional
 authored values and runtime-configurable. Horizon stabilization derives the
 camera basis from world `+Y`, so target bank and roll do not roll the camera.
-A missing or nonfinite target leaves the last valid finite camera pose active,
-reports `NO_TARGET`/`INVALID`, and never emits a nonfinite camera transform.
+A missing, nonfinite or singular target leaves the last valid camera pose
+active, reports `NO_TARGET`/`INVALID`, and never emits a nonfinite or collapsed
+camera transform. Every computed camera pose is checked for a finite origin and
+an orthonormal basis before assignment; uniformly scaled targets are accepted
+and keep unit camera axes with offsets that follow the scaled frame.
 
 Momentary rear view redirects the same camera node backwards while held and
 restores the selected forward mode on release. It creates no second camera or

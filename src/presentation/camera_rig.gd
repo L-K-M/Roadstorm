@@ -25,6 +25,12 @@ extends Node3D
 ## disabled, or when `snap_to_target()` is used, a given target transform
 ## produces the same camera transform on every run.
 
+## Defensive boundaries: nonfinite or singular target bases are rejected
+## atomically at input and never displace the last usable camera pose; a
+## computed camera transform is assigned only when its origin is finite and its
+## basis is orthonormal. Uniformly scaled targets are accepted and still yield
+## unit camera axes and offsets that follow the scaled frame.
+
 enum Mode {
 	CHASE = 0,
 	NEAR_CHASE = 1,
@@ -49,6 +55,14 @@ const DEFAULT_SMOOTHING_RESPONSE_S := 0.12
 
 ## Squared-length guard for degenerate look directions.
 const DIRECTION_EPSILON_SQ := 1e-12
+
+## Minimum squared length of a target basis column for the pose to be usable.
+const MIN_TARGET_AXIS_LENGTH_SQ := 1e-12
+## Minimum |determinant| relative to the product of the column lengths below
+## which a target basis is treated as singular (zero or collinear columns).
+const MIN_TARGET_DETERMINANT_RATIO := 1e-9
+## Orthonormality tolerance used when validating the computed camera basis.
+const CAMERA_BASIS_TOLERANCE := 1e-6
 
 const WORLD_UP := Vector3.UP
 
@@ -153,8 +167,9 @@ func get_mode_name(mode: Mode) -> String:
 
 
 ## Follows a visual target node. The node is never moved or rotated. A null
-## target clears the follow state. Nonfinite target transforms are rejected
-## and leave the rig's last safe camera pose untouched.
+## target clears the follow state. Nonfinite or degenerate/singular target
+## transforms are rejected atomically and leave the rig's last usable camera
+## pose untouched.
 func set_target(target: Node3D) -> bool:
 	if target == null:
 		clear_target()
@@ -165,7 +180,7 @@ func set_target(target: Node3D) -> bool:
 		_target_state = TargetState.INVALID
 		return false
 	var pose := target.global_transform
-	if not _is_finite_transform(pose):
+	if not _is_usable_target_transform(pose):
 		_target = null
 		_has_explicit_pose = false
 		_target_state = TargetState.INVALID
@@ -179,9 +194,9 @@ func set_target(target: Node3D) -> bool:
 
 
 ## Supplies the target pose explicitly instead of following a node. Rejects
-## nonfinite transforms without touching the camera.
+## nonfinite or degenerate/singular transforms without touching the camera.
 func set_target_pose(pose: Transform3D) -> bool:
-	if not _is_finite_transform(pose):
+	if not _is_usable_target_transform(pose):
 		_target = null
 		_has_explicit_pose = false
 		_target_state = TargetState.INVALID
@@ -367,7 +382,7 @@ func _refresh_pose() -> bool:
 			_target_state = TargetState.NO_TARGET
 			return false
 		pose = _target.global_transform
-		if not _is_finite_transform(pose):
+		if not _is_usable_target_transform(pose):
 			_target_state = TargetState.INVALID
 			return false
 	else:
@@ -392,12 +407,20 @@ func _desired_camera_transform() -> Transform3D:
 
 	var forward: Vector3
 	if _rear_held:
-		# Rear view looks along the target's backward axis (+Z local).
-		forward = target_pose.basis.z
+		# Rear view looks along the target's backward axis (+Z local), explicitly
+		# normalized so a scaled target still supplies a unit camera direction.
+		var rear_axis := target_pose.basis.z
+		if rear_axis.length_squared() < DIRECTION_EPSILON_SQ:
+			rear_axis = -target_pose.basis.z
+		forward = rear_axis
 	else:
 		forward = look_point - camera_position
+	if forward.length_squared() < DIRECTION_EPSILON_SQ:
+		# Validated inputs cannot reach this path; it only protects a future
+			# refine_desired_pose seam from installing a collapsed direction.
+		forward = -target_pose.basis.z
 		if forward.length_squared() < DIRECTION_EPSILON_SQ:
-			forward = -target_pose.basis.z
+			forward = Vector3(0.0, 0.0, -1.0)
 	forward = forward.normalized()
 
 	# Horizon stabilization: derive the lateral and vertical axes from the
@@ -417,6 +440,10 @@ func _desired_camera_transform() -> Transform3D:
 func _apply_smoothed(desired: Transform3D, delta: float) -> void:
 	var weight := clampf(1.0 - exp(-delta / _smoothing_response_s), 0.0, 1.0)
 	var current := _ensure_camera().global_transform
+	if not _is_orthonormal_basis(current.basis):
+		# Never build an interpolation on an already-collapsed camera basis.
+		_assign_camera_transform(desired)
+		return
 	var position := current.origin.lerp(desired.origin, weight)
 	var basis := Basis(
 		Quaternion(current.basis).slerp(Quaternion(desired.basis), weight)
@@ -424,12 +451,14 @@ func _apply_smoothed(desired: Transform3D, delta: float) -> void:
 	_assign_camera_transform(Transform3D(basis, position))
 
 
-func _assign_camera_transform(pose: Transform3D) -> void:
-	if not _is_finite_transform(pose):
-		# Never propagate a nonfinite camera transform. The last safe pose
-		# remains active and the invalid target state is reported.
-		return
+## Assigns the camera transform only when it is finite and has a proper
+## orthonormal basis. Returns false and keeps the previous camera transform
+## otherwise, so a bad pose can never collapse the camera.
+func _assign_camera_transform(pose: Transform3D) -> bool:
+	if not _is_valid_camera_pose(pose):
+		return false
 	_ensure_camera().global_transform = pose
+	return true
 
 
 func _is_finite_vec(value: Vector3) -> bool:
@@ -443,3 +472,51 @@ func _is_finite_transform(transform: Transform3D) -> bool:
 		and _is_finite_vec(transform.basis.y)
 		and _is_finite_vec(transform.basis.z)
 	)
+
+
+## A target pose is usable only when its basis is finite and nonsingular, so a
+## zero/collinear-axis target cannot produce a collapsed camera direction.
+func _is_usable_target_transform(transform: Transform3D) -> bool:
+	return _is_finite_transform(transform) and _is_non_degenerate_basis(transform.basis)
+
+
+func _is_non_degenerate_basis(basis: Basis) -> bool:
+	var x := basis.x
+	var y := basis.y
+	var z := basis.z
+	if not (_is_finite_vec(x) and _is_finite_vec(y) and _is_finite_vec(z)):
+		return false
+	if (
+		x.length_squared() < MIN_TARGET_AXIS_LENGTH_SQ
+		or y.length_squared() < MIN_TARGET_AXIS_LENGTH_SQ
+		or z.length_squared() < MIN_TARGET_AXIS_LENGTH_SQ
+	):
+		return false
+	# Compare |det| with the column-volume product so uniform scaling (including
+	# small or negative scales) stays valid while sheared/zero volumes are not.
+	var column_volume := x.length() * y.length() * z.length()
+	if column_volume < 1.0e-12:
+		return false
+	return absf(basis.determinant()) >= MIN_TARGET_DETERMINANT_RATIO * column_volume
+
+
+func _is_valid_camera_pose(pose: Transform3D) -> bool:
+	return _is_finite_transform(pose) and _is_orthonormal_basis(pose.basis)
+
+
+func _is_orthonormal_basis(basis: Basis) -> bool:
+	var x := basis.x
+	var y := basis.y
+	var z := basis.z
+	if not (_is_finite_vec(x) and _is_finite_vec(y) and _is_finite_vec(z)):
+		return false
+	var tolerance := CAMERA_BASIS_TOLERANCE
+	if absf(x.length_squared() - 1.0) > tolerance:
+		return false
+	if absf(y.length_squared() - 1.0) > tolerance:
+		return false
+	if absf(z.length_squared() - 1.0) > tolerance:
+		return false
+	if absf(x.dot(y)) > tolerance or absf(x.dot(z)) > tolerance or absf(y.dot(z)) > tolerance:
+		return false
+	return true

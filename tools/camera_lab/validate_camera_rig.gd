@@ -50,6 +50,18 @@ const REVERSE_TOLERANCE_DEG := 1.0
 const SMOOTHING_SETTLE_DEG := 1.0
 const MAX_STARTUP_FRAMES := 120
 
+## Test double for the documented `refine_desired_pose` seam: it deliberately
+## returns a collapsed pose so the resulting-camera boundary can be exercised.
+class CollapsingCameraRig extends CameraRig:
+	func refine_desired_pose(
+		desired: Transform3D,
+		_delta: float
+	) -> Transform3D:
+		return Transform3D(
+			Basis(Vector3.ZERO, Vector3.ZERO, Vector3.ZERO),
+			desired.origin
+		)
+
 var _checks := 0
 var _failures: Array[String] = []
 var _measured: Dictionary = {}
@@ -122,6 +134,7 @@ func _run_checks() -> void:
 	_check_rear_view()
 	_check_target_safety()
 	_check_off_tree_target()
+	_check_degenerate_and_scaled_targets()
 	_check_nonfinite_inputs()
 	_check_determinism()
 	_check_smoothing_direction()
@@ -779,6 +792,208 @@ func _check_viewport_attach_detach() -> void:
 	viewport.free()
 
 
+func _check_degenerate_and_scaled_targets() -> void:
+	# Establish a usable camera pose that every rejection must preserve.
+	_apply_target(Transform3D.IDENTITY)
+	_rig.select_mode(CameraRig.Mode.CHASE)
+	_rig.snap_to_target()
+	var camera := _rig.get_camera()
+	var good_pose := camera.global_transform
+	var zero_basis := Basis(Vector3.ZERO, Vector3.ZERO, Vector3.ZERO)
+
+	_check(
+		not _rig.set_target_pose(Transform3D(zero_basis, Vector3.ZERO)),
+		"degenerate.zero_explicit_refused",
+		""
+	)
+	_check(
+		_rig.get_target_state() == CameraRig.TargetState.INVALID,
+		"degenerate.zero_explicit_state",
+		str(_rig.get_target_state())
+	)
+	_check(
+		_transforms_equal(camera.global_transform, good_pose, 0.0),
+		"degenerate.zero_explicit_camera_kept",
+		"camera changed on rejected pose"
+	)
+
+	var collinear := Basis(
+		Vector3(1.0, 0.0, 0.0),
+		Vector3(2.0, 0.0, 0.0),
+		Vector3(0.0, 0.0, 1.0)
+	)
+	_check(
+		not _rig.set_target_pose(Transform3D(collinear, Vector3(1.0, 2.0, 3.0))),
+		"degenerate.collinear_explicit_refused",
+		""
+	)
+	_check(
+		_rig.get_target_state() == CameraRig.TargetState.INVALID,
+		"degenerate.collinear_state",
+		str(_rig.get_target_state())
+	)
+	_check(
+		_transforms_equal(camera.global_transform, good_pose, 0.0),
+		"degenerate.collinear_camera_kept",
+		"camera changed on rejected pose"
+	)
+
+	var bad_node := Node3D.new()
+	bad_node.name = "CameraLabZeroBasisTarget"
+	root.add_child(bad_node)
+	bad_node.transform = Transform3D(zero_basis, Vector3.ZERO)
+	_check(not _rig.set_target(bad_node), "degenerate.zero_node_refused", "")
+	_check(
+		_rig.get_target_state() == CameraRig.TargetState.INVALID,
+		"degenerate.zero_node_state",
+		str(_rig.get_target_state())
+	)
+	_check(
+		_transforms_equal(camera.global_transform, good_pose, 0.0),
+		"degenerate.zero_node_camera_kept",
+		"camera changed on rejected node"
+	)
+	bad_node.queue_free()
+
+	# Mid-follow degeneration and recovery.
+	var live_target := Node3D.new()
+	live_target.name = "CameraLabScaledTarget"
+	root.add_child(live_target)
+	var live := Transform3D(
+		Basis(Vector3.UP, deg_to_rad(30.0)),
+		Vector3(4.0, 1.0, -2.0)
+	)
+	live_target.transform = live
+	_check(_rig.set_target(live_target), "degenerate.live_target_accepted", "")
+	_rig.snap_to_target()
+	var stable_pose := camera.global_transform
+
+	live_target.transform = Transform3D(zero_basis, Vector3.ZERO)
+	_rig.update_target_pose(0.0)
+	_check(
+		_rig.get_target_state() == CameraRig.TargetState.INVALID,
+		"degenerate.mid_follow_state",
+		str(_rig.get_target_state())
+	)
+	_check(
+		_finite_transform(camera.global_transform),
+		"degenerate.mid_follow_finite",
+		str(camera.global_transform)
+	)
+	_check(
+		_transforms_equal(camera.global_transform, stable_pose, 0.0),
+		"degenerate.mid_follow_camera_kept",
+		"collapsed target changed the camera"
+	)
+
+	live_target.transform = live
+	_rig.update_target_pose(0.0)
+	_check(_rig.has_valid_target(), "degenerate.recovery_valid", "")
+	_check(
+		_rig.get_target_state() == CameraRig.TargetState.OK,
+		"degenerate.recovery_state",
+		str(_rig.get_target_state())
+	)
+	_check(
+		_is_orthonormal_camera(camera),
+		"degenerate.recovery_orthonormal",
+		str(camera.global_transform.basis)
+	)
+	_check(
+		_vec_close(camera.global_transform.origin, live * EXPECTED_CHASE_OFFSET, VECTOR_TOLERANCE),
+		"degenerate.recovery_position",
+		str(camera.global_transform.origin)
+	)
+
+	# Uniformly scaled targets: accepted, offsets follow the scaled frame,
+	# direction is scale-independent and the camera basis stays orthonormal in
+	# both forward and rear modes.
+	for scale_value in [2.5, 0.5]:
+		var scale_label := str(scale_value)
+		var scaled := Transform3D(
+			Basis(
+				Vector3(scale_value, 0.0, 0.0),
+				Vector3(0.0, scale_value, 0.0),
+				Vector3(0.0, 0.0, scale_value)
+			),
+			Vector3(3.0 * scale_value, scale_value, -2.0 * scale_value)
+		)
+		live_target.transform = scaled
+		_rig.hold_rear(false)
+		_rig.update_target_pose(0.0)
+		_check(_rig.has_valid_target(), "scaled.%s.accepted" % scale_label, "")
+		_check(
+			_finite_transform(camera.global_transform),
+			"scaled.%s.forward_finite" % scale_label,
+			str(camera.global_transform)
+		)
+		_check(
+			_is_orthonormal_camera(camera),
+			"scaled.%s.forward_orthonormal" % scale_label,
+			str(camera.global_transform.basis)
+		)
+		var expected_position: Vector3 = scaled * EXPECTED_CHASE_OFFSET
+		_check(
+			_vec_close(
+				camera.global_transform.origin,
+				expected_position,
+				VECTOR_TOLERANCE * maxf(1.0, scale_value)
+			),
+			"scaled.%s.forward_offset" % scale_label,
+			"%s vs %s" % [camera.global_transform.origin, expected_position]
+		)
+		var expected_forward: Vector3 = (
+			(scaled * EXPECTED_CHASE_LOOK_OFFSET) - expected_position
+		).normalized()
+		_check(
+			_angle_deg(_forward(camera), expected_forward) <= DIRECTION_TOLERANCE_DEG,
+			"scaled.%s.forward_direction" % scale_label,
+			"%s vs %s" % [_forward(camera), expected_forward]
+		)
+
+		_rig.hold_rear(true)
+		_rig.update_target_pose(0.0)
+		_check(
+			_is_orthonormal_camera(camera),
+			"scaled.%s.rear_orthonormal" % scale_label,
+			str(camera.global_transform.basis)
+		)
+		_check(
+			_angle_deg(_forward(camera), scaled.basis.z.normalized()) <= DIRECTION_TOLERANCE_DEG,
+			"scaled.%s.rear_direction" % scale_label,
+			"%s vs %s" % [_forward(camera), scaled.basis.z.normalized()]
+		)
+		_rig.hold_rear(false)
+
+	live_target.queue_free()
+
+	# Resulting-camera boundary: even if the refinement seam returns a collapsed
+	# pose, assignment must be refused and the previous camera must remain.
+	var collapsing := CollapsingCameraRig.new()
+	root.add_child(collapsing)
+	var collapsing_camera := collapsing.get_camera()
+	var collapsing_initial := collapsing_camera.global_transform
+	var valid_pose := Transform3D(Basis(Vector3.UP, 1.0), Vector3(1.0, 2.0, 3.0))
+	_check(collapsing.set_target_pose(valid_pose), "output.valid_input_accepted", "")
+	collapsing.snap_to_target()
+	_check(
+		_transforms_equal(collapsing_camera.global_transform, collapsing_initial, 0.0),
+		"output.collapsed_basis_refused",
+		"collapsed seam pose was assigned"
+	)
+	_check(
+		_finite_transform(collapsing_camera.global_transform),
+		"output.collapsed_basis_finite",
+		str(collapsing_camera.global_transform)
+	)
+	_check(
+		_is_orthonormal_camera(collapsing_camera),
+		"output.collapsed_basis_kept_usable",
+		str(collapsing_camera.global_transform.basis)
+	)
+	collapsing.free()
+
+
 # --- Helpers ---------------------------------------------------------------
 
 
@@ -805,6 +1020,28 @@ func _count_cameras(node: Node) -> int:
 	for child in node.get_children():
 		count += _count_cameras(child)
 	return count
+
+
+func _is_orthonormal_camera(camera: Camera3D) -> bool:
+	return _is_orthonormal_basis(camera.global_transform.basis)
+
+
+func _is_orthonormal_basis(basis: Basis) -> bool:
+	var x := basis.x
+	var y := basis.y
+	var z := basis.z
+	if not (_finite_vec(x) and _finite_vec(y) and _finite_vec(z)):
+		return false
+	var tolerance := 1e-6
+	if absf(x.length_squared() - 1.0) > tolerance:
+		return false
+	if absf(y.length_squared() - 1.0) > tolerance:
+		return false
+	if absf(z.length_squared() - 1.0) > tolerance:
+		return false
+	if absf(x.dot(y)) > tolerance or absf(x.dot(z)) > tolerance or absf(y.dot(z)) > tolerance:
+		return false
+	return true
 
 
 func _count_subviewports(node: Node) -> int:
