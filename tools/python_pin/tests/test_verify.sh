@@ -593,12 +593,86 @@ ln -s "$_other" "$fx/pathbin/python3"
 printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
 printf 'local_interpreter_315_sha256=%s\n' \
 	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
-cp "$_target" "$fx/pathbin/python3.15"
-out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+# A hard link gives the candidate the recorded file's inode, so the earlier
+# candidate genuinely reaches `compared` before the unresolved one fails.
+ln "$_target" "$fx/pathbin/python3.15"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh 2>&1)"
 rc=$?
 assert_eq "later unresolved candidate still fails after an earlier comparison" 1 "$rc"
+assert_contains "earlier hard-linked candidate really was compared" "$out" \
+	"interpreter sha256 matches the recorded LOCAL observation"
 assert_contains "summary names the fail-closed cause, not compared" "$out" \
 	"local digest: not compared (unresolved path)"
+
+# --- recorded canonical path replaced by a symlink fails closed -------------
+fx="$(new_fixture recorded-path-symlink)"
+_rec="$fx/recorded link"
+_target="$fx/replacement build"
+make_counting_fake "$_target" "$fx/marker-target"
+ln -s "$_target" "$_rec"
+_cand="$fx/pathbin/python3.15"
+make_restricted_path "$fx/pathbin"
+make_counting_fake "$_cand" "$fx/marker-cand"
+printf 'local_interpreter_315_path=%s\n' "$_rec" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "symlink-replaced recorded path fails closed" 1 "$rc"
+assert_contains "failure identifies the replacement" "$out" \
+	"is a symbolic link"
+assert_contains "summary uses the replacement state" "$out" \
+	"local digest: recorded build path replaced"
+
+# --- absent recorded baseline: legitimate cross-machine setup --------------
+for _case in missing-parent missing-file; do
+	fx="$(new_fixture absent-baseline-$_case)"
+	_cand="$fx/pathbin/python3.15"
+	make_restricted_path "$fx/pathbin"
+	make_counting_fake "$_cand" "$fx/marker"
+	case "$_case" in
+		missing-parent) _rec="$fx/no-such-dir/recorded build" ;;
+		missing-file) _rec="$fx/recorded build" ;;
+	esac
+	printf 'local_interpreter_315_path=%s\n' "$_rec" >> "$fx/pin/checksums.txt"
+	printf 'local_interpreter_315_sha256=%s\n' \
+		"$(sha256_file "$_cand")" >> "$fx/pin/checksums.txt"
+	out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh 2>&1)"
+	rc=$?
+	assert_eq "absent baseline ($_case) lets a valid pinned candidate pass" 0 "$rc"
+	assert_contains "absence is explained ($_case)" "$out" "is absent on this host"
+	out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh \
+		--python "$_cand" 2>&1)"
+	rc=$?
+	assert_eq "explicit candidate with absent baseline ($_case) passes" 0 "$rc"
+	assert_contains "explicit absence is explained ($_case)" "$out" \
+		"is absent on this host"
+done
+
+# --- inaccessible but possibly present baseline stays fail-closed ------------
+fx="$(new_fixture inaccessible-baseline)"
+_rec="$fx/locked/recorded build"
+mkdir -p "$fx/locked"
+make_counting_fake "$_rec" "$fx/marker-rec"
+printf 'local_interpreter_315_path=%s\n' "$_rec" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_rec")" >> "$fx/pin/checksums.txt"
+_cand="$fx/pathbin/python3.15"
+make_restricted_path "$fx/pathbin"
+make_counting_fake "$_cand" "$fx/marker-cand"
+chmod 000 "$fx/locked"
+if [ -x "$fx/locked" ]; then
+	chmod 755 "$fx/locked"
+	assert_eq "inaccessible-baseline test skipped (mode 000 is searchable here)" yes yes
+else
+	out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+	rc=$?
+	chmod 755 "$fx/locked"
+	assert_eq "possibly-present but inaccessible baseline fails closed" 1 "$rc"
+	assert_contains "indeterminate equivalence is named" "$out" "cannot be determined"
+	assert_contains "summary keeps the specific state" "$out" \
+		"local digest: not compared (equivalence undetermined)"
+fi
 
 # --- hashing feeds content on stdin, tolerating odd path names (Unix) -------
 case "$(uname -s)" in

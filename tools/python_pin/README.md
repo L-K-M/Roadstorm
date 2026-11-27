@@ -140,10 +140,16 @@ shell.
    non-directory prefixes are rejected like `realpath`). If the canonical
    string differs from the recorded path, sameness is established positively
    with `stat` device:inode — so a case-variant or hard-linked build on a
-   case-insensitive volume is still compared — and if `stat` is unavailable
-   and equivalence cannot be determined, the run fails closed rather than
-   reporting “different path”. A missing utility when a link has to be
-   resolved likewise fails closed when a baseline applies. A discovered
+   case-insensitive volume is still compared. A recorded path that is
+   definitely absent (missing file or missing parent directory) is not a
+   comparator on this host, so the ordinary “different path” warning applies.
+   If `stat` is unavailable, or the comparator may exist but cannot be
+   inspected (for example permissions), equivalence cannot be determined and
+   the run fails closed rather than reporting “different path”. A missing
+   utility when a link has to be resolved likewise fails closed when a
+   baseline applies. If the recorded canonical path itself is now a symbolic
+   link, the baseline file was replaced; identity is indeterminate and the
+   run fails closed with `recorded build path replaced`. A discovered
    broken/looping link is simply not executable and is skipped; an explicit
    `--python` to one fails the run. A host with neither `realpath` nor
    `readlink` therefore fails while any symlinked interpreter is discovered
@@ -182,11 +188,14 @@ rejected empty options, unreadable pin/digest metadata failing closed, a
 Python-2-style candidate being skipped without failing the run, an
 unprobeable build at the recorded path still failing closed, a recorded-path
 build reporting a different version failing closed despite another pinned
-candidate, an unresolved chain to the recorded build failing closed, a
-case-variant baseline still comparing without `realpath`, missing/non-directory
-intermediate rejection, undeterminable path equivalence failing closed, a
-fail-closed reason winning over an earlier comparison, a
-healthy-baseline/other-path positive control, odd-name hashing on stdin
+candidate, a recorded canonical path replaced by a symlink failing closed,
+an unresolved chain to the recorded build failing closed, a case-variant
+baseline still comparing without `realpath`, missing/non-directory
+intermediate rejection, definitely-absent recorded baselines passing with a
+clear explanation while inaccessible possibly-present ones fail closed,
+undeterminable path equivalence failing closed, a fail-closed reason winning
+over an earlier comparison with a hard-linked candidate, a healthy-
+baseline/other-path positive control, odd-name hashing on stdin
 (leading dash and backslash), and a failing sha256 command failing closed. All test
 fixtures are regular files
 created in a private temporary directory; symlink/hard-link fixtures live only

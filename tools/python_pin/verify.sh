@@ -271,6 +271,7 @@ obs_append_archive() {
 set_digest_state() {
 	case "$LOCAL_DIGEST_STATE" in
 		compared | "recorded build unprobeable" | "recorded build changed version" | \
+		"recorded build path replaced" | \
 		"not compared (unresolved path)" | "not compared (digest unavailable)" | \
 		"not compared (equivalence undetermined)") ;;
 		*) LOCAL_DIGEST_STATE="$1" ;;
@@ -282,6 +283,7 @@ set_digest_state() {
 set_digest_failure() {
 	case "$LOCAL_DIGEST_STATE" in
 		"recorded build unprobeable" | "recorded build changed version" | \
+		"recorded build path replaced" | \
 		"not compared (unresolved path)" | "not compared (digest unavailable)" | \
 		"not compared (equivalence undetermined)") ;;
 		*) LOCAL_DIGEST_STATE="$1" ;;
@@ -365,8 +367,59 @@ file_identity() {
 	[ -e "$_f" ] || return 1
 	if command -v stat >/dev/null 2>&1; then
 		_id="$(stat -c '%d:%i' "$_f" 2>/dev/null)" && [ -n "$_id" ] && { printf '%s\n' "$_id"; return 0; }
-		_id="$(stat -f '%d:%i' "$_f" 2>/dev/null)" && [ -n "$_id" ] && { printf '%s\n' "$_id"; return 0; }
+		# The BSD `-f` format is only attempted on BSD-style unames. On GNU,
+		# an unexpected `-c` failure must stay indeterminate rather than risk
+		# interpreting a different format's fields as device:inode.
+		_os="$(uname -s 2>/dev/null)"
+		case "$_os" in
+			Darwin | *BSD | SunOS | AIX | HP-UX)
+				_id="$(stat -f '%d:%i' "$_f" 2>/dev/null)" && [ -n "$_id" ] && { printf '%s\n' "$_id"; return 0; }
+				;;
+		esac
 	fi
+	return 1
+}
+
+# Is a path definitely absent? Returns 0 only when every component up to the
+# first missing one was an existing, searchable directory (or a non-directory,
+# which makes the remainder ENOTDIR). Returns 1 when the answer is uncertain
+# (typically a permission-denied parent). This distinguishes “the recorded
+# build is not installed on this machine” (legitimate different-path setup)
+# from “it may exist but cannot be inspected” (fail closed).
+known_absent() {
+	_p="$1"
+	[ -e "$_p" ] || [ -L "$_p" ] && return 1
+	case "$_p" in
+		/*) ;;
+		*) _p="$(pwd)/$_p" ;;
+	esac
+	while [ "${_p%/}" != "$_p" ]; do _p="${_p%/}"; done
+	[ -n "$_p" ] || _p="/"
+	_cur="/"
+	_rest="${_p#/}"
+	while [ -n "$_rest" ]; do
+		_c="${_rest%%/*}"
+		case "$_rest" in
+			*/*) _rest="${_rest#*/}" ;;
+			*) _rest="" ;;
+		esac
+		case "$_c" in
+			"" | ".") continue ;;
+			"..") _cur="${_cur%/*}"; [ -n "$_cur" ] || _cur="/"; continue ;;
+		esac
+		if [ "$_cur" = "/" ]; then _next="/$_c"; else _next="$_cur/$_c"; fi
+		if [ -d "$_next" ]; then
+			[ -x "$_next" ] || return 1
+			_cur="$_next"
+		elif [ -e "$_next" ] || [ -L "$_next" ]; then
+			# Exists but is not a directory: the remaining path is ENOTDIR.
+			return 0
+		else
+			# Missing component: certain ENOENT only if its parent is searchable.
+			[ -x "$_cur" ] || return 1
+			return 0
+		fi
+	done
 	return 1
 }
 
@@ -435,12 +488,27 @@ check_interpreter() {
 			# positively, and fail closed if it cannot be established.
 			_id_real="$(file_identity "$_real")"; _id_rc=$?
 			_id_rec="$(file_identity "$_rec_path")"; _id_rc2=$?
-			if [ "$_id_rc" -eq 0 ] && [ "$_id_rc2" -eq 0 ]; then
+			if [ -L "$_rec_path" ]; then
+				# The recorded canonical path is now a link, so the baseline
+				# file itself was replaced; do not invent an equivalence.
+				set_digest_failure "recorded build path replaced"
+				bad "recorded local path $_rec_path is a symbolic link; the recorded canonical baseline has been replaced, so identity is indeterminate and the run fails closed"
+				return 1
+			fi
+			if [ "$_id_rc2" -ne 0 ] && known_absent "$_rec_path"; then
+				# The recorded build simply is not installed on this machine
+				# (typical on Windows/Linux or a different macOS install). It
+				# cannot be the candidate, so report the ordinary not-compared
+				# outcome instead of failing.
+				info "  recorded local build $_rec_path is absent on this host; not compared"
+			elif [ "$_id_rc" -eq 0 ] && [ "$_id_rc2" -eq 0 ]; then
 				if [ "$_id_real" = "$_id_rec" ]; then
 					_baseline_here=1
 					info "  same file as the recorded path (case/hard-link variant of $_rec_path)"
 				fi
 			else
+				# The recorded comparator may exist but cannot be inspected
+				# (permissions, missing stat): stay fail-closed.
 				set_digest_failure "not compared (equivalence undetermined)"
 				bad "recorded local baseline exists but whether $_real is the recorded file ($_rec_path) cannot be determined; failing closed"
 				return 1

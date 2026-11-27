@@ -235,8 +235,13 @@ These are different claims and the pin keeps them apart:
   component must be an existing directory, like `realpath`. If the canonical
   string differs, sameness is proven positively with `stat` device:inode (so
   case-variant or hard-linked builds on a case-insensitive volume still
-  compare); if `stat` is unavailable and equivalence cannot be determined,
-  the run fails closed. A discovered broken/looping link is not executable and
+  compare). A recorded path that is definitely absent on this host (missing
+  file or missing parent) is not a comparator, so the ordinary different-path
+  warning applies; if `stat` is unavailable, or the comparator may exist but
+  cannot be inspected (permissions), equivalence cannot be determined and the
+  run fails closed. If the recorded canonical path itself is now a symbolic
+  link, the baseline file was replaced; that is reported as `recorded build
+  path replaced` and also fails closed. A discovered broken/looping link is not executable and
   is skipped; an explicit `--python` to one fails the run. On a host with
   neither `realpath` nor `readlink`, any symlinked interpreter therefore fails
   such a run; regular-file paths still resolve lexically.
@@ -341,7 +346,7 @@ the repository or shared inputs.) Full logs and the rerunnable
 | `tools/python_pin/verify.sh --no-interpreter` | PASS (exit 0) with the skip warning. |
 | `tools/python_pin/verify.sh --help` / `--bogus` | exit 0 / exit 2. |
 | `sh -n tools/python_pin/verify.sh` | syntax OK. |
-| `sh`, `bash` and `dash tools/python_pin/tests/test_verify.sh` (base candidate `fb86fc3a006a4c2351a9ca463fa04b6a1c2af4ba`, this verifier repair applied) | **PASS** (exit 0), **133 assertions, 0 failures** in each shell. Covers record-target refusals and ephemeral aliases, spaces/globs, `--no-interpreter`, `-I` probes, per-path digest scope (different path NOT compared with a visible quiet warning; changed same path fails closed), canonical resolution of relative/chained/directory symlinks without realpath plus loop/broken/missing-readlink fail-closed checks, checksums-convention record keys, mismatch evidence wording, empty options, unreadable metadata, a skipped Python-2-style candidate, an unprobeable recorded-path build failing closed, a changed-version recorded-path build failing closed, an unresolved-chain baseline failing closed with a healthy other-path control, case-variant and missing/non-directory intermediate handling, undeterminable path equivalence failing closed, failure-reason precedence over `compared`, and odd-name hashing. |
+| `sh`, `bash` and `dash tools/python_pin/tests/test_verify.sh` (base candidate `fb86fc3a006a4c2351a9ca463fa04b6a1c2af4ba`, this verifier repair applied) | **PASS** (exit 0), **148 assertions on this case-insensitive Mac (146 on a case-sensitive filesystem), 0 failures** in each shell. Covers record-target refusals and ephemeral aliases, spaces/globs, `--no-interpreter`, `-I` probes, per-path digest scope (different path NOT compared with a visible quiet warning; changed same path fails closed), canonical resolution of relative/chained/directory symlinks without realpath plus loop/broken/missing-readlink fail-closed checks, checksums-convention record keys, mismatch evidence wording, empty options, unreadable metadata, a skipped Python-2-style candidate, an unprobeable recorded-path build failing closed, a changed-version recorded-path build failing closed, a symlink-replaced recorded path failing closed, an unresolved-chain baseline failing closed with a healthy other-path control and a hard-linked compared-before-failure precedence check, case-variant and missing/non-directory intermediate handling, definitely-absent recorded baselines passing in discovery and explicit modes while inaccessible possibly-present baselines fail closed, undeterminable path equivalence failing closed, failure-reason precedence over `compared`, and odd-name hashing. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <direct paths to the four independently verified artifacts>` | **PASS** (exit 0). Each file's role (`source archive` / `target installer`), observed and published digests, and the recorded digest+Sigstore evidence note are printed. External artifacts were hashed before and after and were unchanged. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <fresh regular file named Python-3.15.2.tgz>` | **FAIL** (exit 1): sha256 mismatch against the published digest. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <some-other-file.exe>` | **FAIL** (exit 1): not a pinned artifact. |
