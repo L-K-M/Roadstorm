@@ -1,0 +1,10 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+RESET_WAIT fell_before_reset=true y_before=8.834049225 y_after=5.333304882 drifted=true phys_frames=30 ticks=0->0 paused=false
+ZERO_TICK elapsed=0 terminal=none ticks=0->0 y_before=9.487913132 y_after=6.752489090 drifted=true phys_frames=30 paused=false
+CAP0_RESET y_before=10.000000000 y_after=8.834049225 drifted=true ticks=0 paused=false phys_frames=30
+OVERLAP ticks_before_second=3 elapsed=5 ticks_after=8 pending=false
+OVERLAP post_take_empty=true
+NEGATIVE pending=true elapsed=0 terminal=none ticks=0->0 phys_frames=0
+RESIDUAL elapsed=0 terminal=motion_bound moved_m=0.000000000 commanded_m=0.000000000 violations=1 deficit=0.166666667
+REPRO_FOLLOWUP_DONE

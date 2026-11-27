@@ -42,6 +42,12 @@ def main() -> int:
     parser.add_argument("--project", default=None, help="probe project directory (default: this file's parent's parent)")
     parser.add_argument("--out", default=None, help="directory for captured stdout/JSON evidence")
     parser.add_argument("--timeout", type=float, default=30.0, help="per-run timeout in seconds")
+    parser.add_argument(
+        "--pacing",
+        choices=["fixed", "default", "max"],
+        default="fixed",
+        help="engine pacing: --fixed-fps 60 (fixed), none (default), --max-fps 60 (max)",
+    )
     args = parser.parse_args()
 
     project = Path(args.project).resolve() if args.project else Path(__file__).resolve().parent.parent
@@ -62,11 +68,15 @@ def main() -> int:
         env["TMPDIR"] = str(scratch / "tmp")
         (scratch / "home").mkdir()
         (scratch / "tmp").mkdir()
+        pacing_flags = {
+            "fixed": ["--fixed-fps", "60"],
+            "default": [],
+            "max": ["--max-fps", "60"],
+        }[args.pacing]
         cmd = [
             args.godot,
             "--headless",
-            "--fixed-fps",
-            "60",
+            *pacing_flags,
             "--path",
             str(isolated),
             "--script",
@@ -85,7 +95,7 @@ def main() -> int:
             (out_dir / "contract-tests.txt").write_text(proc.stdout + proc.stderr)
             (out_dir / "contract-tests.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
         failed = report.get("checks_failed", 1)
-        print(f"CONTRACT_TESTS_TOTAL={report.get('checks_total', 0)} CONTRACT_TESTS_FAILED={failed}")
+        print(f"PACING={args.pacing} CONTRACT_TESTS_TOTAL={report.get('checks_total', 0)} CONTRACT_TESTS_FAILED={failed}")
         return proc.returncode
     except subprocess.TimeoutExpired:
         print(f"ERROR: contract tests exceeded {args.timeout:.0f}s", file=sys.stderr)

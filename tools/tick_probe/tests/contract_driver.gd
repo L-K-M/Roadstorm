@@ -26,6 +26,8 @@ func _ready() -> void:
 	await _test_stale_result_after_reset()
 	await _test_zero_tick_budget()
 	await _test_motion_bound()
+	await _test_wait_guard()
+	await _test_begin_step_refusals()
 	await _test_bypass_negative_control()
 	await _test_pause_ownership()
 	_finish()
@@ -57,6 +59,37 @@ func _wait_process_frames(count: int) -> void:
 		await get_tree().process_frame
 
 
+## Wait on engine physics callbacks, not process frames: pacing modes differ
+## in how many process frames correspond to one physics iteration.
+func _wait_physics_frames(count: int) -> void:
+	var target := ext_physics_frames + count
+	var guard := 0
+	while ext_physics_frames < target:
+		await get_tree().process_frame
+		guard += 1
+		if guard > 200000:
+			return
+
+
+func _spawn_ambient(y: float = 10.0) -> RigidBody3D:
+	var ambient := RigidBody3D.new()
+	var shape := CollisionShape3D.new()
+	var sphere := SphereShape3D.new()
+	sphere.radius = 0.5
+	shape.shape = sphere
+	ambient.add_child(shape)
+	ambient.position = Vector3(5, y, 0)
+	coord.add_child(ambient)
+	return ambient
+
+
+func _wait_ambient_below(ambient: RigidBody3D, threshold: float) -> void:
+	var guard := 0
+	while is_instance_valid(ambient) and ambient.global_position.y > threshold and guard < 600:
+		await get_tree().process_frame
+		guard += 1
+
+
 func _wait_pending() -> void:
 	var guard := 0
 	while not coord.has_pending_result():
@@ -68,6 +101,11 @@ func _wait_pending() -> void:
 
 func _step(requested: int) -> Dictionary:
 	coord.begin_step(requested)
+	await _wait_pending()
+	return coord.take_result()
+
+
+func _wait_pending_and_take() -> Dictionary:
 	await _wait_pending()
 	return coord.take_result()
 
@@ -108,7 +146,7 @@ func _test_frozen_zero_advance() -> void:
 	var z0: float = coord.body.global_position.z
 	var ef0 := ext_physics_frames
 	coord.set_frozen(true)
-	await _wait_process_frames(30)
+	await _wait_physics_frames(30)
 	_check(ext_physics_frames - ef0 >= 30,
 		"frozen: engine physics frames continued while waiting",
 		"frames=%d" % (ext_physics_frames - ef0))
@@ -217,6 +255,113 @@ func _test_motion_bound() -> void:
 		"elapsed=%d terminal=%s" % [int(reverse.elapsed_ticks), str(reverse.terminal)])
 
 
+## The waiting contract: reset, zero-tick requests and exhausted budgets must
+## leave the authoritative world physically frozen. An independent
+## RigidBody3D proves physical stasis, not just a zero logical tick count.
+func _test_wait_guard() -> void:
+	await _configure(10.0)
+	coord.reset()
+	_check(get_tree().paused, "wait-guard: reset leaves the authoritative world frozen")
+
+	# Control: the same independent body does fall when the world is run. Spawn
+	# it while unpaused so the engine activates the body normally.
+	coord.set_frozen(false)
+	var ambient := _spawn_ambient(10.0)
+	await _wait_ambient_below(ambient, 9.5)
+	_check(ambient.global_position.y <= 9.5,
+		"wait-guard: control body falls while the world is deliberately running",
+		"y=%.9f" % ambient.global_position.y)
+
+	coord.reset()
+	var y_reset: float = ambient.global_position.y
+	var f0 := ext_physics_frames
+	await _wait_physics_frames(30)
+	_check(ext_physics_frames - f0 >= 30,
+		"wait-guard: engine physics frames continued while frozen after reset",
+		"frames=%d" % (ext_physics_frames - f0))
+	_check(ambient.global_position.y == y_reset,
+		"wait-guard: independent body did not drift after reset",
+		"y=%.9f->%.9f" % [y_reset, ambient.global_position.y])
+	_check(coord.tick_count == 0, "wait-guard: zero logical ticks after reset")
+
+	# A zero-tick request ends frozen too.
+	coord.set_frozen(false)
+	await _wait_ambient_below(ambient, y_reset - 0.2)
+	var zero: Dictionary = await _step(0)
+	_check(int(zero.elapsed_ticks) == 0 and str(zero.terminal) == "none",
+		"wait-guard: zero-tick request is a nonterminal zero step",
+		"elapsed=%d terminal=%s" % [int(zero.elapsed_ticks), str(zero.terminal)])
+	_check(get_tree().paused, "wait-guard: zero-tick request leaves the world frozen")
+	var y_zero: float = ambient.global_position.y
+	f0 = ext_physics_frames
+	await _wait_physics_frames(30)
+	_check(ambient.global_position.y == y_zero,
+		"wait-guard: independent body did not drift after a zero-tick request",
+		"y=%.9f->%.9f" % [y_zero, ambient.global_position.y])
+	_check(coord.tick_count == 0, "wait-guard: zero logical ticks after a zero-tick request")
+	ambient.queue_free()
+
+	# Exhausted budget after reset is the same frozen waiting state.
+	await _configure(10.0, INF, 0)
+	coord.reset()
+	coord.set_frozen(false)
+	var ambient_cap := _spawn_ambient(10.0)
+	await _wait_ambient_below(ambient_cap, 9.5)
+	var capped: Dictionary = await _step(12)
+	_check(int(capped.elapsed_ticks) == 0 and str(capped.terminal) == "truncated",
+		"wait-guard: exhausted-budget request is zero-tick truncated",
+		"elapsed=%d terminal=%s" % [int(capped.elapsed_ticks), str(capped.terminal)])
+	_check(get_tree().paused, "wait-guard: exhausted-budget request freezes the world")
+	var y_cap: float = ambient_cap.global_position.y
+	f0 = ext_physics_frames
+	await _wait_physics_frames(30)
+	_check(ambient_cap.global_position.y == y_cap,
+		"wait-guard: independent body did not drift after an exhausted-budget request",
+		"y=%.9f->%.9f" % [y_cap, ambient_cap.global_position.y])
+	ambient_cap.queue_free()
+
+
+## Overlapping, untaken-result and negative begin_step calls are refused
+## without disturbing current accounting.
+func _test_begin_step_refusals() -> void:
+	await _configure(10.0)
+	coord.reset()
+	var ok_first: bool = coord.begin_step(12)
+	_check(ok_first, "begin-step: first request accepted")
+	await _wait_physics_frames(3)
+	var mid: int = coord.tick_count
+	var ok_overlap: bool = coord.begin_step(5)
+	_check(not ok_overlap and coord.begin_step_refusals == 1,
+		"begin-step: overlapping request refused",
+		"ok=%s refusals=%d reason=%s" % [str(ok_overlap), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	var first: Dictionary = await _wait_pending_and_take()
+	_check(int(first.elapsed_ticks) == 12 and coord.tick_count == 12,
+		"begin-step: first request accounting survived the overlap attempt",
+		"elapsed=%d ticks=%d->%d" % [int(first.elapsed_ticks), mid, coord.tick_count])
+
+	var ticks_before_negative: int = coord.tick_count
+	var ok_negative: bool = coord.begin_step(-1)
+	_check(not ok_negative and coord.begin_step_refusals == 2,
+		"begin-step: negative budget refused",
+		"ok=%s refusals=%d reason=%s" % [str(ok_negative), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	_check(coord.tick_count == ticks_before_negative and not coord.has_pending_result(),
+		"begin-step: negative refusal changed no accounting")
+
+	var ok_third: bool = coord.begin_step(12)
+	_check(ok_third, "begin-step: request after refusals accepted")
+	await _wait_pending()
+	var ticks_inflight: int = coord.tick_count
+	var ok_untaken: bool = coord.begin_step(4)
+	_check(not ok_untaken and coord.begin_step_refusals == 3,
+		"begin-step: untaken-result overlap refused",
+		"ok=%s refusals=%d reason=%s" % [str(ok_untaken), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	_check(coord.tick_count == ticks_inflight,
+		"begin-step: untaken refusal changed no accounting")
+	var third: Dictionary = coord.take_result()
+	_check(int(third.elapsed_ticks) == 12,
+		"begin-step: pending result still readable after a refusal")
+
+
 ## Negative control: twelve direct physics calls outside any coordinator request
 ## move the body but consume no accounted logical tick. Call count alone is not
 ## evidence of accounted world steps.
@@ -241,7 +386,7 @@ func _test_pause_ownership() -> void:
 	await _configure(10.0)
 	coord.reset()
 	get_tree().paused = true
-	await _wait_process_frames(2)
+	await _wait_physics_frames(2)
 	coord.begin_step(12)
 	_check(not get_tree().paused,
 		"pause-ownership: begin_step clears an externally set pause")

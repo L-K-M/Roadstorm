@@ -22,9 +22,14 @@ extends Node3D
 ##     dropped silently.
 ##
 ## Pause ownership: this coordinator is the sole owner of SceneTree.paused for
-## the probe world. begin_step() and reset() clear any externally-set pause so
-## the authoritative world is never left frozen by another subsystem. Other
-## nodes must not write SceneTree.paused while the probe is running.
+## the probe world. It freezes the tree whenever the authoritative world is
+## waiting (after reset, after every finished request, after a zero-tick
+## request, and in the exhausted-budget early return), and only begin_step()
+## with a positive budget unfreezes it. Other nodes must not write
+## SceneTree.paused while the probe is running.
+##
+## begin_step() is non-reentrant and refuses overlapping calls, untaken
+## results and negative budgets instead of silently restarting accounting.
 
 signal step_finished(result: Dictionary)
 
@@ -80,6 +85,10 @@ var tick_log: Array[Dictionary] = []
 ## the affected request ends with terminal "motion_bound".
 var motion_bound_violations := 0
 var last_motion_bound_deficit_m := 0.0
+## Refusal bookkeeping for invalid/overlapping begin_step() calls. A refused
+## call leaves the coordinator state untouched.
+var begin_step_refusals := 0
+var last_begin_step_refusal := ""
 
 var _budget := 0
 var _requested_ticks := 0
@@ -175,6 +184,8 @@ func _reset_state() -> void:
 	tick_log.clear()
 	motion_bound_violations = 0
 	last_motion_bound_deficit_m = 0.0
+	begin_step_refusals = 0
+	last_begin_step_refusal = ""
 	_budget = 0
 	_requested_ticks = 0
 	_step_elapsed = 0
@@ -187,10 +198,13 @@ func _reset_state() -> void:
 
 
 ## Complete reset: world pose, clocks, RNG, history, events and counters.
+## The world ends frozen (waiting), matching the post-request wait state;
+## begin_step() is what unfreezes it for the next request.
 func reset() -> Dictionary:
 	set_frozen(false)
 	_reset_state()
 	_build_world_pose()
+	set_frozen(true)
 	return observe()
 
 
@@ -204,18 +218,30 @@ func set_frozen(frozen: bool) -> void:
 	get_tree().paused = frozen
 
 
-func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> void:
+## Start a request. Returns true when the request was accepted, false when it
+## was refused (overlapping in-flight step, untaken previous result, or a
+## negative budget); a refusal leaves coordinator state untouched.
+func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
+	if _pending_result:
+		return _refuse_begin_step("previous result not consumed")
 	if episode_terminal != "none":
+		# A finished episode has no in-flight budget; answer immediately.
+		set_frozen(true)
 		_emit_result(requested_ticks, 0, episode_terminal)
-		return
+		return true
+	if _budget > 0:
+		return _refuse_begin_step("step already in flight")
+	if requested_ticks < 0:
+		return _refuse_begin_step("negative requested_ticks")
 	if max_ticks <= 0:
 		# Exhausted-budget semantics: a non-positive scenario cap allows zero
-		# ticks, so the episode starts (and stays) truncated. No physics callback
-		# is allowed to advance the world.
+		# ticks, so the episode starts (and stays) truncated. The world stays
+		# frozen and no physics callback may advance it.
 		episode_terminal = "truncated"
+		set_frozen(true)
 		_emit_result(requested_ticks, 0, "truncated")
-		return
-	_requested_ticks = maxi(0, requested_ticks)
+		return true
+	_requested_ticks = requested_ticks
 	_budget = _requested_ticks
 	_step_elapsed = 0
 	_pending_result = false
@@ -223,6 +249,14 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> void:
 		set_frozen(false)
 	if _requested_ticks == 0:
 		_emit_result(0, 0, "none")
+		set_frozen(true)
+	return true
+
+
+func _refuse_begin_step(reason: String) -> bool:
+	begin_step_refusals += 1
+	last_begin_step_refusal = reason
+	return false
 
 
 func has_pending_result() -> bool:
@@ -276,7 +310,12 @@ func _physics_process(delta: float) -> void:
 		last_motion_bound_deficit_m = commanded_travel - MAX_TICK_TRAVEL_M
 		_finish_step("motion_bound")
 		return
-	_execute_tick(delta)
+	var work_capped := _execute_tick(delta)
+	if work_capped:
+		# The defence-in-depth residual path must fail closed exactly like the
+		# pre-tick envelope check.
+		_finish_step("motion_bound")
+		return
 	tick_count += 1
 	_step_elapsed += 1
 	_budget -= 1
@@ -293,7 +332,9 @@ func _physics_process(delta: float) -> void:
 		_finish_step(terminal)
 
 
-func _execute_tick(_delta: float) -> void:
+## Returns true when the bounded work cap left an unapplied remainder; the
+## caller must then fail the request with motion_bound.
+func _execute_tick(_delta: float) -> bool:
 	var start := body.global_transform
 	var desired := Vector3(0, 0, -speed_mps * DT)
 	var sim := start
@@ -368,11 +409,13 @@ func _execute_tick(_delta: float) -> void:
 
 	# Defence in depth: the pre-tick envelope check already refuses commands
 	# above MAX_TICK_TRAVEL_M. If a collision did not stop the motion and the
-	# work cap still leaves a remainder, record it loudly rather than dropping
-	# it silently (contact-limited shortfalls are physical, not violations).
+	# work cap still leaves a remainder, record it loudly and fail the request
+	# with motion_bound (contact-limited shortfalls are physical, not
+	# violations).
 	if not contact_stopped and remaining.length() > MOTION_BOUND_EPSILON_M:
 		motion_bound_violations += 1
 		last_motion_bound_deficit_m = maxf(last_motion_bound_deficit_m, remaining.length())
+		return true
 
 	grounded = _probe_grounded()
 	_last_grounded = grounded
@@ -397,6 +440,7 @@ func _execute_tick(_delta: float) -> void:
 	})
 	if tick_log.size() > MAX_TICK_LOG:
 		tick_log.pop_front()
+	return false
 
 
 func _probe_grounded() -> bool:
@@ -411,6 +455,7 @@ func _probe_grounded() -> bool:
 
 
 func _finish_step(terminal: String) -> void:
+	_budget = 0
 	last_step_terminal = terminal
 	if terminal != "none":
 		episode_terminal = terminal

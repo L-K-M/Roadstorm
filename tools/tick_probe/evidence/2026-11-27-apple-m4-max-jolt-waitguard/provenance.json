@@ -1,0 +1,180 @@
+{
+  "base_commit": "55b04cec80fc842d1f40b5ac393a8a6492f112f3",
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "evidence_sha256": {
+    "README.md": "83943baf8d1a7ad7c407e189b9d0cf2ddac155df23ad2906d940bce8f78c889d",
+    "compare-modes.txt": "1b9e3efb8281e470a35d7c9227da8b9844913e534b750efa66dd4c81b9cd5e3d",
+    "contract-default/contract-tests.json": "c79225fcad0094a107f612a20cf29e1f68f943e8e0f45d74c7475558b880a937",
+    "contract-default/contract-tests.txt": "945fa3528e774e7db4624fa15353b2a8d32fbb329f970928f1e46a613b150874",
+    "contract-default/run.txt": "46e33ad79bd3b2b1aaf2a9121c28cac51bc647981433d636eeca10192bd6d173",
+    "contract-fixed/contract-tests.json": "c79225fcad0094a107f612a20cf29e1f68f943e8e0f45d74c7475558b880a937",
+    "contract-fixed/contract-tests.txt": "945fa3528e774e7db4624fa15353b2a8d32fbb329f970928f1e46a613b150874",
+    "contract-fixed/run.txt": "8017f32b559eec949512c752d8f7b5ecf989b0cce460aad64e2351744b28ac3d",
+    "contract-max/contract-tests.json": "c79225fcad0094a107f612a20cf29e1f68f943e8e0f45d74c7475558b880a937",
+    "contract-max/contract-tests.txt": "945fa3528e774e7db4624fa15353b2a8d32fbb329f970928f1e46a613b150874",
+    "contract-max/run.txt": "ac4a3a9ccc160a0b619e4e078ba96c7d40e888ffd17be680022caae24fbdc3af",
+    "exit-code-selftest.txt": "36575429cb58447dfc820ef22e3297b24d3a84ebddd44802cef137ac0fa0567f",
+    "mutation-sensitivity.txt": "10fbcbfbb2304a12751211a7ff937c6f26612aaf8e885ea9d319f6a5c266794f",
+    "post-fix-verification.txt": "c11c353f18f8bf14f8e5b4bb23ee7ef9e03690095ce800e5217bdd3210d92dec",
+    "pre-fix-reproduction.txt": "ea53aa03f67d335fb47d3f9b4217834646689290c86b5b1267c589e0918b8247",
+    "structural-default.checks.txt": "2b0f81c3c837d716995a20052f628047801e38ef8b1aa11135f50c1dcfbe846a",
+    "structural-default.json": "8a8a18ee8088f2b19559b272fa9ca853ed426f01e55d549462c8fb380f9e7ea4",
+    "structural-default.raw.txt": "ee4492cd83fd9e61e8c1a54c62c965b671a2ea01070d9b270f44397e88351fd7",
+    "structural-fixed-fps.checks.txt": "2b0f81c3c837d716995a20052f628047801e38ef8b1aa11135f50c1dcfbe846a",
+    "structural-fixed-fps.json": "edc4f3ae9d8ca55c63339d01bf369f2382395d01eade38fe6613d084b4930ac6",
+    "structural-fixed-fps.raw.txt": "99950ff34fb6a768ebe5f517b5ee6248f98859f99510ebbdc7efffd50614670d",
+    "structural-max-fps-60.checks.txt": "2b0f81c3c837d716995a20052f628047801e38ef8b1aa11135f50c1dcfbe846a",
+    "structural-max-fps-60.json": "edc4f3ae9d8ca55c63339d01bf369f2382395d01eade38fe6613d084b4930ac6",
+    "structural-max-fps-60.raw.txt": "99950ff34fb6a768ebe5f517b5ee6248f98859f99510ebbdc7efffd50614670d"
+  },
+  "file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "1a6ae2ff057ca7e01e2b25a5e898823f9574fcc53aa1ead51ce82b3266ee3672",
+    "compare_modes.py": "e055ba13766c005af6c5dfcdad884979dba5f1601dea4f1cde5391777f25cbcc",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "426cf0bd63168780f5e53585c004ff168437fec50f6ae8438b4f108af8876bbe",
+    "src/tick_coordinator.gd": "aefb158e5dcb68ce671d71639a8d1661c15628131c6f24bae9f33acea027af02",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/contract_driver.gd": "0916b1451d55b3455f3a6bd2d2a6b7768f3f066d1816dac339d72bf93ecf07f3",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/run_contract_tests.py": "4670823760665b508c56394edc67900ba14c84db33582df0c3a80ce3d1d98914"
+  },
+  "followup_report": "review/implementation/m0-tick-opus-recheck-64cbe5b0-7cc7-4130-80a3-cfc7d4d59f43.md",
+  "limits": [
+    "One-car CharacterBody3D probe; not full M1 motor, AI, contact resolver, multi-car reset, interactive invocation or full simulation.",
+    "Same-host determinism only; cross-platform byte equality is not claimed.",
+    "Backend identity inferred from the pinned setting plus historical contrast; not directly observable.",
+    "In-loop residual backstop is defence-in-depth and not reachable through the public constant-speed configuration within the 1e-6 tolerance band.",
+    "Wall-clock numbers are host-load dependent."
+  ],
+  "machine": "arm64",
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "prior_manifest_verification": {
+    "candidate": "d562755c83af1129b4ddf7043baee8d8a742d358",
+    "entries": 26,
+    "manifest": "evidence/2026-11-27-apple-m4-max-jolt-contract/manifest.sha256",
+    "mismatch": 0,
+    "note": "every entry recomputed with git show d562755:<path> and matched byte-for-byte",
+    "ok": 26
+  },
+  "python": "3.15.2",
+  "reviewed_candidate_commit": "d562755c83af1129b4ddf7043baee8d8a742d358",
+  "reviewed_candidate_file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "c76000a11f1168eb7e4f0c7233f4ba1c3c2ce0e9eb131cd07c5fc18a727152c3",
+    "compare_modes.py": "25a8101ec246dc0ebd31f2c8b52eecfb88e4e988236abef25314cad2b29a2630",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "baf8d3730129a54cd328530ca87244ed71eff8c7f279807cdabfcb88f41e3f11",
+    "src/tick_coordinator.gd": "53e2d0d20fb60f7b31e832d299a4040601fc3011b78b61a69e169485cd60fbd8",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/contract_driver.gd": "07d9f8da739cd2fec95439c8481db2f64cefe1e2469cdfeff9c84fe71bbb4058",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/run_contract_tests.py": "761c39d93513a5af7ffb98c9b916d9dbf29a2d98e345a8791df325aa05782656"
+  },
+  "reviewed_candidate_short": "d562755",
+  "run_policy": "headless, isolated copy of tools/tick_probe, private HOME/TMPDIR, each run <= 30 s, no GUI, no Git/installed-template mutation",
+  "runs": [
+    {
+      "checks_failed": 0,
+      "checks_total": 99,
+      "command": "godot --headless --fixed-fps 60 --path <isolated> --script res://src/tick_probe.gd -- mode=structural",
+      "exit": 0,
+      "name": "structural-fixed-fps",
+      "wall_s": 2
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 99,
+      "command": "godot --headless --path <isolated> --script res://src/tick_probe.gd -- mode=structural",
+      "exit": 0,
+      "name": "structural-default",
+      "wall_s": 8
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 99,
+      "command": "godot --headless --max-fps 60 --path <isolated> --script res://src/tick_probe.gd -- mode=structural",
+      "exit": 0,
+      "name": "structural-max-fps-60",
+      "wall_s": 12
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 51,
+      "command": "python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --timeout 25",
+      "exit": 0,
+      "name": "contract-fixed",
+      "wall_s": 0
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 51,
+      "command": "python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --timeout 25",
+      "exit": 0,
+      "name": "contract-default",
+      "wall_s": 5
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 51,
+      "command": "python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --timeout 25",
+      "exit": 0,
+      "name": "contract-max",
+      "wall_s": 6
+    },
+    {
+      "command": "python3 tools/tick_probe/compare_modes.py --project <isolated> --timeout 25",
+      "exit": 0,
+      "name": "compare-modes",
+      "realtime_factor": 1.0,
+      "result": "COMPARISON PASS",
+      "speedup_accelerated": 65.0,
+      "throughput_passes": 9,
+      "trace_max_abs_diff_m": 0.0,
+      "trace_passes": 2,
+      "wall_s": 13
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 5,
+      "command": "godot --headless --fixed-fps 60 --path <isolated> --script res://src/tick_probe.gd -- mode=throughput requests=2 inject_failure=1",
+      "exit": 1,
+      "expected_failure": "injected failure (exit-code self-test)",
+      "name": "exit-code-selftest"
+    },
+    {
+      "command": "godot --headless --fixed-fps 60 --path <pristine d562755 copy> --script res://src/repro_followup_entry.gd",
+      "exit": 0,
+      "name": "pre-fix-reproduction",
+      "observed": {
+        "cap0_reset_drift_m": 1.1659508,
+        "negative_pending": true,
+        "overlap_elapsed": 5,
+        "overlap_ticks": 8,
+        "reset_drift_m": 3.5007443,
+        "zero_tick_drift_m": 2.735424
+      }
+    },
+    {
+      "command": "godot --headless --fixed-fps 60 --path <fixed copy> --script res://src/repro_followup_entry.gd",
+      "exit": 0,
+      "name": "post-fix-verification",
+      "observed": {
+        "cap0_reset_drift_m": 0.0,
+        "negative_pending": false,
+        "overlap_elapsed": 12,
+        "overlap_ticks": 12,
+        "reset_drift_m": 0.0,
+        "zero_tick_drift_m": 0.0
+      }
+    },
+    {
+      "checks_failed": 6,
+      "checks_total": 50,
+      "command": "godot --headless --fixed-fps 60 --path <scratch copy with reset freeze and begin_step guards disabled> --script res://tests/contract_entry.gd",
+      "exit": 1,
+      "name": "mutation-sensitivity"
+    }
+  ],
+  "schema": "roadstorm.tick_probe.waitguard_evidence.v1"
+}

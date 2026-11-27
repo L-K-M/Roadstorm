@@ -1,9 +1,10 @@
 extends Node
 ## M0.8 tick/reset/query probe driver.
 ##
-## Runs the structural fidelity scenarios and, on request, the accelerated /
-## real-time throughput measurement. Prints one machine-readable
-## PROBE_RESULT <json> line and exits nonzero on any failed check.
+## Runs the structural fidelity scenarios, a deterministic per-tick trace for
+## cross-pacing comparison, and, on request, the accelerated / real-time
+## throughput measurement. Prints one machine-readable PROBE_RESULT <json>
+## line and exits nonzero on any failed check.
 
 const DT := 1.0 / 60.0
 const DEFAULT_REQUESTS := 50
@@ -15,6 +16,7 @@ var checks := 0
 var frames := 0
 var mode := "structural"
 var label := "local"
+var engine_frames := 0
 var throughput_requests := DEFAULT_REQUESTS
 var inject_failure := false
 var env := {}
@@ -23,6 +25,7 @@ var scenario_report := {}
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	get_tree().physics_frame.connect(_on_engine_physics_frame)
 	_parse_args(OS.get_cmdline_user_args())
 	coord = CoordinatorScript.new()
 	get_tree().root.add_child(coord)
@@ -31,6 +34,8 @@ func _ready() -> void:
 	match mode:
 		"throughput":
 			scenario_report = {"throughput": await _run_throughput(throughput_requests)}
+		"trace":
+			scenario_report = {"trace": await _run_trace()}
 		"structural":
 			await _run_structural()
 		_:
@@ -41,6 +46,45 @@ func _ready() -> void:
 
 func _process(_delta: float) -> void:
 	frames += 1
+
+
+func _on_engine_physics_frame() -> void:
+	engine_frames += 1
+
+
+func _wait_engine_frames(count: int) -> void:
+	var target := engine_frames + count
+	var guard := 0
+	while engine_frames < target:
+		await get_tree().process_frame
+		guard += 1
+		if guard > 200000:
+			return
+
+
+func _wait_ambient_below(ambient: RigidBody3D, threshold: float) -> void:
+	# Only used while the world is deliberately unpaused; bounded so a paused
+	# tree cannot hang the driver.
+	var guard := 0
+	while is_instance_valid(ambient) and ambient.global_position.y > threshold and guard < 600:
+		await get_tree().process_frame
+		guard += 1
+
+
+func _spawn_ambient(y: float = 10.0) -> RigidBody3D:
+	var ambient := RigidBody3D.new()
+	var shape := CollisionShape3D.new()
+	var sphere := SphereShape3D.new()
+	sphere.radius = 0.5
+	shape.shape = sphere
+	ambient.add_child(shape)
+	ambient.position = Vector3(5, y, 0)
+	coord.add_child(ambient)
+	return ambient
+
+
+func _ambient_y(ambient: RigidBody3D) -> float:
+	return ambient.global_position.y if is_instance_valid(ambient) else NAN
 
 
 func _parse_args(args: Array) -> void:
@@ -109,8 +153,7 @@ func _wait_frames(count: int) -> void:
 		await get_tree().process_frame
 
 
-func _step(requested_ticks: int = 12) -> Dictionary:
-	coord.begin_step(requested_ticks)
+func _wait_pending_result() -> Dictionary:
 	var guard := 0
 	while not coord.has_pending_result():
 		await get_tree().process_frame
@@ -119,6 +162,11 @@ func _step(requested_ticks: int = 12) -> Dictionary:
 			_check(false, "step result arrived", "guard exhausted")
 			return {"elapsed_ticks": -1, "terminal": "error"}
 	return coord.take_result()
+
+
+func _step(requested_ticks: int = 12) -> Dictionary:
+	coord.begin_step(requested_ticks)
+	return await _wait_pending_result()
 
 
 func _configure(speed: float, finish_z: float = INF, max_ticks: int = 1000000, wall_face_z: float = NAN) -> void:
@@ -137,6 +185,8 @@ func _run_structural() -> void:
 	await _scenario_truncation()
 	await _scenario_zero_tick_budget()
 	await _scenario_bounded_work_envelope()
+	await _scenario_wait_guard()
+	await _scenario_begin_step_refusals()
 	await _scenario_reset_replay()
 	await _scenario_wall_swept_motion()
 	await _scenario_max_speed_no_tunnel()
@@ -388,6 +438,26 @@ func _scenario_bounded_work_envelope() -> void:
 		"work-envelope: reverse over-speed is also refused",
 		"elapsed=%d terminal=%s" % [int(reverse.elapsed_ticks), str(reverse.terminal)])
 
+	# Mid-request over-speed: the pre-tick guard must refuse on the next tick
+	# and keep the ticks already elapsed, instead of silently truncating.
+	await _configure(10.0, INF, 1000000)
+	coord.reset()
+	var accepted: bool = coord.begin_step(12)
+	_check(accepted, "work-envelope: mid-request step accepted")
+	await _wait_engine_frames(2)
+	var mid_ticks: int = coord.tick_count
+	coord.speed_mps = 250.0
+	var mid: Dictionary = await _wait_pending_result()
+	_check(str(mid.terminal) == "motion_bound",
+		"work-envelope: mid-request over-speed refused",
+		"elapsed=%d terminal=%s" % [int(mid.elapsed_ticks), str(mid.terminal)])
+	_check(int(mid.elapsed_ticks) == mid_ticks and coord.tick_count == mid_ticks,
+		"work-envelope: mid-request refusal keeps elapsed and tick count",
+		"elapsed=%d mid_ticks=%d tick_count=%d" % [int(mid.elapsed_ticks), mid_ticks, coord.tick_count])
+	_check(mid_ticks > 0 and mid_ticks < 12,
+		"work-envelope: refusal happened inside the request",
+		"mid_ticks=%d" % mid_ticks)
+
 	scenario_report["bounded_work_envelope"] = {
 		"max_tick_travel_m": CoordinatorScript.MAX_TICK_TRAVEL_M,
 		"max_supported_speed_mps": CoordinatorScript.MAX_SUPPORTED_SPEED_MPS,
@@ -396,6 +466,133 @@ func _scenario_bounded_work_envelope() -> void:
 		"over_speed_terminal": str(over.terminal),
 		"over_speed_deficit_m": over_deficit,
 		"reverse_terminal": str(reverse.terminal),
+		"mid_request_terminal": str(mid.terminal),
+		"mid_request_elapsed_ticks": int(mid.elapsed_ticks),
+	}
+
+
+## The authoritative world must be frozen whenever the coordinator is waiting,
+## including after reset, after a zero-tick request and after an exhausted
+## budget early return. An independent RigidBody3D proves physical stasis,
+## not just a logical tick count.
+func _scenario_wait_guard() -> void:
+	await _configure(10.0)
+	coord.reset()
+	_check(get_tree().paused, "wait-guard: reset leaves the authoritative world frozen")
+
+	# Control: the same body does fall when the world is deliberately run. Spawn
+	# it while unpaused so the engine activates the body normally.
+	coord.set_frozen(false)
+	var ambient := _spawn_ambient(10.0)
+	await _wait_ambient_below(ambient, 9.5)
+	_check(ambient.global_position.y <= 9.5,
+		"wait-guard: ambient body falls while the world is deliberately running",
+		"y=%.9f" % ambient.global_position.y)
+
+	# Reset freezes the waiting world again.
+	coord.reset()
+	_check(get_tree().paused, "wait-guard: reset re-freezes the waiting world")
+	var y_reset: float = ambient.global_position.y
+	var f0 := engine_frames
+	await _wait_engine_frames(30)
+	_check(engine_frames - f0 >= 30,
+		"wait-guard: engine physics frames continued while frozen after reset",
+		"frames=%d" % (engine_frames - f0))
+	_check(ambient.global_position.y == y_reset,
+		"wait-guard: independent body did not drift after reset",
+		"y=%.9f->%.9f" % [y_reset, ambient.global_position.y])
+	_check(coord.tick_count == 0, "wait-guard: zero logical ticks after reset")
+
+	# A zero-tick request must also end in the frozen waiting state.
+	coord.set_frozen(false)
+	await _wait_ambient_below(ambient, y_reset - 0.2)
+	var zero: Dictionary = await _step(0)
+	_check(int(zero.elapsed_ticks) == 0 and str(zero.terminal) == "none",
+		"wait-guard: zero-tick request is a nonterminal zero step",
+		"elapsed=%d terminal=%s" % [int(zero.elapsed_ticks), str(zero.terminal)])
+	_check(get_tree().paused, "wait-guard: zero-tick request leaves the world frozen")
+	var y_zero: float = ambient.global_position.y
+	f0 = engine_frames
+	await _wait_engine_frames(30)
+	_check(ambient.global_position.y == y_zero,
+		"wait-guard: independent body did not drift after a zero-tick request",
+		"y=%.9f->%.9f" % [y_zero, ambient.global_position.y])
+	_check(coord.tick_count == 0, "wait-guard: zero logical ticks after a zero-tick request")
+	ambient.queue_free()
+
+	# Exhausted budget after reset is the same waiting state.
+	await _configure(10.0, INF, 0)
+	coord.reset()
+	coord.set_frozen(false)
+	var ambient_cap := _spawn_ambient(10.0)
+	await _wait_ambient_below(ambient_cap, 9.5)
+	var capped: Dictionary = await _step(12)
+	_check(int(capped.elapsed_ticks) == 0 and str(capped.terminal) == "truncated",
+		"wait-guard: exhausted-budget request is zero-tick truncated",
+		"elapsed=%d terminal=%s" % [int(capped.elapsed_ticks), str(capped.terminal)])
+	_check(get_tree().paused, "wait-guard: exhausted-budget request freezes the world")
+	var y_cap: float = ambient_cap.global_position.y
+	f0 = engine_frames
+	await _wait_engine_frames(30)
+	_check(ambient_cap.global_position.y == y_cap,
+		"wait-guard: independent body did not drift after an exhausted-budget request",
+		"y=%.9f->%.9f" % [y_cap, ambient_cap.global_position.y])
+	ambient_cap.queue_free()
+
+	scenario_report["wait_guard"] = {
+		"reset_froze_world": true,
+		"zero_tick_froze_world": true,
+		"exhausted_budget_froze_world": true,
+	}
+
+
+## Overlapping, untaken and negative begin_step calls are refused without
+## disturbing the current accounting.
+func _scenario_begin_step_refusals() -> void:
+	await _configure(10.0)
+	coord.reset()
+	var ok_first: bool = coord.begin_step(12)
+	_check(ok_first, "begin-step: first request accepted")
+	await _wait_engine_frames(3)
+	var mid: int = coord.tick_count
+	var ok_overlap: bool = coord.begin_step(5)
+	_check(not ok_overlap and coord.begin_step_refusals == 1,
+		"begin-step: overlapping request refused",
+		"ok=%s refusals=%d reason=%s" % [str(ok_overlap), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	var first: Dictionary = await _wait_pending_result()
+	_check(int(first.elapsed_ticks) == 12 and coord.tick_count == 12,
+		"begin-step: first request accounting survived the overlap attempt",
+		"elapsed=%d ticks=%d->%d" % [int(first.elapsed_ticks), mid, coord.tick_count])
+
+	var ticks_before_negative: int = coord.tick_count
+	var ok_negative: bool = coord.begin_step(-1)
+	_check(not ok_negative and coord.begin_step_refusals == 2,
+		"begin-step: negative budget refused",
+		"ok=%s refusals=%d reason=%s" % [str(ok_negative), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	_check(coord.tick_count == ticks_before_negative and not coord.has_pending_result(),
+		"begin-step: negative refusal changed no accounting")
+
+	var ok_third: bool = coord.begin_step(12)
+	_check(ok_third, "begin-step: request after refusals accepted")
+	var guard := 0
+	while not coord.has_pending_result() and guard < 200000:
+		await get_tree().process_frame
+		guard += 1
+	var ticks_inflight: int = coord.tick_count
+	var ok_untaken: bool = coord.begin_step(4)
+	_check(not ok_untaken and coord.begin_step_refusals == 3,
+		"begin-step: untaken-result overlap refused",
+		"ok=%s refusals=%d reason=%s" % [str(ok_untaken), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	_check(coord.tick_count == ticks_inflight,
+		"begin-step: untaken refusal changed no accounting")
+	var third: Dictionary = coord.take_result()
+	_check(int(third.elapsed_ticks) == 12,
+		"begin-step: pending result still readable after a refusal")
+
+	scenario_report["begin_step_refusals"] = {
+		"refusals": coord.begin_step_refusals,
+		"first_elapsed_ticks": int(first.elapsed_ticks),
+		"third_elapsed_ticks": int(third.elapsed_ticks),
 	}
 
 
@@ -426,16 +623,16 @@ func _scenario_reset_replay() -> void:
 	_check(coord.events.is_empty(), "reset: event queue cleared")
 	_check(coord.commanded_distance == 0.0 and coord.total_substeps == 0,
 		"reset: distance/substep counters cleared")
-	_check(coord.episode_terminal == "none" and not get_tree().paused,
-		"reset: episode open and world unfrozen")
+	_check(coord.episode_terminal == "none" and get_tree().paused,
+		"reset: episode open and world frozen for waiting")
 
 	# Reset while frozen must also work.
 	await _step(12)
 	coord.set_frozen(true)
 	await _wait_frames(3)
 	coord.reset()
-	_check(coord.tick_count == 0 and not get_tree().paused,
-		"reset: works while waiting/frozen")
+	_check(coord.tick_count == 0 and get_tree().paused,
+		"reset: works while waiting and leaves the world frozen")
 
 	await _step(12)
 	await _step(12)
@@ -600,6 +797,108 @@ func _scenario_wait_freeze() -> void:
 
 
 # ---------------------------------------------------------------------------
+# Deterministic intermediate-state trace: the same command sequence is run
+# under each pacing mode and compare_modes.py compares per-tick digests.
+# ---------------------------------------------------------------------------
+
+func _run_trace() -> Dictionary:
+	var trace := {}
+	trace["open_reset_replay"] = await _trace_open_reset_replay()
+	trace["wall_contact"] = await _trace_wall_contact()
+	trace["termination"] = await _trace_termination()
+	trace["motion_bound"] = await _trace_motion_bound()
+	return trace
+
+
+func _event_kinds() -> Array:
+	var kinds := []
+	for event in coord.events:
+		kinds.append(str(event.kind))
+	return kinds
+
+
+func _pose_array() -> Array:
+	var p: Vector3 = coord.body.global_position
+	return [p.x, p.y, p.z]
+
+
+func _trace_result(result: Dictionary) -> Dictionary:
+	return {
+		"requested_ticks": int(result.requested_ticks),
+		"elapsed_ticks": int(result.elapsed_ticks),
+		"terminal": str(result.terminal),
+	}
+
+
+func _trace_segment(name: String) -> Dictionary:
+	var rows := []
+	for entry in coord.tick_log:
+		rows.append({
+			"tick": int(entry.tick),
+			"start_z": float(entry.start_z),
+			"end_z": float(entry.end_z),
+			"accepted_len": float(entry.accepted_len),
+			"substeps": int(entry.substeps),
+			"grounded": bool(entry.grounded),
+			"prediction_error": float(entry.prediction_error),
+		})
+	return {
+		"name": name,
+		"rows": rows,
+		"rng_draws": coord.rng_draws.duplicate(),
+		"event_kinds": _event_kinds(),
+		"final_position": _pose_array(),
+		"final_rotation_y_deg": rad_to_deg(coord.body.global_rotation.y),
+		"tick_count": coord.tick_count,
+	}
+
+
+func _trace_open_reset_replay() -> Dictionary:
+	await _configure(10.0)
+	coord.reset()
+	await _step(12)
+	await _step(12)
+	var run_a := _trace_segment("run_a")
+	coord.reset()
+	var reset_marker := {
+		"tick_count": coord.tick_count,
+		"paused": get_tree().paused,
+		"position": _pose_array(),
+		"rng_draws": coord.rng_draws.size(),
+		"events": coord.events.size(),
+	}
+	await _step(12)
+	await _step(12)
+	var run_b := _trace_segment("run_b")
+	return {"run_a": run_a, "reset": reset_marker, "run_b": run_b}
+
+
+func _trace_wall_contact() -> Dictionary:
+	await _configure(10.0, INF, 1000000, -3.0)
+	coord.reset()
+	var result: Dictionary = await _step(12)
+	return {"result": _trace_result(result), "segment": _trace_segment("wall")}
+
+
+func _trace_termination() -> Dictionary:
+	await _configure(10.0, -0.9)
+	coord.reset()
+	var result: Dictionary = await _step(12)
+	return {"result": _trace_result(result), "segment": _trace_segment("termination")}
+
+
+func _trace_motion_bound() -> Dictionary:
+	await _configure(250.0)
+	coord.reset()
+	var result: Dictionary = await _step(12)
+	return {
+		"result": _trace_result(result),
+		"violations": coord.motion_bound_violations,
+		"deficit_m": coord.last_motion_bound_deficit_m,
+	}
+
+
+# ---------------------------------------------------------------------------
 # Throughput: accelerated versus real-time pacing
 # ---------------------------------------------------------------------------
 
@@ -660,7 +959,7 @@ func _finish() -> void:
 			"Godot/Jolt same-host determinism is measured; cross-platform byte determinism is not claimed.",
 			"The probe car uses CharacterBody3D explicit displacement like the planned motor; it is not the full M1 motor, AI, contacts, multi-car reset or renderer. A one-car open-road/wall trace is not a full simulation claim.",
 			"The coordinator advances exactly 1/60 s per logical tick and does not use the engine delta parameter; structural scenarios assert that the delivered physics delta stays 1/60 s rather than clamping or adapting to a different delta.",
-			"The coordinator owns SceneTree.paused for the probe world: begin_step() and reset() clear an externally set pause so the authoritative world cannot be left frozen by another subsystem. Other nodes must not write SceneTree.paused while the probe runs.",
+			"The coordinator owns SceneTree.paused for the probe world: it freezes the tree after reset, after every finished request, after zero-tick requests and in exhausted-budget returns; only begin_step() with a positive budget unfreezes it. Other nodes must not write SceneTree.paused while the probe runs.",
 			"A commanded per-tick displacement above MAX_SUBSTEPS * SUBSTEP_MAX_LEN (4.0 m, 240 m/s) is refused with terminal motion_bound; speeds within the envelope are subdivided into <=0.25 m substeps.",
 			"take_result() consumes the pending result and returns an empty Dictionary when none is pending; reset clears any stored result so a prior episode result cannot be read back.",
 			"GDScript cannot query the active 3D physics backend at runtime (PhysicsServer3D is opaque and this build prints no backend line even with --verbose); the backend pin is verified by the physics/3d/physics_engine setting value above plus the explicit backend-contrast run recorded in the evidence directory.",
