@@ -65,6 +65,20 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/roadstorm-ci-selftest.XXXXXX" 2>/dev/null
 	die 2 "could not create a temporary working directory"
 trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
 
+# Normalise the working directory to a clean absolute path. A TMPDIR that ends
+# in a slash (macOS sets TMPDIR=/var/folders/.../T/, so the template above
+# yields a path containing "//") makes the pinned engine fail to resolve its
+# user-data path: measured, the import then exits with
+#   "ERROR: Could not create ObjectDB Snapshots directory:
+#     user://private/var/.../<project copy>"
+# which would fail the engine-backed cases for a reason that has nothing to do
+# with the tooling. `cd` + `pwd` collapses the duplicate separators and resolves
+# the /var -> /private/var symlink; the same normalisation is why
+# scripts/runtime_error_gate.sh does it too.
+WORK_DIR="$(cd "$WORK_DIR" 2>/dev/null && pwd)" ||
+	die 2 "could not resolve the temporary working directory to an absolute path"
+[ -d "$WORK_DIR" ] || die 2 "temporary working directory disappeared: $WORK_DIR"
+
 log "tooling: $TOOLS_CI_DIR"
 log "project: $PROJECT_DIR"
 log "workdir: $WORK_DIR"
@@ -144,6 +158,7 @@ expect_contains() {
 expect_case "ci.sh help exits 0" 0 ci --help
 expect_case "ci.sh commands exits 0" 0 ci commands
 expect_contains "help documents verify-engine" 0 "verify-engine" ci --help
+expect_contains "help documents install-templates" 0 "install-templates" ci --help
 expect_contains "help documents pin" 0 "pin" ci commands
 expect_case "ci.sh with an unknown command exits 2" 2 ci definitely-not-a-command
 
@@ -819,16 +834,101 @@ coverage_fails "a missing export_presets.cfg fails coverage" "$CFG_DIR/absent.cf
 # 11. `ci.sh export --check` end to end, on synthetic project copies.
 #     Gated on the pinned editor being installed (the ffmpeg-gated probe case
 #     above is the precedent): without it the command exits 2 at engine
-#     discovery and proves nothing either way. The template half of the check
-#     is driven by a fake template directory built here, so the cases are
-#     independent of what the host has installed -- and the last case removes
-#     a template file to prove template verification still bites after the
-#     preset mapping change.
+#     discovery and proves nothing either way.
+#
+#     The template half of the check is driven by a sandbox HOME whose ENGINE
+#     template directory (ci_templates_engine_dir) holds the tree under test.
+#     That is deliberate (Opus recheck finding E1): the engine reads templates
+#     from its own user-data directory and does NOT read $GODOT_TEMPLATES_DIR,
+#     so a check that looked at the variable passed trees the engine then
+#     refused to export. The last group of cases proves that regression: a
+#     COMPLETE template tree in $GODOT_TEMPLATES_DIR must not turn a red check
+#     green while the engine's own directory is empty.
 # ---------------------------------------------------------------------------
 ci_at() {
 	_dir="$1"
 	shift
 	sh "$CI_SH" --project "$_dir" "$@"
+}
+
+# ci_at_home <home> <project> [args...] : run ci.sh against a project with an
+# isolated HOME (so the engine template directory is a sandbox) and with
+# GODOT_TEMPLATES_DIR unset, which is the state a clean runner is in.
+ci_at_home() {
+	_ch_home="$1"
+	_ch_proj="$2"
+	shift 2
+	(
+		HOME="$_ch_home"
+		export HOME
+		unset GODOT_TEMPLATES_DIR
+		sh "$CI_SH" --project "$_ch_proj" "$@"
+	)
+}
+
+# ci_at_home_tpl <home> <templates-dir> <project> [args...] : the same, but with
+# GODOT_TEMPLATES_DIR pointing at <templates-dir>.
+ci_at_home_tpl() {
+	_ch_home="$1"
+	_ch_tpl="$2"
+	_ch_proj="$3"
+	shift 3
+	(
+		HOME="$_ch_home"
+		export HOME
+		GODOT_TEMPLATES_DIR="$_ch_tpl"
+		export GODOT_TEMPLATES_DIR
+		sh "$CI_SH" --project "$_ch_proj" "$@"
+	)
+}
+
+# seed_templates <templates-root> : version.txt plus a complete, NON-EMPTY
+# template tree for the three required targets at the architectures the
+# committed presets declare (macos.zip, windows_release_x86_64.exe,
+# linux_release.x86_64). Non-empty matters: a zero-byte template is corrupt and
+# the check must refuse it, which is one of the cases below.
+#
+# The version directory is REMOVED first, so a file left over by an earlier
+# case cannot make a later case pass for the wrong reason -- and every file is
+# written fresh inside this suite's private temporary directory, never through
+# a link to an installed template tree.
+seed_templates() {
+	_st_root="$1"
+	case "$_st_root" in
+		"$WORK_DIR"/*) : ;;
+		*) die 2 "seed_templates refuses to write outside the suite's temporary directory: $_st_root" ;;
+	esac
+	rm -rf "$_st_root/$TVER"
+	mkdir -p "$_st_root/$TVER"
+	printf '%s\n' "$TVER" >"$_st_root/$TVER/version.txt"
+	for _st_f in macos.zip windows_release_x86_64.exe linux_release.x86_64; do
+		printf 'synthetic export template payload for %s\n' "$_st_f" >"$_st_root/$TVER/$_st_f"
+	done
+}
+
+# preset_arch <cfg> <preset-index> <architecture> : rewrite one preset's
+# binary_format/architecture, leaving the other presets alone.
+preset_arch() {
+	_pa_cfg="$1"
+	_pa_idx="$2"
+	_pa_arch="$3"
+	awk -v idx="$_pa_idx" -v arch="$_pa_arch" '
+		/^\[/ { inopts = ($0 == "[" idx ".options]") }
+		inopts && /^binary_format\/architecture=/ { print "binary_format/architecture=\"" arch "\""; next }
+		{ print }
+	' "$_pa_cfg"
+}
+
+# preset_no_arch <cfg> <preset-index> : drop one preset's
+# binary_format/architecture line entirely.
+preset_no_arch() {
+	_pna_cfg="$1"
+	_pna_idx="$2"
+	awk -v idx="$_pna_idx" '
+		/^\[/ { inopts = ($0 == "[" idx ".options]") }
+		inopts && /^binary_format\/architecture=/ { next }
+		{ print }
+	' "$_pna_cfg"
 }
 
 _e2e_bin="${GODOT_BIN:-}"
@@ -845,6 +945,8 @@ fi
 _e2e_version=""
 [ -n "$_e2e_bin" ] && [ -x "$_e2e_bin" ] && _e2e_version="$("$_e2e_bin" --version 2>/dev/null | head -n 1)"
 _e2e_pin="$(ci pin --field version 2>/dev/null)"
+TVERSION="$_e2e_pin"
+TVER="$_e2e_pin.stable"
 
 if [ -n "$_e2e_version" ] && [ -n "$_e2e_pin" ]; then
 	case "$_e2e_version" in
@@ -858,33 +960,43 @@ fi
 if [ "$_e2e" = "yes" ]; then
 	SPROJ="$WORK_DIR/synthetic-project"
 	mkdir -p "$SPROJ"
-	printf 'config_version=5\n\n[application]\n\nconfig/name="synthetic export project"\n' >"$SPROJ/project.godot"
+	# Minimal but REAL content: an engine refuses to export a project with no
+	# files at all ("Must select at least one file to export"), so the export
+	# cases below need a scene and a script of their own. Everything is synthetic
+	# and lives in this suite's temporary directory.
+	{
+		printf 'config_version=5\n\n'
+		printf '[application]\n\n'
+		printf 'config/name="synthetic export project"\n'
+		printf 'run/main_scene="res://main.tscn"\n'
+	} >"$SPROJ/project.godot"
+	printf 'extends Node\n\nfunc _ready() -> void:\n\tprint("synthetic export project ready")\n' \
+		>"$SPROJ/main.gd"
+	{
+		printf '[gd_scene load_steps=2 format=3]\n\n'
+		printf '[ext_resource type="Script" path="res://main.gd" id="1"]\n\n'
+		printf '[node name="Main" type="Node"]\n'
+		printf 'script = ExtResource("1")\n'
+	} >"$SPROJ/main.tscn"
 
-	# The pinned version as this tooling resolves it for a project without its
-	# own tools/toolchain record: the tools/ci fallback pin.
-	TVERSION="$(sh "$CI_SH" --project "$SPROJ" pin --field version 2>/dev/null)"
-	TDIR="$WORK_DIR/export_templates"
-	TVER="$TVERSION.stable"
-	mkdir -p "$TDIR/$TVER"
-	printf '%s.stable\n' "$TVERSION" >"$TDIR/$TVER/version.txt"
-	for _tpl in macos.zip \
-		"windows_release_x86_64.exe" "windows_release_x86_32.exe" \
-		"linux_release.x86_64" "linux_release.x86_32"; do
-		: >"$TDIR/$TVER/$_tpl"
-	done
-	GODOT_TEMPLATES_DIR="$TDIR"
-	export GODOT_TEMPLATES_DIR
+	# The engine's own template directory, under an isolated HOME.
+	SANDBOX_HOME="$WORK_DIR/sandbox-home"
+	mkdir -p "$SANDBOX_HOME"
+	ENGINE_DIR="$(HOME="$SANDBOX_HOME"; export HOME; ci_templates_engine_dir)"
+	[ -n "$ENGINE_DIR" ] || die 2 "could not derive the engine template directory"
 
-	# The happy path: the real presets, fake but complete templates.
+	# The happy path: the real presets, a complete template tree where the
+	# engine reads it.
+	seed_templates "$ENGINE_DIR"
 	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
 	expect_case "export --check passes a project with the three actual presets" 0 \
-		ci_at "$SPROJ" export --check
+		ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
 
 	# Tampered: the Windows preset's platform value changed to the naive
 	# "Windows". Must fail, and name the requirement it could not cover.
 	sed 's/^platform="Windows Desktop"$/platform="Windows"/' "$REAL_CFG" >"$SPROJ/export_presets.cfg"
 	expect_contains "export --check fails a preset with platform=\"Windows\"" 1 \
-		"preset platform missing: Windows" ci_at "$SPROJ" export --check
+		"preset platform missing: Windows" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
 
 	# Missing: no Linux preset at all.
 	cat >"$SPROJ/export_presets.cfg" <<'EOF'
@@ -901,23 +1013,642 @@ platform="Windows Desktop"
 runnable=true
 EOF
 	expect_contains "export --check fails when the Linux preset is missing" 1 \
-		"preset platform missing: Linux" ci_at "$SPROJ" export --check
+		"preset platform missing: Linux" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
 
 	# No presets at all must fail explicitly, not silently pass.
 	rm -f "$SPROJ/export_presets.cfg"
 	expect_contains "export --check fails when export_presets.cfg is absent" 1 \
-		"no export_presets.cfg" ci_at "$SPROJ" export --check
+		"no export_presets.cfg" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
 
-	# Template verification, unchanged by the preset fix: with the presets
-	# complete again, removing the pinned Windows template files must still fail
-	# the check (it requires at least one architecture per platform). A weakened
-	# template check would pass this case.
+	# --- Templates: the architecture each preset declares (Opus recheck E2) ---
+	# Every case below sets up BOTH inputs from scratch -- the committed presets
+	# and a freshly seeded template tree -- so a leftover from an earlier case
+	# cannot make a later one pass (or fail) for the wrong reason. A check that
+	# accepted any architecture would pass the first one; one that looked at
+	# $GODOT_TEMPLATES_DIR instead of the engine directory would pass the last.
+
+	# Only the 32-bit Windows template is installed while the preset declares
+	# x86_64: the presence check must fail and name the file it needed.
 	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
-	rm -f "$TDIR/$TVER/windows_release_x86_64.exe" "$TDIR/$TVER/windows_release_x86_32.exe"
-	expect_contains "export --check still fails when the Windows templates are missing" 1 \
-		"templates: Windows -> none of" ci_at "$SPROJ" export --check
+	seed_templates "$ENGINE_DIR"
+	rm -f "$ENGINE_DIR/$TVER/windows_release_x86_64.exe"
+	printf 'synthetic export template payload for windows_release_x86_32.exe\n' \
+		>"$ENGINE_DIR/$TVER/windows_release_x86_32.exe"
+	expect_contains "export --check fails when only the 32-bit Windows template is installed" 1 \
+		"none of [windows_release_x86_64.exe" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
+
+	# The reverse substitution: the preset asks for x86_32, only x86_64 is there.
+	seed_templates "$ENGINE_DIR"
+	preset_arch "$REAL_CFG" preset.1 x86_32 >"$SPROJ/export_presets.cfg"
+	expect_contains "export --check fails a Windows preset that declares x86_32" 1 \
+		"none of [windows_release_x86_32.exe" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
+
+	# The same substitution on the Linux target.
+	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+	seed_templates "$ENGINE_DIR"
+	preset_arch "$REAL_CFG" preset.2 x86_32 >"$SPROJ/export_presets.cfg"
+	expect_contains "export --check fails a Linux preset that declares x86_32" 1 \
+		"none of [linux_release.x86_32" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
+
+	# A corrupt (zero-byte) template is refused rather than counted as present.
+	# The file is REMOVED and re-created as a new, empty, regular file inside this
+	# suite's private temporary directory: a truncation must never be able to
+	# follow a link into an installed template tree, so nothing is ever written
+	# through an existing path.
+	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+	seed_templates "$ENGINE_DIR"
+	rm -f "$ENGINE_DIR/$TVER/linux_release.x86_64"
+	: >"$ENGINE_DIR/$TVER/linux_release.x86_64"
+	if [ -L "$ENGINE_DIR/$TVER/linux_release.x86_64" ]; then
+		die 2 "refusing to write through a symlinked template path"
+	fi
+	expect_contains "export --check fails a corrupt (empty) template" 1 \
+		"none of [linux_release.x86_64" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
+
+	# A version.txt that does not report the pinned version is refused.
+	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+	seed_templates "$ENGINE_DIR"
+	printf '4.7.1.stable\n' >"$ENGINE_DIR/$TVER/version.txt"
+	expect_contains "export --check fails when version.txt reports another version" 1 \
+		"version.txt reports" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
+
+	# A preset that declares no architecture cannot have its required template
+	# determined, and must fail instead of defaulting silently.
+	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+	seed_templates "$ENGINE_DIR"
+	preset_no_arch "$REAL_CFG" preset.1 >"$SPROJ/export_presets.cfg"
+	expect_contains "export --check fails a preset that declares no architecture" 1 \
+		"declares no binary_format/architecture" ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
+
+	# --- The engine's directory is the one that counts (Opus recheck E1) ---
+	# A COMPLETE template tree in $GODOT_TEMPLATES_DIR, with the engine's own
+	# directory empty, must still fail -- and must say why. Before the fix this
+	# was a green check followed by "No export template found at the expected
+	# path" from the engine itself.
+	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+	seed_templates "$ENGINE_DIR"
+	ENV_TPL="$WORK_DIR/env-templates"
+	seed_templates "$ENV_TPL"
+	rm -rf "$ENGINE_DIR"
+	expect_contains "export --check fails when only GODOT_TEMPLATES_DIR has templates" 1 \
+		"NOT read by the engine" ci_at_home_tpl "$SANDBOX_HOME" "$ENV_TPL" "$SPROJ" export --check
+
+	# ... and with the engine directory populated again the same tree passes,
+	# which is what keeps the case above from being a blanket failure.
+	seed_templates "$ENGINE_DIR"
+	cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+	expect_case "export --check passes again once the engine directory has templates" 0 \
+		ci_at_home "$SANDBOX_HOME" "$SPROJ" export --check
 else
 	log "note: no installed Godot matches pin '$_e2e_pin'; the end-to-end export --check cases were skipped"
+fi
+
+# ---------------------------------------------------------------------------
+# 12. The export-template file mapping and the preset field reader (E2).
+#     The required template file is derived from the preset's
+#     binary_format/architecture, so these cases pin the mapping down in both
+#     directions: the right file for a declared architecture, and a refusal for
+#     an architecture Godot does not accept. A mapping that accepted any
+#     architecture is what let a 32-bit-only tree pass.
+# ---------------------------------------------------------------------------
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_template_files_for Windows x86_64 release 2>/dev/null | head -n 1)" = "windows_release_x86_64.exe" ] &&
+	[ "$(ci_template_files_for Windows x86_32 release 2>/dev/null | head -n 1)" = "windows_release_x86_32.exe" ] &&
+	[ "$(ci_template_files_for Windows arm64 release 2>/dev/null | head -n 1)" = "windows_release_arm64.exe" ] &&
+	[ "$(ci_template_files_for Linux x86_64 release 2>/dev/null)" = "linux_release.x86_64" ] &&
+	[ "$(ci_template_files_for Linux x86_32 release 2>/dev/null)" = "linux_release.x86_32" ] &&
+	[ "$(ci_template_files_for Linux arm64 release 2>/dev/null)" = "linux_release.arm64" ] &&
+	[ "$(ci_template_files_for Linux arm32 release 2>/dev/null)" = "linux_release.arm32" ] &&
+	[ "$(ci_template_files_for macOS universal release 2>/dev/null)" = "macos.zip" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the required template file follows the preset architecture -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_template_files_for Windows x86_64 debug 2>/dev/null | head -n 1)" = "windows_debug_x86_64.exe" ] &&
+	[ "$(ci_template_files_for Linux x86_64 debug 2>/dev/null)" = "linux_debug.x86_64" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the export mode selects the debug or release template -> $_ok"
+
+# The Windows console-wrapper variant is an accepted alternative, not the
+# primary file: Godot selects it when the preset enables the console wrapper.
+CASES_RUN=$((CASES_RUN + 1))
+if ci_template_files_for Windows x86_64 release 2>/dev/null | grep -qxF 'windows_release_x86_64_console.exe'; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the Windows console-wrapper template is an accepted alternative -> $_ok"
+
+for _bad_arch in x86_128 arm "" riscv; do
+	CASES_RUN=$((CASES_RUN + 1))
+	if ci_template_files_for Windows "$_bad_arch" release >/dev/null 2>&1; then
+		_ok=no
+	else
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	fi
+	log "case $CASES_RUN: an architecture Godot does not accept is refused ('$_bad_arch') -> $_ok"
+done
+
+CASES_RUN=$((CASES_RUN + 1))
+if ci_template_files_for Android x86_64 release >/dev/null 2>&1; then
+	_ok=no
+else
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+log "case $CASES_RUN: an unknown platform is refused by the template mapping -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+if ci_template_files_for Linux x86_64 something >/dev/null 2>&1; then
+	_ok=no
+else
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+log "case $CASES_RUN: an unknown export mode is refused by the template mapping -> $_ok"
+
+# The accepted architecture lists, per platform.
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_template_architectures macOS)" = "universal arm64 x86_64" ] &&
+	[ "$(ci_template_architectures Windows)" = "x86_64 x86_32 arm64" ] &&
+	[ "$(ci_template_architectures Linux)" = "x86_64 x86_32 arm64 arm32" ] &&
+	! ci_template_architectures Web >/dev/null 2>&1; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the accepted architectures are listed per platform -> $_ok"
+
+# The preset field reader against the committed presets: the architectures and
+# the Linux embed_pck=false that decides whether a sidecar .pck is required.
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_preset_architecture "$REAL_CFG" preset.0 2>/dev/null)" = "universal" ] &&
+	[ "$(ci_preset_architecture "$REAL_CFG" preset.1 2>/dev/null)" = "x86_64" ] &&
+	[ "$(ci_preset_architecture "$REAL_CFG" preset.2 2>/dev/null)" = "x86_64" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the committed presets declare the architectures they export -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_preset_field "$REAL_CFG" preset.2 binary_format/embed_pck 2>/dev/null)" = "false" ] &&
+	! ci_preset_field "$REAL_CFG" preset.1 binary_format/embed_pck >/dev/null 2>&1 &&
+	! ci_preset_field "$REAL_CFG" preset.0 not/a/real/key >/dev/null 2>&1; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the preset field reader reads a key and refuses an absent one -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_preset_index_for "$REAL_CFG" 'Linux x86-64' 2>/dev/null)" = "preset.2" ] &&
+	! ci_preset_index_for "$REAL_CFG" 'No Such Preset' >/dev/null 2>&1; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a preset name resolves to its preset.N index -> $_ok"
+
+# ---------------------------------------------------------------------------
+# 13. `ci.sh verify-templates`: the publisher digest before extraction, and an
+#     installed tree afterwards (M0.1, Opus recheck finding E1). The committed
+#     pin cannot match a synthetic archive, so the PASS path is exercised
+#     against a copy of the tooling whose pin records the stub's digest -- the
+#     same shape as the mismatch path, with the expectation changed.
+# ---------------------------------------------------------------------------
+TPL_URL="$(ci pin --field templates_url 2>/dev/null)"
+TPL_SHA512="$(ci pin --field templates_archive_sha512 2>/dev/null)"
+
+CASES_RUN=$((CASES_RUN + 1))
+if hex_is "$TPL_SHA512" 128; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: templates_archive_sha512 is 128 lowercase hex chars -> $_ok"
+[ "$_ok" = "yes" ] || log "  value: '$TPL_SHA512'" >&2
+
+CASES_RUN=$((CASES_RUN + 1))
+case "$TPL_URL" in
+	https://github.com/godotengine/godot/releases/download/*)
+		log "case $CASES_RUN: templates_url is the official GitHub release asset -> yes"
+		CASES_OK=$((CASES_OK + 1))
+		;;
+	*)
+		log "case $CASES_RUN: templates_url is the official GitHub release asset -> no"
+		log "  value: '$TPL_URL'" >&2
+		;;
+esac
+
+TPL_STUB="$WORK_DIR/templates.tpz"
+printf 'roadstorm ci self-test export templates archive\n' >"$TPL_STUB"
+TPL_STUB_SHA512="$($SHA512_CMD "$TPL_STUB" | awk '{print $1}')"
+[ -n "$TPL_STUB_SHA512" ] || die 2 "could not digest the template test artifact"
+
+# The committed pin must refuse anything that is not the pinned archive, and
+# must say so before anything is extracted.
+expect_case "verify-templates refuses an artifact that is not the pinned archive" nonzero \
+	ci verify-templates --archive "$TPL_STUB"
+expect_contains "verify-templates reports a mismatch explicitly" 1 "MISMATCH" \
+	ci verify-templates --archive "$TPL_STUB"
+expect_contains "verify-templates says not to extract on mismatch" 1 "DO NOT extract" \
+	ci verify-templates --archive "$TPL_STUB"
+expect_case "verify-templates refuses a missing archive" nonzero \
+	ci verify-templates --archive "$WORK_DIR/absent.tpz"
+expect_case "verify-templates with no options exits 2" 2 ci verify-templates
+expect_case "verify-templates with an unknown option exits 2" 2 ci verify-templates --nope
+
+# make_tools_copy <dir> <templates_archive_sha512 value> : a copy of the
+# tooling whose pin records the given template digest, so the PASS path and the
+# unrecorded-pin path can be exercised without touching the real pin.
+make_tools_copy() {
+	_mtc_dir="$1"
+	_mtc_value="$2"
+	rm -rf "$_mtc_dir"
+	mkdir -p "$_mtc_dir"
+	( cd "$TOOLS_CI_DIR" && tar -cf - --exclude=./out . ) | ( cd "$_mtc_dir" && tar -xf - ) ||
+		die 2 "could not copy the tooling to $_mtc_dir"
+	sed "s|^templates_archive_sha512=.*|templates_archive_sha512=$_mtc_value|" \
+		"$_mtc_dir/pin/engine.txt" >"$_mtc_dir/pin/engine.txt.tmp" ||
+		die 2 "could not rewrite the copied pin"
+	mv "$_mtc_dir/pin/engine.txt.tmp" "$_mtc_dir/pin/engine.txt"
+}
+
+ci_copy_at() {
+	_cca_dir="$1"
+	shift
+	sh "$_cca_dir/ci.sh" --project "$PROJECT_DIR" "$@"
+}
+
+TOOLS_PASS="$WORK_DIR/tools-ci-tpl-pass"
+make_tools_copy "$TOOLS_PASS" "$TPL_STUB_SHA512"
+expect_case "verify-templates accepts an archive that matches the recorded digest" 0 \
+	ci_copy_at "$TOOLS_PASS" verify-templates --archive "$TPL_STUB"
+expect_contains "verify-templates says the archive may be extracted" 0 "may be extracted" \
+	ci_copy_at "$TOOLS_PASS" verify-templates --archive "$TPL_STUB"
+
+# An unrecorded digest must refuse, never wave the artifact through: the pin
+# records what the publisher published, and "not recorded" is not a match.
+TOOLS_BLANK="$WORK_DIR/tools-ci-tpl-blank"
+make_tools_copy "$TOOLS_BLANK" ""
+expect_contains "verify-templates refuses an unrecorded template digest" 1 \
+	"no pinned digest recorded" ci_copy_at "$TOOLS_BLANK" verify-templates --archive "$TPL_STUB"
+
+# --dir : an installed tree is verified for its version and for the templates
+# this project's presets require.
+DIR_TREE="$WORK_DIR/dir-templates"
+BAD_TREE="$WORK_DIR/bad-dir-templates"
+seed_templates "$DIR_TREE"
+seed_templates "$BAD_TREE"
+printf '4.7.1.stable\n' >"$BAD_TREE/$TVER/version.txt"
+
+expect_case "verify-templates accepts a complete installed tree" 0 \
+	ci_copy_at "$TOOLS_PASS" verify-templates --dir "$DIR_TREE" --mode release
+expect_contains "verify-templates fails a tree with the wrong version.txt" 1 "version.txt reports" \
+	ci_copy_at "$TOOLS_PASS" verify-templates --dir "$BAD_TREE" --mode release
+expect_case "verify-templates refuses a missing tree" nonzero \
+	ci_copy_at "$TOOLS_PASS" verify-templates --dir "$WORK_DIR/absent-templates"
+
+# A tree that has the right version but none of the required templates: the
+# version check alone must not pass it.
+EMPTY_TREE="$WORK_DIR/empty-tree"
+mkdir -p "$EMPTY_TREE/$TVER"
+printf '%s\n' "$TVER" >"$EMPTY_TREE/$TVER/version.txt"
+expect_contains "verify-templates refuses a tree with no required template" 1 \
+	"none of [macos.zip" ci_copy_at "$TOOLS_PASS" verify-templates --dir "$EMPTY_TREE" --mode release
+
+# --- install-templates: the publisher's actual .tpz layout -----------------
+# The official Godot release packages templates/* at the archive root
+# (godot-build-scripts build-release.sh runs `zip ... templates/*` from the
+# parent of ${templatesdir}), so there is NO <version>.stable directory inside
+# the .tpz. Build a synthetic archive with that layout and exercise the ACTUAL
+# install operation end to end against a synthetic destination under this
+# suite's private temporary directory -- never the host's installed templates.
+if command -v zip >/dev/null 2>&1; then
+	TPL_PUB_SRC="$WORK_DIR/publisher-layout"
+	rm -rf "$TPL_PUB_SRC"
+	mkdir -p "$TPL_PUB_SRC/templates"
+	printf '%s\n' "$TVER" >"$TPL_PUB_SRC/templates/version.txt"
+	for _tpl_f in macos.zip windows_release_x86_64.exe linux_release.x86_64; do
+		printf 'synthetic export template payload for %s\n' "$_tpl_f" \
+			>"$TPL_PUB_SRC/templates/$_tpl_f"
+	done
+	TPL_PUB="$WORK_DIR/publisher-layout.tpz"
+	( cd "$TPL_PUB_SRC" && zip -q -r "$TPL_PUB" templates ) ||
+		die 2 "could not build the synthetic publisher-layout template archive"
+	TPL_PUB_SHA512="$($SHA512_CMD "$TPL_PUB" | awk '{print $1}')"
+	[ -n "$TPL_PUB_SHA512" ] || die 2 "could not digest the synthetic publisher-layout archive"
+
+	TOOLS_INSTALL="$WORK_DIR/tools-ci-tpl-install"
+	make_tools_copy "$TOOLS_INSTALL" "$TPL_PUB_SHA512"
+
+	INSTALL_DEST="$WORK_DIR/install-dest"
+	rm -rf "$INSTALL_DEST"
+	mkdir -p "$INSTALL_DEST"
+	expect_case "install-templates installs an archive laid out like the publisher's .tpz" 0 \
+		ci_copy_at "$TOOLS_INSTALL" --out "$WORK_DIR/install-out" install-templates \
+		--archive "$TPL_PUB" --dest "$INSTALL_DEST" --mode release
+
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$(head -n 1 "$INSTALL_DEST/$TVER/version.txt" 2>/dev/null)" = "$TVER" ] &&
+		[ -s "$INSTALL_DEST/$TVER/macos.zip" ] &&
+		[ -s "$INSTALL_DEST/$TVER/windows_release_x86_64.exe" ] &&
+		[ -s "$INSTALL_DEST/$TVER/linux_release.x86_64" ] &&
+		[ ! -e "$INSTALL_DEST/$TVER/templates" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: install-templates places templates/* at <dest>/<version>.stable -> $_ok"
+
+	expect_case "verify-templates accepts the tree install-templates produced" 0 \
+		ci_copy_at "$TOOLS_PASS" verify-templates --dir "$INSTALL_DEST" --mode release
+
+	# A payload whose version.txt names another version must be refused BEFORE
+	# anything is placed in the destination.
+	TPL_BADVER_SRC="$WORK_DIR/bad-version-layout"
+	rm -rf "$TPL_BADVER_SRC"
+	mkdir -p "$TPL_BADVER_SRC/templates"
+	printf '4.7.1.stable\n' >"$TPL_BADVER_SRC/templates/version.txt"
+	for _tpl_f in macos.zip windows_release_x86_64.exe linux_release.x86_64; do
+		printf 'synthetic export template payload for %s\n' "$_tpl_f" \
+			>"$TPL_BADVER_SRC/templates/$_tpl_f"
+	done
+	TPL_BADVER="$WORK_DIR/bad-version-layout.tpz"
+	( cd "$TPL_BADVER_SRC" && zip -q -r "$TPL_BADVER" templates ) ||
+		die 2 "could not build the wrong-version template archive"
+	TPL_BADVER_SHA512="$($SHA512_CMD "$TPL_BADVER" | awk '{print $1}')"
+	TOOLS_BADVER="$WORK_DIR/tools-ci-tpl-badver"
+	make_tools_copy "$TOOLS_BADVER" "$TPL_BADVER_SHA512"
+	BADVER_DEST="$WORK_DIR/install-badver"
+	rm -rf "$BADVER_DEST"
+	mkdir -p "$BADVER_DEST"
+	expect_case "install-templates refuses a payload whose version.txt is wrong" nonzero \
+		ci_copy_at "$TOOLS_BADVER" --out "$WORK_DIR/install-badver-out" install-templates \
+		--archive "$TPL_BADVER" --dest "$BADVER_DEST" --mode release
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ -z "$(ls -A "$BADVER_DEST" 2>/dev/null)" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a refused install leaves the destination empty -> $_ok"
+
+	# An EXISTING installed tree must be preserved: the command refuses to
+	# replace it rather than deleting it. Build a synthetic pre-existing tree
+	# and prove two different failures (a valid archive against an existing
+	# target, and a wrong-version payload) leave every byte of it alone.
+	install_dest_manifest() {
+		( cd "$1" && find . -type f | sort | while IFS= read -r _idm_f; do
+			printf '%s ' "$_idm_f"
+			$SHA512_CMD "$_idm_f" 2>/dev/null | awk '{print $1}'
+		done )
+	}
+	EXIST_DEST="$WORK_DIR/install-existing"
+	rm -rf "$EXIST_DEST"
+	mkdir -p "$EXIST_DEST/$TVER"
+	printf '%s\n' "$TVER" >"$EXIST_DEST/$TVER/version.txt"
+	for _tpl_f in macos.zip windows_release_x86_64.exe linux_release.x86_64; do
+		printf 'pre-existing synthetic payload for %s\n' "$_tpl_f" \
+			>"$EXIST_DEST/$TVER/$_tpl_f"
+	done
+	printf 'preserve-me\n' >"$EXIST_DEST/$TVER/marker.txt"
+	EXIST_BEFORE="$(install_dest_manifest "$EXIST_DEST")"
+
+	expect_case "install-templates refuses to replace an existing target" nonzero \
+		ci_copy_at "$TOOLS_INSTALL" --out "$WORK_DIR/install-existing-out" install-templates \
+		--archive "$TPL_PUB" --dest "$EXIST_DEST" --mode release
+	expect_contains "the refusal names the existing target" 1 \
+		"already exists" ci_copy_at "$TOOLS_INSTALL" --out "$WORK_DIR/install-existing-out" \
+		install-templates --archive "$TPL_PUB" --dest "$EXIST_DEST" --mode release
+	# A different failure (wrong version) must also leave the existing tree
+	# untouched, not just the destination-policy refusal.
+	expect_case "a wrong-version install leaves an existing target untouched" nonzero \
+		ci_copy_at "$TOOLS_BADVER" --out "$WORK_DIR/install-existing-badver-out" \
+		install-templates --archive "$TPL_BADVER" --dest "$EXIST_DEST" --mode release
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$EXIST_BEFORE" = "$(install_dest_manifest "$EXIST_DEST")" ] &&
+		[ "$(cat "$EXIST_DEST/$TVER/marker.txt" 2>/dev/null)" = "preserve-me" ] &&
+		[ "$(find "$EXIST_DEST" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" = "1" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an existing target survives every failed install -> $_ok"
+
+	# The archive must match the pinned digest before extraction (M0.1).
+	TAMPER_DEST="$WORK_DIR/install-tampered"
+	rm -rf "$TAMPER_DEST"
+	mkdir -p "$TAMPER_DEST"
+	expect_case "install-templates refuses an archive that fails the pinned digest" nonzero \
+		ci_copy_at "$TOOLS_INSTALL" --out "$WORK_DIR/install-tampered-out" install-templates \
+		--archive "$TPL_STUB" --dest "$TAMPER_DEST" --mode release
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ -z "$(ls -A "$TAMPER_DEST" 2>/dev/null)" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a digest-refused install leaves the destination empty -> $_ok"
+
+	expect_case "install-templates requires --archive and --dest" 2 \
+		ci_copy_at "$TOOLS_INSTALL" install-templates --archive "$TPL_PUB"
+else
+	log "note: zip is not installed; the install-templates publisher-layout regression was skipped"
+fi
+
+# ---------------------------------------------------------------------------
+# 14. The workflow's warning watch. The policy lives in
+#     tools/ci/scripts/warning_watch.sh, on top of the same classification code
+#     `ci.sh` uses, so the workflow and the tooling cannot disagree about which
+#     warnings are fatal (Opus recheck W2) and the summary is produced even
+#     when an earlier step failed (Sol recheck finding 5, W1).
+# ---------------------------------------------------------------------------
+WW="$TOOLS_CI_DIR/scripts/warning_watch.sh"
+WW_LOGS="$WORK_DIR/ww-logs"
+mkdir -p "$WW_LOGS"
+WW_SUMMARY="$WORK_DIR/ww-summary.md"
+
+[ -x "$WW" ] || die 2 "missing or non-executable warning watch: $WW"
+
+expect_case "warning_watch exits 0 when there are no captured logs" 0 sh "$WW" "$WORK_DIR/ww-absent"
+
+: >"$WW_LOGS/clean.log"
+expect_case "warning_watch exits 0 on a log with no warnings" 0 sh "$WW" "$WW_LOGS"
+
+printf 'WARNING: plain unexpected warning\n' >"$WW_LOGS/plain.log"
+expect_contains "warning_watch surfaces a plain warning without failing" 0 \
+	"WARNING: plain unexpected warning" sh "$WW" "$WW_LOGS"
+
+printf 'WARNING: Detected another project.godot at res://tools/tick_probe. The folder will be ignored.\n' \
+	>"$WW_LOGS/accepted.log"
+expect_contains "warning_watch labels an accepted warning" 0 "[accepted]" sh "$WW" "$WW_LOGS"
+
+printf 'WARNING: Jolt Physics job system exceeded the maximum number of jobs. This should not happen.\n' \
+	>"$WW_LOGS/jolt.log"
+expect_contains "warning_watch fails on a Jolt physics warning" 1 \
+	"Jolt Physics job system exceeded" sh "$WW" "$WW_LOGS"
+expect_contains "warning_watch prints every warning line, not only the fatal one" 1 \
+	"WARNING: plain unexpected warning" sh "$WW" "$WW_LOGS"
+
+rm -f "$WW_LOGS/jolt.log"
+
+# The run summary is written when the environment asks for one, which is what
+# makes the step useful after a failure.
+: >"$WW_SUMMARY"
+GITHUB_STEP_SUMMARY="$WW_SUMMARY" sh "$WW" "$WW_LOGS" >/dev/null 2>&1
+CASES_RUN=$((CASES_RUN + 1))
+if grep -q '### Engine warnings' "$WW_SUMMARY" &&
+	grep -qF 'WARNING: plain unexpected warning' "$WW_SUMMARY"; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: warning_watch writes the markdown run summary -> $_ok"
+[ "$_ok" = "yes" ] || sed 's/^/  | /' "$WW_SUMMARY" >&2
+
+# ---------------------------------------------------------------------------
+# 15. The workflow file itself. Sol recheck finding 1 is that the committed
+#     workflow was INVALID: `hashFiles` is a step-level function and actionlint
+#     rejects it in a job-level `if`, which failed the whole workflow including
+#     the checks job. The regression case is the absence of that expression; the
+#     lint case runs when actionlint is installed (it is not on GitHub runners,
+#     so it is reported as skipped there rather than assumed).
+# ---------------------------------------------------------------------------
+WORKFLOW="$PROJECT_DIR/.github/workflows/ci.yml"
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ -f "$WORKFLOW" ] &&
+	! grep -nE '^[[:space:]]*if:.*hashFiles' "$WORKFLOW" >/dev/null 2>&1; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: no job-level if: uses the step-level hashFiles function -> $_ok"
+[ "$_ok" = "yes" ] || grep -nE '^[[:space:]]*if:.*hashFiles' "$WORKFLOW" >&2
+
+# The export job must always run: a skipped job is a silent green, and the
+# presets being absent is a failure `ci.sh export --check` reports explicitly.
+CASES_RUN=$((CASES_RUN + 1))
+if [ -f "$WORKFLOW" ] &&
+	grep -q 'name: export preparation' "$WORKFLOW" &&
+	! awk '/^  export-preparation:/{f=1} f && /^    if:/{print; exit}' "$WORKFLOW" | grep -q .; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the export-preparation job carries no job-level condition -> $_ok"
+
+# The warning watch step must run even when an earlier step failed, or the
+# summary is skipped exactly when it matters (Sol recheck finding 5).
+CASES_RUN=$((CASES_RUN + 1))
+if [ -f "$WORKFLOW" ] &&
+	grep -A3 'Warning watch - surface engine warnings' "$WORKFLOW" | grep -q 'if: always()'; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the warning watch step runs with if: always() -> $_ok"
+
+# The export job must install templates with the command that handles the
+# publisher's templates/* layout; searching the archive for a <version>.stable
+# directory fails on the official .tpz (coordinator follow-up).
+CASES_RUN=$((CASES_RUN + 1))
+if [ -f "$WORKFLOW" ] &&
+	grep -q 'install-templates --archive' "$WORKFLOW" &&
+	! grep -q 'find .* -name "$tver"' "$WORKFLOW"; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the export job installs via install-templates, not a version-directory search -> $_ok"
+
+if command -v actionlint >/dev/null 2>&1; then
+	expect_case "actionlint accepts the committed workflow" 0 actionlint "$WORKFLOW"
+else
+	log "note: actionlint is not installed; the workflow lint case was skipped"
+fi
+
+# ---------------------------------------------------------------------------
+# 16. A package is more than its main file (Opus recheck finding E3). The Linux
+#     preset declares binary_format/embed_pck=false, so the export must write a
+#     sidecar .pck next to the output and the tooling must report its digest:
+#     the main Linux binary IS the pinned stock template, so its digest
+#     identifies no game content at all. Engine-backed and needs the pinned
+#     templates installed where the engine reads them, so the case is skipped
+#     (and reported as skipped) on a host without them -- a GitHub checks runner
+#     has none.
+# ---------------------------------------------------------------------------
+if [ "$_e2e" = "yes" ]; then
+	_real_edir="$(ci_templates_engine_dir 2>/dev/null || true)"
+	if [ -n "$_real_edir" ] &&
+		[ -s "$_real_edir/$TVER/macos.zip" ] &&
+		[ -s "$_real_edir/$TVER/windows_release_x86_64.exe" ] &&
+		[ -s "$_real_edir/$TVER/linux_release.x86_64" ]; then
+		REALHOME="$WORK_DIR/realhome"
+		mkdir -p "$REALHOME"
+		_rdir="$(HOME="$REALHOME"; export HOME; ci_templates_engine_dir)"
+		mkdir -p "$_rdir/$TVER"
+		# The engine needs REAL template binaries to export, so this case copies
+		# the three files it needs out of the host's installed tree into the
+		# sandbox. They are COPIES, never links: nothing the suite writes can
+		# reach an installed template through this path, and the originals are
+		# only ever read.
+		cp "$_real_edir/$TVER/version.txt" "$_rdir/$TVER/version.txt"
+		for _rt in macos.zip windows_release_x86_64.exe linux_release.x86_64; do
+			cp "$_real_edir/$TVER/$_rt" "$_rdir/$TVER/$_rt" ||
+				die 2 "could not copy the installed template $_rt into the sandbox"
+		done
+		cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
+		PKG="$WORK_DIR/pkg"
+		mkdir -p "$PKG"
+		expect_case "export builds the Linux preset with the pinned templates" 0 \
+			ci_at_home "$REALHOME" "$SPROJ" export --export "Linux x86-64" --out "$PKG/linux"
+		# The report the run wrote must carry the sidecar's path and digest: the
+		# main Linux binary is the pinned stock template, so its digest alone
+		# says nothing about the game content that was packaged.
+		expect_contains "export reports the sidecar .pck path and digest (E3)" 0 \
+			"pck=$PKG/linux.pck" grep -h "export result=pass" \
+			"$SPROJ/tools/ci/out/reports/"export-*.txt
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ -s "$PKG/linux.pck" ] &&
+			grep -qh "pck_sha256=[0-9a-f]\{64\}" "$SPROJ/tools/ci/out/reports/"export-*.txt; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: the Linux package's sidecar .pck exists, is non-empty and is hashed -> $_ok"
+	else
+		log "note: the pinned export templates are not installed on this host; the sidecar .pck export case was skipped"
+	fi
+else
+	log "note: no installed Godot matches pin '$_e2e_pin'; the sidecar .pck export case was skipped"
 fi
 
 # ---------------------------------------------------------------------------

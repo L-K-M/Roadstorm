@@ -407,6 +407,12 @@ CI_PIN_RELEASE_CHECKSUMS_URL=""
 CI_PIN_RELEASE_SHA512=""
 CI_PIN_RELEASE_SHA256=""
 CI_PIN_RELEASE_BINARY_SHA256=""
+# Official export-template archive (the .tpz) that CI downloads and verifies
+# before extraction, plus the publisher's SHA-512 of it. Same rule as the editor
+# archive: a published release artifact is the same bytes everywhere, so its
+# digest IS a portable expectation (Opus recheck finding E1).
+CI_PIN_TEMPLATES_URL=""
+CI_PIN_TEMPLATES_SHA512=""
 
 # ci_pin_parse_version <file> : version/authority fields.
 ci_pin_parse_version() {
@@ -433,6 +439,8 @@ ci_pin_parse_release() {
 			release_archive_sha512) CI_PIN_RELEASE_SHA512="$_value" ;;
 			release_archive_sha256) CI_PIN_RELEASE_SHA256="$_value" ;;
 			release_binary_sha256) CI_PIN_RELEASE_BINARY_SHA256="$_value" ;;
+			templates_url) CI_PIN_TEMPLATES_URL="$_value" ;;
+			templates_archive_sha512) CI_PIN_TEMPLATES_SHA512="$_value" ;;
 		esac
 	done <"$1"
 }
@@ -501,8 +509,13 @@ ci_check_engine_pin() {
 		ci_warn "release artifact: no release_archive_sha512 recorded; 'ci.sh verify-engine' would refuse the download"
 	fi
 
-	# Export templates (needed by export preparation only).
-	_tdir="$(ci_templates_dir)"
+	# Export templates (needed by export preparation only). The engine reads
+	# them from its own user-data directory; see ci_templates_engine_dir.
+	_tdir="$(ci_templates_engine_dir || true)"
+	_envdir="$(ci_templates_env_dir || true)"
+	if [ -n "$_envdir" ] && [ "$_envdir" != "$_tdir" ]; then
+		ci_warn "export templates: GODOT_TEMPLATES_DIR=$_envdir is NOT read by the engine (measured); the engine reads $_tdir"
+	fi
 	if [ -n "$_tdir" ] && [ -d "$_tdir/${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable" ]; then
 		_tver="$(head -n 1 "$_tdir/${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable/version.txt" 2>/dev/null)"
 		if [ "$_tver" = "${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable" ]; then
@@ -521,24 +534,61 @@ ci_check_engine_pin() {
 	return "$_rc"
 }
 
-# ci_templates_dir : prints the Godot user-data export_templates directory.
-ci_templates_dir() {
+# ci_templates_engine_dir : prints the directory the engine itself reads export
+# templates from, following the engine's own user-data rules.
+#
+# MEASURED against the pinned engine (4.7.2.stable.official.ed1daf0bf), because
+# Opus recheck finding E1 is exactly a check that looked in the wrong place:
+# the engine reads <user data dir>/export_templates/<version>.stable and does
+# NOT read $GODOT_TEMPLATES_DIR. The variable name does not appear in the engine
+# binary at all, and an export with GODOT_TEMPLATES_DIR pointing at a complete
+# template tree while the user-data directory is empty fails with
+#   "No export template found at the expected path:
+#    <HOME>/Library/Application Support/Godot/export_templates/4.7.2.stable/..."
+# A presence check that honoured the variable could therefore pass a tree whose
+# export then fails, which is the false green this function exists to prevent.
+#
+# Prints nothing and returns 1 when the user-data directory cannot be derived
+# (no HOME on a Unix host, no APPDATA on Windows).
+ci_templates_engine_dir() {
+	[ -n "${HOME:-}" ] || return 1
+	case "$(uname -s 2>/dev/null)" in
+		Darwin) printf '%s/Library/Application Support/Godot/export_templates\n' "$HOME" ;;
+		Linux)
+			if [ -n "${XDG_DATA_HOME:-}" ]; then
+				printf '%s/godot/export_templates\n' "$XDG_DATA_HOME"
+			else
+				printf '%s/.local/share/godot/export_templates\n' "$HOME"
+			fi
+			;;
+		MINGW* | MSYS* | CYGWIN*)
+			[ -n "${APPDATA:-}" ] || return 1
+			printf '%s/Godot/export_templates\n' "$APPDATA"
+			;;
+		*) return 1 ;;
+	esac
+	return 0
+}
+
+# ci_templates_env_dir : prints $GODOT_TEMPLATES_DIR when it names an existing
+# directory. The pinned engine does NOT read it (see ci_templates_engine_dir), so
+# this is reported for information only -- never used to pass the export check.
+ci_templates_env_dir() {
 	if [ -n "${GODOT_TEMPLATES_DIR:-}" ] && [ -d "$GODOT_TEMPLATES_DIR" ]; then
 		printf '%s\n' "$GODOT_TEMPLATES_DIR"
 		return 0
 	fi
-	for candidate in \
-		"${HOME}/Library/Application Support/Godot/export_templates" \
-		"${HOME}/.local/share/godot/export_templates" \
-		"${HOME}/.var/app/org.godotengine.Godot/data/godot/export_templates" \
-		"${APPDATA:-}/Godot/export_templates"
-	do
-		if [ -n "$candidate" ] && [ -d "$candidate" ]; then
-			printf '%s\n' "$candidate"
-			return 0
-		fi
-	done
 	return 1
+}
+
+# ci_templates_version_dir <templates-root> : prints the pinned version's
+# template directory (<root>/<major>.<minor>.<patch>.stable), which is the name
+# the engine looks for regardless of where the root is.
+ci_templates_version_dir() {
+	_rtv_root="$1"
+	[ -n "$_rtv_root" ] || return 1
+	printf '%s/%s.%s.%s.stable\n' "$_rtv_root" "$CI_PIN_MAJOR" "$CI_PIN_MINOR" "$CI_PIN_PATCH"
+	return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -777,6 +827,110 @@ ci_preset_platform_coverage() {
 		fi
 	done
 	return "$_cov_rc"
+}
+
+# ci_preset_field <export_presets.cfg> <preset.N> <key> : prints the value of
+# <key> as written in that preset's own section or in its [preset.N.options]
+# section, with surrounding quotes stripped. Prints nothing and returns 1 when
+# the key is absent, so a caller can never mistake an empty line for a value.
+ci_preset_field() {
+	_pf_cfg="$1"
+	_pf_idx="$2"
+	_pf_key="$3"
+	[ -f "$_pf_cfg" ] || return 1
+	_pf_out="$(awk -v idx="$_pf_idx" -v key="$_pf_key" '
+		/^\[/ { insec = ($0 == "[" idx "]" || $0 == "[" idx ".options]"); next }
+		insec && index($0, key "=") == 1 {
+			v = $0; sub(/^[^=]*=/, "", v); gsub(/^"|"$/, "", v); out = v
+		}
+		END { if (out != "") print out }
+	' "$_pf_cfg" 2>/dev/null)"
+	[ -n "$_pf_out" ] || return 1
+	printf '%s\n' "$_pf_out"
+	return 0
+}
+
+# ci_preset_index_for <export_presets.cfg> <preset name> : prints "preset.N"
+# for the preset with that exact name, so the field reader above can be driven
+# from a name the way `export --export <name>` is.
+ci_preset_index_for() {
+	_pi_cfg="$1"
+	_pi_name="$2"
+	[ -f "$_pi_cfg" ] || return 1
+	_pi_out="$(ci_preset_table "$_pi_cfg" 2>/dev/null | awk -F'\t' -v n="$_pi_name" '$2 == n { print $1; exit }')"
+	[ -n "$_pi_out" ] || return 1
+	printf '%s\n' "$_pi_out"
+	return 0
+}
+
+# ci_preset_architecture <export_presets.cfg> <preset.N> : prints the preset's
+# binary_format/architecture, or fails when it is not declared. Opus recheck
+# finding E2 is that a presence check accepting ANY architecture reported a
+# green check for a build that cannot be produced: an export uses the
+# architecture the preset declares, and a missing or different template fails
+# at export time. Refusing to guess keeps the check honest.
+ci_preset_architecture() {
+	_pa_cfg="$1"
+	_pa_idx="$2"
+	_pa_arch="$(ci_preset_field "$_pa_cfg" "$_pa_idx" binary_format/architecture 2>/dev/null)" || return 1
+	[ -n "$_pa_arch" ] || return 1
+	printf '%s\n' "$_pa_arch"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Export template files
+# ---------------------------------------------------------------------------
+# The template file names the pinned official release ships, measured from
+# export_templates/4.7.2.stable/ in that release (not invented):
+#   macos.zip                     one universal archive for every architecture
+#   windows_<mode>_<arch>.exe     x86_64 | x86_32 | arm64
+#   linux_<mode>.<arch>           x86_64 | x86_32 | arm64 | arm32
+# The Windows *_console.exe variants are accepted alternatives: Godot selects
+# them when the preset enables the console wrapper, and the release ships both.
+
+# ci_template_architectures <platform> : the architecture values Godot accepts
+# for that platform, space separated. Fails for an unknown platform.
+ci_template_architectures() {
+	case "$1" in
+		macOS) printf 'universal arm64 x86_64\n' ;;
+		Windows) printf 'x86_64 x86_32 arm64\n' ;;
+		Linux) printf 'x86_64 x86_32 arm64 arm32\n' ;;
+		*) return 1 ;;
+	esac
+	return 0
+}
+
+# ci_template_files_for <platform> <architecture> <mode> : prints the template
+# file name(s) the engine looks for, one per line. Fails for an architecture
+# Godot does not accept on that platform, for an unknown platform, or for an
+# unknown export mode, so a caller cannot fall back to "any file will do".
+ci_template_files_for() {
+	_tf_platform="$1"
+	_tf_arch="$2"
+	_tf_mode="$3"
+	case "$_tf_mode" in
+		debug | release) : ;;
+		*) return 1 ;;
+	esac
+	_tf_known=no
+	for _tf_a in $(ci_template_architectures "$_tf_platform" 2>/dev/null); do
+		if [ "$_tf_a" = "$_tf_arch" ]; then
+			_tf_known=yes
+			break
+		fi
+	done
+	[ "$_tf_known" = yes ] || return 1
+	case "$_tf_platform" in
+		macOS) printf 'macos.zip\n' ;;
+		Windows)
+			printf 'windows_%s_%s.exe\n' "$_tf_mode" "$_tf_arch"
+			printf 'windows_%s_%s_console.exe\n' "$_tf_mode" "$_tf_arch"
+			;;
+		Linux) printf 'linux_%s.%s\n' "$_tf_mode" "$_tf_arch" ;;
+		*) return 1 ;;
+	esac
+	return 0
 }
 
 # ci_is_positive_int <value> : true for a non-empty run of digits that is not

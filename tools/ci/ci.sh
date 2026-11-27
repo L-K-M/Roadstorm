@@ -15,6 +15,9 @@
 #   verify-engine          verify a downloaded release artifact against the
 #                          pinned publisher digest, before extraction/execution
 #                          (M0.1)
+#   install-templates      verify the export-template archive, then install its
+#                          templates/<version> payload where the engine reads it;
+#                          refuses an existing installed tree instead of deleting
 #   pin                    print the pinned engine facts as key=value lines
 #   all                    import + validate + test (what CI runs)
 #   help | commands | version
@@ -89,20 +92,46 @@ Commands:
                           resolution is applied to the scratch copy's viewport
                           and the recorded size is verified afterwards.
   export --check | --list-presets | --export <preset> --out <file>
-                          Export preparation and optional native export.
+                          Export preparation and optional native export. --check
+                          verifies the export templates where the ENGINE reads
+                          them (its own user-data directory), for the
+                          architecture each preset declares, plus preset
+                          coverage.
   verify-engine --archive <file> [--binary <file>]
                           Compare a downloaded release archive (and optionally
                           the extracted editor binary) against the pinned
                           publisher digest in tools/ci/pin/engine.txt. Fails
                           before anything is extracted or executed (M0.1).
                           Resolves no engine, so it runs on a host with none.
+  verify-templates --archive <file> [--dir <dir>] [--mode release|debug]
+                          Compare the downloaded export-template archive against
+                          the pinned publisher digest BEFORE it is extracted,
+                          and/or verify an installed template tree
+                          (<dir>/<version>.stable: version.txt and the
+                          templates this project's presets require, non-empty).
+                          Resolves no engine. (M0.1, Opus recheck E1.)
+  install-templates --archive <file> --dest <dir> [--mode release|debug]
+                          Verify the archive against the pinned publisher digest
+                          BEFORE extraction, then install the archive's template
+                          payload at <dest>/<version>.stable. Godot's official
+                          .tpz packages templates/* at the archive root (there is
+                          no <version>.stable directory inside it), so the
+                          payload is located by its version.txt and that version
+                          is validated before anything is moved into <dest>.
+                          The staged tree must satisfy this project's presets.
+                          An existing <dest>/<version>.stable is REFUSED, never
+                          replaced (remove it explicitly to reinstall).
+                          Resolves no engine. (M0.1; coordinator follow-up.)
   pin [--field <name>]    Print the pinned engine facts (tag, version, official
                           URLs and digests) as key=value lines.
   all                     import + validate + test (the CI check set).
 
 Environment:
-  GODOT_BIN, GODOT_TEMPLATES_DIR, ROADSTORM_SOURCE_SHA, NO_COLOR,
-  CI_TIMEOUT_DEFAULT, CI_STRICT_WARNINGS
+  GODOT_BIN, ROADSTORM_SOURCE_SHA, NO_COLOR, CI_TIMEOUT_DEFAULT, CI_STRICT_WARNINGS
+  GODOT_TEMPLATES_DIR is reported but NOT used to pass the export check: the
+  engine reads templates from its own user-data directory (measured, see
+  lib/common.sh ci_templates_engine_dir), so a check that honoured the variable
+  could pass a tree whose export then fails.
 
 Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run.
 EOF
@@ -117,6 +146,8 @@ test        run discovered headless checks and the exit-code proof
 capture     deterministic AVI capture driver
 export      export preparation and optional native export
 verify-engine  verify a downloaded release archive against the pinned digest
+verify-templates  verify the export-template archive / an installed template tree
+install-templates  verify the archive, then install it where the engine reads it
 pin         print the pinned engine facts
 all         import + validate + test
 EOF
@@ -253,7 +284,7 @@ CI_RUN_NAME="$CI_COMMAND"
 # commands unusable at the point they are needed.
 CI_NEEDS_GODOT=1
 case "$CI_COMMAND" in
-	verify-engine | pin) CI_NEEDS_GODOT=0 ;;
+	verify-engine | verify-templates | install-templates | pin) CI_NEEDS_GODOT=0 ;;
 esac
 if [ "$CI_NEEDS_GODOT" -eq 1 ]; then
 	ci_find_godot || exit "$?"
@@ -384,6 +415,276 @@ cmd_verify_engine() {
 }
 
 # ---------------------------------------------------------------------------
+# verify-templates : verify the export-template archive BEFORE extraction, and
+# an installed template tree (M0.1; Opus recheck finding E1).
+#
+# The hosted export-preparation job used to install no templates at all, so
+# `export --check` could not pass on a fresh runner and the obvious workaround
+# (GODOT_TEMPLATES_DIR) would have turned a red check green while the build
+# still failed. This command closes both halves: the archive is compared against
+# the publisher's pinned SHA-512 before anything is unpacked, and the installed
+# tree is checked where the engine actually reads it.
+#
+# Like verify-engine, it resolves no engine: it hashes files and reads the pin.
+#
+# Exit codes: 0 = every requested check matched, 1 = a mismatch or an
+# unrecorded pin, 2 = the command could not run.
+# ---------------------------------------------------------------------------
+cmd_verify_templates() {
+	_archive=""
+	_dir=""
+	_mode="release"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--archive)
+				[ $# -ge 2 ] || ci_die "verify-templates: --archive needs a file"
+				_archive="$2"
+				shift 2
+				;;
+			--archive=*) _archive="${1#--archive=}"; shift ;;
+			--dir)
+				[ $# -ge 2 ] || ci_die "verify-templates: --dir needs a directory"
+				_dir="$2"
+				shift 2
+				;;
+			--dir=*) _dir="${1#--dir=}"; shift ;;
+			--mode)
+				[ $# -ge 2 ] || ci_die "verify-templates: --mode needs debug or release"
+				_mode="$2"
+				shift 2
+				;;
+			--mode=*) _mode="${1#--mode=}"; shift ;;
+			*) ci_die "verify-templates: unknown option $1" ;;
+		esac
+	done
+	case "$_mode" in
+		debug | release) : ;;
+		*) ci_die "verify-templates: --mode must be debug or release (got '$_mode')" ;;
+	esac
+	if [ -z "$_archive" ] && [ -z "$_dir" ]; then
+		ci_die "verify-templates: give --archive <file> and/or --dir <dir>"
+	fi
+
+	_rc="$CI_OK"
+	ci_step "verify-templates: pinned export templates"
+	ci_info "pin source:     $CI_PIN_SOURCE"
+	ci_info "pinned tag:     $CI_PIN_TAG"
+	ci_info "templates url:  ${CI_PIN_TEMPLATES_URL:-not recorded}"
+	ci_info "checksums url:  ${CI_PIN_RELEASE_CHECKSUMS_URL:-not recorded}"
+
+	if [ -z "$(ci_sha512_tool)" ]; then
+		ci_fail "no sha512 utility on PATH (need shasum or sha512sum); the publisher's digest cannot be checked, so the artifact is refused"
+		return "$CI_FAIL"
+	fi
+
+	if [ -n "$_archive" ]; then
+		if [ ! -f "$_archive" ]; then
+			ci_fail "verify-templates: archive does not exist: $_archive"
+			return "$CI_FAIL"
+		fi
+		ci_info "archive:        $_archive ($(wc -c <"$_archive" 2>/dev/null | tr -d ' ') bytes)"
+		# The publisher publishes SHA-512, so compare with SHA-512.
+		ci_verify_digest "export templates archive sha512" "$_archive" "$CI_PIN_TEMPLATES_SHA512" sha512 || _rc="$CI_FAIL"
+		if [ "$_rc" -eq 0 ]; then
+			ci_ok "the template archive may be extracted"
+		else
+			ci_fail "DO NOT extract or install this template archive: it does not match the pinned digest"
+		fi
+	fi
+
+	if [ -n "$_dir" ]; then
+		_tver="${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable"
+		if [ ! -d "$_dir/$_tver" ]; then
+			ci_fail "verify-templates: no $_tver directory in $_dir (the engine reads $_dir/$_tver)"
+			_rc="$CI_FAIL"
+		else
+			_vtxt="$(head -n 1 "$_dir/$_tver/version.txt" 2>/dev/null)"
+			if [ "$_vtxt" = "$_tver" ]; then
+				ci_ok "installed templates: version.txt reports $_tver in $_dir"
+			else
+				ci_fail "installed templates: version.txt reports '$_vtxt' in $_dir/$_tver (expected $_tver)"
+				_rc="$CI_FAIL"
+			fi
+			ci_export_templates_check "$_dir" "$_mode" "$CI_PROJECT/export_presets.cfg" || _rc="$CI_FAIL"
+		fi
+	fi
+
+	ci_report "verify-templates result=$([ "$_rc" -eq 0 ] && printf pass || printf fail) archive=${_archive:-none} dir=${_dir:-none} mode=$_mode"
+	[ "$_rc" -eq 0 ] && ci_ok "verify-templates: PASS" || ci_fail "verify-templates: FAIL"
+	return "$_rc"
+}
+
+# ---------------------------------------------------------------------------
+# install-templates : verify the export-template archive against the pinned
+# publisher digest BEFORE extraction, then install the payload where the engine
+# reads it (coordinator follow-up).
+#
+# The official Godot build-release.sh packages the template files under a
+# top-level templates/ directory inside the .tpz:
+#     templates/version.txt, templates/linux_release.x86_64, ...
+# There is no <version>.stable/ directory in the archive, so searching the
+# extracted tree for one fails on the publisher's own artifact. This command
+# locates the payload by its version.txt instead, validates that the version
+# matches the pin BEFORE anything is moved, and requires the staged tree to
+# satisfy this project's presets before it replaces <dest>/<version>.stable.
+#
+# `--dest` is the engine's export_templates root (on GitHub Linux,
+# $HOME/.local/share/godot/export_templates); the installed tree is
+# <dest>/<major>.<minor>.<patch>.stable. An existing target directory is
+# REFUSED, never deleted or replaced silently: this command must not be able to
+# destroy an installed template tree. Remove the existing directory explicitly
+# if a reinstall is intended (a fresh hosted runner has none).
+#
+# Like verify-engine/verify-templates, it resolves no engine.
+#
+# Exit codes: 0 = installed and verified, 1 = mismatch/refused, 2 = unusable.
+# ---------------------------------------------------------------------------
+cmd_install_templates() {
+	_archive=""
+	_dest=""
+	_mode="release"
+	while [ $# -gt 0 ]; do
+		case "$1" in
+			--archive)
+				[ $# -ge 2 ] || ci_die "install-templates: --archive needs a file"
+				_archive="$2"
+				shift 2
+				;;
+			--archive=*) _archive="${1#--archive=}"; shift ;;
+			--dest)
+				[ $# -ge 2 ] || ci_die "install-templates: --dest needs a directory"
+				_dest="$2"
+				shift 2
+				;;
+			--dest=*) _dest="${1#--dest=}"; shift ;;
+			--mode)
+				[ $# -ge 2 ] || ci_die "install-templates: --mode needs debug or release"
+				_mode="$2"
+				shift 2
+				;;
+			--mode=*) _mode="${1#--mode=}"; shift ;;
+			*) ci_die "install-templates: unknown option $1" ;;
+		esac
+	done
+	case "$_mode" in
+		debug | release) : ;;
+		*) ci_die "install-templates: --mode must be debug or release (got '$_mode')" ;;
+	esac
+	if [ -z "$_archive" ] || [ -z "$_dest" ]; then
+		ci_die "install-templates: give --archive <file> and --dest <dir>"
+	fi
+
+	_tver="${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable"
+	ci_step "install-templates: pinned export templates"
+	ci_info "pin source:    $CI_PIN_SOURCE"
+	ci_info "pinned tag:    $CI_PIN_TAG"
+	ci_info "templates url: ${CI_PIN_TEMPLATES_URL:-not recorded}"
+	ci_info "destination:   $_dest/$_tver"
+
+	if [ -z "$(ci_sha512_tool)" ]; then
+		ci_fail "no sha512 utility on PATH (need shasum or sha512sum); the publisher's digest cannot be checked, so the artifact is refused"
+		return "$CI_FAIL"
+	fi
+	if [ ! -f "$_archive" ]; then
+		ci_fail "install-templates: archive does not exist: $_archive"
+		return "$CI_FAIL"
+	fi
+
+	# PLAN.md M0.1: verify before installation. Nothing is extracted unless the
+	# archive is the publisher's pinned bytes.
+	ci_info "archive:       $_archive ($(wc -c <"$_archive" | tr -d ' ') bytes)"
+	if ! ci_verify_digest "export templates archive sha512" "$_archive" "$CI_PIN_TEMPLATES_SHA512" sha512; then
+		ci_fail "DO NOT extract or install this template archive: it does not match the pinned digest"
+		return "$CI_FAIL"
+	fi
+	ci_ok "the archive matches the pinned digest and may be extracted"
+
+	_stage="$(mktemp -d "$CI_OUT/templates-stage.XXXXXX" 2>/dev/null)" || {
+		ci_fail "install-templates: cannot create a staging directory under $CI_OUT"
+		return "$CI_FAIL"
+	}
+	trap 'rm -rf "$_stage"' EXIT INT TERM
+
+	mkdir -p "$_dest" || {
+		ci_fail "install-templates: cannot create destination: $_dest"
+		return "$CI_FAIL"
+	}
+
+	if ! unzip -q "$_archive" -d "$_stage"; then
+		ci_fail "install-templates: unzip failed for $_archive"
+		return "$CI_FAIL"
+	fi
+
+	# The publisher's archive carries templates/<files> at its root. Find the
+	# payload by version.txt rather than assuming a directory named after the
+	# version, while still accepting a self-named legacy layout.
+	_payload=""
+	if [ -f "$_stage/templates/version.txt" ]; then
+		_payload="$_stage/templates"
+	else
+		_candidates="$(find "$_stage" -maxdepth 3 -type f -name version.txt 2>/dev/null | sort)"
+		_n="$(printf '%s\n' "$_candidates" | grep -c . || true)"
+		if [ "$_n" = "1" ]; then
+			_payload="$(dirname "$_candidates")"
+		elif [ "$_n" -gt 1 ]; then
+			ci_fail "install-templates: the archive contains $_n version.txt files; cannot choose the template payload"
+			printf '%s\n' "$_candidates" | sed 's/^/    /' >&2
+			return "$CI_FAIL"
+		fi
+	fi
+	if [ -z "$_payload" ] || [ ! -f "$_payload/version.txt" ]; then
+		ci_fail "install-templates: the verified archive contains no template payload (expected templates/version.txt)"
+		return "$CI_FAIL"
+	fi
+
+	# Validate the version BEFORE anything is placed: a payload for another
+	# engine version must never reach the engine's directory.
+	_vtxt="$(head -n 1 "$_payload/version.txt" 2>/dev/null)"
+	if [ "$_vtxt" != "$_tver" ]; then
+		ci_fail "install-templates: refusing to install: version.txt reports '$_vtxt' (expected $_tver)"
+		return "$CI_FAIL"
+	fi
+	ci_ok "staged templates: version.txt reports $_tver"
+
+	# Verify the staged tree against this project's presets before it replaces
+	# anything in the destination. ci_export_templates_check expects the tree at
+	# <root>/<version>.stable, so stage it under that name first.
+	_check_root="$_stage/install"
+	mkdir -p "$_check_root" || {
+		ci_fail "install-templates: cannot create the staging root $_check_root"
+		return "$CI_FAIL"
+	}
+	if ! mv "$_payload" "$_check_root/$_tver"; then
+		ci_fail "install-templates: could not stage the payload at $_check_root/$_tver"
+		return "$CI_FAIL"
+	fi
+	if ! ci_export_templates_check "$_check_root" "$_mode" "$CI_PROJECT/export_presets.cfg"; then
+		ci_fail "install-templates: refusing to install: the staged templates do not satisfy the project's export presets"
+		return "$CI_FAIL"
+	fi
+
+	# Destination policy: never mutate an existing installed tree. A fresh
+	# hosted runner has no <dest>/<version>.stable; on a persistent host the
+	# operator removes it explicitly before reinstalling. This check runs after
+	# archive, payload, and template validation, immediately before the move.
+	# It is not a race-free transaction with another installer.
+	if [ -e "$_dest/$_tver" ] || [ -L "$_dest/$_tver" ]; then
+		ci_fail "install-templates: $_dest/$_tver already exists; refusing to replace an installed template tree (remove it explicitly if a reinstall is intended)"
+		return "$CI_FAIL"
+	fi
+
+	if ! mv "$_check_root/$_tver" "$_dest/$_tver"; then
+		ci_fail "install-templates: could not install the verified templates into $_dest/$_tver"
+		return "$CI_FAIL"
+	fi
+
+	ci_ok "installed templates: $_dest/$_tver"
+	ci_report "install-templates result=pass dest=$_dest tver=$_tver mode=$_mode archive=$_archive"
+	ci_ok "install-templates: PASS"
+	return "$CI_OK"
+}
+
+# ---------------------------------------------------------------------------
 # pin : print the pinned engine facts as key=value lines, so a workflow or a
 # reviewer reads one source of truth instead of a second copy of the digests.
 # ---------------------------------------------------------------------------
@@ -409,6 +710,8 @@ cmd_pin() {
 	printf 'release_archive_sha512=%s\n' "$CI_PIN_RELEASE_SHA512"
 	printf 'release_archive_sha256=%s\n' "$CI_PIN_RELEASE_SHA256"
 	printf 'release_binary_sha256=%s\n' "$CI_PIN_RELEASE_BINARY_SHA256"
+	printf 'templates_url=%s\n' "$CI_PIN_TEMPLATES_URL"
+	printf 'templates_archive_sha512=%s\n' "$CI_PIN_TEMPLATES_SHA512"
 	return "$CI_OK"
 }
 
@@ -430,6 +733,8 @@ ci_pin_field() {
 		release_archive_sha512) _value="$CI_PIN_RELEASE_SHA512"; _digest=1 ;;
 		release_archive_sha256) _value="$CI_PIN_RELEASE_SHA256"; _digest=1 ;;
 		release_binary_sha256) _value="$CI_PIN_RELEASE_BINARY_SHA256"; _digest=1 ;;
+		templates_url) _value="$CI_PIN_TEMPLATES_URL" ;;
+		templates_archive_sha512) _value="$CI_PIN_TEMPLATES_SHA512"; _digest=1 ;;
 		*)
 			ci_fail "pin: unknown field '$_field'"
 			return "$CI_USAGE"
@@ -466,7 +771,7 @@ cmd_doctor() {
 	ci_info "shell:          $0 (pid $$)"
 	ci_info "os:             $(uname -s) $(uname -r) $(uname -m)"
 	ci_info "cpu count:      $( (command -v nproc >/dev/null 2>&1 && nproc) || sysctl -n hw.ncpu 2>/dev/null || printf 'unknown')"
-	ci_info "templates:      $(ci_templates_dir || printf 'not found')"
+	ci_info "templates:      $(ci_templates_engine_dir || printf 'not determined')"
 
 	_rc="$CI_OK"
 	ci_check_engine_pin || _rc="$CI_FAIL"
@@ -598,7 +903,8 @@ ci_tooling_selfcheck() {
 	# Scoped result variable: a plain _rc here would clobber the caller's.
 	_self_rc="$CI_OK"
 	for _f in "$CI_TOOLS_DIR/ci.sh" "$CI_TOOLS_DIR/lib/common.sh" \
-		"$CI_TOOLS_DIR/scripts/runtime_error_gate.sh"; do
+		"$CI_TOOLS_DIR/scripts/runtime_error_gate.sh" \
+		"$CI_TOOLS_DIR/scripts/warning_watch.sh"; do
 		if [ -x "$_f" ]; then
 			ci_ok "executable: $(ci_relpath "$_f")"
 		else
@@ -775,7 +1081,11 @@ EOF
 	ci_exit_code_proof
 
 	if [ "$CI_TEST_WARN" -gt 0 ]; then
-		ci_warn "$CI_TEST_WARN engine warning line(s) across $CI_TEST_RUN check(s), $CI_TEST_WARN_UNEXPECTED of them not accepted in $CI_WARNINGS_ALLOW; surfaced, not fatal (use --strict-warnings to fail on unexpected ones)"
+		if [ "$CI_STRICT_WARNINGS" -eq 1 ]; then
+			ci_warn "$CI_TEST_WARN engine warning line(s) across $CI_TEST_RUN check(s), $CI_TEST_WARN_UNEXPECTED of them not accepted in $CI_WARNINGS_ALLOW; strict warnings are on, so an unaccepted warning failed its check (see the per-check lines above)"
+		else
+			ci_warn "$CI_TEST_WARN engine warning line(s) across $CI_TEST_RUN check(s), $CI_TEST_WARN_UNEXPECTED of them not accepted in $CI_WARNINGS_ALLOW; surfaced, not fatal (use --strict-warnings to fail on unexpected ones)"
+		fi
 	fi
 	ci_report "test result=$([ "$CI_TEST_FAIL" -eq 0 ] && [ "$CI_TEST_RUN" -gt 0 ] && printf pass || printf fail) run=$CI_TEST_RUN pass=$CI_TEST_PASS fail=$CI_TEST_FAIL warnings=$CI_TEST_WARN unexpected_warnings=$CI_TEST_WARN_UNEXPECTED strict_warnings=$CI_STRICT_WARNINGS"
 	if [ "$CI_TEST_FAIL" -gt 0 ]; then
@@ -907,11 +1217,23 @@ ci_run_one_test() {
 		return "$CI_OK"
 	fi
 
+	# Signal 4, decided BEFORE the verdict is recorded. With --strict-warnings an
+	# unaccepted warning is fatal, and Sol recheck finding 4 is that the pass was
+	# recorded and counted first, so a strict failure left a passing per-check
+	# record next to a failed stage. The gate also prints every warning line, so
+	# the FAIL line that follows it still names the reason.
+	if ! ci_log_warning_gate "$CI_LAST_LOG" "$_res"; then
+		ci_fail "FAIL: $_res (strict warnings: an unaccepted engine warning is fatal)"
+		CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
+		ci_count_check_warnings "$CI_LAST_LOG"
+		ci_report "check=$_res result=fail exit=0 reason=strict-warnings errors=0 warnings=$(ci_log_warning_count "$CI_LAST_LOG") unexpected_warnings=$(ci_log_unexpected_warning_count "$CI_LAST_LOG") jolt_warnings=$(ci_log_jolt_warning_count "$CI_LAST_LOG")"
+		return "$CI_OK"
+	fi
+
 	ci_ok "PASS: $_res"
 	CI_TEST_PASS=$((CI_TEST_PASS + 1))
 	ci_count_check_warnings "$CI_LAST_LOG"
 	ci_report "check=$_res result=pass exit=0 errors=0 warnings=$(ci_log_warning_count "$CI_LAST_LOG") unexpected_warnings=$(ci_log_unexpected_warning_count "$CI_LAST_LOG") jolt_warnings=0"
-	ci_log_warning_gate "$CI_LAST_LOG" "$_res" || CI_TEST_FAIL=$((CI_TEST_FAIL + 1))
 	return "$CI_OK"
 }
 
@@ -1246,41 +1568,98 @@ cmd_export() {
 	esac
 }
 
+# ci_export_templates_check <templates-root> <mode> <export_presets.cfg> :
+# verifies that the template tree holds the template every REQUIRED target
+# needs, for the architecture that target's preset declares. Prints one
+# ci_ok/ci_fail line per covering preset and returns CI_OK/CI_FAIL.
+#
+# Two findings this closes, both measured against the pinned engine:
+#   E1 - the engine reads <user data dir>/export_templates/<version>.stable and
+#        ignores $GODOT_TEMPLATES_DIR, so the tree passed in here must be the
+#        engine's own (the caller decides which directory that is).
+#   E2 - a presence check that accepted ANY architecture passed a tree holding
+#        only the 32-bit Windows and Linux templates while both presets declare
+#        x86_64; the export then fails. The required file is now derived from
+#        the preset's binary_format/architecture, and an empty file is refused
+#        (a zero-byte template is corrupt and cannot be exported).
+# Variables are prefixed (_etc_*) so no caller state is clobbered.
+ci_export_templates_check() {
+	_etc_root="$1"
+	_etc_mode="$2"
+	_etc_cfg="$3"
+	_etc_rc="$CI_OK"
+
+	if [ ! -f "$_etc_cfg" ]; then
+		ci_fail "templates: no export_presets.cfg at $_etc_cfg, so the required templates cannot be determined"
+		return "$CI_FAIL"
+	fi
+
+	_tver="${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable"
+	_vtxt="$(head -n 1 "$_etc_root/$_tver/version.txt" 2>/dev/null)"
+	if [ "$_vtxt" = "$_tver" ]; then
+		ci_ok "templates: version.txt reports $_tver in $(ci_relpath "$_etc_root")"
+	else
+		ci_fail "templates: version.txt reports '$_vtxt' in $(ci_relpath "$_etc_root")/$_tver (expected $_tver)"
+		_etc_rc="$CI_FAIL"
+	fi
+
+	_etc_table="$(ci_preset_table "$_etc_cfg" 2>/dev/null | tr '\t' '|')"
+	while IFS='|' read -r _etc_idx _etc_name _etc_platform; do
+		[ -n "$_etc_idx" ] || continue
+		# Only presets that cover a REQUIRED target constrain the templates;
+		# ci_preset_platform_coverage reports the targets themselves.
+		_etc_req=""
+		for _etc_r in $CI_EXPORT_PLATFORMS; do
+			if [ "$(ci_preset_platform_for "$_etc_r")" = "$_etc_platform" ]; then
+				_etc_req="$_etc_r"
+				break
+			fi
+		done
+		[ -n "$_etc_req" ] || continue
+
+		_etc_arch="$(ci_preset_architecture "$_etc_cfg" "$_etc_idx" 2>/dev/null)"
+		if [ -z "$_etc_arch" ]; then
+			ci_fail "templates: preset '$_etc_name' ($_etc_platform) declares no binary_format/architecture, so the required template cannot be determined (declare it; do not rely on the engine default)"
+			_etc_rc="$CI_FAIL"
+			continue
+		fi
+		_etc_files="$(ci_template_files_for "$_etc_req" "$_etc_arch" "$_etc_mode" 2>/dev/null)"
+		if [ -z "$_etc_files" ]; then
+			ci_fail "templates: preset '$_etc_name' declares architecture '$_etc_arch', which Godot does not accept for $_etc_req (accepted: $(ci_template_architectures "$_etc_req" 2>/dev/null | tr '\n' ' '))"
+			_etc_rc="$CI_FAIL"
+			continue
+		fi
+
+		_etc_found=""
+		for _etc_f in $_etc_files; do
+			if [ -s "$_etc_root/$_tver/$_etc_f" ]; then
+				_etc_found="$_etc_found $_etc_f"
+			fi
+		done
+		if [ -n "$_etc_found" ]; then
+			ci_ok "templates: $_etc_req preset '$_etc_name' (architecture=$_etc_arch, mode=$_etc_mode) ->$_etc_found"
+		else
+			ci_fail "templates: $_etc_req preset '$_etc_name' (architecture=$_etc_arch, mode=$_etc_mode) -> none of [$(printf '%s ' $_etc_files)] in $(ci_relpath "$_etc_root")/$_tver"
+			_etc_rc="$CI_FAIL"
+		fi
+
+		# The official macOS template ships ONE universal archive, so an arm64 or
+		# x86_64 request is a build-time failure the check cannot see here. Say so
+		# instead of letting the file presence look like coverage.
+		if [ "$_etc_req" = "macOS" ] && [ "$_etc_arch" != "universal" ]; then
+			ci_warn "templates: macOS preset '$_etc_name' requests architecture '$_etc_arch'; the official 4.7.2 macOS template (macos.zip) ships only a universal binary, so the build step will fail unless a custom_template is configured"
+		fi
+	done <<EOF
+$_etc_table
+EOF
+	return "$_etc_rc"
+}
+
 ci_export_check() {
 	_mode="$1"
 	_rc="$CI_OK"
 	ci_step "export preparation (mode=$_mode)"
 	ci_check_engine_pin || _rc="$CI_FAIL"
-
-	_tdir="$(ci_templates_dir || true)"
-	if [ -z "$_tdir" ]; then
-		ci_fail "export templates: no template directory found (set GODOT_TEMPLATES_DIR)"
-		_rc="$CI_FAIL"
-	else
-		_tver="${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable"
-		for _platform in $CI_EXPORT_PLATFORMS; do
-			# Template file names as shipped in the pinned release
-			# (export_templates/<version>/ from the official archive).
-			case "$_platform" in
-				macOS) _files="macos.zip" ;;
-				Windows) _files="windows_${_mode}_x86_64.exe windows_${_mode}_x86_32.exe" ;;
-				Linux) _files="linux_${_mode}.x86_64 linux_${_mode}.x86_32" ;;
-				*) _files="" ;;
-			esac
-			_found=""
-			for _f in $_files; do
-				if [ -f "$_tdir/$_tver/$_f" ]; then
-					_found="$_found $_f"
-				fi
-			done
-			if [ -n "$_found" ]; then
-				ci_ok "templates: $_platform ->$_found"
-			else
-				ci_fail "templates: $_platform -> none of [$_files] in $_tdir/$_tver"
-				_rc="$CI_FAIL"
-			fi
-		done
-	fi
 
 	_cfg="$CI_PROJECT/export_presets.cfg"
 	if [ ! -f "$_cfg" ]; then
@@ -1288,20 +1667,45 @@ ci_export_check() {
 		ci_note "Native export preparation is not implemented yet (PLAN.md M0.5/M9.1)."
 		ci_note "Add export_presets.cfg through the editor's Project > Export dialog (or hand-author it),"
 		ci_note "then re-run 'ci.sh export --check'. Until then, no export is claimed to work."
+		ci_report "export-check mode=$_mode result=fail reason=no-presets"
+		ci_fail "export preparation: FAIL"
+		return "$CI_FAIL"
+	fi
+
+	_presets="$(ci_preset_table "$_cfg")"
+	if [ -z "$_presets" ]; then
+		ci_fail "export presets: export_presets.cfg has no [preset.N] sections"
+		ci_report "export-check mode=$_mode result=fail reason=no-preset-sections"
+		ci_fail "export preparation: FAIL"
+		return "$CI_FAIL"
+	fi
+	ci_ok "export presets: $(printf '%s\n' "$_presets" | grep -c .) preset(s) declared"
+	printf '%s\n' "$_presets" | sed 's/^/    /'
+	# Map each required target to the platform value Godot writes in a preset
+	# before looking for it, so a covered target is not reported missing
+	# ("Windows" -> platform="Windows Desktop").
+	ci_preset_platform_coverage "$_cfg" || _rc="$CI_FAIL"
+
+	# Templates: verified where the ENGINE reads them, not where an environment
+	# variable points. Measured against the pinned engine: GODOT_TEMPLATES_DIR is
+	# not read at all (the name does not appear in the binary, and an export with
+	# it set while the engine's own directory is empty fails with "No export
+	# template found at the expected path" under that directory). Opus recheck
+	# finding E1 is exactly that a check honouring the variable passed a tree the
+	# engine then refused to export, so the variable is only ever reported.
+	_edir="$(ci_templates_engine_dir || true)"
+	_envdir="$(ci_templates_env_dir || true)"
+	_tver="${CI_PIN_MAJOR}.${CI_PIN_MINOR}.${CI_PIN_PATCH}.stable"
+	if [ -z "$_edir" ]; then
+		ci_fail "export templates: cannot determine the engine's user-data directory (HOME/APPDATA unset?)"
 		_rc="$CI_FAIL"
 	else
-		_presets="$(ci_preset_table "$_cfg")"
-		if [ -z "$_presets" ]; then
-			ci_fail "export presets: export_presets.cfg has no [preset.N] sections"
-			_rc="$CI_FAIL"
-		else
-			ci_ok "export presets: $(printf '%s\n' "$_presets" | grep -c .) preset(s) declared"
-			printf '%s\n' "$_presets" | sed 's/^/    /'
-			# Map each required target to the platform value Godot writes in a
-			# preset before looking for it, so a covered target is not reported
-			# missing ("Windows" -> platform="Windows Desktop").
-			ci_preset_platform_coverage "$_cfg" || _rc="$CI_FAIL"
+		if [ -n "$_envdir" ] && [ "$_envdir" != "$_edir" ]; then
+			ci_warn "GODOT_TEMPLATES_DIR=$_envdir is NOT read by the engine; the check below verifies the engine's own directory instead ($_edir)"
+			ci_note "install the templates into $_edir/$_tver (the CI workflow does exactly that, after verifying the publisher's digest)"
 		fi
+		ci_info "engine template directory: $_edir"
+		ci_export_templates_check "$_edir" "$_mode" "$_cfg" || _rc="$CI_FAIL"
 	fi
 
 	ci_note "A successful export is not a verified release package: PLAN.md M9.2 still requires launching it on each target OS."
@@ -1386,10 +1790,57 @@ ci_export_build() {
 		ci_report "export result=fail preset=$_preset reason=no-output"
 		return "$CI_FAIL"
 	fi
+
+	# The package is more than its main file (Opus recheck finding E3). With
+	# binary_format/embed_pck=false Godot writes a sidecar .pck NEXT TO the
+	# output, with the output's extension replaced -- measured against the pinned
+	# engine: the Linux preset (embed_pck=false) writes "<out>.pck", the Windows
+	# preset (which does not declare the key, so the engine default applies) also
+	# writes "<name>.pck", and the macOS preset embeds the .pck inside the app
+	# bundle in the .zip and writes no sidecar. On Linux the main binary IS the
+	# pinned stock template -- its digest identifies no game content at all,
+	# while the .pck carries the project -- so hashing only the main file proved
+	# nothing about what was built. The sidecar is required when the preset
+	# declares it, and hashed whenever it is written.
+	_idx="$(ci_preset_index_for "$_cfg" "$_preset" 2>/dev/null)"
+	_embed=""
+	[ -n "$_idx" ] && _embed="$(ci_preset_field "$_cfg" "$_idx" binary_format/embed_pck 2>/dev/null)"
+	# <out> -> <out with the extension replaced by .pck>, computed on the
+	# BASENAME so a dot in a directory component cannot move the sidecar.
+	case "$_out" in
+		*/*) _pck_dir="${_out%/*}"; _pck_base="${_out##*/}" ;;
+		*) _pck_dir="."; _pck_base="$_out" ;;
+	esac
+	case "$_pck_base" in
+		*.*) _pck_base="${_pck_base%.*}" ;;
+	esac
+	_pck="$_pck_dir/$_pck_base.pck"
 	_size="$(wc -c <"$_out" 2>/dev/null | tr -d ' ')"
-	ci_ok "export: PASS ($_size bytes at $_out, sha256 $(ci_sha256 "$_out"))"
+	_sha="$(ci_sha256 "$_out")"
+	_pck_note=""
+	if [ -e "$_pck" ]; then
+		if [ ! -s "$_pck" ]; then
+			ci_fail "export wrote an empty sidecar .pck: $_pck (the package carries no project data)"
+			ci_report "export result=fail preset=$_preset reason=empty-pck"
+			return "$CI_FAIL"
+		fi
+		_pck_size="$(wc -c <"$_pck" 2>/dev/null | tr -d ' ')"
+		_pck_sha="$(ci_sha256 "$_pck")"
+		_pck_note="; pck $_pck ($_pck_size bytes, sha256 $_pck_sha)"
+		ci_ok "export: PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
+		ci_report "export result=pass preset=$_preset mode=$_mode output=$_out bytes=$_size sha256=$_sha pck=$_pck pck_bytes=$_pck_size pck_sha256=$_pck_sha embed_pck=${_embed:-not-declared}"
+	elif [ "$_embed" = "false" ]; then
+		# Declared, and then missing: the package was not produced as configured.
+		ci_fail "export: preset '$_preset' declares binary_format/embed_pck=false but no sidecar .pck was written next to $_out (expected $_pck)"
+		ci_note "a package whose .pck is missing carries no project data; do not treat the main file alone as the build"
+		ci_report "export result=fail preset=$_preset reason=missing-pck output=$_out bytes=$_size"
+		return "$CI_FAIL"
+	else
+		_pck_note="; no sidecar .pck was written (binary_format/embed_pck=${_embed:-not declared}; the macOS preset embeds the .pck inside the app bundle)"
+		ci_ok "export: PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
+		ci_report "export result=pass preset=$_preset mode=$_mode output=$_out bytes=$_size sha256=$_sha embed_pck=${_embed:-not-declared} sidecar_pck=absent"
+	fi
 	ci_note "This is a locally built package, not a verified release: launching it on the target OS (PLAN.md M9.2) and signing/notarization (M9.3) are separate steps."
-	ci_report "export result=pass preset=$_preset mode=$_mode output=$_out bytes=$_size sha256=$(ci_sha256 "$_out")"
 	return "$CI_OK"
 }
 
@@ -1423,6 +1874,8 @@ case "$CI_COMMAND" in
 	capture) cmd_capture "$@" ;;
 	export) cmd_export "$@" ;;
 	verify-engine) cmd_verify_engine "$@" ;;
+	verify-templates) cmd_verify_templates "$@" ;;
+	install-templates) cmd_install_templates "$@" ;;
 	pin) cmd_pin "$@" ;;
 	all) cmd_all "$@" ;;
 	version)

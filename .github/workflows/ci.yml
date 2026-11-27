@@ -140,34 +140,20 @@ jobs:
       # was used, so a run that printed one must not be reported as a clean pass
       # (the open R7 item is the job-system one). Warnings that do not name Jolt
       # are reported, not fatal; the ones the project has accepted live in
-      # tools/ci/warnings.allow and are labelled as accepted in the output.
+      # tools/ci/warnings.allow and are labelled as accepted.
+      #
+      # `if: always()` (Sol recheck finding 5, Opus recheck W1): the step used to
+      # run under the default success condition, so the Test step that failed on
+      # a Jolt warning skipped the very summary meant to surface it.
+      #
+      # The policy itself lives in tools/ci/scripts/warning_watch.sh, on top of
+      # the same classification code `ci.sh` uses, so the workflow and the
+      # tooling cannot disagree about which warnings are fatal (Opus recheck
+      # W2/W3).
       - name: Warning watch - surface engine warnings, fail on physics ones (R7)
+        if: always()
         shell: bash
-        run: |
-          set -uo pipefail
-          warnings="$(grep -rhE '^(WARNING|USER WARNING):' tools/ci/out/logs/ 2>/dev/null | sort -u || true)"
-          jolt="$(printf '%s\n' "$warnings" | grep -i 'jolt' || true)"
-          {
-            echo "### Engine warnings"
-            echo ""
-            if [ -z "$warnings" ]; then
-              echo "No \`WARNING:\` lines in the captured engine logs."
-            else
-              echo '```'
-              printf '%s\n' "$warnings"
-              echo '```'
-              echo ""
-              echo "Warnings the project has accepted are listed in"
-              echo "\`tools/ci/warnings.allow\`; they are still printed on every run"
-              echo "rather than filtered out."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$jolt" ]; then
-            echo "::error::a Jolt physics warning appeared in the engine logs. The pinned engine's Jolt warnings all mean contacts were ignored or a slower allocator was used, so this run is not a clean pass."
-            printf '%s\n' "$jolt"
-            exit 1
-          fi
-          echo "No physics-backend (Jolt) warnings in the captured engine logs."
+        run: tools/ci/scripts/warning_watch.sh tools/ci/out/logs
 
       # Asset validation (PLAN.md M0.5). The validator is owned by
       # tools/asset_manifest/**; CI runs it when it is present and fails
@@ -228,14 +214,19 @@ jobs:
             sed 's/^/ /' >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-  # Native export preparation (M0.5). The job is skipped until export_presets.cfg
-  # exists, because no preset means there is nothing to prepare and claiming an
-  # export would be false. `ci.sh export --check` fails clearly when it is run
-  # without presets, and the README documents that behaviour.
+  # Native export preparation (M0.5).
+  #
+  # No job-level condition. The condition this job used to carry,
+  # `if: hashFiles('export_presets.cfg') != ''`, is INVALID: `hashFiles` is a
+  # step-level function and actionlint rejects it in a job `if`, which made the
+  # whole committed workflow -- including the checks above -- fail validation
+  # (Sol recheck finding 1). export_presets.cfg is committed now, so the job
+  # always runs; if the presets are ever removed again, `ci.sh export --check`
+  # fails the job with an explicit message instead. A skipped job would be a
+  # silent green, which is exactly what this workflow must not produce.
   export-preparation:
     name: export preparation
     runs-on: ubuntu-latest
-    if: hashFiles('export_presets.cfg') != ''
     steps:
       - uses: actions/checkout@v4
 
@@ -267,6 +258,73 @@ jobs:
           fi
           echo "bin=$bin" >> "$GITHUB_OUTPUT"
 
+      # Export templates (Opus recheck finding E1). The job used to install no
+      # templates at all, so `export --check` failed on a fresh runner for all
+      # three targets -- and the obvious workaround, GODOT_TEMPLATES_DIR, would
+      # have turned that red check green while the engine still refused to
+      # export, because the engine reads templates from its OWN user-data
+      # directory and does not read that variable (measured against the pinned
+      # engine; see ci_templates_engine_dir in tools/ci/lib/common.sh).
+      #
+      # So: download the pinned template archive, verify it against the
+      # publisher's SHA-512 BEFORE extraction (M0.1: "Verify before
+      # installation"), install it exactly where the engine looks on GitHub
+      # Linux (~/.local/share/godot/export_templates/<version>.stable), then
+      # verify the installed tree -- version.txt plus the templates this
+      # project's presets require, each non-empty.
+      #
+      # The official Godot release packages templates/* at the archive root
+      # (godot-build-scripts build-release.sh), NOT a <version>.stable
+      # directory, so the installer locates the payload by its version.txt,
+      # validates that version before placing anything, and refuses a staged
+      # tree that does not satisfy the project's presets. It also REFUSES to
+      # replace an existing ~/.local/share/godot/export_templates/<version>
+      # directory rather than deleting an installed tree (a fresh hosted runner
+      # has none; remove it explicitly on a persistent host). (Coordinator
+      # follow-up.)
+      - name: Resolve and verify the pinned export templates
+        id: templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          tver="$(tools/ci/ci.sh pin --field version).stable"
+          url="$(tools/ci/ci.sh pin --field templates_url)"
+          archive="$RUNNER_TEMP/godot-export-templates.tpz"
+          curl -fsSL --retry 3 --retry-delay 2 \
+            --connect-timeout 30 --max-time 1800 \
+            -o "$archive" "$url"
+          echo "downloaded $(wc -c <"$archive" | tr -d ' ') bytes from $url"
+
+          # M0.1: verify before installation. A tampered, truncated or
+          # substituted archive never reaches `unzip`.
+          tools/ci/ci.sh verify-templates --archive "$archive"
+
+          # Install where the engine reads templates. Re-verifies the archive
+          # digest before extracting it, then installs the verified payload.
+          dest="${HOME}/.local/share/godot/export_templates"
+          tools/ci/ci.sh install-templates --archive "$archive" --dest "$dest" --mode release
+
+          # The installed tree is what the engine will read: its version and the
+          # templates this project's presets require, all non-empty.
+          tools/ci/ci.sh verify-templates --dir "$dest" --mode release
+
+          {
+            echo "### Pinned export templates"
+            echo ""
+            echo "| fact | value |"
+            echo "| --- | --- |"
+            echo "| pinned tag | $(tools/ci/ci.sh pin --field tag) |"
+            echo "| archive url | $url |"
+            echo "| archive sha512 | $(tools/ci/ci.sh pin --field templates_archive_sha512) |"
+            echo "| installed at | $dest/$tver |"
+            echo "| templates | $(find "$dest/$tver" -maxdepth 1 -type f | wc -l | tr -d ' ') file(s) |"
+            echo ""
+            echo "The archive was compared against the pinned publisher digest in"
+            echo "\`tools/ci/pin/engine.txt\` BEFORE extraction (PLAN.md M0.1), and the"
+            echo "installed tree was verified afterwards. Reproduce locally with"
+            echo "\`ci.sh install-templates --archive <file> --dest <engine export_templates dir>\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Export preparation check (templates and presets)
         run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --check
 
@@ -279,14 +337,16 @@ jobs:
           set -euo pipefail
           mkdir -p build
           tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --list-presets |
-            while IFS=$'\t' read -r section name platform; do
+            while IFS=$'\t' read -r _section name platform; do
               # The platform column is the value Godot writes in
               # export_presets.cfg, so the Windows target is "Windows
               # Desktop", not "Windows" -- the same mapping
               # `ci.sh export --check` applies through
               # ci_preset_platform_for (tools/ci/lib/common.sh). Matching the
               # requirement name here would build the Windows preset with a
-              # .pck extension.
+              # .pck extension. (_section is the preset index and is unused
+              # here; it is named with a leading underscore so linters do not
+              # report it.)
               case "$platform" in
                 macOS) ext="zip" ;;
                 "Windows Desktop") ext="exe" ;;
@@ -298,6 +358,9 @@ jobs:
               tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --export "$name" --out "$out"
             done
 
+      # The build step reports the main file AND the sidecar .pck (which carries
+      # the project data; on Linux the main binary is the pinned stock template).
+      # This upload therefore contains the package as it was actually produced.
       - name: Upload built packages
         if: always()
         uses: actions/upload-artifact@v4

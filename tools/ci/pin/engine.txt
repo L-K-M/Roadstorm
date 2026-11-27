@@ -34,6 +34,12 @@
 #   release_binary_sha256
 #                      locally computed SHA-256 of the editor binary inside
 #                      release_archive_url, checked BEFORE it is executed
+#   templates_url
+#                      official export-template archive (.tpz) that CI downloads
+#                      and verifies before extraction (Opus recheck finding E1)
+#   templates_archive_sha512
+#                      publisher's SHA-512 digest of templates_url. This is what
+#                      `ci.sh verify-templates` checks BEFORE extraction.
 #
 # Why digests live here after all: a digest recorded on one host for an
 # *installed* file is not a portable expectation for another host, so those stay
@@ -81,3 +87,31 @@ release_binary_sha256=8d106cbe6144c2dc7e881d61d2429c1a8a76e6b22ef48bd5e48dcf9349
 # The digests above were compared against the publisher's checksum file for the
 # pinned tag (scope: the Linux x86_64 editor ZIP and its contained binary).
 upstream_verified=yes
+
+# --- Official export templates ---------------------------------------------
+# Recorded 2026-11-27 (job d20b5592) for the pinned tag 4.7.2-stable.
+#
+# Provenance of templates_archive_sha512:
+#   1. https://github.com/godotengine/godot/releases/download/4.7.2-stable/SHA512-SUMS.txt
+#      was fetched and its line for
+#      Godot_v4.7.2-stable_export_templates.tpz used.
+#   2. The same checksum file carries the digests recorded in
+#      docs/evidence/godot-4.7.2-archive-verification.md, which independently
+#      confirms that this is the publisher's file for this tag.
+#
+# Scope: the export-template archive itself. CI verifies THIS digest before
+# extracting anything from it (PLAN.md M0.1: "Verify before installation"), then
+# installs the <version>.stable tree where the engine reads it and verifies the
+# installed tree's version.txt and required templates. Per-file digests of the
+# extracted templates are NOT recorded here: a digest of a file inside a
+# publisher-verified archive adds no portable expectation, and the installed
+# copies belong to tools/toolchain/pin/checksums.txt (local observations).
+#
+# Why the templates are pinned at all: the hosted export-preparation job used to
+# install no templates, so `export --check` failed on a fresh runner for all
+# three targets, and pointing GODOT_TEMPLATES_DIR at a template tree would have
+# made the check pass while the engine still refused to export (the engine does
+# not read that variable). Verifying the archive before extraction and
+# installing it into the engine's own directory is the fix for both halves.
+templates_url=https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_export_templates.tpz
+templates_archive_sha512=ca4d71c4d7b81dfc15d1a98baa07534aa95b03fdda78a0075b06672e1648d2e5f40980c9adc28d23e1b92e732ee7bf3461997aa804af74ec2fcd7a93ccb84079

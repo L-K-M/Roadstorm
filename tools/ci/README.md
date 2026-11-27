@@ -19,9 +19,9 @@ tools/ci/ci.sh commands
 
 | Requirement | Detail |
 | --- | --- |
-| Godot editor | **4.7.2 Standard**, the version pinned in `pin/engine.txt` (PLAN.md M0.1). Found via `$GODOT_BIN`, then `godot`/`godot4`/`Godot` on `PATH`, then common install locations. |
+| Godot editor | **4.7.2 Standard**, the version pinned in `pin/engine.txt` (PLAN.md M0.1). Found via `$GODOT_BIN`, then `godot`/`godot4`/`Godot` on `PATH`, then common install locations. Not needed by `verify-engine`, `verify-templates` or `install-templates`. |
 | Shell | Any POSIX `/bin/sh` (dash, bash, ash, busybox). No bashisms; verified under `dash`. |
-| Everything else | `tar`, `grep`, `sed`, `awk`, `find`, `sort`, `head`, `date`, `uname`. |
+| Everything else | `tar`, `grep`, `sed`, `awk`, `find`, `sort`, `head`, `dirname`, `mktemp`, `date`, `uname`; `unzip` for `install-templates` (the workflow also uses it to unpack the editor archive). |
 | Python 3 | **Not** required by `ci.sh` itself. `scripts/runtime_error_gate.sh` needs `python3` to inject the GDScript faults into its snapshot copies (the same dependency `tools/smoke/fault_injection.sh` and `tools/asset_manifest/` already have); without it, that one script exits 2 and the rest of the tooling is unaffected. |
 
 Set `GODOT_BIN=/path/to/godot` when the engine is not on `PATH`. Set
@@ -107,6 +107,7 @@ captures and exports. `validate` checks that nothing under it is tracked.
 | `export --list-presets [names]` | Lists the declared export presets (`preset.N`, name, platform). | there is no `export_presets.cfg`. |
 | `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. | presets are missing, the preset is unknown, the export fails, or no file is produced. |
 | `verify-engine --archive <file> [--binary <file>]` | Compares a downloaded release archive, and optionally the extracted editor binary, against the pinned publisher digest in `pin/engine.txt`. Resolves no engine, so it also runs on a host with none installed. | a digest does not match, a pinned digest is missing, or the file cannot be read (exit 1, before anything is extracted or executed). |
+| `install-templates --archive <file> --dest <dir> [--mode release\|debug]` | Verifies the export-template archive against the pinned publisher digest BEFORE extraction, locates its payload by `version.txt` (the official `.tpz` packages `templates/*` at the archive root, not a `<version>.stable/` directory), validates that version, checks the staged tree against this project's presets, and only then installs it as `<dir>/<version>.stable`. Refuses to replace an existing target directory rather than deleting an installed template tree; remove it explicitly to reinstall. Resolves no engine. | the digest does not match, `<dir>/<version>.stable` already exists, `version.txt` is missing or names another version, the required template files are absent/empty, or the destination cannot be written. Nothing is placed in or removed from `<dir>` on failure. |
 | `pin [--field <name>]` | Prints the pinned engine facts (tag, version, official URLs, pinned digests) as `key=value` lines. One source of truth for the workflow. | a requested digest field is not recorded. |
 | `all` | `import` + `validate` + `test` on one shared scratch copy. This is the CI check set. | any of them fail. |
 | `version` | Prints the pinned and detected engine versions. | — |
