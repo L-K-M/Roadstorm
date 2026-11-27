@@ -16,12 +16,22 @@ extends RefCounted
 ## the simulation coordinator is responsible for converting this road-plane
 ## motion into world motion on the support basis and committing it.
 ##
+## Committed gear mirror: `gear_index` mirrors the canonical
+## `AutomaticGearbox.GearboxState.gear_index` (`-1` reverse, `1..N` forward)
+## for HUD/audio consumers and initializes to gear 1 so a fresh record agrees
+## with the gearbox deterministic reset. The gearbox owns selection, shift
+## dwell and rpm indication. A replay/restore must save and restore the
+## `GearboxState` together with this record and then repair this mirror with
+## `AutomaticGearbox.mirror_gear()` (called after `propose()` or
+## `restore_state()`) or the restored canonical gear as one atomic step;
+## restoring this record alone cannot reproduce dwell or shift timing.
+##
 ## Inert seams for later M1 slices (present so the state shape already matches
 ## docs/TECHNICAL_DESIGN.md:81; the M1.1 motor copies them unchanged and does not
-## interpret them): `gear_index`, `drift_active`, `drift_timer_s`,
-## `surge_cooldown_s`, `drafting_active`, `contact_immunity_s` and
-## `valid_progress_m`. Surface response is likewise deferred: `surface_id` is
-## carried through untouched and M1.3/M1.7 owns modifier resolution.
+## interpret them): `drift_active`, `drift_timer_s`, `surge_cooldown_s`,
+## `drafting_active`, `contact_immunity_s` and `valid_progress_m`. Surface
+## response is likewise deferred: `surface_id` is carried through untouched and
+## M1.3/M1.7 owns modifier resolution.
 
 ## Road-plane position relative to the scenario origin, metres.
 var position_m := Vector2(0.0, 0.0)
@@ -42,8 +52,10 @@ var reverse_engaged := false
 var reverse_hold_s := 0.0
 
 # --- Inert documented seams (copied unchanged by M1.1) --------------------
-## Reserved transmission gear index; automatic gear selection is later work.
-var gear_index := 0
+## Committed mirror of the gearbox's canonical gear indication (`-1` reverse,
+## `1..N` forward). Defaults to gear 1; the integrator repairs it from
+## `AutomaticGearbox` after each successful proposal or restore.
+var gear_index := 1
 ## Drift state machine seam; drift entry/sustain/exit is M1.3.
 var drift_active := false
 ## Seconds since drift entry; M1.3 owns the value.

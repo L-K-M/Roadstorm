@@ -125,6 +125,7 @@ func snapshot_car(car) -> Dictionary:
 		"velocity_y": car.velocity_m_s.y,
 		"heading_rad": car.heading_rad,
 		"reverse_engaged": car.reverse_engaged,
+		"gear_index": car.gear_index,
 	}
 
 
@@ -147,17 +148,34 @@ func snapshot_proposal(proposal) -> Dictionary:
 	}
 
 
+## Build the committed `CarState` sequence for a `{s: speed, r: reverse}`
+## schedule. Replay tests feed these exact objects to both the original and
+## the restored gearbox so the inputs are identical.
+func make_cars(specs: Array) -> Array:
+	var cars := []
+	for spec in specs:
+		cars.append(make_car(float(spec["s"]), bool(spec["r"])))
+	return cars
+
+
 ## Run a `{s: speed, r: reverse}` schedule and return one proposal snapshot
 ## per tick. The real gearbox owns its state; no external state is threaded.
 ## Pass `gearbox` to replay onto an existing instance, otherwise a fresh one is
 ## created from `config`. A refused tick records null.
 func replay_trace(config, specs: Array, gearbox = null) -> Array:
+	return replay_cars(make_cars(specs), config, gearbox)
+
+
+## Run an explicit committed `CarState` sequence and return one proposal
+## snapshot per tick. Passing `gearbox` resumes that exact instance, which is
+## how restore/replay checks reuse the same inputs after a state restore.
+func replay_cars(cars: Array, config = null, gearbox = null) -> Array:
 	var trace := []
 	var owned = gearbox
 	if owned == null:
 		owned = fresh_gearbox(config)
-	for spec in specs:
-		var proposal = step(owned, make_car(float(spec["s"]), bool(spec["r"])))
+	for car in cars:
+		var proposal = step(owned, car)
 		trace.append(snapshot_proposal(proposal))
 	return trace
 

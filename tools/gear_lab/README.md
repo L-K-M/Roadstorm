@@ -11,7 +11,7 @@ automatic transmission exists.
 
 | Path | Role |
 | --- | --- |
-| `src/simulation/automatic_gearbox.gd` | pure gearbox: config/state validation, stateful gear selection, reverse-latch handling, rpm indication, atomic refusal, deterministic reset |
+| `src/simulation/automatic_gearbox.gd` | pure gearbox: config/state validation, stateful gear selection, reverse-latch handling, rpm indication, atomic refusal, deterministic reset, validated canonical-state restore and committed CarState mirror helper |
 | `tools/gear_lab/validate_gear_lab.gd` | headless `SceneTree` validator with one case per required behavior |
 | `tools/gear_lab/gear_lab_driver.gd` | shared builders/checks; calls the real gearbox, never re-implements its math |
 | `tools/gear_lab/run_validation.sh` | bounded isolated-copy wrapper (stages, imports, runs validator and failure proof) |
@@ -40,6 +40,18 @@ Helper scripts live only under `tools/gear_lab/`; nothing here is placed in
   part of the whole record rather than by a narrower field subset.
 - `gearbox.reset()` restores the deterministic initial state: gear 1, zero
   dwell, zero rpm. No clock, RNG or input is consulted.
+- The private `GearboxState` is the canonical gear/dwell/rpm indication.
+  `gearbox.restore_state(state)` atomically replaces it with a validated copy:
+  finite, gear `-1` or `1..forward_gear_count` for this configuration, dwell in
+  `[0, min_shift_dwell_s]`, rpm in `[0, 1]`. Invalid or null input returns
+  `false` and leaves the gearbox unchanged; the caller's object is copied, not
+  shared.
+- `gearbox.mirror_gear(car_state)` returns a copy of a finite committed
+  `CarState` whose `gear_index` mirrors the gearbox's canonical current gear,
+  or `null`. It reads only this gearbox's own validated canonical state; no
+  proposal enters the call, so a stale or foreign proposal cannot affect it.
+  Call it after a successful `propose()` or immediately after
+  `restore_state()`. Neither the input record nor the gearbox is mutated.
 - Reverse obeys the existing motor latch, never signed velocity alone: a
   negative signed speed with the latch released selects a forward gear;
   entering `-1` requires the latch. Leaving `-1` requires the latch to clear
@@ -50,16 +62,20 @@ Helper scripts live only under `tools/gear_lab/`; nothing here is placed in
   separated by `min_shift_dwell_s`. Boundary dither inside the band therefore
   produces exactly one event.
 
-The future simulation integrator owns committing `CarState.gear_index`,
-choosing whether to feed this indicator from throttle/brake state, and routing
-`ShiftEvent` to presentation/audio. This component neither applies torque nor
-emits sound.
+The future simulation integrator owns calling `mirror_gear()` after a
+successful proposal, choosing whether to feed this indicator from
+throttle/brake state, and routing `ShiftEvent` to presentation/audio. This
+component neither applies torque nor emits sound.
 
-Open integration decision (Opus F4): `CarState.gear_index` defaults to `0`
-while the kernel uses `-1`/`1..N` and holds `shift_cooldown_s` privately, so a
-replay or reset restored from a committed record cannot reproduce gearbox
-state. Before wiring, decide the single source of truth for the gear index,
-the shared initial value, and where the shift cooldown lives.
+State boundary (resolved): `AutomaticGearbox.GearboxState` is canonical;
+`CarState.gear_index` is a committed mirror initialized to gear 1 like
+`reset()`. A replay/restore MUST save and restore the `GearboxState`
+alongside the `CarState`, then verify or repair the mirror as one explicit
+atomic step (for example `restore_state(saved_gearbox_state)` followed
+immediately by `mirror_gear(car_state_copy)`, with no intervening tick, or
+`propose()` then `mirror_gear(car_state_copy)` in the normal tick path).
+Restoring `CarState` alone is insufficient: it carries no dwell or canonical
+rpm, so shift timing changes.
 
 ## Provisional defaults
 
@@ -98,7 +114,8 @@ supplied older source is staged over the isolated gearbox and must fail
 
 Cases: `custom_config_boundaries`, `acceleration_through_each_threshold`,
 `downshifts`, `boundary_dithering`, `reverse_latch_transition`, `rpm_bounds`,
-`invalid_atomicity`, `reset_replay`, plus the intentional-failure proof.
+`invalid_atomicity`, `reset_replay`, `restore_replay`, plus the
+intentional-failure proof.
 
 ## Limits
 
@@ -106,5 +123,6 @@ Pure-kernel checks only: no scene, body, physics query, clock, rendering,
 audio device, input routing or gameplay claim. Car states are explicit
 scripted values, not integrated motor/airborne/contact physics. Airborne,
 throttle/brake awareness, launch control and shift-torque effects are out of
-scope. This is an integration-ready indication component, not an integrated
-automatic transmission, and it is not M1 acceptance evidence.
+scope. `restore_state()` is an in-memory state-boundary API; persistence,
+DriveLab wiring, HUD/audio routing and an integrated automatic transmission
+remain future integration work. This is not M1 acceptance evidence.

@@ -7,8 +7,9 @@ extends RefCounted
 ## from the committed `CarState` road-plane motion and reports at most one
 ## shift event per tick. It changes no physics, writes no `CarState` field,
 ## touches no Godot body/scene/physics server/clock/RNG, and produces no
-## audio. The future simulation integrator owns committing `CarState.gear_index`
-## and routing `ShiftEvent` to presentation/audio.
+## audio. The future simulation integrator owns calling `mirror_gear()` to
+## commit the gear indication into a `CarState` copy and routing `ShiftEvent` to
+## presentation/audio.
 ##
 ## Inputs and output:
 ##   * input: one committed `CarState` whose every numeric field is finite
@@ -55,13 +56,20 @@ extends RefCounted
 ## awareness, airborne behaviour, launch logic, shift audio and HUD display.
 ## This component only indicates a gear and an event.
 ##
-## Integration seam (open): `CarState.gear_index` defaults to 0 while this
-## kernel uses `-1`/`1..N` and keeps `shift_cooldown_s` privately, so a replay
-## or reset restored from a committed `CarState` cannot reproduce gearbox
-## state. Before integration, decide the single source of truth for the gear
-## index, the shared initial value, and whether the shift cooldown lives in
-## `CarState`, in the gearbox, or is rebuilt on restore. This slice writes no
-## `CarState.gear_index`.
+## State boundary (resolved): the private `GearboxState` is the canonical
+## gear/dwell/rpm indication; `CarState.gear_index` is only a committed mirror
+## for HUD/audio consumers and initializes to gear 1 like `reset()`. A
+## replay/restore must save and restore the `GearboxState` alongside the
+## `CarState`, then repair the mirror as one explicit atomic step; restoring
+## `CarState` alone is insufficient because it carries neither the dwell nor
+## the canonical rpm. `restore_state()` validates and copies a complete state
+## atomically. `mirror_gear(car_state)` reads only this gearbox's validated
+## canonical current state and returns a repaired copy of a finite committed
+## `CarState`; no proposal enters the call, so a stale or foreign proposal
+## cannot affect the published gear. The integrator calls it after a
+## successful `propose()` and immediately after `restore_state()`. Neither
+## helper changes physics or the physical motor; `propose()` retains its valid
+## shift behavior and still writes no `CarState` field.
 
 const DT := 1.0 / 60.0
 ## Absolute tolerance for accepting a caller-supplied step size as 60 Hz.
@@ -262,9 +270,40 @@ func reset() -> void:
 	_state = GearboxState.new()
 
 
+## Atomically replace the canonical state with a validated copy of `state`.
+## The copy is taken only after validation, so an invalid input leaves this
+## gearbox unchanged and the caller's object is never shared. A valid state is
+## finite, has gear `-1` or `1..forward_gear_count` for this configuration,
+## dwell in `[0, min_shift_dwell_s]`, and rpm in `[0, 1]`. Returns `false` for
+## null or invalid input.
+func restore_state(state: GearboxState) -> bool:
+	if not _is_restorable_state(state):
+		return false
+	_state = state.copy()
+	return true
+
+
 ## Read-only copy of the current gearbox state.
 func get_state() -> GearboxState:
 	return _state.copy()
+
+
+## Return a copy of `car_state` whose `gear_index` mirrors this gearbox's
+## canonical current gear, or `null` when the mirror cannot be published.
+## Only the gearbox's own canonical state is read: no proposal enters this
+## API, so a stale or foreign proposal cannot affect the result. The canonical
+## state and the input record are both validated; a null or nonfinite
+## `car_state` is refused. Call immediately after a successful `propose()` or
+## `restore_state()`. Neither the input record nor this gearbox is mutated,
+## and the returned record does not share storage with either.
+func mirror_gear(car_state: CarState) -> CarState:
+	if car_state == null or not car_state.is_finite():
+		return null
+	if not _is_restorable_state(_state):
+		return null
+	var mirrored := car_state.copy()
+	mirrored.gear_index = _state.gear_index
+	return mirrored
 
 
 ## Machine-readable state snapshot for replay/immutability comparisons.
@@ -360,6 +399,23 @@ func propose(car_state: CarState, dt: float = DT) -> GearboxProposal:
 		event.normalized_rpm = rpm
 		proposal.event = event
 	return proposal
+
+
+func _is_restorable_state(state: GearboxState) -> bool:
+	if state == null:
+		return false
+	if not state.is_finite():
+		return false
+	if state.gear_index != -1 and (
+		state.gear_index < 1 or state.gear_index > _forward_gear_count
+	):
+		return false
+	if state.shift_cooldown_s < 0.0 or state.shift_cooldown_s > _min_shift_dwell_s:
+		return false
+	if state.normalized_rpm < 0.0 or state.normalized_rpm > 1.0:
+		return false
+	return true
+
 
 
 ## Forward target gear from the speed magnitude, anchored at the current gear.

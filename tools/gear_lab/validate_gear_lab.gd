@@ -15,8 +15,9 @@ extends SceneTree
 ## These are pure-kernel checks only: no scene, body, physics query, clock,
 ## input routing, audio or gameplay claim. Car states are explicit scripted
 ## inputs, not integrated motor physics. The component indicates gears and
-## shift events only; nothing here commits `CarState.gear_index` or produces
-## audible shifts, and no integrated automatic transmission is claimed.
+## shift events only; it writes no `CarState` field, `mirror_gear()` returns a
+## repaired copy rather than committing one, and no audible shifts or
+## integrated automatic transmission are claimed.
 
 const DriverScript = preload("res://tools/gear_lab/gear_lab_driver.gd")
 const GearboxScript = preload("res://src/simulation/automatic_gearbox.gd")
@@ -30,6 +31,7 @@ const CASE_IDS := [
 	"rpm_bounds",
 	"invalid_atomicity",
 	"reset_replay",
+	"restore_replay",
 ]
 
 var _checks := 0
@@ -105,6 +107,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_invalid_atomicity(driver)
 		"reset_replay":
 			_case_reset_replay(driver)
+		"restore_replay":
+			_case_restore_replay(driver)
 	_checks += driver.checks
 	for failure in driver.failures:
 		_failures.append("%s: %s" % [case_id, failure])
@@ -829,6 +833,241 @@ func _case_reset_replay(driver) -> void:
 		driver.check(not reset_event.has_event(), "post-reset neutral tick emits no event")
 
 
+func _case_restore_replay(driver) -> void:
+	# Tick 0 upshifts 1->3 with a full dwell; tick 1 is blocked by that dwell,
+	# so a checkpoint after tick 1 carries a nonzero cooldown that a
+	# CarState-only restore cannot reproduce.
+	var specs := [
+		{"s": 20.0, "r": false},
+		{"s": 2.0, "r": false},
+	]
+	for _index in range(45):
+		specs.append({"s": 2.0, "r": false})
+	specs.append({"s": 0.0, "r": true})
+	specs.append({"s": -2.0, "r": false})
+	specs.append({"s": 0.5, "r": false})
+	specs.append({"s": 45.0, "r": false})
+	for _index in range(20):
+		specs.append({"s": 45.0, "r": false})
+
+	var cars: Array = driver.make_cars(specs)
+	var checkpoint_index := 1
+	var checkpoint_box = driver.fresh_gearbox()
+	for index in range(checkpoint_index + 1):
+		var checkpoint_proposal = driver.step(checkpoint_box, cars[index])
+		if checkpoint_proposal == null:
+			driver.check(false, "restore checkpoint tick %d is valid" % index)
+			return
+	var checkpoint_state = checkpoint_box.get_state()
+	driver.check_eq(int(checkpoint_state.gear_index), 3, "restore checkpoint is in third gear")
+	driver.check(
+		checkpoint_state.shift_cooldown_s > 0.0,
+		"restore checkpoint has a nonzero shift dwell"
+	)
+
+	var original: Array = driver.replay_cars(cars)
+	driver.check_eq(original.size(), cars.size(), "restore replay records every tick")
+	driver.measure("restore_checkpoint_index", checkpoint_index)
+	driver.measure("restore_resumed_ticks", cars.size() - checkpoint_index - 1)
+
+	# Restore the canonical GearboxState into a fresh gearbox built from the
+	# same configuration, then resume with the exact same committed CarStates.
+	var restored = driver.fresh_gearbox()
+	driver.check(restored.restore_state(checkpoint_state), "valid checkpoint state restores")
+	driver.check(
+		restored.snapshot() == checkpoint_box.snapshot(),
+		"restored canonical state equals the checkpoint"
+	)
+	var resumed: Array = driver.replay_cars(cars.slice(checkpoint_index + 1), null, restored)
+	var expected_tail: Array = original.slice(checkpoint_index + 1)
+	driver.check_eq(resumed.size(), expected_tail.size(), "resumed tail covers every remaining tick")
+	driver.check(resumed == expected_tail, "resumed shift timing, events and rpm match exactly")
+
+	# A fresh gearbox from the same config would not carry the dwell; the first
+	# resumed tick must differ, proving the restore changed the outcome.
+	var naive = driver.fresh_gearbox()
+	var naive_first = driver.step(naive, cars[checkpoint_index + 1])
+	driver.check(naive_first != null, "restore naive comparison evaluation exists")
+	if naive_first != null and resumed.size() > 0 and resumed[0] != null:
+		driver.check(
+			int(naive_first.gear_index) != int(resumed[0]["gear_index"]),
+			"the restored dwell changes the resumed outcome"
+		)
+
+	# Restore-then-mirror without a tick: the helper reads the restored
+	# canonical state directly, so the committed mirror is repaired even before
+	# another proposal exists.
+	var mirror_box = driver.fresh_gearbox()
+	driver.check(mirror_box.restore_state(checkpoint_state), "mirror setup restores the checkpoint")
+	var committed = cars[checkpoint_index].copy()
+	committed.gear_index = 99
+	var restored_mirror = mirror_box.mirror_gear(committed)
+	driver.check(restored_mirror != null, "restore-then-mirror succeeds without a tick")
+	if restored_mirror != null:
+		driver.check_eq(
+			int(restored_mirror.gear_index), int(checkpoint_state.gear_index),
+			"restore-then-mirror publishes the restored canonical gear"
+		)
+		driver.check_eq(int(committed.gear_index), 99, "mirror leaves the input record unchanged")
+
+	# Copy semantics: neither the source object nor a state obtained from the
+	# gearbox shares mutable storage with the live gearbox.
+	var source = checkpoint_box.get_state()
+	var copied_target = driver.fresh_gearbox()
+	driver.check(copied_target.restore_state(source), "copy-semantics setup restores")
+	source.gear_index = 99
+	driver.check_eq(
+		int(copied_target.snapshot()["gear_index"]), 3,
+		"restore copies instead of sharing the source object"
+	)
+	var exposed = copied_target.get_state()
+	exposed.gear_index = 99
+	driver.check_eq(
+		int(copied_target.snapshot()["gear_index"]), 3,
+		"get_state returns an independent copy"
+	)
+
+	# Invalid restores are refused atomically: bad gear index, nonfinite
+	# dwell/rpm and out-of-range dwell all leave the gearbox untouched.
+	var config = driver.default_config()
+	var gearbox = driver.fresh_gearbox(config)
+	var baseline: Dictionary = gearbox.snapshot()
+
+	var out_of_range = GearboxScript.GearboxState.new()
+	out_of_range.gear_index = int(config.forward_gear_count) + 1
+	driver.check(out_of_range.is_valid(), "config-invalid gear is only invalid for this configuration")
+	driver.check(not gearbox.restore_state(out_of_range), "gear above the configured count is refused")
+
+	var negative_gear = GearboxScript.GearboxState.new()
+	negative_gear.gear_index = -2
+	driver.check(not gearbox.restore_state(negative_gear), "invalid negative gear is refused")
+
+	var nan_cooldown = GearboxScript.GearboxState.new()
+	nan_cooldown.shift_cooldown_s = NAN
+	driver.check(not gearbox.restore_state(nan_cooldown), "nonfinite cooldown is refused")
+
+	var inf_rpm = GearboxScript.GearboxState.new()
+	inf_rpm.normalized_rpm = INF
+	driver.check(not gearbox.restore_state(inf_rpm), "nonfinite rpm is refused")
+
+	var over_dwell = GearboxScript.GearboxState.new()
+	over_dwell.shift_cooldown_s = config.min_shift_dwell_s + 1.0
+	driver.check(not gearbox.restore_state(over_dwell), "cooldown above the configured dwell is refused")
+
+	driver.check(not gearbox.restore_state(null), "null state is refused")
+	driver.check(gearbox.snapshot() == baseline, "invalid restores leave the gearbox unchanged")
+
+	# A state from a different configuration is refused even when its values
+	# are globally valid.
+	var three_gear_config = driver.config(3, [10.0, 20.0], [6.0, 14.0], 0.1, 0.5, 0.5, 30.0)
+	var three_gear_box = driver.fresh_gearbox(three_gear_config)
+	driver.check(three_gear_box != null, "config-mismatch probe creates the three-gear gearbox")
+	if three_gear_box != null:
+		var mismatched_gear = GearboxScript.GearboxState.new()
+		mismatched_gear.gear_index = 4
+		driver.check(mismatched_gear.is_valid(), "gear 4 is globally valid")
+		var mismatch_baseline: Dictionary = three_gear_box.snapshot()
+		driver.check(
+			not three_gear_box.restore_state(mismatched_gear),
+			"gear beyond a three-gear config is refused"
+		)
+		var mismatched_dwell = GearboxScript.GearboxState.new()
+		mismatched_dwell.gear_index = 1
+		mismatched_dwell.shift_cooldown_s = 0.25
+		driver.check(mismatched_dwell.is_valid(), "dwell 0.25 is globally valid")
+		driver.check(
+			not three_gear_box.restore_state(mismatched_dwell),
+			"dwell above a shorter configured dwell is refused"
+		)
+		driver.check(
+			three_gear_box.snapshot() == mismatch_baseline,
+			"config mismatches leave the gearbox unchanged"
+		)
+
+	# Normal post-proposal mirror: the helper reads this gearbox's own
+	# canonical gear and agrees with the proposal that produced it.
+	var home = driver.fresh_gearbox()
+	var home_proposal = driver.step(home, driver.make_car(20.0))
+	driver.check(home_proposal != null, "normal mirror proposal exists")
+	var mirror_car = driver.make_car(20.0)
+	mirror_car.gear_index = 99
+	var car_before: Dictionary = driver.snapshot_car(mirror_car)
+	var home_before: Dictionary = home.snapshot()
+	var normal_mirror = home.mirror_gear(mirror_car)
+	driver.check(normal_mirror != null, "normal post-proposal mirror succeeds")
+	if normal_mirror != null and home_proposal != null:
+		driver.check_eq(
+			int(normal_mirror.gear_index), int(home_proposal.gear_index),
+			"normal mirror publishes the proposed canonical gear"
+		)
+	driver.check_eq(int(mirror_car.gear_index), 99, "normal mirror leaves the input record unchanged")
+
+	# Invalid mirror inputs are refused atomically.
+	var null_target = home.mirror_gear(null)
+	var nan_car = driver.make_car(20.0)
+	nan_car.velocity_m_s = Vector2(NAN, 20.0)
+	var nan_target = home.mirror_gear(nan_car)
+	driver.check(null_target == null, "null car is refused")
+	driver.check(nan_target == null, "nonfinite car is refused")
+	driver.check(driver.snapshot_car(mirror_car) == car_before, "refused mirrors leave the car unchanged")
+	driver.check(home.snapshot() == home_before, "refused mirrors leave the gearbox unchanged")
+
+	# Two same-valued gearboxes/proposals cannot confuse the helper: each mirror
+	# reads its own instance, and value-equivalent history does not leak across.
+	var first = driver.fresh_gearbox()
+	var second = driver.fresh_gearbox()
+	var first_proposal = driver.step(first, driver.make_car(20.0))
+	var second_proposal = driver.step(second, driver.make_car(20.0))
+	driver.check(first_proposal != null and second_proposal != null, "same-valued setup proposals exist")
+	if first_proposal != null and second_proposal != null:
+		driver.check_eq(
+			first.snapshot(), second.snapshot(),
+			"same-valued gearboxes have identical canonical state"
+		)
+		driver.check_eq(
+			int(first_proposal.gear_index), int(second_proposal.gear_index),
+			"same-valued proposals agree"
+		)
+		var first_car = driver.make_car(20.0)
+		var second_car = driver.make_car(20.0)
+		var equal_first = first.mirror_gear(first_car)
+		var equal_second = second.mirror_gear(second_car)
+		driver.check(equal_first != null and equal_second != null, "same-valued mirrors succeed")
+		if equal_first != null and equal_second != null:
+			driver.check_eq(
+				int(equal_first.gear_index), int(first_proposal.gear_index),
+				"first same-valued mirror follows its own state"
+			)
+			driver.check_eq(
+				int(equal_second.gear_index), int(second_proposal.gear_index),
+				"second same-valued mirror follows its own state"
+			)
+		# Diverge the pair: the earlier equal values must not leak.
+		for _index in range(30):
+			driver.step(first, driver.make_car(2.0))
+		var diverged_first = first.mirror_gear(first_car)
+		var diverged_second = second.mirror_gear(second_car)
+		driver.check(diverged_first != null and diverged_second != null, "diverged mirrors succeed")
+		if diverged_first != null and diverged_second != null:
+			driver.check_eq(int(diverged_first.gear_index), 1, "diverged first mirror follows first gearbox")
+			driver.check_eq(int(diverged_second.gear_index), 3, "diverged second mirror follows second gearbox")
+
+	# A valid custom state restores, takes effect and is undone by reset.
+	var reset_box = driver.fresh_gearbox()
+	var custom_state = GearboxScript.GearboxState.new()
+	custom_state.gear_index = 2
+	custom_state.shift_cooldown_s = config.min_shift_dwell_s
+	custom_state.normalized_rpm = 0.5
+	driver.check(reset_box.restore_state(custom_state), "valid custom state restores")
+	driver.check_eq(int(reset_box.snapshot()["gear_index"]), 2, "restored gear takes effect")
+	reset_box.reset()
+	driver.check(
+		reset_box.snapshot() == driver.fresh_gearbox().snapshot(),
+		"reset restores the deterministic initial state"
+	)
+	driver.check_eq(int(reset_box.snapshot()["gear_index"]), 1, "reset returns to first gear")
+
+
 # --- Deliberate failure proof ----------------------------------------------
 
 
@@ -842,6 +1081,22 @@ func _run_intentional_failure() -> Dictionary:
 	driver.check(
 		bool(proposal != null and proposal.has_event()),
 		"intentional failure probe: exact-threshold speed unexpectedly shifted"
+	)
+
+	# A second deliberate probe for the state boundary: an out-of-range gear
+	# must be refused by restore_state, so expecting success must fail too.
+	var bad_state := GearboxScript.GearboxState.new()
+	bad_state.gear_index = GearboxScript.MAX_FORWARD_GEARS + 1
+	driver.check(
+		gearbox.restore_state(bad_state),
+		"intentional failure probe: invalid restore unexpectedly succeeded"
+	)
+
+	# A third deliberate probe for the simplified mirror API: a null record must
+	# be refused, so expecting success must fail too.
+	driver.check(
+		gearbox.mirror_gear(null) != null,
+		"intentional failure probe: null mirror unexpectedly succeeded"
 	)
 	var proof := {
 		"schema": "roadstorm.gear_lab.validation.v1",
@@ -862,7 +1117,7 @@ const LIMITATIONS := [
 	"Pure-kernel checks only: no Godot body, scene, physics query, clock, rendering, audio device or input routing is exercised.",
 	"Car states are explicit scripted values, not integrated motor, contact or airborne physics; the gearbox consumes committed road-plane records only.",
 	"Reverse selection follows the committed CarState.reverse_engaged latch and does not model how the motor engages or releases that latch; it makes no reverse-drive physics claim.",
-	"The gearbox changes no physics and writes no CarState field. The future integrator owns committing gear_index and routing ShiftEvent to presentation/audio.",
+	"The gearbox changes no physics and writes no CarState field; mirror_gear() only returns a repaired copy. Replay/restore must save and restore GearboxState alongside CarState and repair the mirror atomically, because restoring CarState alone loses dwell and rpm indication.",
 	"No audible shift is produced or faked here; normalized rpm is a bounded indication value, not measured engine speed.",
 	"Airborne behaviour, throttle/brake awareness, launch control and shift-torque effects are out of scope; the same fixed-step contract as ArcadeMotor is enforced but no motor torque is applied.",
 	"Default thresholds, dwell, hysteresis and reverse-exit values are provisional M1.1 choices spanning the committed 0-45 m/s laboratory envelope; they are not frozen handling coefficients and await M1.6/M1.7 measurements.",
