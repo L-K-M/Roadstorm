@@ -22,6 +22,11 @@ extends Node3D
 ## input at all. Presentation actions never call the adapter, never write
 ## simulation or body state and never create a second viewport or camera.
 ##
+## Keyboard focus-loss lifecycle: a key released while the window is unfocused
+## never reaches `_unhandled_input()`, so every held keyboard level is dropped and
+## rear view is released on Godot focus loss. A fresh press after refocus
+## registers normally; scripted and headless command isolation is unchanged.
+##
 ## The laboratory has no drift telemetry source, so the HUD cue is the honest
 ## `GRIP` phase with a zero slip reading and no qualifying flag: it never claims
 ## a drift the flat straight cannot produce. Nothing here claims audio
@@ -201,6 +206,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		if key.keycode != 0:
 			_keys[key.keycode] = key.pressed
 		_apply_presentation_key(key)
+
+
+func _notification(what: int) -> void:
+	if what == Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT \
+			or what == Node.NOTIFICATION_APPLICATION_FOCUS_OUT:
+		_clear_keyboard_lifecycle_state()
 
 
 # --- Public laboratory API -------------------------------------------------
@@ -659,6 +670,17 @@ func _apply_presentation_key(key: InputEventKey) -> void:
 			set_rear_view_held(key.pressed)
 
 
+## Drops every held keyboard level and releases momentary rear view. Called on
+## focus loss because a release delivered while the window is unfocused never
+## reaches `_unhandled_input()`, which would otherwise latch throttle, brake,
+## steering or rear view. Scripted and headless mode read no GUI input, so the
+## clear cannot inject a command there; a fresh press after refocus registers
+## normally.
+func _clear_keyboard_lifecycle_state() -> void:
+	_keys.clear()
+	set_rear_view_held(false)
+
+
 func _reset_run_state() -> void:
 	failed = false
 	failure_reason = ""
@@ -681,6 +703,12 @@ func _reset_run_state() -> void:
 	max_remainder_m = 0.0
 	tick_log = []
 	tick_log_dropped = 0
+	# Presentation counters describe the current configuration, not the whole
+	# lifetime of a node that is reconfigured with a new schedule.
+	hud_updates = 0
+	hud_rejected_updates = 0
+	camera_mode_cycles = 0
+	rear_view_holds = 0
 	last_result = null
 	if _material != null:
 		_material.albedo_color = GRAYBOX_COLOR

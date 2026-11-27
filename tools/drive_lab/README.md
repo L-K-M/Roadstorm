@@ -24,7 +24,8 @@ bounded isolated runner.
 
 Cases, in order: `scene_and_manifest`, `movement_from_rest`, `braking`,
 `displacement_accounting`, `repeatability`, `finite_state`, `hull_road_overlap`,
-`one_call_per_tick`, `refusal_halts`, `presentation_integration`.
+`one_call_per_tick`, `refusal_halts`, `presentation_integration`,
+`keyboard_focus_lifecycle`, `reconfigure_presentation_counters`.
 
 `presentation_integration` is the M1.5 presentation slice. It runs against the
 real `scenes/laboratory/drive_lab.tscn` and checks that the committed
@@ -53,6 +54,24 @@ real `scenes/laboratory/drive_lab.tscn` and checks that the committed
 * laboratory teardown frees the HUD, its canvas layer, the camera rig and the
   camera, and leaves no `SpeedHud`, `Camera3D` or `CanvasLayer` in the tree.
 
+`keyboard_focus_lifecycle` holds `W` and `Shift` through the real input
+pipeline, then loses focus without any key-up event and requires the held
+throttle and rear view to be dropped immediately, with no residual acceleration
+and a working fresh press afterward. Headless mode cannot create a genuine OS
+window focus transition, so the case drives Godot's
+`NOTIFICATION_WM_WINDOW_FOCUS_OUT` and `NOTIFICATION_APPLICATION_FOCUS_OUT`
+through the scene-tree root, the same notifications the engine propagates on
+window and application focus loss. It does not exercise DisplayServer or a
+window-manager transition. The pre-fix source fails this case (five assertions,
+including measurable residual throttle), which is kept as the old-source control
+in the task log.
+
+`reconfigure_presentation_counters` runs one schedule, cycles the camera,
+holds and releases rear view, then calls `configure()` again with a new
+schedule and requires every presentation and simulation counter to describe
+only the new configuration, followed by an independent run of that schedule.
+The pre-fix source carries the counters over and fails three assertions.
+
 A deliberate negative control inside that case feeds a scratch collector a
 wrong expectation about a real measurement and requires it to record exactly one
 failure while the live collector stays untouched, so the case's assertions are
@@ -61,7 +80,8 @@ demonstrably capable of failing.
 Scope: one car, one flat straight, structural and behavioural headless checks.
 The validator does not prove rendering, visual readability, HUD contrast or
 legibility at real resolutions, audio playback, controller input, split-screen
-cost, race integration or M1.5/M1 acceptance.
+cost, race integration, a real window-manager focus transition, or M1.5/M1
+acceptance.
 
 ## Run
 

@@ -31,6 +31,10 @@ const PRESENTATION_TICKS := 30
 const KMH_PER_M_S := 3.6
 ## Bounded wait for a synthetic key event to reach the input pipeline.
 const INPUT_WAIT_FRAMES := 20
+## Bounded tick counts for the keyboard focus-loss lifecycle case.
+const FOCUS_HOLD_TICKS := 20
+const FOCUS_COAST_TICKS := 20
+const FOCUS_FRESH_TICKS := 20
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
@@ -43,6 +47,8 @@ const CASE_IDS: Array[String] = [
 	"one_call_per_tick",
 	"refusal_halts",
 	"presentation_integration",
+	"keyboard_focus_lifecycle",
+	"reconfigure_presentation_counters",
 ]
 
 var d := DriveLabChecks.new()
@@ -125,6 +131,10 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_refusal_halts()
 		"presentation_integration":
 			await _case_presentation_integration()
+		"keyboard_focus_lifecycle":
+			await _case_keyboard_focus_lifecycle()
+		"reconfigure_presentation_counters":
+			await _case_reconfigure_presentation_counters()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	var result := {
@@ -1084,6 +1094,179 @@ func _presentation_keyboard_checks() -> void:
 	)
 	measurements["keyboard_driven_ticks"] = driven
 	measurements["keyboard_speed_m_s"] = lab.state.speed_m_s()
+	await _teardown_lab(lab)
+
+
+# --- Keyboard focus-loss lifecycle ------------------------------------------
+
+
+## Hold `W` and `Shift` through the real input pipeline, lose focus without any
+## key-up event, and prove the laboratory drops the held throttle and rear view
+## immediately. A real release while the window is unfocused never reaches
+## `_unhandled_input()`, so this reproduces the exact failure mode. Headless
+## runs cannot create a genuine OS window focus transition; the case drives
+## Godot's `NOTIFICATION_WM_WINDOW_FOCUS_OUT` through the scene-tree root, the
+## same notification the engine propagates on window focus loss. It does not
+## exercise DisplayServer or a window-manager transition.
+func _case_keyboard_focus_lifecycle() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _presentation_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.command_mode = DriveLabScript.CommandMode.KEYBOARD
+	lab.set_auto_tick(false)
+	await _settle()
+
+	_input_probe.events.clear()
+	_deliver_key(Key.KEY_W, true)
+	_deliver_key(Key.KEY_SHIFT, true)
+	var registered := await _await_input_events(2, INPUT_WAIT_FRAMES)
+	d.check(registered, "focus.synthetic_key_downs_reached_the_input_pipeline")
+	d.check(lab._keys.get(Key.KEY_W, false), "focus.w_registered_as_held")
+	d.check(lab._keys.get(Key.KEY_SHIFT, false), "focus.shift_registered_as_held")
+	d.check(lab.is_rear_view_held(), "focus.rear_view_held_before_focus_loss")
+
+	lab.set_auto_tick(true)
+	var hold_run := await _run_auto(lab, FOCUS_HOLD_TICKS)
+	lab.set_auto_tick(false)
+	d.check(int(hold_run["steps"]) == FOCUS_HOLD_TICKS, "focus.held_w_drove_ticks")
+	d.check(not lab.failed, "focus.held_run_not_failed: " + str(lab.failure_reason))
+	var held_speed := 0.0
+	if lab.state != null:
+		held_speed = lab.state.speed_m_s()
+	d.check(held_speed > 0.0, "focus.car_accelerated_under_held_throttle")
+
+	get_tree().root.propagate_notification(Node.NOTIFICATION_WM_WINDOW_FOCUS_OUT)
+	d.check(not lab.is_rear_view_held(), "focus.rear_view_released_on_focus_loss")
+	d.check(lab._keys.is_empty(), "focus.keyboard_cache_cleared_on_focus_loss")
+	var coast_start_speed := 0.0
+	if lab.state != null:
+		coast_start_speed = lab.state.speed_m_s()
+	lab.set_auto_tick(true)
+	var coast_run := await _run_auto(lab, FOCUS_COAST_TICKS)
+	lab.set_auto_tick(false)
+	d.check(int(coast_run["steps"]) == FOCUS_COAST_TICKS, "focus.coast_ticks_ran_without_release_events")
+	d.check(not lab.failed, "focus.coast_run_not_failed: " + str(lab.failure_reason))
+	var coast_end_speed := 0.0
+	if lab.state != null:
+		coast_end_speed = lab.state.speed_m_s()
+	d.check(
+		coast_end_speed <= coast_start_speed + 1e-6,
+		"focus.no_residual_throttle_after_focus_loss (before=%s after=%s)"
+			% [coast_start_speed, coast_end_speed]
+	)
+
+	_input_probe.events.clear()
+	_deliver_key(Key.KEY_W, true)
+	var fresh_registered := await _await_input_events(1, INPUT_WAIT_FRAMES)
+	d.check(fresh_registered, "focus.fresh_key_down_reached_the_input_pipeline")
+	d.check(lab._keys.get(Key.KEY_W, false), "focus.fresh_press_registered_after_focus_loss")
+	lab.set_auto_tick(true)
+	var fresh_run := await _run_auto(lab, FOCUS_FRESH_TICKS)
+	lab.set_auto_tick(false)
+	d.check(int(fresh_run["steps"]) == FOCUS_FRESH_TICKS, "focus.fresh_press_drove_ticks")
+	d.check(not lab.failed, "focus.fresh_run_not_failed: " + str(lab.failure_reason))
+	var fresh_end_speed := 0.0
+	if lab.state != null:
+		fresh_end_speed = lab.state.speed_m_s()
+	d.check(
+		fresh_end_speed > coast_start_speed + 0.5,
+		"focus.fresh_press_resumes_throttle (coast=%s fresh=%s)"
+			% [coast_start_speed, fresh_end_speed]
+	)
+
+	measurements["focus_held_speed_m_s"] = held_speed
+	measurements["focus_coast_start_speed_m_s"] = coast_start_speed
+	measurements["focus_coast_end_speed_m_s"] = coast_end_speed
+	measurements["focus_fresh_end_speed_m_s"] = fresh_end_speed
+
+	# The application-level deactivation notification takes the same path.
+	# Release and re-press Shift first: the pre-focus-loss press never got a
+	# release event, so this is a genuine fresh press rather than a duplicate.
+	_input_probe.events.clear()
+	_deliver_key(Key.KEY_SHIFT, false)
+	_deliver_key(Key.KEY_SHIFT, true)
+	var shift_registered := await _await_input_events(2, INPUT_WAIT_FRAMES)
+	d.check(shift_registered, "focus.shift_key_down_reached_the_input_pipeline")
+	d.check(lab.is_rear_view_held(), "focus.rear_view_held_before_application_focus_loss")
+	get_tree().root.propagate_notification(Node.NOTIFICATION_APPLICATION_FOCUS_OUT)
+	d.check(
+		not lab.is_rear_view_held(),
+		"focus.rear_view_released_on_application_focus_loss"
+	)
+	d.check(
+		lab._keys.is_empty(),
+		"focus.keyboard_cache_cleared_on_application_focus_loss"
+	)
+
+	await _teardown_lab(lab)
+
+
+## Reconfiguring one laboratory must describe only the new configuration.
+## Presentation counters cover the current run; carrying camera cycles, rear-view
+## holds and HUD updates across `configure()` would report activity that no
+## longer belongs to the configured schedule.
+func _case_reconfigure_presentation_counters() -> void:
+	var first_commands: Array = []
+	for _index in range(20):
+		first_commands.append(d.throttle_command(1.0))
+	var lab = _make_lab(first_commands)
+	if lab == null:
+		return
+	await _settle()
+	var first_run := await _run_auto(lab, first_commands.size())
+	d.check(int(first_run["committed"]) == first_commands.size(), "reconfig.first_schedule_ran")
+	lab.cycle_camera_mode()
+	lab.set_rear_view_held(true)
+	lab.set_rear_view_held(false)
+	var telemetry_before: Dictionary = lab.get_presentation_telemetry()
+	d.check(
+		int(telemetry_before["camera_mode_cycles"]) > 0,
+		"reconfig.camera_counter_nonzero_before_reset"
+	)
+	d.check(
+		int(telemetry_before["rear_view_holds"]) > 0,
+		"reconfig.rear_view_counter_nonzero_before_reset"
+	)
+	d.check(
+		int(telemetry_before["hud_updates"]) > 0,
+		"reconfig.hud_update_counter_nonzero_before_reset"
+	)
+
+	var second_commands: Array = []
+	for _index in range(10):
+		second_commands.append(d.idle_command())
+	var reconfigured: bool = lab.configure(lab.tuning, lab.adapter_config, second_commands)
+	d.check(reconfigured, "reconfig.configure_accepted_second_schedule")
+	var telemetry_after: Dictionary = lab.get_presentation_telemetry()
+	d.check(
+		int(telemetry_after["hud_updates"]) == 1,
+		"reconfig.hud_update_counter_reset_to_initial_update (got=%d)"
+			% int(telemetry_after["hud_updates"])
+	)
+	d.check(
+		int(telemetry_after["hud_rejected_updates"]) == 0,
+		"reconfig.hud_rejected_counter_reset"
+	)
+	d.check(
+		int(telemetry_after["camera_mode_cycles"]) == 0,
+		"reconfig.camera_counter_reset"
+	)
+	d.check(
+		int(telemetry_after["rear_view_holds"]) == 0,
+		"reconfig.rear_view_counter_reset"
+	)
+	var simulation: Dictionary = lab.get_telemetry()
+	d.check(int(simulation["steps_called"]) == 0, "reconfig.steps_counter_reset")
+	d.check(int(simulation["ticks_committed"]) == 0, "reconfig.committed_counter_reset")
+
+	var second_run := await _run_auto(lab, second_commands.size())
+	d.check(int(second_run["committed"]) == second_commands.size(), "reconfig.second_schedule_ran")
+	d.check(not lab.failed, "reconfig.second_run_not_failed: " + str(lab.failure_reason))
+	measurements["reconfig_first_committed"] = int(first_run["committed"])
+	measurements["reconfig_second_committed"] = int(second_run["committed"])
 	await _teardown_lab(lab)
 
 
