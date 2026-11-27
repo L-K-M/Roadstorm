@@ -311,6 +311,43 @@ _ci_assert_publishable_report() {
 		ci_fail "export --export: the report source $CI_REPORT does not carry this attempt's attempt-id header; refusing to publish or record a verdict in a foreign/headerless report"
 		return "$CI_FAIL"
 	fi
+	if [ -n "$CI_REPORT_IDENTITY" ]; then
+		_apr_now="$(ci_report_identity "$CI_REPORT" 2>/dev/null)" || {
+			ci_fail "export --export: cannot re-read the reserved report inode for $CI_REPORT"
+			return "$CI_FAIL"
+		}
+		if [ "$_apr_now" != "$CI_REPORT_IDENTITY" ]; then
+			ci_fail "export --export: the report at $CI_REPORT is not the reserved inode; refusing to record a verdict in a replacement"
+			return "$CI_FAIL"
+		fi
+	fi
+	return "$CI_OK"
+}
+
+# _ci_verify_report_identity : confirm the path still resolves to the reserved
+# dev/inode so every verdict append is bound to that file and can never create
+# a missing path.
+# The expected dev/inode comes from the private mktemp body (or an authentic
+# parent handoff); the path must still resolve to exactly that inode before any
+# lock, scratch copy or writer.
+_ci_verify_report_identity() {
+	if [ "${CI_REPORT_IDENTITY_TRUSTED:-no}" != "yes" ] || [ -z "$CI_REPORT_IDENTITY" ]; then
+		if command -v python3 >/dev/null 2>&1 &&
+			ci_run_bounded 10 ci_python3 -c 'import os' >/dev/null 2>&1; then
+			ci_fail "export --export: no authentic attempt-report identity is available for $CI_REPORT; refusing before locks or writer"
+			return "$CI_FAIL"
+		fi
+		# No usable interpreter: the inventory capability guard refuses the writer.
+		return "$CI_OK"
+	fi
+	_vri_now="$(ci_report_identity "$CI_REPORT" 2>/dev/null)" || {
+		ci_fail "export --export: the reserved report inode cannot be read: $CI_REPORT"
+		return "$CI_FAIL"
+	}
+	if [ "$_vri_now" != "$CI_REPORT_IDENTITY" ]; then
+		ci_fail "export --export: the report at $CI_REPORT is not the reserved inode (replaced or swapped); refusing before locks or writer"
+		return "$CI_FAIL"
+	fi
 	return "$CI_OK"
 }
 
@@ -328,7 +365,7 @@ _ci_assert_inventory_capable() {
 		return "$CI_FAIL"
 	fi
 	if ! command -v python3 >/dev/null 2>&1 ||
-		! ci_run_bounded 10 python3 -I -c 'import argparse, fnmatch, hashlib, json, os, struct, sys, tempfile, zipfile' >/dev/null 2>&1; then
+		! ci_run_bounded 10 ci_python3 -c "import ${CI_PYTHON3_IMPORTS}" >/dev/null 2>&1; then
 		ci_fail "export --export: python3 is missing or unusable for the package inventory checker ($_iic_script); refusing before scratch preparation or the export writer"
 		ci_report "export result=fail preset=$_iic_preset mode=$_iic_mode reason=inventory-python-unavailable output=$_iic_out"
 		return "$CI_FAIL"
@@ -1965,6 +2002,9 @@ done
 ci_export_build() {
 	_mode="$1"
 	shift
+	# Verdict appends in this path must be bound to the reserved inode; never
+	# fall back to a create-on-append if identity binding was impossible.
+	CI_REPORT_REQUIRE_BOUND=1
 	_preset=""
 	_out=""
 	# `export --export <preset> --out <file>` and `export --export --preset <name>`
@@ -2039,12 +2079,15 @@ ci_export_build() {
 	if ! _ci_assert_publishable_report; then
 		return "$CI_FAIL"
 	fi
+	if ! _ci_verify_report_identity; then
+		return "$CI_FAIL"
+	fi
 	_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
 	_pub_rc=0
 	ci_publish_report_exclusive "$CI_REPORT" "$_new_report" || _pub_rc=$?
 	if [ "$_pub_rc" -ne 0 ]; then
 		if [ "$_pub_rc" -eq 2 ]; then
-			ci_fail "export --export: cannot publish the preset-specific report at $_new_report: no atomic hard-link mechanism is available (need a working python3, or GNU/busybox ln -T on Linux)"
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report: hard-link publication failed for a non-collision reason (missing/broken python3 or ln -T, permission, cross-device or unwritable path)"
 		else
 			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
 		fi
@@ -2099,7 +2142,8 @@ EOF
 		return "$CI_FAIL"
 	fi
 	_saved_report_env="${ROADSTORM_CI_REPORT:-}"
-	export ROADSTORM_CI_REPORT="$CI_REPORT" ROADSTORM_CI_ATTEMPT_ID="$CI_ATTEMPT_ID"
+	export ROADSTORM_CI_REPORT="$CI_REPORT" ROADSTORM_CI_ATTEMPT_ID="$CI_ATTEMPT_ID" \
+		ROADSTORM_CI_REPORT_IDENTITY="$CI_REPORT_IDENTITY"
 	_attempt_slug="${_slug}-${CI_ATTEMPT_ID}"
 	export ROADSTORM_CI_LOG_BASE="$CI_OUT/logs/export-${_attempt_slug}"
 	export ROADSTORM_CI_COPY_BASE="$CI_OUT/attempts/export-${_attempt_slug}/project-copy"
@@ -2178,6 +2222,7 @@ ci_export_build_inner() {
 	_preset="$1"
 	_mode="$2"
 	_out="$3"
+	CI_REPORT_REQUIRE_BOUND=1
 	_cfg="$CI_PROJECT/export_presets.cfg"
 	[ -f "$_cfg" ] || {
 		ci_fail "export --export: no export_presets.cfg at the project root"
@@ -2196,12 +2241,15 @@ ci_export_build_inner() {
 	if ! _ci_assert_publishable_report; then
 		return "$CI_FAIL"
 	fi
+	if ! _ci_verify_report_identity; then
+		return "$CI_FAIL"
+	fi
 	_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
 	_pub_rc=0
 	ci_publish_report_exclusive "$CI_REPORT" "$_new_report" || _pub_rc=$?
 	if [ "$_pub_rc" -ne 0 ]; then
 		if [ "$_pub_rc" -eq 2 ]; then
-			ci_fail "export --export: cannot publish the preset-specific report at $_new_report: no atomic hard-link mechanism is available (need a working python3, or GNU/busybox ln -T on Linux)"
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report: hard-link publication failed for a non-collision reason (missing/broken python3 or ln -T, permission, cross-device or unwritable path)"
 		else
 			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
 		fi
@@ -2425,7 +2473,7 @@ EOF
 	# fail after the handoff. The checker therefore owns the success identity;
 	# ci.sh only validates what it produced and writes failure evidence under a
 	# separate, exclusively created name.
-	_inv_out="$(python3 "$_inv_script" check --platform "$_inv_plat" --main "$_out" --report "$_inv_report" --quiet 2>&1)"
+	_inv_out="$(ci_python3 "$_inv_script" check --platform "$_inv_plat" --main "$_out" --report "$_inv_report" --quiet 2>&1)"
 	_inv_rc=$?
 	if [ "$_inv_rc" -ne 0 ]; then
 		_fr="$(ci_new_evidence_file "$CI_OUT/reports")" || {

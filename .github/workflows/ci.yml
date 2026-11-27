@@ -398,7 +398,21 @@ jobs:
             "foreign bytes appended to a live lock file are preserved -> yes" \
             "a lock path replaced with a symlink during export is preserved -> yes" \
             "SIGTERM releases the advisory lock and leaves no package -> yes" \
-            "stale persistent lock files are inert after SIGTERM -> yes"
+            "stale persistent lock files are inert after SIGTERM -> yes" \
+            "attempt binding requires the exact bounded header line -> yes" \
+            "a partial report body is never linked or published -> yes" \
+            "corrupted PYTHONHOME still exports because preflight and checker share -I -> yes" \
+            "a failing writer that deletes the report leaves no recreated verdict -> yes" \
+            "a writer-replaced report with the right header is not appended -> yes" \
+            "a headerless inherited outer report is refused before writer -> yes" \
+            "a headerless inherited direct inner report is refused -> yes" \
+            "a report deleted after publication is not recreated as a pass -> yes" \
+            "broken Python blocks the writer while pin still reserves via ln -T -> yes" \
+            "no usable hard-link mechanism fails once on any host -> yes" \
+            "simulated Linux ln -T fallback links exactly and refuses occupants -> yes" \
+            "a detected but broken ln -T fails fast without retry -> yes" \
+            "a pre-bind same-header substitution is rejected before writer -> yes" \
+            "a passing writer that swaps the report prints no success -> yes"
           do
             if ! grep -qF -- "$_needle" "$log"; then
               echo "::error::required export failure-path case did not pass: $_needle"

@@ -1034,6 +1034,15 @@ ci_probe_video_size() {
 # ---------------------------------------------------------------------------
 CI_RUN_NAME="${CI_RUN_NAME:-run}"
 CI_REPORT=""
+# dev/inode of the reserved report, when an identity could be captured. Verdict
+# appends use it to bind to that inode and to refuse creating a missing path.
+CI_REPORT_IDENTITY=""
+# Whether CI_REPORT_IDENTITY came from the private mktemp body or an authentic
+# parent handoff, rather than being merely absent for a Python-less host.
+CI_REPORT_IDENTITY_TRUSTED="no"
+# Set by export build paths: their verdict appends must never fall back to a
+# create-on-append when no identity could be bound.
+CI_REPORT_REQUIRE_BOUND="0"
 # Unique id for THIS invocation/attempt (<utc>-<random>). The per-run report and
 # the pack-inventory report share it, so a consumer can associate an inventory
 # with the exact attempt that produced it (Sol recheck 675ec1c finding 2).
@@ -1045,6 +1054,18 @@ ci_init_report() {
 	if [ -n "${ROADSTORM_CI_REPORT:-}" ]; then
 		CI_REPORT="$ROADSTORM_CI_REPORT"
 		[ -n "${ROADSTORM_CI_ATTEMPT_ID:-}" ] && CI_ATTEMPT_ID="$ROADSTORM_CI_ATTEMPT_ID"
+		CI_REPORT_IDENTITY=""
+		CI_REPORT_IDENTITY_TRUSTED="no"
+		case "${ROADSTORM_CI_REPORT_IDENTITY:-}" in
+		'') : ;;
+		*[!0-9\ ]*) : ;;
+		*)
+			if [ "$(printf '%s\n' "$ROADSTORM_CI_REPORT_IDENTITY" | wc -w | tr -d ' ')" = "2" ]; then
+				CI_REPORT_IDENTITY="$ROADSTORM_CI_REPORT_IDENTITY"
+				CI_REPORT_IDENTITY_TRUSTED="yes"
+			fi
+			;;
+		esac
 		return 0
 	fi
 	if [ -n "${ROADSTORM_CI_ATTEMPT_ID:-}" ]; then
@@ -1074,20 +1095,31 @@ ci_init_report() {
 			CI_ATTEMPT_ID="${_stamp}-${_rand}"
 		fi
 		_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${CI_ATTEMPT_ID}.txt"
-		if ! {
-			printf 'attempt-id: %s\n' "$CI_ATTEMPT_ID"
-			printf 'command: %s\n' "${CI_RUN_NAME:-run}"
-			printf 'utc: %s\n' "$_stamp"
-			printf 'project: %s\n' "${CI_PROJECT:-not set}"
-			printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}"
-			printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
-			printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
-		} >"$_body" 2>/dev/null; then
+		_body_ok=1
+		printf 'attempt-id: %s\n' "$CI_ATTEMPT_ID" >"$_body" 2>/dev/null || _body_ok=0
+		printf 'command: %s\n' "${CI_RUN_NAME:-run}" >>"$_body" 2>/dev/null || _body_ok=0
+		printf 'utc: %s\n' "$_stamp" >>"$_body" 2>/dev/null || _body_ok=0
+		printf 'project: %s\n' "${CI_PROJECT:-not set}" >>"$_body" 2>/dev/null || _body_ok=0
+		printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}" >>"$_body" 2>/dev/null || _body_ok=0
+		printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)" >>"$_body" 2>/dev/null || _body_ok=0
+		printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}" >>"$_body" 2>/dev/null || _body_ok=0
+		if [ "$_body_ok" -ne 1 ]; then
 			rm -f "$_body" 2>/dev/null
-			ci_die "could not write the reserved report body $_body in $CI_OUT/reports (unwritable filesystem or exhausted disk); refusing to link an unverified report"
+			ci_die "could not write the complete reserved report body $_body in $CI_OUT/reports (unwritable filesystem or exhausted disk); refusing to link an unverified report"
+		fi
+		# Capture the identity from the PRIVATE mktemp body before publishing it:
+		# the hard link shares this inode, so a later same-header replacement at
+		# the pathname is detectable and cannot become the trusted inode.
+		_cri_id="$(ci_report_identity "$_body" 2>/dev/null)" || _cri_id=""
+		if [ -n "$_cri_id" ]; then
+			CI_REPORT_IDENTITY="$_cri_id"
+			CI_REPORT_IDENTITY_TRUSTED="yes"
+		else
+			CI_REPORT_IDENTITY=""
+			CI_REPORT_IDENTITY_TRUSTED="no"
 		fi
 		_link_rc=0
-		ci_link_create_only "$_body" "$_new_report" || _link_rc=$?
+		ci_link_create_only "$_body" "$_new_report" 2>/dev/null || _link_rc=$?
 		if [ "$_link_rc" -eq 0 ]; then
 			rm -f "$_body" 2>/dev/null
 			CI_REPORT="$_new_report"
@@ -1107,9 +1139,55 @@ ci_init_report() {
 
 ci_report() {
 	[ -n "$CI_REPORT" ] || return 0
+	# Never create a missing path and never follow a symlink: a verdict append
+	# must land on the reserved report inode, not on a replacement created by
+	# the append itself. When an identity was bound, a small isolated Python
+	# helper opens O_WRONLY|O_APPEND without O_CREAT and re-verifies dev/inode.
+	if [ -L "$CI_REPORT" ] || [ ! -f "$CI_REPORT" ]; then
+		return 1
+	fi
+	if [ -n "$CI_REPORT_IDENTITY" ]; then
+		ci_append_report_verdict "$*"
+		return "$?"
+	fi
+	# Export verdict paths must never create a missing report. Without a bound
+	# identity there is no verified target, so fail closed rather than recreate.
+	if [ "${CI_REPORT_REQUIRE_BOUND:-0}" = "1" ]; then
+		return 1
+	fi
 	# Return the append status: a caller emitting a PASS verdict must not be
 	# able to exit 0 while the verdict silently failed to reach the report.
 	printf '%s\n' "$*" >>"$CI_REPORT" 2>/dev/null
+}
+
+# ci_report_identity <file> : print "<st_dev> <st_ino>" for the report so
+# verdict writes can be bound to that exact inode.
+ci_report_identity() {
+	python3 -I -c 'import os, sys
+st = os.stat(sys.argv[1])
+print("%d %d" % (st.st_dev, st.st_ino))' "$1" 2>/dev/null
+}
+
+# ci_append_report_verdict <message> : append one line to the already-open
+# reserved report, with no O_CREAT and an fstat check against the bound
+# dev/inode. Missing or swapped targets fail instead of being recreated.
+ci_append_report_verdict() {
+	python3 -I -c 'import os, sys
+path, expected, message = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+except OSError:
+    sys.exit(1)
+try:
+    st = os.fstat(fd)
+    if "%d %d" % (st.st_dev, st.st_ino) != expected:
+        sys.exit(1)
+    data = (message + "\n").encode("utf-8")
+    while data:
+        written = os.write(fd, data)
+        data = data[written:]
+finally:
+    os.close(fd)' "$CI_REPORT" "$CI_REPORT_IDENTITY" "$1" 2>/dev/null
 }
 
 # ci_report_has_attempt_header <file> <attempt-id> : true only when the
@@ -1121,7 +1199,15 @@ ci_report_has_attempt_header() {
 	case "$2" in
 	'' | *[!A-Za-z0-9._-]*) return 1 ;;
 	esac
-	awk -v _crah_id="$2" '$0 == "attempt-id: " _crah_id { _crah_found = 1 } END { exit _crah_found ? 0 : 1 }' "$1" 2>/dev/null
+	awk -v _crah_id="$2" 'NR == 1 && $0 == "attempt-id: " _crah_id { _crah_found = 1 } END { exit _crah_found ? 0 : 1 }' "$1" 2>/dev/null
+}
+
+# The package inventory checker and every capability probe must use the same
+# interpreter startup: isolated (-I), so PYTHONHOME/PYTHONPATH cannot make a
+# preflight disagree with the real check.
+CI_PYTHON3_IMPORTS="argparse, fnmatch, hashlib, json, os, shutil, struct, sys, tempfile, zipfile"
+ci_python3() {
+	python3 -I "$@"
 }
 
 # ci_new_evidence_file <dir> : create-only evidence file. mktemp guarantees a

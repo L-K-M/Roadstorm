@@ -399,11 +399,13 @@ printf 'attempt-id: hdr-test-1\ncommand: pin\n' >"$HDR_MATCH/proper.txt"
 printf '# attempt-id: hdr-test-1\n' >"$HDR_MATCH/comment.txt"
 printf 'xx attempt-id: hdr-test-1\n' >"$HDR_MATCH/prefix.txt"
 printf 'attempt-id: hdr-test-1 extra\n' >"$HDR_MATCH/suffix.txt"
+printf 'command: pin\nattempt-id: hdr-test-1\n' >"$HDR_MATCH/later.txt"
 _ok=no
 if ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "hdr-test-1" &&
 	! ci_report_has_attempt_header "$HDR_MATCH/comment.txt" "hdr-test-1" &&
 	! ci_report_has_attempt_header "$HDR_MATCH/prefix.txt" "hdr-test-1" &&
 	! ci_report_has_attempt_header "$HDR_MATCH/suffix.txt" "hdr-test-1" &&
+	! ci_report_has_attempt_header "$HDR_MATCH/later.txt" "hdr-test-1" &&
 	! ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "other-id" &&
 	! ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "bad/id"; then
 	_ok=yes
@@ -411,6 +413,42 @@ if ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "hdr-test-1" &&
 fi
 CASES_RUN=$((CASES_RUN + 1))
 log "case $CASES_RUN: attempt binding requires the exact bounded header line -> $_ok"
+
+# The report body must be written completely before it is linked. Force the
+# FIRST printf (the attempt-id line) to fail while later printfs succeed: a
+# compound-group status would mask the first failure and publish a partial
+# header.
+BODY_W="$WORK_DIR/report-body-write"
+rm -rf "$BODY_W"; mkdir -p "$BODY_W"
+BODY_PROBE="$WORK_DIR/body-write-probe.sh"
+cat >"$BODY_PROBE" <<'EOF'
+#!/bin/sh
+. "$COMMON_SH" >/dev/null 2>&1
+CI_OUT="$BODY_W"
+CI_RUN_NAME=bodytest
+CI_PROJECT="$PROJECT_DIR"
+ROADSTORM_SOURCE_SHA=""
+printf() {
+	case "$1" in
+		'attempt-id:'*) [ -f "$BODY_W/first-failed" ] || { : >"$BODY_W/first-failed"; return 1; } ;;
+	esac
+	command printf "$@"
+}
+ci_init_report >/dev/null 2>&1
+echo "rc=$?"
+EOF
+chmod +x "$BODY_PROBE"
+COMMON_SH="$COMMON_SH" BODY_W="$BODY_W" PROJECT_DIR="$PROJECT_DIR" sh "$BODY_PROBE" >/dev/null 2>&1
+_body_rc=$?
+_ok=no
+if [ "$_body_rc" -eq 2 ] && [ -f "$BODY_W/first-failed" ] &&
+	! ls "$BODY_W/reports/"*.txt >/dev/null 2>&1; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: a partial report body is never linked or published -> $_ok"
+[ "$_ok" = "yes" ] || { echo "  body_rc=$_body_rc" >&2; }
 
 # ---------------------------------------------------------------------------
 # 5. Viewport helpers: the capture-resolution fix depends on them.
@@ -3450,7 +3488,7 @@ EOF
 	_pub_rc=$?
 	CASES_RUN=$((CASES_RUN + 1))
 	if [ "$_pub_rc" -ne 0 ] && grep -q 'no attempt id is reserved' "$CONC/pub-noattempt.log" &&
-		grep -q '^export result=fail .*reason=no-attempt-id' "$INV_OUT/reports/pre-noatt.txt" &&
+		[ "$(cat "$INV_OUT/reports/pre-noatt.txt")" = "reserved body" ] &&
 		[ ! -e "$CONC/pub-inv-writer-called" ] && [ ! -e "$CONC/noattcwd/pkg" ] &&
 		[ ! -e "$CONC/noattcwd/pkg.ci-lock" ] && [ ! -d "$INV_OUT/attempts" ]; then
 		_ok=yes
@@ -3530,8 +3568,10 @@ EOF
 	rm -rf "$PD_OUT" "$CONC/pdcwd" "$CONC/post-del-calls.log"
 	mkdir -p "$PD_OUT/reports" "$CONC/pdcwd"
 	printf 'attempt-id: pd1\ncommand: export-linux-x86-64\n' >"$PD_REPORT"
+	PD_ID="$(ci_report_identity "$PD_REPORT")"
 	( export HOME="$REALHOME"; unset GODOT_TEMPLATES_DIR
 		export ROADSTORM_CI_REPORT="$PD_REPORT" ROADSTORM_CI_ATTEMPT_ID=pd1 \
+			ROADSTORM_CI_REPORT_IDENTITY="$PD_ID" \
 			FAKE_DELETE_AFTER_EXPORT="$PD_REPORT"
 		sh "$CI_SH" --project "$SPROJ" --godot "$POST_DEL" --out "$PD_OUT" \
 			__export-inner "Linux x86-64" release "$CONC/pdcwd/pkg" ) >"$CONC/pub-post-disappear.log" 2>&1
@@ -3578,7 +3618,8 @@ EOF
 		_py_in_rc=$?
 		CASES_RUN=$((CASES_RUN + 1))
 		if [ "$_py_pin_rc" -eq 0 ] && [ "$_py_in_rc" -ne 0 ] &&
-			grep -rq 'reason=inventory-python-unavailable' "$CONC/py-lin-inner-out/reports" 2>/dev/null &&
+			grep -q 'unusable for the package inventory' "$CONC/py-lin-inner.log" &&
+			! grep -rq 'reason=inventory-python-unavailable' "$CONC/py-lin-inner-out/reports" 2>/dev/null &&
 			[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pycwd/pkg" ] &&
 			[ ! -e "$CONC/pycwd/pkg.ci-lock" ] && [ ! -d "$CONC/py-lin-inner-out/attempts" ]; then
 			_ok=yes
@@ -3590,6 +3631,234 @@ EOF
 		[ "$_ok" = "yes" ] || { echo "  pin=$_py_pin_rc inner=$_py_in_rc writer=$([ -e "$PUB_WRITER" ] && echo y || echo n) pkg=$([ -e "$CONC/pycwd/pkg" ] && echo y || echo n) lock=$([ -e "$CONC/pycwd/pkg.ci-lock" ] && echo y || echo n) attempts=$([ -d "$CONC/py-lin-inner-out/attempts" ] && echo y || echo n)" >&2; sed 's/^/  | /' "$CONC/py-lin-inner.log" >&2; }
 	else
 		log "note: no real python3 available to emulate ln -T; the broken-Python Linux case was skipped"
+	fi
+
+	# The inventory preflight and the actual checker must run the interpreter
+	# identically (-I), so a corrupt PYTHONHOME cannot let a preflight pass while
+	# the checker fails after the writer. This fake python fails any invocation
+	# without -I when PYTHONHOME is set, mirroring plain startup honouring it.
+	PYHOME="$CONC/pyhome-isolation"
+	_real_pyhome="$(command -v python3)"
+	if [ -n "$_real_pyhome" ]; then
+		rm -rf "$PYHOME" "$CONC/pyhome-out" "$CONC/phcwd"
+		mkdir -p "$PYHOME" "$CONC/phcwd"
+		cat >"$PYHOME/python3" <<EOF
+#!/bin/sh
+_ph_i=no
+for _ph_a in "\$@"; do [ "\$_ph_a" = "-I" ] && _ph_i=yes; done
+if [ "\$_ph_i" != yes ] && [ -n "\$PYTHONHOME" ]; then exit 1; fi
+exec "$_real_pyhome" "\$@"
+EOF
+		chmod +x "$PYHOME/python3"
+		( export PATH="$PYHOME:$PATH" PYTHONHOME="$CONC/no-such-pythonhome" HOME="$REALHOME"
+			unset GODOT_TEMPLATES_DIR
+			sh "$CI_SH" --project "$SPROJ" --godot "$_e2e_bin" --out "$CONC/pyhome-out" \
+				__export-inner "Linux x86-64" release "$CONC/phcwd/pkg" ) >"$CONC/pyhome-isolation.log" 2>&1
+		_pyhome_rc=$?
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_pyhome_rc" -eq 0 ] && [ -s "$CONC/phcwd/pkg" ] &&
+			grep -rq '^export result=pass' "$CONC/pyhome-out/reports" 2>/dev/null; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: corrupted PYTHONHOME still exports because preflight and checker share -I -> $_ok"
+		[ "$_ok" = "yes" ] || { echo "  rc=$_pyhome_rc pkg=$([ -s "$CONC/phcwd/pkg" ] && echo y || echo n)" >&2; sed 's/^/  | /' "$CONC/pyhome-isolation.log" >&2; }
+	else
+		log "note: no real python3 to build the PYTHONHOME isolation seam; skipped"
+	fi
+
+	# A writer that exits nonzero after deleting the reserved report must not
+	# recreate a headerless FAIL report through >>.
+	DELW="$CONC/godot-delete-on-fail"
+	cat >"$DELW" <<EOF
+#!/bin/sh
+case " \$* " in
+	*" --version "*) printf '4.7.2.stable.official.ed1daf0bf\n'; exit 0 ;;
+	*" --import "*) exit 0 ;;
+	*" --export-"*) rm -f "\$FAKE_DELETE_REPORT" 2>/dev/null; exit 99 ;;
+esac
+exit 0
+EOF
+	chmod +x "$DELW"
+	DW_OUT="$CONC/writer-deletes-report"
+	DW_REPORT="$DW_OUT/reports/export-linux-x86-64-dw1.txt"
+	rm -rf "$DW_OUT" "$CONC/dwcwd"
+	mkdir -p "$DW_OUT/reports" "$CONC/dwcwd"
+	printf 'attempt-id: dw1\ncommand: export-linux-x86-64\n' >"$DW_REPORT"
+	DW_ID="$(ci_report_identity "$DW_REPORT")"
+	( export ROADSTORM_CI_REPORT="$DW_REPORT" ROADSTORM_CI_ATTEMPT_ID=dw1 \
+		ROADSTORM_CI_REPORT_IDENTITY="$DW_ID" FAKE_DELETE_REPORT="$DW_REPORT"
+		sh "$CI_SH" --project "$SPROJ" --godot "$DELW" --out "$DW_OUT" \
+			__export-inner "Linux x86-64" release "$CONC/dwcwd/pkg" ) >"$CONC/writer-deletes-report.log" 2>&1
+	_dw_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_dw_rc" -ne 0 ] && [ ! -e "$DW_REPORT" ] && [ ! -e "$CONC/dwcwd/pkg" ] &&
+		! grep -q '\[ci:ok\] export:' "$CONC/writer-deletes-report.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a failing writer that deletes the report leaves no recreated verdict -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_dw_rc report=$([ -e "$DW_REPORT" ] && echo present || echo absent)" >&2; sed 's/^/  | /' "$CONC/writer-deletes-report.log" >&2; }
+
+	# Same protection against replacement: a writer substitutes a new regular
+	# file carrying the right header line; the bound inode must reject it.
+	REPL="$CONC/godot-replace-on-fail"
+	cat >"$REPL" <<EOF
+#!/bin/sh
+case " \$* " in
+	*" --version "*) printf '4.7.2.stable.official.ed1daf0bf\n'; exit 0 ;;
+	*" --import "*) exit 0 ;;
+	*" --export-"*)
+		rm -f "\$FAKE_REPLACE_REPORT" 2>/dev/null
+		printf 'attempt-id: rp1\ncommand: foreign\n' >"\$FAKE_REPLACE_REPORT" 2>/dev/null
+		exit 99 ;;
+esac
+exit 0
+EOF
+	chmod +x "$REPL"
+	RP_OUT="$CONC/writer-replaces-report"
+	RP_REPORT="$RP_OUT/reports/export-linux-x86-64-rp1.txt"
+	rm -rf "$RP_OUT" "$CONC/rpcwd"
+	mkdir -p "$RP_OUT/reports" "$CONC/rpcwd"
+	printf 'attempt-id: rp1\ncommand: export-linux-x86-64\n' >"$RP_REPORT"
+	RP_ID="$(ci_report_identity "$RP_REPORT")"
+	( export ROADSTORM_CI_REPORT="$RP_REPORT" ROADSTORM_CI_ATTEMPT_ID=rp1 \
+		ROADSTORM_CI_REPORT_IDENTITY="$RP_ID" FAKE_REPLACE_REPORT="$RP_REPORT"
+		sh "$CI_SH" --project "$SPROJ" --godot "$REPL" --out "$RP_OUT" \
+			__export-inner "Linux x86-64" release "$CONC/rpcwd/pkg" ) >"$CONC/writer-replaces-report.log" 2>&1
+	_rp_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_rp_rc" -ne 0 ] && [ ! -e "$CONC/rpcwd/pkg" ] &&
+		[ "$(cat "$RP_REPORT" 2>/dev/null)" = "$(printf 'attempt-id: rp1\ncommand: foreign')" ] &&
+		! grep -q '\[ci:ok\] export:' "$CONC/writer-replaces-report.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a writer-replaced report with the right header is not appended -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_rp_rc report=$(cat "$RP_REPORT" 2>/dev/null | tr '\n' '|')" >&2; sed 's/^/  | /' "$CONC/writer-replaces-report.log" >&2; }
+
+	# A same-header file substituted BEFORE binding must not become the trusted
+	# inode: the parent identity was captured from a different file.
+	SB_OUT="$CONC/prebind-swap"
+	SB_A="$SB_OUT/authoritative.txt"
+	SB_B="$SB_OUT/reports/export-linux-x86-64-sb1.txt"
+	rm -rf "$SB_OUT" "$CONC/sbcwd" "$PUB_WRITER"
+	mkdir -p "$SB_OUT/reports" "$CONC/sbcwd"
+	printf 'attempt-id: sb1\ncommand: authoritative\n' >"$SB_A"
+	printf 'attempt-id: sb1\ncommand: substituted\n' >"$SB_B"
+	SB_A_ID="$(ci_report_identity "$SB_A")"
+	( export ROADSTORM_CI_REPORT="$SB_B" ROADSTORM_CI_ATTEMPT_ID=sb1 \
+		ROADSTORM_CI_REPORT_IDENTITY="$SB_A_ID"
+		ci_rel_at_home "$CONC/sbcwd" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$SB_OUT" __export-inner "Linux x86-64" release "$CONC/sbcwd/pkg" ) >"$CONC/prebind-swap.log" 2>&1
+	_sb_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_sb_rc" -ne 0 ] && grep -q 'not the reserved inode' "$CONC/prebind-swap.log" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/sbcwd/pkg" ] &&
+		[ ! -e "$CONC/sbcwd/pkg.ci-lock" ] && [ ! -d "$SB_OUT/attempts" ] &&
+		[ "$(cat "$SB_B")" = "$(printf 'attempt-id: sb1\ncommand: substituted')" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a pre-bind same-header substitution is rejected before writer -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_sb_rc" >&2; sed 's/^/  | /' "$CONC/prebind-swap.log" >&2; }
+
+	# Passing writer, swapped report: after a real successful export the
+	# reserved report is replaced by a same-header file; the final verdict must
+	# refuse it and print no export success line.
+	SWAPOK="$CONC/godot-swap-on-success"
+	cat >"$SWAPOK" <<EOF
+#!/bin/sh
+case " \$* " in
+	*" --version "*) printf '4.7.2.stable.official.ed1daf0bf\n'; exit 0 ;;
+	*" --import "*) exec "$_e2e_bin" "\$@" ;;
+	*" --export-"*)
+		"$_e2e_bin" "\$@"
+		_sw_rc=\$?
+		if [ "\$_sw_rc" -eq 0 ] && [ -n "\$FAKE_SWAP_REPORT" ]; then
+			rm -f "\$FAKE_SWAP_REPORT" 2>/dev/null
+			printf 'attempt-id: sw2\ncommand: foreign\n' >"\$FAKE_SWAP_REPORT" 2>/dev/null
+		fi
+		exit "\$_sw_rc" ;;
+esac
+exec "$_e2e_bin" "\$@"
+EOF
+	chmod +x "$SWAPOK"
+	SW_OUT="$CONC/passing-swap"
+	SW_REPORT="$SW_OUT/reports/export-linux-x86-64-sw2.txt"
+	rm -rf "$SW_OUT" "$CONC/swcwd"
+	mkdir -p "$SW_OUT/reports" "$CONC/swcwd"
+	printf 'attempt-id: sw2\ncommand: export-linux-x86-64\n' >"$SW_REPORT"
+	SW_ID="$(ci_report_identity "$SW_REPORT")"
+	( export HOME="$REALHOME"; unset GODOT_TEMPLATES_DIR
+		export ROADSTORM_CI_REPORT="$SW_REPORT" ROADSTORM_CI_ATTEMPT_ID=sw2 \
+			ROADSTORM_CI_REPORT_IDENTITY="$SW_ID" FAKE_SWAP_REPORT="$SW_REPORT"
+		sh "$CI_SH" --project "$SPROJ" --godot "$SWAPOK" --out "$SW_OUT" \
+			__export-inner "Linux x86-64" release "$CONC/swcwd/pkg" ) >"$CONC/passing-swap.log" 2>&1
+	_sw_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_sw_rc" -ne 0 ] && [ -s "$CONC/swcwd/pkg" ] &&
+		[ "$(cat "$SW_REPORT" 2>/dev/null)" = "$(printf 'attempt-id: sw2\ncommand: foreign')" ] &&
+		! grep -q '\[ci:ok\] export:' "$CONC/passing-swap.log" &&
+		! grep -q 'export result=pass' "$CONC/passing-swap.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a passing writer that swaps the report prints no success -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_sw_rc report=$(cat "$SW_REPORT" 2>/dev/null | tr '\n' '|')" >&2; sed 's/^/  | /' "$CONC/passing-swap.log" >&2; }
+
+	# Where the host's real ln supports -T, exercise the genuine GNU/coreutils
+	# fallback with Python disabled rather than the Python-backed emulator.
+	RL_PROBE="$WORK_DIR/real-ln-probe"
+	rm -rf "$RL_PROBE"; mkdir -p "$RL_PROBE"
+	: >"$RL_PROBE/src"
+	if ln -T -- "$RL_PROBE/src" "$RL_PROBE/dst" >/dev/null 2>&1 && [ -f "$RL_PROBE/dst" ]; then
+		RL="$CONC/real-ln-fallback"
+		rm -rf "$RL" "$CONC/real-ln-pin-out"
+		mkdir -p "$RL"
+		printf '#!/bin/sh\necho Linux\n' >"$RL/uname"
+		printf '#!/bin/sh\nexit 127\n' >"$RL/python3"
+		chmod +x "$RL/uname" "$RL/python3"
+		( export PATH="$RL:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/real-ln-pin-out" pin ) >"$CONC/real-ln-pin.log" 2>&1
+		_rl_pin=$?
+		printf 'real ln body\n' >"$RL/src.txt"
+		(
+			export PATH="$RL:$PATH"
+			. "$COMMON_SH" >/dev/null 2>&1
+			_r=0
+			ci_link_create_only "$RL/src.txt" "$RL/new.txt" || _r=$?
+			[ "$_r" -eq 0 ] || exit 1
+			[ "$(_inode "$RL/src.txt")" = "$(_inode "$RL/new.txt")" ] || exit 1
+			printf 'foreign\n' >"$RL/existing.txt"
+			ci_link_create_only "$RL/src.txt" "$RL/existing.txt" && exit 1
+			[ "$(cat "$RL/existing.txt")" = "foreign" ] || exit 1
+			rm -rf "$RL/dir"; mkdir -p "$RL/dir"
+			ci_link_create_only "$RL/src.txt" "$RL/dir" && exit 1
+			[ -z "$(ls -A "$RL/dir" 2>/dev/null)" ] || exit 1
+			exit 0
+		)
+		_rl_probe=$?
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_rl_pin" -eq 0 ] && [ "$_rl_probe" -eq 0 ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: the real host ln -T fallback links exactly with Python disabled -> $_ok"
+		[ "$_ok" = "yes" ] || { echo "  pin=$_rl_pin probe=$_rl_probe" >&2; sed 's/^/  | /' "$CONC/real-ln-pin.log" >&2; }
+	else
+		log "note: this host's ln lacks -T; the real ln -T fallback case was skipped (the emulator case covers classification)"
 	fi
 
 	# Host-independent no-mechanism seam: a broken python3 plus a non-Linux
