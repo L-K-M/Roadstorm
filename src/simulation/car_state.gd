@@ -21,10 +21,14 @@ extends RefCounted
 ## for HUD/audio consumers and initializes to gear 1 so a fresh record agrees
 ## with the gearbox deterministic reset. The gearbox owns selection, shift
 ## dwell and rpm indication. A replay/restore must save and restore the
-## `GearboxState` together with this record and then repair this mirror with
-## `AutomaticGearbox.mirror_gear()` (called after `propose()` or
-## `restore_state()`) or the restored canonical gear as one atomic step;
-## restoring this record alone cannot reproduce dwell or shift timing.
+## `GearboxState` together with this record and then apply both as one atomic
+## step with `AutomaticGearbox.restore_and_mirror()`; `restore_state()`
+## followed by `mirror_gear()` is the compatible two-call form, but only the
+## combined helper is transactional. Restoring this record alone cannot
+## reproduce dwell or shift timing. `AutomaticGearbox.propose()` commits the
+## canonical state immediately, so the integrator must propose exactly once
+## per accepted tick from this car's committed record and pair the returned
+## gear with the matching car/tick.
 ##
 ## Inert seams for later M1 slices (present so the state shape already matches
 ## docs/TECHNICAL_DESIGN.md:81; the M1.1 motor copies them unchanged and does not

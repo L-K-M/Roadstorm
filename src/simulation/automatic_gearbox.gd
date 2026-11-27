@@ -33,8 +33,11 @@ extends RefCounted
 ## threshold; every pair keeps at least `min_hysteresis_gap_m_s` of separation
 ## and shifts are additionally separated by `min_shift_dwell_s`. Together these
 ## prevent boundary dithering and repeated shift events. Threshold comparison
-## uses the forward-speed magnitude for forward gears, so a forward gear is
-## always selected while the latch is released.
+## uses the forward-speed magnitude for forward gears. From a forward gear the
+## selected gear therefore stays forward whenever the latch is released;
+## releasing the reverse indication additionally requires forward travel at or
+## above `reverse_exit_forward_speed_m_s`, so `-1` persists during backward
+## roll after the latch clears.
 ##
 ## Invalid configuration, a nonfinite committed `CarState` record (any
 ## numeric field, per `CarState.is_finite()`), a nonfinite dt, or an unexpected
@@ -60,16 +63,27 @@ extends RefCounted
 ## gear/dwell/rpm indication; `CarState.gear_index` is only a committed mirror
 ## for HUD/audio consumers and initializes to gear 1 like `reset()`. A
 ## replay/restore must save and restore the `GearboxState` alongside the
-## `CarState`, then repair the mirror as one explicit atomic step; restoring
-## `CarState` alone is insufficient because it carries neither the dwell nor
-## the canonical rpm. `restore_state()` validates and copies a complete state
-## atomically. `mirror_gear(car_state)` reads only this gearbox's validated
-## canonical current state and returns a repaired copy of a finite committed
-## `CarState`; no proposal enters the call, so a stale or foreign proposal
-## cannot affect the published gear. The integrator calls it after a
-## successful `propose()` and immediately after `restore_state()`. Neither
-## helper changes physics or the physical motor; `propose()` retains its valid
-## shift behavior and still writes no `CarState` field.
+## `CarState`; restoring `CarState` alone is insufficient because it carries
+## neither the dwell nor the canonical rpm. `restore_and_mirror(candidate,
+## car_state)` is the all-or-nothing form: it validates the whole candidate
+## pair before mutating this gearbox, commits the canonical copy, and returns
+## a repaired copy of the finite `CarState`, or returns `null` and leaves both
+## untouched. `restore_state()` commits the canonical state immediately and
+## `mirror_gear(car_state)` then repairs the mirror in a second call; that
+## two-call window is not transactional, so a caller error can leave a changed
+## gearbox with no paired `CarState`.
+##
+## Commit discipline: `propose()` advances and commits the canonical state
+## immediately. Call it exactly once per accepted tick, from that car's
+## committed record, and route or mirror the returned proposal before taking
+## another proposal; an abandoned proposal leaves the gearbox ahead of the
+## committed `CarState`. `mirror_gear()` reads only this gearbox's validated
+## canonical current state and cannot bind an arbitrary `CarState` to this
+## gearbox, configuration or tick, so the caller owns car identity, tick
+## pairing and configuration choice. No proposal enters `mirror_gear()`, so a
+## stale or foreign retained proposal cannot affect the published gear. None of
+## these helpers changes physics or the physical motor; `propose()` still
+## writes no `CarState` field.
 
 const DT := 1.0 / 60.0
 ## Absolute tolerance for accepting a caller-supplied step size as 60 Hz.
@@ -82,6 +96,13 @@ const MAX_FORWARD_GEARS := 8
 const MIN_HYSTERESIS_GAP_M_S := 0.25
 ## Slack for threshold separation comparisons.
 const VALIDATION_TOLERANCE := 1e-9
+## Inclusive maximum accepted shift dwell, seconds. A larger authored value is
+## refused instead of silently clamped: near `1e16` an IEEE-754 double is spaced
+## more than one fixed `DT` apart, so subtracting `DT` cannot change it and
+## forward shifts stay locked forever. Ten seconds (600 ticks) is far above any
+## plausible arcade shift lockout, so the cap costs no realistic tuning freedom
+## while every accepted dwell remains countable at 60 Hz.
+const MAX_SHIFT_DWELL_S := 10.0
 
 
 enum ShiftDirection {
@@ -113,7 +134,8 @@ class ShiftEvent extends RefCounted:
 ##     forward gear k+1 upward requires speed strictly above element k;
 ##   * `downshift_speeds_m_s`: length N-1, strictly increasing speeds; leaving
 ##     forward gear k+2 downward requires speed strictly below element k;
-##   * `min_shift_dwell_s`: minimum seconds between committed gear changes;
+##   * `min_shift_dwell_s`: minimum seconds between committed gear changes,
+##     accepted in `[0, MAX_SHIFT_DWELL_S]` inclusive;
 ##   * `min_hysteresis_gap_m_s`: required separation between each downshift and
 ##     its corresponding upshift threshold (floor
 ##     `MIN_HYSTERESIS_GAP_M_S`);
@@ -140,6 +162,8 @@ class GearboxConfig extends RefCounted:
 		if downshift_speeds_m_s.size() != expected:
 			return false
 		if not _non_negative_finite(min_shift_dwell_s):
+			return false
+		if min_shift_dwell_s > MAX_SHIFT_DWELL_S:
 			return false
 		if not _finite(min_hysteresis_gap_m_s):
 			return false
@@ -188,7 +212,9 @@ class GearboxConfig extends RefCounted:
 
 
 ## Copyable gearbox state. `shift_cooldown_s` is the remaining lockout before
-## another forward shift may commit; reverse latch transitions bypass it.
+## another forward shift may commit; reverse latch transitions bypass it. The
+## globally valid domain bounds it to `[0, MAX_SHIFT_DWELL_S]`; a concrete
+## gearbox may accept less, up to its configured `min_shift_dwell_s`.
 class GearboxState extends RefCounted:
 	var gear_index := 1
 	var shift_cooldown_s := 0.0
@@ -217,7 +243,7 @@ class GearboxState extends RefCounted:
 			return false
 		if gear_index != -1 and (gear_index < 1 or gear_index > MAX_FORWARD_GEARS):
 			return false
-		if shift_cooldown_s < 0.0:
+		if shift_cooldown_s < 0.0 or shift_cooldown_s > MAX_SHIFT_DWELL_S:
 			return false
 		if normalized_rpm < 0.0 or normalized_rpm > 1.0:
 			return false
@@ -274,8 +300,8 @@ func reset() -> void:
 ## The copy is taken only after validation, so an invalid input leaves this
 ## gearbox unchanged and the caller's object is never shared. A valid state is
 ## finite, has gear `-1` or `1..forward_gear_count` for this configuration,
-## dwell in `[0, min_shift_dwell_s]`, and rpm in `[0, 1]`. Returns `false` for
-## null or invalid input.
+## dwell in `[0, min_shift_dwell_s]` (never above `MAX_SHIFT_DWELL_S`), and
+## rpm in `[0, 1]`. Returns `false` for null or invalid input.
 func restore_state(state: GearboxState) -> bool:
 	if not _is_restorable_state(state):
 		return false
@@ -303,6 +329,28 @@ func mirror_gear(car_state: CarState) -> CarState:
 		return null
 	var mirrored := car_state.copy()
 	mirrored.gear_index = _state.gear_index
+	return mirrored
+
+
+## All-or-nothing checkpoint convenience. Validates `candidate_state` against
+## this gearbox's configuration and `car_state` as a finite committed record
+## before mutating anything. On success it commits a copy of the candidate as
+## the canonical state and returns a repaired copy of `car_state` whose
+## `gear_index` mirrors that gear. On refusal (null candidate, invalid
+## candidate for this configuration, null car, or nonfinite car) it returns
+## `null` and leaves both this gearbox's canonical state and the input
+## `car_state` unchanged. Prefer this over separate `restore_state()` plus
+## `mirror_gear()` calls when the pair must be applied together; see the header
+## note that `propose()` commits immediately and `mirror_gear()` alone cannot
+## bind car identity or tick.
+func restore_and_mirror(candidate_state: GearboxState, car_state: CarState) -> CarState:
+	if not _is_restorable_state(candidate_state):
+		return null
+	if car_state == null or not car_state.is_finite():
+		return null
+	var mirrored := car_state.copy()
+	mirrored.gear_index = candidate_state.gear_index
+	_state = candidate_state.copy()
 	return mirrored
 
 

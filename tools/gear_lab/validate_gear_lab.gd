@@ -32,6 +32,8 @@ const CASE_IDS := [
 	"invalid_atomicity",
 	"reset_replay",
 	"restore_replay",
+	"dwell_domain",
+	"restore_and_mirror",
 ]
 
 var _checks := 0
@@ -109,6 +111,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_reset_replay(driver)
 		"restore_replay":
 			_case_restore_replay(driver)
+		"dwell_domain", "restore_and_mirror":
+			_run_extension(driver, case_id)
 	_checks += driver.checks
 	for failure in driver.failures:
 		_failures.append("%s: %s" % [case_id, failure])
@@ -1066,6 +1070,18 @@ func _case_restore_replay(driver) -> void:
 		"reset restores the deterministic initial state"
 	)
 	driver.check_eq(int(reset_box.snapshot()["gear_index"]), 1, "reset returns to first gear")
+
+
+func _run_extension(driver, case_id: String) -> void:
+	var extensions_script = load("res://tools/gear_lab/gear_lab_extensions.gd")
+	if extensions_script == null:
+		driver.check(false, "%s extension script failed to load" % case_id)
+		return
+	var extensions = extensions_script.new()
+	if case_id == "dwell_domain":
+		extensions.run_dwell_domain(driver)
+	else:
+		extensions.run_restore_and_mirror(driver)
 
 
 # --- Deliberate failure proof ----------------------------------------------
