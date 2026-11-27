@@ -26,6 +26,9 @@ This proves one 60 Hz integration tick at a time:
 - an unchecked yaw that would install the hull across a parallel wall is
   constrained to the largest safe fraction of the proposed yaw, or refused;
   clear open-ground steering still rotates freely;
+- a gentle yaw below the former per-tick skip threshold (about 0.555 rad/s
+  for the default tolerance and this hull) is probed on every committed tick,
+  so a trailing hull corner cannot creep across a nearby parallel wall;
 - a wall on a layer excluded from the car mask is crossed with the full
   physical motion committed and the primary prediction matching it, while the
   identical wall on an included layer still stops the car and the prediction;
@@ -130,15 +133,45 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
   passes a real captured `KinematicCollision3D` through the same helper. The
   existing `wall_contact_normal_authority` selection-seam case remains a
   selector-level check, not end-to-end proof of collection order.
+- Gentle-yaw regression: `gentle_yaw_wall_probe` runs 30 ticks at 0.5 rad/s
+  (0.1 m/s with grip gain 5.0 and full opposite lock) beside a parallel wall
+  5 cm from the hull's right side. The nose turns away from the wall so the
+  trailing right corner sweeps toward it while the centreline velocity carries
+  the car away. Steering the nose into the wall instead lets pinned Jolt
+  depenetration recovery push the body back out every tick, which masks the
+  yaw-only overlap this case exists to expose. The case checks the hull/wall
+  plane bound on every committed tick, then drives an already-overlapping
+  installed pose into a checked atomic `REFUSED_ORIENTATION`, and carries a
+  geometric control showing the first six proposed yaw deltas would penetrate
+  about 4.4 cm unchecked. Against a pre-fix control
+  copy (`work/agents/f1-small-yaw/old_source_control`) the same case fails
+  from tick 6 and reaches about 38.6 cm penetration; the fixed source
+  constrains at tick 5 and stays within about 2.3 cm.
 - Installed orientation: after the translation sweep, the adapter probes the
   final hull pose with a nonmutating `intersect_shape` query using the body's
-  collision mask and excluding its RID. The probe is a real box hull reduced
-  by twice the contact tolerance in every dimension, so touching contact and
-  the pinned solver's penetration slop (0.02 m) do not count as overlap;
-  this also keeps ordinary grounded floor contact from being rejected. A
-  blocked yaw is reduced by a fixed 12-probe bisection; if even the
-  tick-start heading overlaps, the tick is refused (`REFUSED_ORIENTATION`)
+  collision mask and excluding its RID. The probe runs for every nonzero yaw
+  delta. The previous version skipped it whenever
+  `0.5 * hull diagonal * |yaw delta| <= orientation_contact_tolerance_m`
+  (about 0.555 rad/s for the default 0.02 m tolerance and this hull), leaving
+  gentle per-tick yaw unconstrained; the parked-hull geometry from interim
+  review F1 crosses the wall plane that way. The probe box is a real box hull
+  reduced by twice the contact tolerance in every dimension, so touching
+  contact and the pinned solver's penetration slop (0.02 m) do not count as
+  overlap; this also keeps ordinary grounded floor contact from being
+  rejected. A blocked yaw is reduced by a fixed 12-probe bisection; if even
+  the tick-start heading overlaps, the tick is refused (`REFUSED_ORIENTATION`)
   with the body and inputs untouched. `orientation_contact_tolerance_m`
   defaults to 0.02 m (the pinned solver's penetration slop), is capped at
   0.1 m, and must stay below half the smallest hull extent so the reduced
   probe remains a positive box.
+- Orientation probe limits: the probe checks only sampled orientations (tick
+  start, proposed pose, and the bisection midpoints), never every intermediate
+  rotation; contact along a yaw arc is not guaranteed monotonic, so the
+  bisection falls back to the verified tick-start heading if its own final
+  candidate still overlaps. The probe reports any collider in the body mask,
+  floors and ramps included, not only wall-like normals. Flat-ground staging
+  keeps the floor outside the reduced box, but adhesion, kerbs and ramp
+  integration require a support-aware probe before this constraint can be
+  applied there. The installed hull may legitimately sit up to roughly the
+  contact tolerance (measured about 5 mm past the nominal shrink) inside wall
+  geometry; that is inside the 3 cm laboratory no-tunnel gate.

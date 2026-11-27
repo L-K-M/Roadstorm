@@ -41,12 +41,18 @@ extends RefCounted
 ##     restitution tuning, depenetration, multi-car response) is M1.4 work.
 ##   * the translation sweep uses the tick-start basis; before the tick is
 ##     committed, a bounded nonmutating world check probes the installed hull
-##     at the proposed yaw, using the body's actual collision mask and
-##     excluding the body RID. A yaw that would leave the hull across a wall
-##     is constrained to a probe-clear fraction of the proposed yaw, or the
-##     tick is refused. The probe deliberately allows configured contact
-##     penetration and solver slop; it does not prove zero overlap of the
-##     full hull or sweep every intermediate rotation.
+##     at the proposed yaw for every nonzero yaw delta, using the body's
+##     actual collision mask and excluding the body RID. A yaw that would
+##     leave the hull across geometry in that mask is constrained to a
+##     probe-clear fraction of the proposed yaw, or the tick is refused. The
+##     probe is endpoint-only: it checks the start and proposed orientations
+##     and sampled bisection candidates, not every intermediate rotation, and
+##     its box is reduced by twice the contact tolerance so configured contact
+##     penetration and solver slop do not count as an overlap. It reports any
+##     collider in the mask, floor and ramp colliders included, not only
+##     wall-like normals; flat-ground laboratory staging keeps ordinary ground
+##     contact outside the reduced box. Zero yaw relies on the translation
+##     sweep's own prediction/commit.
 ##   * every swept prediction and installed-pose probe uses the body's actual
 ##     `collision_mask`, so an obstacle excluded by the body mask is not
 ##     considered by the prediction solely because of the query's default.
@@ -459,11 +465,14 @@ static func step(
 	var yaw_delta := proposed_heading - state_in.heading_rad
 	var applied_heading := proposed_heading
 	var heading_constrained := false
-	# A vertex at most half the hull diagonal from the centre moves by at most
-	# that radius times the yaw delta. Below the contact tolerance the rotation
-	# cannot newly cross geometry, so the query is skipped.
-	var max_yaw_support_shift_m := 0.5 * hull_shape.size.length() * absf(yaw_delta)
-	if max_yaw_support_shift_m > config.orientation_contact_tolerance_m:
+	# Every nonzero yaw probes the installed pose, however small. The former
+	# skip below `0.5 * hull diagonal * |yaw| <= orientation tolerance` assumed
+	# the tick-start pose already cleared the wall by that tolerance; nothing
+	# established it, and a long hull corner can cross wall-like geometry with
+	# far less centre-line rotation than the tolerance. A probe per nonzero-yaw
+	# tick is cheap and keeps the installed-pose bound enforced. Exactly zero
+	# yaw relies on the translation sweep's own prediction/commit.
+	if absf(yaw_delta) > 0.0:
 		var probe_shape := BoxShape3D.new()
 		probe_shape.size = (
 			hull_shape.size - Vector3.ONE * (2.0 * config.orientation_contact_tolerance_m)

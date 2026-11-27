@@ -24,6 +24,15 @@ const POSE_SETTLE_FRAMES := 3
 ## Straight-wall laboratory layout.
 const STRAIGHT_WALL_Z := -20.0
 const OBLIQUE_WALL_POINT := Vector3(0.0, 2.0, -15.0)
+## Gentle-yaw regression layout: a parallel wall whose near face is 5 cm from
+## the hull's right side at zero heading. Its outward near-face normal is -X.
+const GENTLE_YAW_WALL_POINT := Vector3(0.95, 2.0, 0.0)
+const GENTLE_YAW_TICKS := 30
+## Low-speed/high-gain tuning gives a yaw rate of 5.0 * 0.1 = 0.5 rad/s,
+## below the old per-tick skip threshold `tolerance / (0.5 * hull diagonal)`
+## ~ 0.00925 rad (about 0.555 rad/s). The low speed keeps translation small.
+const GENTLE_YAW_FORWARD_SPEED_M_S := 0.1
+const GENTLE_YAW_GAIN_GRIP := 5.0
 ## Same slab used with its layer excluded from and included in the body mask.
 const MASK_CONSISTENCY_WALL_POINT := Vector3(0.0, 2.0, -10.0)
 const MASK_CONSISTENCY_APPROACH_SPEED_M_S := 20.0
@@ -56,6 +65,7 @@ const CASE_IDS := [
 	"multi_contact_collection",
 	"wall_contact_normal_authority",
 	"rotated_hull_wall_orientation",
+	"gentle_yaw_wall_probe",
 	"envelope_refusal",
 	"work_cap_and_truncation",
 	"fixed_60hz_repeatability",
@@ -179,6 +189,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_wall_contact_normal_authority()
 		"rotated_hull_wall_orientation":
 			await _case_rotated_hull_wall_orientation()
+		"gentle_yaw_wall_probe":
+			await _case_gentle_yaw_wall_probe()
 		"envelope_refusal":
 			await _case_envelope_refusal()
 		"work_cap_and_truncation":
@@ -1383,6 +1395,187 @@ func _case_rotated_hull_wall_orientation() -> void:
 		)
 		previous_heading = result.committed_state.heading_rad
 	await _destroy_world(open_world)
+
+
+func _case_gentle_yaw_wall_probe() -> void:
+	# Regression for interim review F1: the installed-pose probe used to run
+	# only when `0.5 * hull diagonal * |yaw delta|` exceeded the orientation
+	# contact tolerance, so a gentle yaw below that threshold (~0.555 rad/s for
+	# the default 0.02 m tolerance and this hull) skipped the world check
+	# entirely. The adapter now probes every nonzero yaw. This real pinned-Jolt
+	# case runs at 0.5 rad/s (0.1 m/s with grip gain 5.0, full opposite lock)
+	# for 30 ticks next to a parallel wall 5 cm from the hull's right side.
+	# The nose turns away from the wall so the trailing right corner sweeps
+	# toward it while the centreline velocity carries the car away. That keeps
+	# `move_and_collide()` depenetration recovery from masking the yaw-only
+	# bound: with the nose steered into the wall, Jolt pushes the body back out
+	# every tick and the probe never sees the installed overlap.
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+	tuning.yaw_gain_grip = GENTLE_YAW_GAIN_GRIP
+	var wall_spec := {
+		"point": GENTLE_YAW_WALL_POINT,
+		"yaw_deg": -90.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(
+		Vector2.ZERO, Vector2(0.0, GENTLE_YAW_FORWARD_SPEED_M_S), 0.0
+	)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var start_pose := world.body.global_transform
+	var commands: Array = []
+	for _index in range(GENTLE_YAW_TICKS):
+		commands.append(d.make_steer_command(-1.0, 0.0))
+	var records := await _drive(world, state, commands, tuning, config)
+	d.check(records.size() == GENTLE_YAW_TICKS, "gentle: %d ticks driven" % GENTLE_YAW_TICKS)
+
+	var hull_half_width := world.hull_shape.size.x * 0.5
+	var hull_half_length := world.hull_shape.size.z * 0.5
+	var skip_threshold_rad := (
+		config.orientation_contact_tolerance_m
+		/ (0.5 * world.hull_shape.size.length())
+	)
+	var saw_constraint := false
+	var first_constraint_tick := -1
+	var refusals := 0
+	var worst_signed := 0.0
+	var max_committed_heading := 0.0
+	var max_abs_proposed_yaw_delta := 0.0
+	for index in range(records.size()):
+		var result = records[index]["result"]
+		var label := "gentle tick %d" % (index + 1)
+		max_abs_proposed_yaw_delta = maxf(
+			max_abs_proposed_yaw_delta, absf(result.motor_yaw_delta_rad)
+		)
+		if result.status != AdapterScript.Status.COMMITTED:
+			refusals += 1
+			d.check(
+				result.status == AdapterScript.Status.REFUSED_ORIENTATION,
+				"%s: unexpected refusal %s (%s)"
+				% [label, result.status, result.rejection_reason]
+			)
+			d.check(
+				result.committed_state == null,
+				"%s: refusal exposes no committed state" % label
+			)
+			var expected_pose: Transform3D = (
+				start_pose if index == 0 else records[index - 1]["pose"]
+			)
+			d.check(
+				records[index]["pose"].is_equal_approx(expected_pose),
+				"%s: refused tick leaves the body at its pre-tick pose" % label
+			)
+			continue
+		var pose: Transform3D = records[index]["pose"]
+		var support := d.box_support_point(
+			pose, world.hull_shape.size, -world.wall_normal
+		)
+		var signed: float = (support - world.wall_point).dot(world.wall_normal)
+		worst_signed = minf(worst_signed, signed)
+		d.check(
+			signed >= -PENETRATION_TOLERANCE_M,
+			"%s: hull passed the wall near face by %.6f m" % [label, -signed]
+		)
+		d.check(
+			signed >= -(world.wall_thickness_m + PENETRATION_TOLERANCE_M),
+			"%s: hull crossed the %.1f m wall (signed distance %.6f)"
+			% [label, world.wall_thickness_m, signed]
+		)
+		var committed = result.committed_state
+		d.check(
+			committed != null and committed.is_finite(),
+			"%s: finite committed state" % label
+		)
+		if committed == null:
+			continue
+		max_committed_heading = maxf(
+			max_committed_heading, absf(committed.heading_rad)
+		)
+		d.check(
+			pose.basis.is_equal_approx(
+				AdapterScript.basis_from_heading(committed.heading_rad)
+			),
+			"%s: body basis matches the committed heading" % label
+		)
+		if result.heading_constrained:
+			if not saw_constraint:
+				first_constraint_tick = index + 1
+			saw_constraint = true
+
+	d.check(
+		max_abs_proposed_yaw_delta < skip_threshold_rad,
+		"gentle: every proposed yaw delta (max %.9f rad) is below the old skip threshold %.9f rad"
+		% [max_abs_proposed_yaw_delta, skip_threshold_rad]
+	)
+	d.check(
+		refusals == 0,
+		"gentle: no refusal; the installed-pose bound constrains instead"
+	)
+	d.check(saw_constraint, "gentle: steering toward the wall constrained the yaw")
+	d.check(first_constraint_tick > 0, "gentle: constraint tick recorded")
+
+	# Geometric control for the old skip: the first six proposed yaw deltas, if
+	# applied unchecked, rotate the hull's front-right corner past the 3 cm lab
+	# gate. Origin drift only adds penetration, so this is a conservative
+	# mirror of what the pre-fix code installed.
+	var unchecked_heading := 0.0
+	for index in range(mini(6, records.size())):
+		unchecked_heading += records[index]["result"].motor_yaw_delta_rad
+	unchecked_heading = absf(unchecked_heading)
+	var unchecked_support_x := (
+		hull_half_width * cos(unchecked_heading)
+		+ hull_half_length * sin(unchecked_heading)
+	)
+	var unchecked_penetration := unchecked_support_x - GENTLE_YAW_WALL_POINT.x
+	d.check(
+		unchecked_penetration > PENETRATION_TOLERANCE_M,
+		"gentle control: unchecked yaw would penetrate %.6f m by tick 6, past the %.3f m gate"
+		% [unchecked_penetration, PENETRATION_TOLERANCE_M]
+	)
+	d.check(
+		worst_signed >= -PENETRATION_TOLERANCE_M,
+		"gentle: worst committed hull plane distance %.6f m stays inside the gate"
+		% worst_signed
+	)
+	measurements["worst_hull_plane_distance_m"] = worst_signed
+	measurements["max_committed_heading_rad"] = max_committed_heading
+	measurements["max_abs_proposed_yaw_delta_rad"] = max_abs_proposed_yaw_delta
+	measurements["old_skip_threshold_rad_per_tick"] = skip_threshold_rad
+	measurements["first_constraint_tick"] = first_constraint_tick
+	measurements["refusals"] = refusals
+	measurements["unchecked_control_penetration_m"] = unchecked_penetration
+
+	# Refusal path: an installed pose already across the wall at the tick-start
+	# heading must fail closed without moving the body or exposing a state.
+	var overlap_state := d.make_state(
+		Vector2(1.0, 0.0), Vector2(0.0, GENTLE_YAW_FORWARD_SPEED_M_S), 0.0
+	)
+	await _place_body(world, overlap_state, d.BODY_SUPPORT_Y)
+	var overlap_pose := world.body.global_transform
+	var overlap_result = AdapterScript.step(
+		world.body, world.hull_shape, overlap_state,
+		d.make_steer_command(-1.0, 0.0), tuning, config
+	)
+	d.check(
+		overlap_result.status == AdapterScript.Status.REFUSED_ORIENTATION,
+		"gentle refusal: already-overlapping pose refused (%s)"
+		% overlap_result.rejection_reason
+	)
+	d.check(
+		overlap_result.committed_state == null,
+		"gentle refusal: no committed state exposed"
+	)
+	d.check(
+		overlap_result.rejection_reason.contains("installed hull overlaps"),
+		"gentle refusal: reason names the overlapping installed hull"
+	)
+	d.check(
+		world.body.global_transform.is_equal_approx(overlap_pose),
+		"gentle refusal: body pose unchanged"
+	)
+	await _destroy_world(world)
 
 
 func _case_envelope_refusal() -> void:
