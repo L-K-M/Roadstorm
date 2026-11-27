@@ -62,9 +62,9 @@ godot --headless --max-fps 60 --path tools/tick_probe \
 
 # Independent focused contract tests (isolated copy, XDG/TMPDIR redirected, <=30 s).
 # Run them under every pacing mode: --pacing fixed|default|max.
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 76
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 76
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 76
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 77
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 77
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 77
 
 # Dynamic server-step regression (one physics-server step per logical tick)
 godot --headless --fixed-fps 60 --path tools/tick_probe \
@@ -419,3 +419,7 @@ observation separation) was produced after that N1 revision; it supersedes
 the earlier cold-start caveat. Hashes bind the worktree in
 `evidence/2026-11-27-apple-m4-max-jolt-cold-start/manifest.sha256`. Engine:
 Godot 4.7.2-stable (official). No third-party assets or network services.
+
+The cold-start evidence manifest records the tested files at commit `8a5615c`.
+This later README correction updates the example count from 76 to 77; the
+probe source and test inputs are unchanged by that documentation-only update.
