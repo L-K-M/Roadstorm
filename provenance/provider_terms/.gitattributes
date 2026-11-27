@@ -1,0 +1,3 @@
+# Keep exact third-party HTML captures byte-for-byte; review their hashes and
+# the bounded intake notes instead of line-diffing generated page markup.
+*.html -diff
