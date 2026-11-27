@@ -63,15 +63,15 @@ godot --headless --max-fps 60 --path tools/tick_probe \
 
 # Independent focused contract tests (isolated copy, XDG/TMPDIR redirected, <=30 s).
 # Run them under every pacing mode: --pacing fixed|default|max.
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 128
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 128
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 128
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 133
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 133
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 133
 
 # Runner must fail closed when a well-formed report says checks failed but the
 # child exits 0 (must exit 1):
 FAKE_CHECKS=85 FAKE_FAILED=1 python3 tools/tick_probe/tests/run_contract_tests.py \
     --godot tools/tick_probe/tests/inject_failure_fake_godot.sh \
-    --pacing fixed --expect-checks 128; echo $?   # 1
+    --pacing fixed --expect-checks 133; echo $?   # 1
 
 # Dynamic server-step regression (strict isolated runner)
 python3 tools/tick_probe/tests/run_n1_tests.py --pacing fixed --expect-checks 76
@@ -96,7 +96,7 @@ Exit code `0` means every check passed, `1` means at least one failed.
 `TICK_PROBE_DEBUG=1` additionally prints per-substep query/commit diagnostics.
 
 The broad structural suite currently has **108 checks**; the independent
-contract suite has **128 checks** and passes under `--fixed-fps 60`, default
+contract suite has **133 checks** and passes under `--fixed-fps 60`, default
 and `--max-fps 60` pacing. Recorded totals and outputs live under `evidence/`.
 
 ## Coordinator contract
@@ -275,8 +275,9 @@ an ordinary idle-time call; the next physics iteration pairs the first tick
 with its server step. A warmed counting-body contract test calls
 `begin_step(12)` from a later-ordered `PROCESS_MODE_ALWAYS` node and requires
 exactly 12 counted server steps and `paused == true` immediately after the
-call; synchronous unpausing yields 13 steps and fails the test. Idle-time calls
-keep immediate unpause; zero-budget/terminal/reset/reentrancy paths unchanged.
+call; synchronous unpausing yields 13 steps and fails the test. Idle-time calls spend
+one fully paused settling iteration before activation (they do not synchronously
+unpause either); zero-budget/terminal/reset/reentrancy paths unchanged.
 
 **Callback ordering at completion.** Completion pauses in the final tick's own
 callback, so nodes processed after the coordinator do not receive that final
@@ -401,7 +402,7 @@ frozen trailing callback never advanced `tick_count`.
 - `evidence/2026-11-27-apple-m4-max-jolt-repeated-boundary/` — **current**:
   repeated same-world 12+12+1 gate on one warmed body, one-iteration paused
   settling correction for exact repeated requests, pre/post traces across
-  pacings, settle-removed mutation, refreshed 128-check contract / 76-check N1 /
+  pacings, settle-removed mutation, refreshed 133-check contract / 76-check N1 /
   108-check structural evidence, and honest `n+1` frame / ~0.92× realtime cost.
 - `evidence/2026-11-27-apple-m4-max-jolt-f2-f3-gates/` — historical:
   warmed exact server-step gates, measured signal-time relationship (300/300

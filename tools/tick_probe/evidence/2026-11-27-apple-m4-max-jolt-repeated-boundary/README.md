@@ -50,8 +50,9 @@ second request `server_steps_delta=11`, third `0`.
 Each idle-origin request spans `n + 1` engine frames at signal time: `n` tick
 iterations plus one fully paused settling iteration. No server step is added —
 server steps stay exactly `n`. Physics-callback-origin requests also span
-`n + 1`. Realtime cost is therefore real: measured 600 ticks / 50 requests in
-10.966 s, speedup **0.912×**; expected ceiling from 50 settling iterations is
+`n + 1`. Realtime cost is therefore real: the retained `compare-modes.txt`
+measures 600 ticks / 50 requests in **10.881 s**, speedup **0.919×** (its INFO
+line reports the same 0.919 observed against the 0.923 ceiling); expected ceiling from 50 settling iterations is
 `10 / (10 + 0.833) = 0.923×`. The documented 0.5–2.0 acceptance band is
 unchanged. Accelerated throughput includes the same settling iterations.
 
@@ -59,12 +60,29 @@ unchanged. Accelerated throughput includes the same settling iterations.
 
 | Run | Checks | Exit |
 | --- | --- | ---: |
-| contract fixed/default/max (`--expect-checks 128`) | 128/128 each | 0 |
+| contract fixed/default/max (`--expect-checks 133`) | 133/133 each | 0 |
 | strict N1 fixed/default/max (`--expect-checks 76`) | 76/76 each | 0 |
 | structural fixed/default/max | 108/108 each | 0 |
-| compare_modes throughput + trace | 9 + 2 PASS; realtime 0.912× | 0 |
+| compare_modes throughput + trace | 9 + 2 PASS; realtime 0.919× (10.881 s) | 0 |
 | exit-code selftest | 5 total, 1 injected failure | 1 |
 | mutation: settling removed | 7 failures / 128 (repeated requests lose steps) | 1 |
+
+## Sol `b56d902` findings 3/4 correction
+
+- **F3 fixed:** on a live episode the empty-request branch now runs **before**
+  the movement-envelope check. `begin_step(0)` at an over-envelope speed is a
+  zero-tick `(0, none)` no-op: episode stays live, no tick, motion, violation or
+  event, frozen publication. The already-terminal fast path is unchanged, so a
+  later positive request is still refused `motion_bound`. New hard contract
+  regression `zero-request:*` (live 250 m/s config); moving the envelope check
+  back ahead of the empty request makes exactly those three checks fail
+  (`sol-f3-mutation.txt`).
+- **F4 reconciled without touching raw traces:** the retained
+  `compare-modes.txt` is authoritative at **10.881 s / 0.919×** (INFO observed
+  0.919 vs ceiling 0.923). This README and `provenance.json` previously said
+  0.912× from an uncommitted rerun; both now record the retained value. Probe
+  README no longer says idle requests unpause immediately; they spend one fully
+  paused settling iteration like all other origins.
 
 ## Remaining limits / low issues
 

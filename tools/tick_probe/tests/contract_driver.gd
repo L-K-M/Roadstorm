@@ -44,6 +44,7 @@ func _ready() -> void:
 	await _test_callback_ordering()
 	await _test_physics_callback_begin_step()
 	await _test_repeated_same_world_requests()
+	await _test_zero_request_live_over_envelope()
 	await _test_motion_bound_server_steps()
 	await _test_api_edges()
 	await _test_bypass_negative_control()
@@ -183,6 +184,36 @@ func _test_repeated_same_world_requests() -> void:
 			"obs=%s body=%s" % [str(obs_pos), str(body_pos)])
 	coord.step_finished.disconnect(observer)
 	dyn.queue_free()
+
+
+## An empty request on a live over-envelope episode is a nonterminal no-op:
+## it must not trip the movement-envelope refusal or end the episode.
+func _test_zero_request_live_over_envelope() -> void:
+	await _configure(250.0)
+	coord.reset()
+	var ticks0: int = coord.tick_count
+	var violations0: int = coord.motion_bound_violations
+	var events0: int = coord.events.size()
+	var z0: float = coord.body.global_position.z
+	var accepted: bool = coord.begin_step(0)
+	var pending: bool = coord.has_pending_result()
+	var result: Dictionary = coord.take_result()
+	_check(accepted and pending and int(result.elapsed_ticks) == 0 and str(result.terminal) == "none",
+		"zero-request: live over-envelope empty request is a zero-tick nonterminal result",
+		"accepted=%s elapsed=%d terminal=%s" % [str(accepted), int(result.elapsed_ticks), str(result.terminal)])
+	_check(coord.episode_terminal == "none" and coord.tick_count == ticks0,
+		"zero-request: episode stays live and no tick accrues",
+		"terminal=%s ticks=%d" % [str(coord.episode_terminal), coord.tick_count])
+	_check(coord.motion_bound_violations == violations0 and coord.events.size() == events0,
+		"zero-request: no envelope violation or event is recorded",
+		"violations=%d->%d events=%d->%d" % [violations0, coord.motion_bound_violations, events0, coord.events.size()])
+	_check(coord.body.global_position.z == z0 and get_tree().paused,
+		"zero-request: no motion and waiting freeze preserved")
+	# The next positive request must still see the over-envelope refusal.
+	var positive: Dictionary = await _step(12)
+	_check(str(positive.terminal) == "motion_bound" and int(positive.elapsed_ticks) == 0,
+		"zero-request: later positive request is still refused as motion_bound",
+		"elapsed=%d terminal=%s" % [int(positive.elapsed_ticks), str(positive.terminal)])
 
 
 ## A refused over-envelope command must integrate no physics-server step.

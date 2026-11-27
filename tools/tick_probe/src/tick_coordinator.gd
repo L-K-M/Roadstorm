@@ -274,6 +274,16 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 		set_frozen(true)
 		_emit_result(requested_ticks, 0, "truncated")
 		return true
+	if requested_ticks == 0:
+		# Empty requests are non-terminating no-ops on a live episode: they must
+		# never trigger the movement-envelope refusal or mark motion_bound.
+		_requested_ticks = 0
+		_budget = 0
+		_step_elapsed = 0
+		_pending_result = false
+		set_frozen(true)
+		_emit_result(0, 0, "none")
+		return true
 	var commanded_travel := absf(speed_mps) * DT
 	if commanded_travel > MAX_TICK_TRAVEL_M + MOTION_BOUND_EPSILON_M:
 		# Validate before unpausing: refusing here must not let the current
@@ -290,12 +300,6 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 	_budget = _requested_ticks
 	_step_elapsed = 0
 	_pending_result = false
-	if _requested_ticks == 0:
-		# Empty-request completion is published with the waiting freeze already
-		# in effect; no observer may see an unpaused tree during the signal.
-		set_frozen(true)
-		_emit_result(0, 0, "none")
-		return true
 	if Engine.is_in_physics_frame() and get_tree().paused:
 		# A request issued from a physics callback must not synchronously
 		# unpause this iteration (the coordinator has already returned for it,

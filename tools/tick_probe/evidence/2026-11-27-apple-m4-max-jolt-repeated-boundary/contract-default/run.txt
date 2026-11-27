@@ -111,6 +111,11 @@ PASS repeat-same-world: requested 1 integrates exactly 1 server steps
 PASS repeat-same-world: requested 1 publishes while frozen
 PASS repeat-same-world: signal snapshot matches accounted ticks/freeze
 PASS repeat-same-world: final observation is the committed body pose
+PASS zero-request: live over-envelope empty request is a zero-tick nonterminal result
+PASS zero-request: episode stays live and no tick accrues
+PASS zero-request: no envelope violation or event is recorded
+PASS zero-request: no motion and waiting freeze preserved
+PASS zero-request: later positive request is still refused as motion_bound
 PASS motion-bound: counting body activated before refusal
 PASS motion-bound: refusal returns zero elapsed ticks
 PASS motion-bound: refusal integrates no physics-server step and freezes
@@ -128,6 +133,6 @@ PASS bypass-negative: direct physics calls consumed zero logical ticks
 PASS bypass-negative: direct calls still moved the body outside tick accounting
 PASS pause-ownership: begin_step never synchronously clears an external pause
 PASS pause-ownership: stepping proceeds after the one-iteration settle
-TEST_RESULT {"checks_failed":0,"checks_total":128,"failures":[],"schema":"roadstorm.tick_probe.contract.v1"}
-TESTS_TOTAL=128 TESTS_FAILED=0
-PACING=default CONTRACT_TESTS_TOTAL=128 CONTRACT_TESTS_FAILED=0
+TEST_RESULT {"checks_failed":0,"checks_total":133,"failures":[],"schema":"roadstorm.tick_probe.contract.v1"}
+TESTS_TOTAL=133 TESTS_FAILED=0
+PACING=default CONTRACT_TESTS_TOTAL=133 CONTRACT_TESTS_FAILED=0
