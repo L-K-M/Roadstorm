@@ -21,6 +21,10 @@ VERIFY="$PIN_ROOT/verify.sh"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/python-pin-tests.XXXXXX" 2>/dev/null)" ||
 	WORK="${TMPDIR:-/tmp}/python-pin-tests.$$"
 mkdir -p "$WORK" || exit 2
+# Use the physical prefix: on macOS TMPDIR (/var/folders/...) contains a
+# /var symlink, which would make every absolute fixture path depend on
+# readlink even for tests that are not about symlink resolution.
+WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
 trap 'exit 130' INT TERM HUP
 
@@ -64,6 +68,19 @@ assert_not_contains() { # description haystack needle
 			PASS=$((PASS + 1))
 			printf 'ok   %s\n' "$1" ;;
 	esac
+}
+
+# Build a private PATH directory with the utilities verify.sh invokes,
+# omitting named tools. Used to exercise the readlink fallback and the
+# fail-closed behaviour when realpath/readlink are absent.
+make_restricted_path() {
+	_dir="$1"; shift
+	mkdir -p "$_dir" || return 1
+	for _t in sed awk date hostname uname mkdir dirname shasum tail tr sh readlink realpath; do
+		case " $* " in *" $_t "*) continue ;; esac
+		_src="$(command -v "$_t" 2>/dev/null)" || continue
+		ln -s "$_src" "$_dir/$_t"
+	done
 }
 
 # Canonical absolute path, matching verify.sh's realpath-based resolution.
@@ -414,8 +431,8 @@ rc=$?
 assert_eq "same recorded path and unchanged bytes exit 0" 0 "$rc"
 assert_contains "summary reports a comparison for the same path" "$out" \
 	"local digest: compared"
-# Restore the original bytes, then pretend to be a different host: the
-# baseline is path-scoped, so the same path must still be compared.
+# Restore the original bytes. verify.sh never consults host identity, so this
+# pins that claim: the baseline is path-scoped and the same path is compared.
 make_counting_fake "$fx/build" "$fx/marker"
 mkdir -p "$fx/bin"
 printf '#!/bin/sh\necho some-other-host\n' > "$fx/bin/hostname"
@@ -443,7 +460,12 @@ printf 'local_interpreter_315_sha256=%s\n' \
 	"$(sha256_file "$fx/bin/python3.15")" >> "$fx/pin/checksums.txt"
 printf '#!/bin/sh\ncase "$1" in -I) echo "python: unknown option: -I" >&2; exit 64;; esac\nprintf "3.15.2\\n"\n' > "$fx/bin/python"
 chmod +x "$fx/bin/python"
-out="$(cd "$fx" && PATH="$fx/bin:$PATH" NO_COLOR=1 sh ./verify.sh \
+# Use only our tools plus the two fake interpreters, so the result does not
+# depend on whichever `python3` the host happens to have on PATH.
+make_restricted_path "$fx/pathbin"
+ln -s "$fx/bin/python3.15" "$fx/pathbin/python3.15"
+ln -s "$fx/bin/python" "$fx/pathbin/python"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh \
 	--archive "$fx/python-3.15.2-macos11.pkg" \
 	--record "$fx/observed.txt" 2>&1)"
 rc=$?
@@ -451,6 +473,23 @@ assert_eq "Python-2-like bare python does not fail a run that finds the pin" 0 "
 assert_contains "unprobeable candidate is visible" "$out" "skipping this candidate"
 assert_contains "valid pinned candidate is compared" "$out" \
 	"local digest: compared"
+
+# --- an unprobeable build AT the recorded path fails closed (Opus L1) ------
+fx="$(new_fixture recorded-unprobeable)"
+make_restricted_path "$fx/pathbin"
+printf '#!/bin/sh\nexit 1\n' > "$fx/pathbin/python3.15"
+chmod +x "$fx/pathbin/python3.15"
+make_counting_fake "$fx/pathbin/python3" "$fx/marker"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$fx/pathbin/python3.15")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$fx/pathbin/python3.15")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "broken recorded-path build with another pinned build fails (exit 1)" 1 "$rc"
+assert_contains "failure names the recorded build" "$out" \
+	"it is the recorded local build"
+assert_contains "summary gives the specific drift-gate state" "$out" \
+	"local digest: recorded build unprobeable"
 
 # --- hashing feeds content on stdin, tolerating odd path names (Unix) -------
 case "$(uname -s)" in
@@ -469,6 +508,11 @@ case "$(uname -s)" in
 		rec="$(cat "$fx/observed.txt" 2>/dev/null)"
 		assert_contains "record carries the backslash-name digest" "$rec" \
 			"local_interpreter_315_sha256=$(sha256_file "$_bs")"
+		sed -n '/^sha256_of() {/,/^}/p' "$VERIFY" > "$fx/hashharness.sh"
+		printf 'odd\n' > "$fx/-dashname"
+		_dh="$(cd "$fx" && . ./hashharness.sh && sha256_of -dashname 2>/dev/null)"
+		assert_eq "leading-dash path hashes via stdin" \
+			"$(sha256_file "$fx/-dashname")" "$_dh"
 		;;
 esac
 
@@ -514,6 +558,109 @@ else
 	assert_eq "unreadable digest file fails closed (exit 2)" 2 "$rc"
 	assert_contains "unreadable digest file is named" "$out" "cannot read digest file"
 fi
+
+# --- relative ../ symlink fallback without realpath (Sol d8cd39c) ----------
+fx="$(new_fixture rel-symlink-fallback)"
+mkdir -p "$fx/spaces [literal]" "$fx/elsewhere"
+_target="$fx/spaces [literal]/stub python"
+make_counting_fake "$_target" "$fx/marker"
+ln -s '../spaces [literal]/stub python' "$fx/elsewhere/link python"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+make_restricted_path "$fx/bin" realpath
+
+out="$(cd "$fx" && PATH="$fx/bin" NO_COLOR=1 sh ./verify.sh \
+	--python "$fx/elsewhere/link python" --quiet 2>&1)"
+rc=$?
+assert_eq "relative ../ symlink resolves and compares without realpath" 0 "$rc"
+assert_contains "summary confirms comparison without realpath" "$out" \
+	"local digest: compared"
+printf '# bytes changed without changing stdout\n' >> "$_target"
+out="$(cd "$fx" && PATH="$fx/bin" NO_COLOR=1 sh ./verify.sh \
+	--python "$fx/elsewhere/link python" --quiet 2>&1)"
+rc=$?
+assert_eq "drift behind a relative ../ symlink fails closed" 1 "$rc"
+assert_contains "drift is reported through the symlink" "$out" \
+	"interpreter sha256 changed"
+
+# --- chained symlinks and an intermediate directory symlink ----------------
+fx="$(new_fixture chained-symlink)"
+mkdir -p "$fx/real dir"
+_target="$fx/real dir/stub python"
+make_counting_fake "$_target" "$fx/marker"
+ln -s 'real dir' "$fx/dirlink"
+ln -s 'dirlink/stub python' "$fx/ch1"
+ln -s 'ch1' "$fx/ch2"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+make_restricted_path "$fx/bin" realpath
+out="$(cd "$fx" && PATH="$fx/bin" NO_COLOR=1 sh ./verify.sh \
+	--python "$fx/ch2" --quiet 2>&1)"
+rc=$?
+assert_eq "chained/dir symlink resolves and compares without realpath" 0 "$rc"
+printf '# bytes changed\n' >> "$_target"
+out="$(cd "$fx" && PATH="$fx/bin" NO_COLOR=1 sh ./verify.sh \
+	--python "$fx/ch2" --quiet 2>&1)"
+rc=$?
+assert_eq "drift behind chained/dir symlinks fails closed" 1 "$rc"
+
+# --- unavailable readlink fails closed only when it matters -----------------
+fx="$(new_fixture no-readlink)"
+_target="$fx/direct python"
+make_counting_fake "$_target" "$fx/marker"
+ln -s "$_target" "$fx/link"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+make_restricted_path "$fx/bin" realpath readlink
+out="$(cd "$fx" && PATH="$fx/bin" NO_COLOR=1 sh ./verify.sh \
+	--python "$fx/link" --quiet 2>&1)"
+rc=$?
+assert_eq "unresolvable symlink with a baseline fails closed" 1 "$rc"
+assert_contains "failure says canonical resolution failed" "$out" \
+	"cannot canonically resolve"
+assert_contains "summary marks the unresolved path" "$out" \
+	"local digest: not compared (unresolved path)"
+out="$(cd "$fx" && PATH="$fx/bin" NO_COLOR=1 sh ./verify.sh \
+	--python "$_target" --quiet 2>&1)"
+rc=$?
+assert_eq "direct regular file still resolves without readlink" 0 "$rc"
+assert_contains "direct path is compared" "$out" "local digest: compared"
+
+# --- canonical_path unit checks: chains, loops, broken links ----------------
+fx="$(new_fixture canonical-harness)"
+mkdir -p "$fx/tree/sub" "$fx/tree/a"
+printf 'x\n' > "$fx/tree/target file"
+ln -s '../target file' "$fx/tree/sub/one"
+ln -s 'sub/one' "$fx/tree/two"
+ln -s 'two' "$fx/tree/three"
+ln -s 'loop-b' "$fx/tree/loop-a"
+ln -s 'loop-a' "$fx/tree/loop-b"
+ln -s 'self' "$fx/tree/self"
+ln -s 'missing-nowhere' "$fx/tree/broken"
+sed -n '/^canonical_path() {/,/^}/p' "$VERIFY" > "$fx/harness.sh"
+_h="$(cd "$fx" && . ./harness.sh && canonical_path "$fx/tree/three" 2>/dev/null)"
+assert_contains "harness follows a three-hop chain" "$_h" "target file"
+assert_not_contains "harness leaves no .. component" "$_h" ".."
+[ -n "$(command -v realpath)" ] && assert_eq "harness chain equals realpath" \
+	"$(real_path "$fx/tree/target file")" "$_h"
+mkdir -p "$fx/tree/target dir"
+printf 'x\n' > "$fx/tree/f"
+ln -s '../target dir' "$fx/tree/sub/link"
+_dd="$(cd "$fx" && . ./harness.sh && canonical_path "$fx/tree/sub/link/../f" 2>/dev/null)"
+assert_eq "harness applies .. after symlink expansion like realpath" \
+	"$(real_path "$fx/tree/f")" "$_dd"
+for _bad in loop-a self broken missing-path; do
+	( cd "$fx" && . ./harness.sh && canonical_path "$fx/tree/$_bad" >/dev/null 2>&1 )
+	assert_eq "harness rejects $_bad" 1 "$?"
+done
+make_restricted_path "$fx/bin" realpath readlink
+_rc_link="$(cd "$fx" && PATH="$fx/bin"; export PATH; . ./harness.sh; canonical_path "$fx/tree/three" >/dev/null 2>&1; echo $?)"
+assert_eq "harness needs readlink for a symlink" 1 "$_rc_link"
+_rc_file="$(cd "$fx" && PATH="$fx/bin"; export PATH; . ./harness.sh; canonical_path "$fx/tree/target file" >/dev/null 2>&1; echo $?)"
+assert_eq "harness works lexically without readlink" 0 "$_rc_file"
 
 # --- empty option values are rejected, never silently ignored --------------
 fx="$(new_fixture empty-options)"

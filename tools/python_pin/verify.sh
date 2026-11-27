@@ -54,12 +54,15 @@
 # but are not an absolute race-free guarantee; see the README. Record entries
 # use the drift-lookup key convention (local_interpreter_<major><minor>_*;
 # pin/checksums.txt retains one older local_interpreter_396_* entry) and store
-# the realpath-resolved path when the selected file is a symlink. A real
-# launcher such as macOS /usr/bin/python3 stays the launcher. The local-digest drift comparison is
-# scoped to the exact canonical path recorded there (not to a host): a build
-# at that same path on ANY machine is compared and may fail closed, while an
-# interpreter at a different path is NOT RECORDED and not compared. --archive compares with the published digest RECORDED in
-# pin/python.txt, and a mismatch produces no publisher/Sigstore success claim.
+# the canonical path (realpath, or the built-in canonical_path/readlink
+# fallback). A real launcher such as macOS /usr/bin/python3 stays the
+# launcher. The local-digest drift comparison is scoped to the exact
+# canonical path recorded there (not to a host): a build at that same path on
+# ANY machine is compared and may fail closed, while an interpreter at a
+# different path is NOT RECORDED and not compared. Unresolved paths fail
+# closed when a baseline applies. --archive compares with the published digest
+# RECORDED in pin/python.txt, and a mismatch produces no publisher/Sigstore
+# success claim.
 #
 # Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run
 # (missing pin or digest file, no sha256 utility on PATH, a bad or empty option,
@@ -263,6 +266,79 @@ obs_append_archive() {
 	OBSERVED_ARCHIVES="$OBSERVED_ARCHIVES$_n$NL$_h"
 }
 
+# Set the drift-gate state unless an earlier decisive outcome already applies.
+# "decisive" means: a comparison happened, or the run failed closed because
+# the recorded build / its digest could not be checked.
+set_digest_state() {
+	case "$LOCAL_DIGEST_STATE" in
+		compared | "recorded build unprobeable" | \
+		"not compared (unresolved path)" | "not compared (digest unavailable)") ;;
+		*) LOCAL_DIGEST_STATE="$1" ;;
+	esac
+}
+
+# Canonicalize a path to its physical target with POSIX left-to-right path
+# resolution: components are processed in order (so `..` after a symlink
+# expansion applies to the expanded path), relative and absolute symlinks are
+# followed including chains and links in parent directories, and broken links,
+# loops and a nonexistent final target are rejected. Uses only the shell's
+# -L/-e tests and readlink, so it also works where realpath is unavailable.
+# If readlink is missing, a path containing a symlink cannot be resolved and
+# this fails.
+canonical_path() {
+	_cp_in="$1"
+	[ -n "$_cp_in" ] || return 1
+	case "$_cp_in" in
+		/*) _cp_abs="$_cp_in" ;;
+		*) _cp_abs="$(pwd)/$_cp_in" ;;
+	esac
+	_cp_cur="/"
+	_cp_work="${_cp_abs#/}"
+	_cp_hops=0
+	while [ -n "$_cp_work" ]; do
+		_cp_c="${_cp_work%%/*}"
+		case "$_cp_work" in
+			*/*) _cp_work="${_cp_work#*/}" ;;
+			*) _cp_work="" ;;
+		esac
+		case "$_cp_c" in
+			"" | ".") continue ;;
+			"..")
+				_cp_cur="${_cp_cur%/*}"
+				[ -n "$_cp_cur" ] || _cp_cur="/"
+				continue
+				;;
+		esac
+		if [ "$_cp_cur" = "/" ]; then _cp_p="/$_cp_c"; else _cp_p="$_cp_cur/$_cp_c"; fi
+		if [ -L "$_cp_p" ]; then
+			_cp_hops=$((_cp_hops + 1))
+			[ "$_cp_hops" -le 64 ] || return 1
+			_cp_tgt="$(readlink "$_cp_p" 2>/dev/null)" || return 1
+			[ -n "$_cp_tgt" ] || return 1
+			case "$_cp_tgt" in
+				/*) _cp_exp="$_cp_tgt" ;;
+				*) _cp_exp="$_cp_cur/$_cp_tgt" ;;
+			esac
+			# Re-process the expanded target from the root, followed by the
+			# components not yet consumed. Deliberately no pre-normalization:
+			# `..` after an expansion must apply to the expanded path, not to
+			# the raw text.
+			_cp_cur="/"
+			_cp_new="${_cp_exp#/}"
+			if [ -n "$_cp_work" ]; then
+				[ -n "$_cp_new" ] && _cp_work="$_cp_new/$_cp_work"
+			else
+				_cp_work="$_cp_new"
+			fi
+		else
+			_cp_cur="$_cp_p"
+		fi
+	done
+	[ -n "$_cp_cur" ] || _cp_cur="/"
+	[ -e "$_cp_cur" ] || return 1
+	printf '%s\n' "$_cp_cur"
+}
+
 # read_version <interpreter> -> prints "X.Y.Z" or nothing.
 # -I isolates the probe: the current directory and PYTHONPATH are not put on
 # sys.path, so a platform.py or sys.py planted in the caller's working
@@ -285,23 +361,22 @@ FOUND_PINNED=0
 OBSERVED_SHA=""
 _FOUND_ANY=0
 LOCAL_DIGEST_STATE="not compared"
+RESOLVED_OK=0
 
 check_interpreter() {
 	_py="$1"
 	[ -x "$_py" ] || { bad "not executable: $_py"; return 1; }
-	_real="$(cd "$(dirname "$_py")" && pwd)/$(basename "$_py")"
+	RESOLVED_OK=0
+	_real=""
 	if command -v realpath >/dev/null 2>&1; then
-		_real="$(realpath "$_py" 2>/dev/null || printf '%s' "$_py")"
-	elif command -v readlink >/dev/null 2>&1; then
-		# Fallback: make a relative link target absolute before the baseline
-		# path comparison, so it is not silently treated as a different build.
-		_link="$(readlink "$_py" 2>/dev/null)"
-		if [ -n "$_link" ]; then
-			case "$_link" in
-				/*) _real="$_link" ;;
-				*) _real="$(cd "$(dirname "$_py")" && pwd)/$_link" ;;
-			esac
-		fi
+		_real="$(realpath "$_py" 2>/dev/null)" && RESOLVED_OK=1
+	fi
+	if [ "$RESOLVED_OK" -eq 0 ]; then
+		_real="$(canonical_path "$_py")" && RESOLVED_OK=1
+	fi
+	if [ "$RESOLVED_OK" -eq 0 ]; then
+		_real="$_py"
+		warn "cannot canonically resolve interpreter path $_py (realpath/readlink unavailable, or a broken/looping link); recording it as given"
 	fi
 	case "$SEEN" in
 		*"|$_real|"*) return 0 ;; # already inspected this file
@@ -311,9 +386,16 @@ check_interpreter() {
 	_ver="$(read_version "$_py")"
 	if [ -z "$_ver" ]; then
 		# An unprobeable candidate (for example a bare `python` that is
-		# Python 2 and rejects -I) must not fail a run that does find the
-		# pinned interpreter. If no pinned interpreter is found, the final
-		# check below still fails the run closed.
+		# Python 2 and rejects -I) need not fail a run that finds another
+		# pinned interpreter — unless this IS the recorded baseline build,
+		# whose whole purpose is the local-change check.
+		_obs_key="local_interpreter_${PIN_MAJOR}${PIN_MINOR}"
+		_rec_path="$(digest_get "${_obs_key}_path")"
+		if [ -n "$_rec_path" ] && [ "$_real" = "$_rec_path" ]; then
+			set_digest_state "recorded build unprobeable"
+			bad "cannot read a Python version from $_py; it is the recorded local build ($_rec_path), so the drift check cannot be skipped"
+			return 1
+		fi
 		warn "cannot read a Python version from $_py (skipping this candidate; the run fails if no pinned interpreter is found)"
 		return 1
 	fi
@@ -342,6 +424,7 @@ check_interpreter() {
 check_interpreter_digest() {
 	_real="$1"; _ver="$2"
 	if ! _observed="$(sha256_of "$_real")"; then
+		set_digest_state "not compared (digest unavailable)"
 		bad "cannot compute the sha256 of $_real"
 		return 1
 	fi
@@ -349,24 +432,32 @@ check_interpreter_digest() {
 	_obs_key="local_interpreter_${PIN_MAJOR}${PIN_MINOR}"
 	_expected="$(digest_get "${_obs_key}_sha256")"
 	if [ -z "$_expected" ]; then
-		[ "$LOCAL_DIGEST_STATE" = "compared" ] || LOCAL_DIGEST_STATE="not compared (no recorded digest)"
+		set_digest_state "not compared (no recorded digest)"
 		warn "no recorded local digest for a $PIN_VERSION interpreter in $DIGEST_FILE (NOT RECORDED; nothing is invented)"
 		info "observed sha256: $_observed"
 		return 0
+	fi
+	if [ "$RESOLVED_OK" -eq 0 ]; then
+		# Indeterminate resolution must never become a "different path" skip
+		# while a recorded baseline exists: fail closed instead.
+		set_digest_state "not compared (unresolved path)"
+		bad "cannot canonically resolve interpreter path $_real; a recorded local baseline applies, so the digest comparison is not skipped silently and the run fails closed"
+		info "  make realpath/readlink available, or point --python at the recorded canonical path"
+		return 1
 	fi
 	_expected_path="$(digest_get "${_obs_key}_path")"
 	if [ -n "$_expected_path" ] && [ "$_real" != "$_expected_path" ]; then
 		# The baseline is one observed build at one canonical path, not a
 		# per-host value. A different path means no recorded observation
 		# applies; say so even under --quiet.
-		[ "$LOCAL_DIGEST_STATE" = "compared" ] || LOCAL_DIGEST_STATE="not compared (different path)"
+		set_digest_state "not compared (different path)"
 		warn "different local build: $_real is not the recorded path $_expected_path; local digest NOT compared (NOT RECORDED for this path)."
 		info "  version match is not authentication; the baseline applies only to its own path."
 		info "observed sha256: $_observed"
 		info "  provenance: LOCAL observation only; not publisher-authenticated"
 		return 0
 	fi
-	LOCAL_DIGEST_STATE="compared"
+	set_digest_state "compared"
 	if [ "$_observed" = "$_expected" ]; then
 		ok "interpreter sha256 matches the recorded LOCAL observation"
 	else

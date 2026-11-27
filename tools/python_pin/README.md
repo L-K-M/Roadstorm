@@ -82,11 +82,14 @@ Unreadable pin or digest files are hard failures (exit `2`), never treated as
 
 Residual limitation: validation and creation are separate steps. A hostile
 process that controls the parent directory could race the check and put a path
-at the destination first. By shell semantics (noclobber opens exclusively in
-bash 3.2 as `/bin/sh` and dash on macOS), the final creation then fails
-instead of truncating, even for a symlink; the bundled suite exercises the
-deterministic existence refusals, not this race. This narrows the window but
-is **not** a formal, race-free guarantee on every POSIX shell.
+at the destination first, so a node that already exists at validation time is
+refused deterministically. Verified on bash 3.2 as `/bin/sh` and dash here:
+the final noclobber creation refuses an existing regular file or a symlink to
+one, while a non-regular node (FIFO or device) planted in the race window may
+be opened for writing without truncation rather than refused. The bundled
+suite exercises the deterministic existence refusals, not this race. This
+narrows the window but is **not** a formal, race-free guarantee on every POSIX
+shell.
 
 ## Rules this directory must not break
 
@@ -125,12 +128,18 @@ is **not** a formal, race-free guarantee on every POSIX shell.
    identity as well as by existence. Empty option values (`--archive ''`,
    `--record=`, ...) are usage errors, never silently ignored.
 8. **The local digest baseline is scoped to an exact canonical path, not to
-   a host.** Only an interpreter whose resolved path equals
+   a host.** Only an interpreter whose canonicalized path equals
    `local_interpreter_315_path` in `pin/checksums.txt` is compared with the
-   recorded digest. A build at that same path on **any** machine is compared
-   and fails closed on mismatch; an interpreter at a different path is
-   reported as a version match but left `NOT RECORDED`, never silently
-   assumed to match. No host identity is consulted.
+   recorded digest. Canonicalization uses `realpath`, or a built-in resolver
+   (`canonical_path`) that follows relative, absolute and chained symlinks
+   when only `readlink` exists. Broken links, loops, and a missing utility
+   when a link actually has to be resolved are failures: if a recorded
+   baseline applies, the run fails closed rather than reporting “different
+   path” for an unresolved input.
+   A build at the recorded path on **any** machine is compared and fails
+   closed on mismatch; an interpreter at a genuinely different path is
+   reported as a version match but left `NOT RECORDED`. No host identity is
+   consulted.
 9. **Probes are isolated.** Interpreters are invoked with `-I`; modules in
    the caller's working directory or `PYTHONPATH` cannot affect the result.
    A candidate whose version cannot be read (for example a bare Python 2
@@ -153,10 +162,13 @@ characters, multiple `--archive` forms, `--no-interpreter` executing nothing
 re-probing, a failing fake interpreter marked as diagnostic, `-I` in probes,
 a second matching-version build at a different path being NOT compared (with a
 visible `--quiet` warning), a changed same-path build failing closed,
-checksums-convention record keys, mismatch getting no Sigstore success claim,
+relative/chained/directory symlink resolution without `realpath`, loop/broken
+and missing-`readlink` fail-closed handling, checksums-convention record keys, mismatch getting no Sigstore success claim,
 rejected empty options, unreadable pin/digest metadata failing closed, a
-Python-2-style candidate being skipped without failing the run, odd-name
-hashing on stdin, and a failing sha256 command failing closed. All test
+Python-2-style candidate being skipped without failing the run, an
+unprobeable build at the recorded path still failing closed, odd-name
+hashing on stdin (leading dash and backslash), and a failing sha256 command
+failing closed. All test
 fixtures are regular files
 created in a private temporary directory; symlink/hard-link fixtures live only
 there and are removed with it.
