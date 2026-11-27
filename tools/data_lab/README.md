@@ -38,6 +38,7 @@ Exit codes:
 | `handling_diagnostic_attribution` | referenced handling identity/status/schema defects are reported as `handling.*`, distinct from the car's own paths even when both records carry the same defect, and physical diagnostics are not doubled |
 | `deferred_fields_declaration` | draft/incomplete declarations must list every `DEFERRED_FIELDS_V1` path exactly once; arbitrary, missing-one-field, duplicate and blank/whitespace-only entries fail while a full or nonblank extended declaration validates |
 | `scratch_reservation_control` | unique atomic scratch reservation per run, distinct reservations, owned-content cleanup scope, and byte-identical sentinels at the legacy fixed `res://data_lab_*_roundtrip.tres` paths |
+| `scratch_cleanup_controls` | a reservation holding only known outputs is emptied and removed; unexpected, nested-directory and hidden entries are retained, reported and byte-checked; a separate test-only teardown then removes only those exact fixtures after re-verifying type and bytes, removes the now-empty reservations, and asserts no `data_lab_scratch_*` residue remains; legacy sentinels stay unchanged |
 | `malformed_identity_controls` | unsupported schema version, malformed IDs/revisions including trailing-newline whole-string controls, empty display name, and the same identity defects in a referenced handling |
 | `negative_and_nonfinite_physical_controls` | negative/nonfinite braking, drag, yaw, damping, reverse bounds and consistency; bad/unsorted/empty curves |
 | `dimensional_bounds` | length/width/height envelopes, wheelbase/clearance/jump consistency, mass, inclusive boundaries accepted |
@@ -54,8 +55,21 @@ failure detection.
 ## Scratch ownership
 
 Round-trip saves go to a fresh `res://data_lab_scratch_<stamp>_<ticks>_<pid>_<attempt>/`
-reserved with an atomic `mkdir`. Cleanup removes only directories this validator
-run reserved. The validator is read-only at the legacy fixed
+reserved with an atomic `mkdir`. Cleanup removes only the exact file names this
+validator creates inside a reservation (`handling_roundtrip.tres`,
+`car_roundtrip.tres`, `bad_enum.tres`, `owned.txt`), and only after checking
+they are not directories. Any other entry, including nested directories and
+hidden files, is retained, printed to stderr and listed in the report's
+`scratch_cleanup_reports`; the reservation directory is removed only when
+nothing remains. Cleanup never recurses, so a symlinked directory cannot be
+traversed. Production cleanup deliberately leaves such entries behind. The
+`scratch_cleanup_controls` case then performs a separate test-only teardown:
+it re-checks each exact captured fixture path for the expected basename,
+regular-file type and unchanged bytes, removes only those files, removes the
+now-empty subdirectory and reservations, and fails (retaining and reporting)
+on any changed or unexpected state. It uses no recursive removal, no glob
+cleanup and no symlink traversal, and ends by asserting no `data_lab_scratch_*`
+entry remains under `res://`. The validator is read-only at the legacy fixed
 `res://data_lab_handling_roundtrip.tres` and `res://data_lab_car_roundtrip.tres`
 paths: it never opens them for write and never removes them.
 `run_validation.sh` populates distinct sentinel files in its own freshly reserved
@@ -81,6 +95,9 @@ captured log inspection is authoritative.
 Pure resource checks only: no scene, body, physics query, clock, rendering,
 audio, input routing, motor integration or gameplay claim. Fixtures are
 synthetic `example.data_lab.*` EXAMPLE resources with arbitrary authored
-numbers, not measured handling or production content. `.tres` coverage is
+numbers, not measured handling or production content. The default handling
+fixture uses the documented derivation `example.data_lab.car.handling`; the
+typed validator accepts any valid handling reference and does not enforce that
+derivation. `.tres` coverage is
 limited to this slice's fields on the pinned local engine and does not prove
 behavior across other Godot versions or exported templates.

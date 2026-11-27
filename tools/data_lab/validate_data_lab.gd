@@ -31,6 +31,7 @@ const CASE_IDS := [
 	"handling_diagnostic_attribution",
 	"deferred_fields_declaration",
 	"scratch_reservation_control",
+	"scratch_cleanup_controls",
 	"malformed_identity_controls",
 	"negative_and_nonfinite_physical_controls",
 	"dimensional_bounds",
@@ -46,13 +47,24 @@ const LEGACY_ROUNDTRIP_HANDLING_PATH := "res://data_lab_handling_roundtrip.tres"
 const LEGACY_ROUNDTRIP_CAR_PATH := "res://data_lab_car_roundtrip.tres"
 ## Every validator run reserves its own scratch directory under `res://` so a
 ## direct execution cannot clobber files another process owns.
-const SCRATCH_DIR_PREFIX := "res://data_lab_scratch_"
+const SCRATCH_DIR_NAME_PREFIX := "data_lab_scratch_"
+const SCRATCH_DIR_PREFIX := "res://" + SCRATCH_DIR_NAME_PREFIX
+## The only file basenames this validator creates inside a reservation. Cleanup
+## removes these after checking they are not directories; any other entry is
+## retained and reported, never deleted or traversed.
+const KNOWN_SCRATCH_FILE_NAMES := [
+	"handling_roundtrip.tres",
+	"car_roundtrip.tres",
+	"bad_enum.tres",
+	"owned.txt",
+]
 
 var _checks := 0
 var _failures: Array[String] = []
 var _measured: Dictionary = {}
 var _finished := false
 var _scratch_dirs: Array[String] = []
+var _scratch_cleanup_reports: Array[String] = []
 
 
 func _initialize() -> void:
@@ -92,6 +104,7 @@ func _initialize() -> void:
 		"failed_cases": failed_cases,
 		"case_results": results,
 		"measured": _measured,
+		"scratch_cleanup_reports": _scratch_cleanup_reports.duplicate(),
 		"limitations": LIMITATIONS,
 	}
 	_finish(report)
@@ -122,6 +135,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_deferred_fields_declaration(driver)
 		"scratch_reservation_control":
 			_case_scratch_reservation_control(driver)
+		"scratch_cleanup_controls":
+			_case_scratch_cleanup_controls(driver)
 		"malformed_identity_controls":
 			_case_malformed_identity_controls(driver)
 		"negative_and_nonfinite_physical_controls":
@@ -159,7 +174,7 @@ func _case_valid_in_memory_definition(driver: DataLabDriver) -> void:
 	driver.check(handling.is_valid(), "valid handling is_valid agrees")
 	driver.check_eq(
 		handling.identity_key(),
-		"1.0.0/example.data_lab.handling@0.1.0",
+		"1.0.0/example.data_lab.car.handling@0.1.0",
 		"handling identity key"
 	)
 	driver.check_eq(handling.status_name(), "EXAMPLE", "example handling status name")
@@ -169,6 +184,11 @@ func _case_valid_in_memory_definition(driver: DataLabDriver) -> void:
 	driver.check(not car.is_complete(), "draft car is not complete")
 	driver.check_eq(car.completeness, CarScript.Completeness.DRAFT, "car completeness is DRAFT")
 	driver.check(car.handling == handling, "car keeps its typed handling reference")
+	driver.check_eq(
+		car.handling.definition_id,
+		car.definition_id + ".handling",
+		"default fixture handling ID follows the documented <car_id>.handling derivation"
+	)
 	driver.check_eq(
 		car.deferred_fields.size(),
 		CarScript.DEFERRED_FIELDS_V1.size(),
@@ -275,11 +295,20 @@ func _case_tres_round_trip(driver: DataLabDriver) -> void:
 	driver.check(loaded_car is CarDefinition, "loaded car is a CarDefinition")
 	if loaded_car is CarDefinition:
 		_assert_same_car(driver, car, loaded_car)
+		# A changed but still-parseable schema version must be detected by the
+		# car comparator too; comparing only the physical fields would let it
+		# through.
+		var car_version_before: String = loaded_car.schema_version
+		loaded_car.schema_version = "9.9.9"
+		_assert_detects_car_alteration(
+			driver, car, loaded_car, "altered car schema version"
+		)
+		loaded_car.schema_version = car_version_before
 		if loaded_car.handling is HandlingDefinition:
 			# The car `.tres` references the separately saved handling `.tres`
 			# as an external resource; compare the reloaded contents in full, not
-			# only their validity: a different valid ID, revision or curve must
-			# fail this round trip.
+			# only their validity: a different valid ID, revision, schema version
+			# or curve must fail this round trip.
 			_assert_same_handling(driver, handling, loaded_car.handling)
 			_assert_referenced_handling_controls(driver, handling, loaded_car)
 		else:
@@ -309,11 +338,11 @@ func _case_tres_round_trip(driver: DataLabDriver) -> void:
 
 
 ## Deliberate-alteration controls: a changed but still-valid referenced
-## handling ID or curve must be detected by `_assert_same_handling`. The old
-## check only asked `is_valid()`, so both alterations passed it; these controls
-## would fail against that old behavior. Restores each field after proving
-## detection. The handling is an external resource reference here, not an
-## embedded subresource.
+## handling ID, schema version or curve must be detected by
+## `_assert_same_handling`. The old check only asked `is_valid()`, so all three
+## alterations passed it; these controls would fail against that old behavior.
+## Restores each field after proving detection. The handling is an external
+## resource reference here, not an embedded subresource.
 func _assert_referenced_handling_controls(
 	driver: DataLabDriver,
 	original: HandlingDefinition,
@@ -333,6 +362,13 @@ func _assert_referenced_handling_controls(
 	)
 	loaded_car.handling.acceleration_curve_accelerations_m_s2[1] = acceleration_before
 
+	var version_before := loaded_car.handling.schema_version
+	loaded_car.handling.schema_version = "9.9.9"
+	_assert_detects_alteration(
+		driver, original, loaded_car.handling, "altered referenced handling schema version"
+	)
+	loaded_car.handling.schema_version = version_before
+
 
 func _assert_detects_alteration(
 	driver: DataLabDriver,
@@ -350,8 +386,27 @@ func _assert_detects_alteration(
 	driver.check(detected, "%s is detected by the referenced handling comparison" % label)
 
 
+func _assert_detects_car_alteration(
+	driver: DataLabDriver,
+	original: CarDefinition,
+	altered: CarDefinition,
+	label: String
+) -> void:
+	var checks_before := driver.checks
+	var failures_before := driver.failures.size()
+	_assert_same_car(driver, original, altered)
+	var detected := driver.failures.size() > failures_before
+	# The expected mismatch diagnostics are consumed by the control itself.
+	driver.failures.resize(failures_before)
+	driver.checks = checks_before
+	driver.check(detected, "%s is detected by the car comparison" % label)
+
+
 func _assert_same_handling(driver, expected: HandlingDefinition, actual: HandlingDefinition) -> void:
 	driver.check_eq(actual.definition_id, expected.definition_id, "round trip handling ID")
+	driver.check_eq(
+		actual.schema_version, expected.schema_version, "round trip handling schema version"
+	)
 	driver.check_eq(actual.revision, expected.revision, "round trip handling revision")
 	driver.check_eq(actual.display_name, expected.display_name, "round trip handling display name")
 	driver.check_eq(actual.status, expected.status, "round trip handling status")
@@ -431,6 +486,9 @@ func _assert_same_handling(driver, expected: HandlingDefinition, actual: Handlin
 
 func _assert_same_car(driver, expected: CarDefinition, actual: CarDefinition) -> void:
 	driver.check_eq(actual.definition_id, expected.definition_id, "round trip car ID")
+	driver.check_eq(
+		actual.schema_version, expected.schema_version, "round trip car schema version"
+	)
 	driver.check_eq(actual.revision, expected.revision, "round trip car revision")
 	driver.check_eq(actual.display_name, expected.display_name, "round trip car display name")
 	driver.check_eq(actual.status, expected.status, "round trip car status")
@@ -1148,6 +1206,25 @@ func _case_deferred_fields_declaration(driver: DataLabDriver) -> void:
 	)
 	driver.check(not blank.is_valid(), "blank deferred entries are refused")
 
+	# Surrounding whitespace is malformed rather than silently stripped: the
+	# exact spelling is required, and the padded entry must not count toward
+	# its required v1 slot.
+	var padded := driver.valid_car()
+	var padded_fields: PackedStringArray = padded.deferred_fields.duplicate()
+	padded_fields[0] = "  presentation.mesh_id\t"
+	padded.deferred_fields = padded_fields
+	driver.expect_diagnostic(
+		"deferred_fields: entry at index 0 carries surrounding whitespace '  presentation.mesh_id\t'",
+		padded.validate(),
+		"padded deferred entry"
+	)
+	driver.expect_diagnostic(
+		"deferred_fields: missing 1 required DEFERRED_FIELDS_V1 path(s): presentation.mesh_id",
+		padded.validate(),
+		"padded deferred entry does not satisfy its required path"
+	)
+	driver.check(not padded.is_valid(), "padded deferred entry is refused")
+
 	var full := driver.valid_car()
 	driver.check(full.is_valid(), "full v1 deferred declaration validates")
 	driver.check_eq(
@@ -1221,6 +1298,246 @@ func _case_scratch_reservation_control(driver: DataLabDriver) -> void:
 	)
 
 
+## Focused controls for the known-output-only cleanup policy: a reservation
+## holding only files this validator created is emptied and removed; unrelated,
+## nested and hidden entries are retained, reported and left untouched.
+func _case_scratch_cleanup_controls(driver: DataLabDriver) -> void:
+	var expected_handling := _read_bytes(LEGACY_ROUNDTRIP_HANDLING_PATH)
+	var expected_car := _read_bytes(LEGACY_ROUNDTRIP_CAR_PATH)
+	var reports_before := _scratch_cleanup_reports.size()
+
+	var known := _reserve_scratch_dir()
+	driver.check(known != "", "known-output reservation succeeds")
+	if known != "":
+		driver.check(_write_text_file(known.path_join("owned.txt"), "known output"), "known output written")
+
+	var unexpected := _reserve_scratch_dir()
+	driver.check(unexpected != "", "unexpected-entry reservation succeeds")
+	if unexpected != "":
+		driver.check(
+			_write_text_file(unexpected.path_join("unexpected.txt"), "unrelated content"),
+			"unexpected entry written"
+		)
+
+	var nested := _reserve_scratch_dir()
+	driver.check(nested != "", "nested-directory reservation succeeds")
+	if nested != "":
+		driver.check(
+			DirAccess.make_dir_absolute(nested.path_join("subdir")) == OK,
+			"subdirectory created inside reservation"
+		)
+		driver.check(
+			_write_text_file(nested.path_join("subdir").path_join("inside.txt"), "nested content"),
+			"nested file written"
+		)
+
+	var hidden := _reserve_scratch_dir()
+	driver.check(hidden != "", "hidden-entry reservation succeeds")
+	if hidden != "":
+		driver.check(
+			_write_text_file(hidden.path_join(".hidden.txt"), "hidden content"),
+			"hidden entry written"
+		)
+
+	_cleanup_scratch_dirs()
+	var reports := _scratch_cleanup_reports.slice(reports_before)
+
+	driver.check(
+		not DirAccess.dir_exists_absolute(known),
+		"reservation holding only known outputs is removed once empty"
+	)
+	driver.check(
+		DirAccess.dir_exists_absolute(unexpected),
+		"reservation with an unexpected entry is retained"
+	)
+	if unexpected != "":
+		driver.check(
+			FileAccess.file_exists(unexpected.path_join("unexpected.txt")),
+			"unexpected entry survives cleanup"
+		)
+		driver.check_eq(
+			_read_bytes(unexpected.path_join("unexpected.txt")).get_string_from_utf8(),
+			"unrelated content",
+			"unexpected entry bytes survive cleanup"
+		)
+	driver.check(
+		DirAccess.dir_exists_absolute(nested),
+		"reservation with a subdirectory is retained without traversal"
+	)
+	if nested != "":
+		driver.check(
+			FileAccess.file_exists(nested.path_join("subdir").path_join("inside.txt")),
+			"nested content survives cleanup"
+		)
+	driver.check(
+		DirAccess.dir_exists_absolute(hidden),
+		"reservation with a hidden entry is retained"
+	)
+	if hidden != "":
+		driver.check(
+			FileAccess.file_exists(hidden.path_join(".hidden.txt")),
+			"hidden entry survives cleanup"
+		)
+
+	var reported := 0
+	for report in reports:
+		if "unexpected.txt" in report or "subdir" in report or ".hidden.txt" in report:
+			reported += 1
+	driver.check(
+		reported >= 3,
+		"unexpected, nested and hidden retention are all reported (%d matched)" % reported
+	)
+
+	# Separate, tightly scoped teardown of only the fixtures this case created.
+	# Production cleanup above deliberately retained them; here each exact
+	# captured path is re-verified as the same regular file with the same bytes
+	# before it is removed, then the now-empty subdirectory and reservations are
+	# removed. Changed, replaced, non-empty or unexpected state is retained and
+	# reported rather than deleted. No recursive removal and no glob cleanup.
+	var teardown_reports: Array[String] = []
+	if unexpected != "":
+		teardown_reports.append_array(
+			_teardown_regular_file(
+				unexpected.path_join("unexpected.txt"), "unexpected.txt", "unrelated content"
+			)
+		)
+		teardown_reports.append_array(_teardown_reserved_directory(unexpected))
+	if nested != "":
+		teardown_reports.append_array(
+			_teardown_regular_file(
+				nested.path_join("subdir").path_join("inside.txt"),
+				"inside.txt",
+				"nested content"
+			)
+		)
+		teardown_reports.append_array(_teardown_named_directory(nested.path_join("subdir"), "subdir"))
+		teardown_reports.append_array(_teardown_reserved_directory(nested))
+	if hidden != "":
+		teardown_reports.append_array(
+			_teardown_regular_file(hidden.path_join(".hidden.txt"), ".hidden.txt", "hidden content")
+		)
+		teardown_reports.append_array(_teardown_reserved_directory(hidden))
+	for report in teardown_reports:
+		printerr("data lab: fixture teardown: %s" % report)
+	driver.check(
+		teardown_reports.is_empty(),
+		"test-fixture teardown removes only its exact files and empty directories"
+	)
+
+	# Final residue check: none of the four reservations this case created may
+	# remain, and the normal project path holds no data_lab_scratch_* debris.
+	for path in [known, unexpected, nested, hidden]:
+		if path != "":
+			driver.check(
+				not DirAccess.dir_exists_absolute(path),
+				"test-created reservation %s is fully removed" % path.get_file()
+			)
+	var root_leftovers := _list_scratch_residue()
+	driver.check(
+		root_leftovers.is_empty(),
+		"normal project path holds no data_lab_scratch_* residue (found %d)" % root_leftovers.size()
+	)
+	if not root_leftovers.is_empty():
+		printerr("data lab: scratch residue retained: %s" % ", ".join(PackedStringArray(root_leftovers)))
+
+	var actual_handling := _read_bytes(LEGACY_ROUNDTRIP_HANDLING_PATH)
+	var actual_car := _read_bytes(LEGACY_ROUNDTRIP_CAR_PATH)
+	driver.check(
+		actual_handling == expected_handling,
+		"legacy handling roundtrip path stays byte-identical during cleanup controls"
+	)
+	driver.check(
+		actual_car == expected_car,
+		"legacy car roundtrip path stays byte-identical during cleanup controls"
+	)
+
+
+## Test-only teardown for one exact file this case created. Removes it only
+## when the basename is the expected one, it is still a regular file (not a
+## directory) and its bytes are unchanged. Anything else is retained and
+## reported. Reading follows a symlink, but removal only unlinks the entry
+## itself; there is no recursive traversal.
+func _teardown_regular_file(
+	path: String,
+	expected_name: String,
+	expected_text: String
+) -> Array[String]:
+	if path.get_file() != expected_name:
+		return ["%s: teardown refused, unexpected basename (expected %s)" % [path, expected_name]]
+	if not FileAccess.file_exists(path):
+		return ["%s: teardown found the test file missing" % path]
+	if DirAccess.dir_exists_absolute(path):
+		return ["%s: teardown found a directory where the test created a file; retained" % path]
+	if _read_bytes(path).get_string_from_utf8() != expected_text:
+		return ["%s: teardown found changed content; retained" % path]
+	var err := DirAccess.remove_absolute(path)
+	if err != OK:
+		return ["%s: teardown removal failed (error %d); retained" % [path, err]]
+	return []
+
+
+## Test-only teardown for a named directory (`subdir` here): removes it only
+## when it is empty, including hidden entries. Never recurses.
+func _teardown_named_directory(path: String, expected_name: String) -> Array[String]:
+	if path.get_file() != expected_name:
+		return ["%s: teardown refused, unexpected basename (expected %s)" % [path, expected_name]]
+	return _teardown_empty_directory(path)
+
+
+## Test-only teardown for a reservation this run created. Requires the atomic
+## scratch basename prefix before touching the directory.
+func _teardown_reserved_directory(path: String) -> Array[String]:
+	if not path.get_file().begins_with(SCRATCH_DIR_NAME_PREFIX):
+		return ["%s: teardown refused, not a reserved data-lab scratch directory" % path]
+	return _teardown_empty_directory(path)
+
+
+func _teardown_empty_directory(path: String) -> Array[String]:
+	if not DirAccess.dir_exists_absolute(path):
+		return ["%s: teardown found the directory missing" % path]
+	var access := DirAccess.open(path)
+	if access == null:
+		return ["%s: teardown could not open the directory" % path]
+	access.set_include_navigational(false)
+	access.set_include_hidden(true)
+	access.list_dir_begin()
+	var entries: Array[String] = []
+	var name := access.get_next()
+	while name != "":
+		entries.append(name)
+		name = access.get_next()
+	access.list_dir_end()
+	access = null
+	if not entries.is_empty():
+		return [
+			"%s: teardown found unexpected entries (%s); retained"
+			% [path, ", ".join(PackedStringArray(entries))]
+		]
+	var err := DirAccess.remove_absolute(path)
+	if err != OK:
+		return ["%s: teardown removal of empty directory failed (error %d)" % [path, err]]
+	return []
+
+
+## Read-only residue check over the normal project path.
+func _list_scratch_residue() -> Array[String]:
+	var residue: Array[String] = []
+	var access := DirAccess.open("res://")
+	if access == null:
+		return ["res:// could not be listed"]
+	access.set_include_navigational(false)
+	access.set_include_hidden(true)
+	access.list_dir_begin()
+	var name := access.get_next()
+	while name != "":
+		if name.begins_with(SCRATCH_DIR_NAME_PREFIX):
+			residue.append(name)
+		name = access.get_next()
+	access.list_dir_end()
+	access = null
+	return residue
+
+
 ## Atomically reserve a fresh scratch directory under res://. The mkdir either
 ## creates exactly this run's directory or fails, so ownership never depends
 ## on a preexisting path.
@@ -1241,31 +1558,61 @@ func _reserve_scratch_dir() -> String:
 	return ""
 
 
-## Remove exactly the directories this run reserved, and nothing else.
+## Remove only the files this validator created inside each reservation, then
+## remove the reservation directory itself only when no unexpected entry
+## remains. Unexpected content is retained and reported; nothing is recursed
+## into, so a symlinked directory cannot pull cleanup outside the reservation.
 func _cleanup_scratch_dirs() -> void:
+	var reports: Array[String] = []
 	for path in _scratch_dirs:
-		_remove_directory_tree(path)
+		reports.append_array(_cleanup_scratch_dir(path))
 	_scratch_dirs.clear()
+	if reports.is_empty():
+		return
+	_scratch_cleanup_reports.append_array(reports)
+	printerr("data lab: scratch cleanup retained %d entr%s:\n%s" % [
+		reports.size(),
+		"y" if reports.size() == 1 else "ies",
+		"\n".join(PackedStringArray(reports)),
+	])
 
 
-func _remove_directory_tree(path: String) -> void:
+func _cleanup_scratch_dir(path: String) -> Array[String]:
 	var access := DirAccess.open(path)
 	if access == null:
-		DirAccess.remove_absolute(path)
-		return
+		return ["%s: reserved scratch directory could not be opened" % path.get_file()]
+	# Report hidden entries instead of skipping them, but never include the
+	# navigational `.`/`..` entries. Snapshot the listing before removing
+	# anything so cleanup does not mutate a live directory enumeration.
+	access.set_include_navigational(false)
+	access.set_include_hidden(true)
 	access.list_dir_begin()
+	var names: Array[String] = []
+	var is_dirs: Array[bool] = []
 	var name := access.get_next()
 	while name != "":
-		if name != "." and name != "..":
-			var child := path.path_join(name)
-			if access.current_is_dir():
-				_remove_directory_tree(child)
-			else:
-				DirAccess.remove_absolute(child)
+		names.append(name)
+		is_dirs.append(access.current_is_dir())
 		name = access.get_next()
 	access.list_dir_end()
 	access = null
-	DirAccess.remove_absolute(path)
+	var retained: Array[String] = []
+	for index in range(names.size()):
+		var entry_name := names[index]
+		if not KNOWN_SCRATCH_FILE_NAMES.has(entry_name):
+			retained.append("%s: unexpected entry retained" % entry_name)
+		elif is_dirs[index]:
+			retained.append("%s: directory retained without traversal" % entry_name)
+		else:
+			var err := DirAccess.remove_absolute(path.path_join(entry_name))
+			if err != OK:
+				retained.append("%s: removal failed (error %d); retained" % [entry_name, err])
+	if not retained.is_empty():
+		return retained
+	var err := DirAccess.remove_absolute(path)
+	if err != OK:
+		return ["%s: empty reserved directory removal failed (error %d)" % [path.get_file(), err]]
+	return []
 
 
 func _read_bytes(path: String) -> PackedByteArray:

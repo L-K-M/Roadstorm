@@ -57,11 +57,14 @@ func measure(key: String, value) -> void:
 
 
 ## Synthetic valid handling fixture. Values are explicit test inputs chosen to
-## exercise every validated field, not handling coefficients.
+## exercise every validated field, not handling coefficients. Its ID follows
+## the documented baker derivation `<car_id>.handling` for the matching
+## `valid_car()` fixture; the typed validator does not enforce that derivation,
+## so other fixtures may reference a differently named valid handling.
 func valid_handling() -> HandlingDefinition:
 	var handling := HandlingDefinition.new()
 	handling.schema_version = HandlingDefinition.SUPPORTED_SCHEMA_VERSION
-	handling.definition_id = "example.data_lab.handling"
+	handling.definition_id = "example.data_lab.car.handling"
 	handling.revision = "0.1.0"
 	handling.display_name = "Data Lab Example Handling"
 	handling.status = DefinitionIdentity.Status.EXAMPLE

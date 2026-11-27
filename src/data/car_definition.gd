@@ -208,17 +208,26 @@ func _referenced_handling_diagnostics(handling: HandlingDefinition) -> Array[Str
 
 
 ## A draft or incomplete declaration must account for every known v1 deferred
-## path exactly once. Blank or whitespace-only entries are malformed rather
-## than ignorable. Entries for fields introduced by later slices may be added,
-## but the declared v1 set cannot be silently omitted or repeated.
+## path exactly once, spelled exactly as listed. Blank or whitespace-only
+## entries are malformed rather than ignorable, and surrounding whitespace is
+## refused instead of being stripped as a silent repair. Entries for fields
+## introduced by later slices may be added, but the declared v1 set cannot be
+## silently omitted or repeated.
 func _validate_deferred_declaration() -> Array[String]:
 	var diagnostics: Array[String] = []
 	var declared := {}
 	for index in range(deferred_fields.size()):
-		var path := String(deferred_fields[index]).strip_edges()
+		var raw := String(deferred_fields[index])
+		var path := raw.strip_edges()
 		if path.is_empty():
 			diagnostics.append(
 				"deferred_fields: blank or whitespace-only entry at index %d" % index
+			)
+			continue
+		if path != raw:
+			diagnostics.append(
+				"deferred_fields: entry at index %d carries surrounding whitespace '%s'"
+				% [index, raw]
 			)
 			continue
 		if declared.has(path):

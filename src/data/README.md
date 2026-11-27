@@ -207,6 +207,25 @@ resource's inert zero. A draft `CarDefinition` can exist for structural editing,
 but its validation alone does not authorize a motor, a measured status or
 product-complete content.
 
+The closed schema has **no** source property for five required fields:
+`max_yaw_rate_rad_s` (rad/s), `reverse_trigger_speed_m_s` (m/s),
+`reverse_hold_time_s` (s), `reverse_acceleration_m_s2` (m/s²) and
+`reverse_top_speed_m_s` (m/s); the uncapped-yaw choice (`INF`) is likewise
+unsourced. A schema-valid recipe therefore cannot supply the full declared
+runtime subset even with every nullable coefficient resolved and every
+`unknowns` entry cleared. Until a versioned source-schema revision supplies
+those fields (for example a new `schema_version` adding exactly those
+properties while keeping `additionalProperties: false`), a future baker must
+refuse every recipe and report the missing paths; the typed defaults are
+direct-authoring placeholders and must never be emitted as if authored. This is
+an explicit missing-field refusal decision, not implemented refusal code. See
+`docs/evidence/m02-typed-runtime-mapping-20261127.md`.
+
+Only directly authored typed resources are usable today: `HandlingDefinition`
+and `CarDefinition` validate and round-trip from hand-authored `.tres`, but they
+cannot be derived from the current source recipe. This slice remains
+provisional and does not complete M0.2.
+
 For this first runtime mapping the nested source `handling` has no independent
 identity: derive `HandlingDefinition.definition_id` as `<car_id>.handling` and
 copy the car recipe's `schema_version`, `revision` and lifecycle `status`. The
