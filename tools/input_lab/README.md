@@ -9,8 +9,10 @@ integrated input router or a product-ready controls implementation.
 
 | Path | Role |
 | --- | --- |
-| `src/input/one_slot_controls.gd` | owned component: analog deadzone/sensitivity, digital steering ramp, rising-edge reset, lifecycle clear, atomic rejection of invalid raw/dt |
-| `tools/input_lab/validate_one_slot_controls.gd` | headless `SceneTree` validation entry point |
+| `src/input/one_slot_controls.gd` | owned component: analog deadzone/sensitivity, digital steering ramp, rising-edge reset plus normalized `reset_held` level, lifecycle clear, atomic rejection of invalid raw/dt |
+| `src/input/reset_hold_gate.gd` | owned pure one-second hold gate consuming `reset_held` and emitting exactly one latched action per eligible hold |
+| `src/simulation/driver_command.gd` | owned seam record carrying the `reset_held` level alongside `reset_requested` (also owned by this M1.1 slice) |
+| `tools/input_lab/validate_one_slot_controls.gd` | headless `SceneTree` validation entry point for the controls, command fields and hold gate |
 | `tools/input_lab/run_validation.sh` | pinned-engine wrapper that stages an isolated copy, imports resources, bounds every Godot run, and runs the pass plus deliberate-failure cases |
 
 ## Component behaviour
@@ -34,11 +36,25 @@ validation contract.
 
 Call `clear_lifecycle_state()` on focus loss, pause, reassignment or
 reconnect. It clears the digital ramp. If reset was held at the last sample,
-it also requires release and repress before another edge, so a continuing
-hold is not mistaken for a new press; a press that begins after the clear
-emits normally, and repeated clears keep that requirement until release.
+it also requires release and repress before another edge or held level, so a
+continuing hold is not mistaken for a new press; a press that begins after the
+clear emits normally, and repeated clears keep that requirement until release.
 Tuning values persist. `configure(deadzone, sensitivity, ramp_per_second)` validates all
 three values atomically and changes nothing on rejection.
+
+Alongside the rising-edge `reset_requested`, each command carries
+`reset_held`: true while a valid fresh press is held, false while released, and
+false throughout the post-clear suppression window. `DriverCommand.create()`
+and `set_from_raw()` accept it as an optional final argument; `copy()` copies
+it and rejected updates leave it untouched.
+
+`ResetHoldGate` consumes normalized commands and dt, never the press edge. It
+returns true exactly once when a continuous eligible `reset_held` level reaches
+`HOLD_SECONDS_S` (1.0). Releasing early clears progress, holding after firing
+never repeats, releasing and pressing again rearms, zero dt does not advance,
+invalid dt/command is refused atomically, and `clear_lifecycle_state()`
+cancels progress. The gate places no car and does not implement the Practice
+pause menu's immediate reset path; those remain separate future callers.
 
 Unimplemented seams, explicitly not claimed: device enumeration and
 device-to-player ownership, joining/leaving, remapping, persistent profiles,
@@ -75,6 +91,8 @@ prints one machine-readable `INPUT_LAB_RESULT <json>` line per run and a
 
 - Pure headless component checks; no rendering, audio, GUI, integrated race
   wiring or physical controller verification.
+- The hold gate times an explicit hold only: no car placement, route anchor,
+  RaceSession integration or Practice menu immediate-reset path.
 - All deadzone, sensitivity and ramp defaults are provisional starting values
   pending M3 device profiles and play testing.
 - The deliberate-failure case proves only that a failing check exits nonzero.

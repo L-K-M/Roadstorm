@@ -1,9 +1,9 @@
 #!/bin/sh
 # Roadstorm Racer! - M1.1/M3.1 one-slot control normalizer validation runner.
 #
-# Ownership: tools/input_lab/**. Runs the headless OneSlotControls validator from an
-# isolated copy of the project so the live checkout's .godot cache is never
-# written. Every Godot invocation, including the version probe and the resource
+# Ownership: tools/input_lab/**. Runs the headless one-slot controls, DriverCommand
+# reset-field and ResetHoldGate validator from an isolated copy of the project so
+# the live checkout's .godot cache is never written. Every Godot invocation, including the version probe and the resource
 # import, is bounded by --timeout. The runner runs two bounded cases:
 #   * the normal pass case (exit 0, CHECKS_FAILED=0);
 #   * the deliberate-failure proof (`--expect-failure`, nonzero exit and
@@ -61,7 +61,7 @@ Usage: run_validation.sh [--project DIR] [--godot BIN]
                          [--private-dir FRESH_DIR] [--timeout SECONDS]
                          [--log FILE]
 
-Runs the OneSlotControls pass case and the --expect-failure proof from an isolated
+Runs the input lab pass case and the --expect-failure proof from an isolated
 copy. --private-dir must not already exist, and its parent directory must
 already exist (the parent is never created); the runner reserves the
 destination with an atomic mkdir and stages the project into it. Omit it to use

@@ -5,12 +5,20 @@ extends SceneTree
 ##   godot --headless --fixed-fps 60 --path <project> \
 ##       --script res://tools/input_lab/validate_one_slot_controls.gd
 ##
-## Exercises `src/input/one_slot_controls.gd`: provisional defaults,
-## atomic configure, analog deadzone boundaries and sensitivity, digital
-## ramp rate/dt/reversal/simultaneous buttons, digital-vs-analog precedence
-## and release decay, rising-edge reset and repress, nonfinite/negative-dt
-## rejection without stored-state mutation, range clamping, fresh-command
-## isolation, instance independence and every lifecycle clear trigger.
+## Exercises `src/input/one_slot_controls.gd` and its M1.1 seam partners:
+## provisional defaults, atomic configure, analog deadzone boundaries and
+## sensitivity, digital ramp rate/dt/reversal/simultaneous buttons,
+## digital-vs-analog precedence and release decay, rising-edge reset and
+## repress, the new normalized `reset_held` level and its lifecycle
+## suppression, nonfinite/negative-dt rejection without stored-state
+## mutation, range clamping, fresh-command isolation, instance independence
+## and every lifecycle clear trigger.
+##
+## It also exercises the pure `src/input/reset_hold_gate.gd`: the exact
+## one-second boundary, sustained hold without repeat, early release clearing
+## progress, release-and-repress rearming, zero-dt no-advance, atomic refusal
+## of malformed dt/commands, lifecycle clear cancellation, focus-loss
+## suppression through OneSlotControls and deterministic replay.
 ##
 ## `--expect-failure` deliberately records a failure so the nonzero exit path
 ## is observable. The bounded wrapper tools/input_lab/run_validation.sh runs
@@ -22,6 +30,10 @@ extends SceneTree
 
 const CONTROLS_SCRIPT_PATH := "res://src/input/one_slot_controls.gd"
 const ControlsScript := preload("res://src/input/one_slot_controls.gd")
+const DRIVER_COMMAND_SCRIPT_PATH := "res://src/simulation/driver_command.gd"
+const DriverCommandScript := preload("res://src/simulation/driver_command.gd")
+const RESET_GATE_SCRIPT_PATH := "res://src/input/reset_hold_gate.gd"
+const ResetHoldGateScript := preload("res://src/input/reset_hold_gate.gd")
 
 const EXPECTED_MAJOR := 4
 const EXPECTED_MINOR := 7
@@ -73,10 +85,20 @@ func _run_checks(controls: OneSlotControls) -> void:
 	_check_digital_ramp()
 	_check_digital_analog_precedence()
 	_check_reset_edges()
+	_check_driver_command_reset_fields()
+	_check_reset_held_signal()
 	_check_clamping()
 	_check_invalid_atomicity()
 	_check_lifecycle_clear()
 	_check_fresh_commands_and_instances()
+	_check_reset_hold_gate_structure()
+	_check_reset_hold_gate_boundary()
+	_check_reset_hold_gate_early_release_and_rearm()
+	_check_reset_hold_gate_zero_dt()
+	_check_reset_hold_gate_invalid_atomicity()
+	_check_reset_hold_gate_lifecycle_clear()
+	_check_reset_hold_gate_focus_loss_suppression()
+	_check_reset_hold_gate_replay()
 
 	if _has_user_flag("--expect-failure"):
 		_check(
@@ -320,6 +342,165 @@ func _check_reset_edges() -> void:
 	)
 
 
+# --- DriverCommand reset flags ---------------------------------------------
+
+
+func _check_driver_command_reset_fields() -> void:
+	var default_command := DriverCommandScript.create()
+	_check(
+		default_command != null and not default_command.reset_held,
+		"command.reset_held_defaults_false",
+		str(default_command)
+	)
+
+	var edge_only := DriverCommandScript.create(0.0, 0.0, 0.0, 0.0, true)
+	_check(
+		edge_only != null and edge_only.reset_requested and not edge_only.reset_held,
+		"command.five_argument_edge_still_accepted",
+		str(edge_only)
+	)
+
+	var held_only := DriverCommandScript.create(0.0, 0.0, 0.0, 0.0, false, true)
+	_check(
+		held_only != null and not held_only.reset_requested and held_only.reset_held,
+		"command.held_without_edge_accepted",
+		str(held_only)
+	)
+
+	var both := DriverCommandScript.create(0.1, 0.2, 0.3, 0.4, true, true)
+	_check(
+		both != null and both.reset_requested and both.reset_held and both.is_normalized(),
+		"command.both_reset_flags_accepted",
+		str(both)
+	)
+
+	var clamped := DriverCommandScript.create(2.0, -1.0, 7.0, 5.0, true, true)
+	_check(
+		clamped != null and clamped.is_normalized() and clamped.reset_held,
+		"command.clamp_preserves_reset_held",
+		str(clamped)
+	)
+
+	var updated := DriverCommandScript.create()
+	var applied := updated.set_from_raw(0.0, 0.0, 0.0, 0.0, true, true)
+	_check(
+		applied and updated.reset_requested and updated.reset_held,
+		"command.set_from_raw_stores_both_flags",
+		str(updated)
+	)
+
+	var rejected := updated.set_from_raw(NAN, 1.0, 1.0, 1.0, false, false)
+	_check(
+		not rejected and updated.reset_requested and updated.reset_held,
+		"command.rejected_update_keeps_reset_flags",
+		str(updated)
+	)
+
+	var source := DriverCommandScript.create(0.2, 0.0, 0.0, 0.0, true, true)
+	var duplicate := source.copy()
+	_check(
+		duplicate != null and duplicate != source
+		and duplicate.reset_requested and duplicate.reset_held,
+		"command.copy_covers_reset_flags",
+		str(duplicate)
+	)
+	if duplicate != null:
+		duplicate.reset_requested = false
+		duplicate.reset_held = false
+		_check(
+			source.reset_requested and source.reset_held,
+			"command.copy_isolates_reset_flags",
+			str(source)
+		)
+
+
+# --- Normalized reset_held level -------------------------------------------
+
+
+func _check_reset_held_signal() -> void:
+	var controls := OneSlotControls.new()
+
+	var released := _sample(controls, 0.0, 0.0, 0.0, 0.0, false, DEFAULT_DT)
+	_check(
+		released != null and not released.reset_held,
+		"held.unpressed_is_false",
+		str(released)
+	)
+
+	var pressed := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		pressed != null and pressed.reset_requested and pressed.reset_held,
+		"held.fresh_press_true",
+		str(pressed)
+	)
+
+	var continuing := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		continuing != null and not continuing.reset_requested and continuing.reset_held,
+		"held.continuing_press_stays_true",
+		str(continuing)
+	)
+
+	var let_go := _sample(controls, 0.0, 0.0, 0.0, 0.0, false, DEFAULT_DT)
+	_check(let_go != null and not let_go.reset_held, "held.release_false", str(let_go))
+
+	var repress := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		repress != null and repress.reset_requested and repress.reset_held,
+		"held.repress_true",
+		str(repress)
+	)
+
+	var invalid_probe := OneSlotControls.new()
+	_sample(invalid_probe, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	var rejected := _sample(invalid_probe, NAN, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(rejected == null, "held.invalid_returns_null", str(rejected))
+	var resumed := _sample(invalid_probe, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		resumed != null and not resumed.reset_requested and resumed.reset_held,
+		"held.invalid_does_not_advance_state",
+		str(resumed)
+	)
+
+	var suppressed := OneSlotControls.new()
+	_sample(suppressed, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	suppressed.clear_lifecycle_state()
+	var held_after_clear := _sample(suppressed, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		held_after_clear != null
+		and not held_after_clear.reset_requested
+		and not held_after_clear.reset_held,
+		"held.clear_while_held_suppresses_level",
+		str(held_after_clear)
+	)
+
+	suppressed.clear_lifecycle_state()
+	var repeat_clear := _sample(suppressed, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		repeat_clear != null and not repeat_clear.reset_held,
+		"held.repeat_clear_keeps_suppression",
+		str(repeat_clear)
+	)
+
+	_sample(suppressed, 0.0, 0.0, 0.0, 0.0, false, DEFAULT_DT)
+	var fresh_press := _sample(suppressed, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		fresh_press != null and fresh_press.reset_requested and fresh_press.reset_held,
+		"held.repress_after_suppression_true",
+		str(fresh_press)
+	)
+
+	var idle := OneSlotControls.new()
+	_sample(idle, 0.0, 0.0, 0.0, 0.0, false, DEFAULT_DT)
+	idle.clear_lifecycle_state()
+	var idle_press := _sample(idle, 0.0, 0.0, 0.0, 0.0, true, DEFAULT_DT)
+	_check(
+		idle_press != null and idle_press.reset_requested and idle_press.reset_held,
+		"held.idle_clear_keeps_new_press",
+		str(idle_press)
+	)
+
+
 # --- Range clamping ---------------------------------------------------------
 
 
@@ -529,6 +710,269 @@ func _check_fresh_commands_and_instances() -> void:
 	)
 
 
+# --- Reset hold gate --------------------------------------------------------
+
+
+func _check_reset_hold_gate_structure() -> void:
+	var gate := ResetHoldGateScript.new()
+	_check(gate != null, "gate.instance_created", str(gate))
+	var as_object: Object = gate
+	_check(
+		as_object is RefCounted and not (as_object is Node),
+		"gate.refcounted_not_node",
+		str(gate)
+	)
+	_check(
+		gate.get_script() == ResetHoldGateScript,
+		"gate.script_attached",
+		str(gate.get_script())
+	)
+	_check(
+		_near(ResetHoldGateScript.HOLD_SECONDS_S, 1.0),
+		"gate.hold_constant_one_second",
+		str(ResetHoldGateScript.HOLD_SECONDS_S)
+	)
+	_measured["gate_hold_seconds"] = ResetHoldGateScript.HOLD_SECONDS_S
+
+
+func _check_reset_hold_gate_boundary() -> void:
+	var gate := ResetHoldGateScript.new()
+	var held := _gate_command(true)
+	_check(not gate.sample(held, 0.5), "gate.half_second_no_fire", "")
+	_check(not gate.sample(held, 0.25), "gate.three_quarters_no_fire", "")
+	_check(not gate.sample(held, 0.125), "gate.seven_eighths_no_fire", "")
+	_check(not gate.sample(held, 0.0625), "gate.just_under_one_second_no_fire", "")
+	_check(gate.sample(held, 0.0625), "gate.exactly_one_second_fires", "")
+
+	for index in 10:
+		_check(
+			not gate.sample(held, DEFAULT_DT),
+			"gate.sustained_hold_does_not_repeat_%d" % index,
+			""
+		)
+	_check(not gate.sample(held, 1.0), "gate.long_hold_after_fire_no_repeat", "")
+
+	var near := ResetHoldGateScript.new()
+	_check(not near.sample(held, 0.9375), "gate.setup_just_under_threshold", "")
+	_check(not near.sample(held, 0.062499), "gate.epsilon_under_threshold_no_fire", "")
+	_check(near.sample(held, 0.000002), "gate.epsilon_over_threshold_fires", "")
+
+	var level_only := ResetHoldGateScript.new()
+	_check(
+		level_only.sample(_gate_command(true, false), 1.0),
+		"gate.held_without_edge_fires",
+		""
+	)
+
+	var edge_gate := ResetHoldGateScript.new()
+	var edge_only := _gate_command(false, true)
+	var edge_fired := false
+	for index in 60:
+		if edge_gate.sample(edge_only, DEFAULT_DT):
+			edge_fired = true
+			break
+	_check(not edge_fired, "gate.edge_alone_never_fires", "")
+	_check(
+		not edge_gate.sample(_gate_command(true, false), 0.5),
+		"gate.edge_ticks_do_not_accumulate",
+		""
+	)
+
+
+func _check_reset_hold_gate_early_release_and_rearm() -> void:
+	var gate := ResetHoldGateScript.new()
+	var held := _gate_command(true)
+	var released := _gate_command(false)
+
+	_check(not gate.sample(held, 0.6), "gate.early_release_partial_no_fire", "")
+	_check(not gate.sample(released, 0.1), "gate.release_clears_progress", "")
+	_check(
+		not gate.sample(held, 0.6),
+		"gate.rehold_after_release_needs_full_second",
+		""
+	)
+	_check(gate.sample(held, 0.4), "gate.rehold_completes_one_second", "")
+
+	var threshold_release := ResetHoldGateScript.new()
+	_check(not threshold_release.sample(held, 0.99), "gate.threshold_release_setup", "")
+	_check(
+		not threshold_release.sample(released, 0.5),
+		"gate.release_at_threshold_does_not_fire",
+		""
+	)
+	_check(not threshold_release.sample(held, 0.99), "gate.threshold_release_rehold_partial", "")
+	_check(
+		threshold_release.sample(held, 0.01),
+		"gate.threshold_release_full_hold_fires",
+		""
+	)
+
+	for index in 5:
+		_check(
+			not gate.sample(held, DEFAULT_DT),
+			"gate.post_fire_hold_no_repeat_%d" % index,
+			""
+		)
+	_check(not gate.sample(released, DEFAULT_DT), "gate.post_fire_release_no_repeat", "")
+	_check(not gate.sample(held, 0.5), "gate.rearm_needs_full_second", "")
+	_check(gate.sample(held, 0.5), "gate.rearmed_second_hold_fires", "")
+
+
+func _check_reset_hold_gate_zero_dt() -> void:
+	var gate := ResetHoldGateScript.new()
+	var held := _gate_command(true)
+	_check(not gate.sample(held, 0.9), "gate.zero_dt_setup_below_threshold", "")
+	for index in 10:
+		_check(
+			not gate.sample(held, 0.0),
+			"gate.zero_dt_does_not_advance_%d" % index,
+			""
+		)
+	_check(gate.sample(held, 0.1), "gate.zero_dt_then_positive_dt_fires", "")
+
+
+func _check_reset_hold_gate_invalid_atomicity() -> void:
+	var held := _gate_command(true)
+	var malformed_range := DriverCommandScript.create()
+	malformed_range.steer = 2.0
+	var malformed_nonfinite := DriverCommandScript.create()
+	malformed_nonfinite.throttle = NAN
+
+	var dt_variants: Array[float] = [NAN, INF, -0.1]
+	for index in dt_variants.size():
+		var gate := ResetHoldGateScript.new()
+		_check(not gate.sample(held, 0.6), "gate.invalid_dt_setup_%d" % index, "")
+		_check(
+			not gate.sample(held, dt_variants[index]),
+			"gate.invalid_dt_refused_%d" % index,
+			""
+		)
+		var reference := ResetHoldGateScript.new()
+		_check(not reference.sample(held, 0.6), "gate.invalid_dt_reference_%d" % index, "")
+		_check(
+			_gate_replays_match(gate, reference, [0.1, 0.1, 0.1, 0.1]),
+			"gate.invalid_dt_leaves_progress_untouched_%d" % index,
+			""
+		)
+
+	var command_variants: Array = [null, malformed_range, malformed_nonfinite]
+	for index in command_variants.size():
+		var probe: DriverCommand = command_variants[index]
+		var gate := ResetHoldGateScript.new()
+		_check(not gate.sample(held, 0.6), "gate.invalid_command_setup_%d" % index, "")
+		_check(
+			not gate.sample(probe, 0.5),
+			"gate.invalid_command_refused_%d" % index,
+			""
+		)
+		var reference := ResetHoldGateScript.new()
+		_check(not reference.sample(held, 0.6), "gate.invalid_command_reference_%d" % index, "")
+		_check(
+			_gate_replays_match(gate, reference, [0.1, 0.1, 0.1, 0.1]),
+			"gate.invalid_command_leaves_progress_untouched_%d" % index,
+			""
+		)
+
+	var rearm := ResetHoldGateScript.new()
+	_check(rearm.sample(held, 1.0), "gate.invalid_rearm_fire_setup", "")
+	_check(not rearm.sample(_gate_command(false), DEFAULT_DT), "gate.invalid_rearm_release", "")
+	_check(not rearm.sample(held, 0.6), "gate.invalid_rearm_partial", "")
+	_check(not rearm.sample(held, INF), "gate.invalid_rearm_inf_dt_refused", "")
+	_check(rearm.sample(held, 0.4), "gate.invalid_rearm_still_completable", "")
+
+
+func _check_reset_hold_gate_lifecycle_clear() -> void:
+	var gate := ResetHoldGateScript.new()
+	var held := _gate_command(true)
+	_check(not gate.sample(held, 0.6), "gate.clear_partial_no_fire", "")
+	gate.clear_lifecycle_state()
+	_check(not gate.sample(held, 0.6), "gate.clear_cancels_progress", "")
+	_check(gate.sample(held, 0.4), "gate.after_clear_needs_full_second", "")
+
+	var refire := ResetHoldGateScript.new()
+	_check(refire.sample(held, 1.0), "gate.clear_refire_setup", "")
+	refire.clear_lifecycle_state()
+	_check(refire.sample(held, 1.0), "gate.clear_cancels_fired_latch", "")
+
+
+func _check_reset_hold_gate_focus_loss_suppression() -> void:
+	var controls := OneSlotControls.new()
+	var gate := ResetHoldGateScript.new()
+
+	var first := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, 0.25)
+	_check(first != null and first.reset_held, "focus.first_press_held", str(first))
+	_check(not gate.sample(first, 0.25), "focus.first_tick_no_fire", "")
+
+	var second := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, 0.25)
+	_check(second != null and second.reset_held, "focus.second_tick_held", str(second))
+	_check(not gate.sample(second, 0.25), "focus.half_second_no_fire", "")
+
+	controls.clear_lifecycle_state()
+	var suppressed_fires := 0
+	for index in 4:
+		var suppressed := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, 0.25)
+		_check(
+			suppressed != null and not suppressed.reset_held,
+			"focus.suppressed_physical_hold_%d" % index,
+			str(suppressed)
+		)
+		if suppressed != null and gate.sample(suppressed, 0.25):
+			suppressed_fires += 1
+	_check(
+		suppressed_fires == 0,
+		"focus.suppressed_physical_hold_never_fires",
+		"fires=%d" % suppressed_fires
+	)
+
+	_sample(controls, 0.0, 0.0, 0.0, 0.0, false, 0.25)
+	var rearmed_fires := 0
+	var fired_index := -1
+	for index in 4:
+		var fresh := _sample(controls, 0.0, 0.0, 0.0, 0.0, true, 0.25)
+		_check(
+			fresh != null and fresh.reset_held,
+			"focus.repressed_hold_%d" % index,
+			str(fresh)
+		)
+		if fresh != null and gate.sample(fresh, 0.25):
+			rearmed_fires += 1
+			fired_index = index
+	_check(
+		rearmed_fires == 1 and fired_index == 3,
+		"focus.rearmed_hold_fires_once_at_one_second",
+		"fires=%d index=%d" % [rearmed_fires, fired_index]
+	)
+
+
+func _check_reset_hold_gate_replay() -> void:
+	var schedule := [
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.5},
+		{"held": false, "dt": 0.25},
+		{"held": true, "dt": 0.5},
+		{"held": true, "dt": 0.5},
+		{"held": true, "dt": -1.0},
+		{"held": true, "dt": 0.25},
+		{"held": false, "dt": 0.1},
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.25},
+		{"held": true, "dt": 0.25},
+	]
+	var expected := [
+		false, false, false, true, false, false, false, true,
+		false, false, false, false, false, false, true,
+	]
+	var first := _run_gate_schedule(schedule)
+	var second := _run_gate_schedule(schedule)
+	_check(first == expected, "gate.replay_expected_actions", str(first))
+	_check(first == second, "gate.replay_deterministic", str(second))
+	_measured["replay_actions"] = first
+
+
 # --- Helpers ----------------------------------------------------------------
 
 
@@ -554,6 +998,31 @@ func _steer_of(command: DriverCommand) -> float:
 
 func _reset_of(command: DriverCommand) -> bool:
 	return command.reset_requested if command != null else false
+
+
+func _gate_command(p_held: bool, p_edge := false) -> DriverCommand:
+	return DriverCommandScript.create(0.0, 0.0, 0.0, 0.0, p_edge, p_held)
+
+
+func _run_gate_schedule(p_schedule: Array) -> Array:
+	var gate := ResetHoldGateScript.new()
+	var outputs := []
+	for entry in p_schedule:
+		outputs.append(gate.sample(_gate_command(entry["held"], false), entry["dt"]))
+	return outputs
+
+
+func _gate_replays_match(
+	p_left: ResetHoldGate,
+	p_right: ResetHoldGate,
+	p_steps: Array[float]
+) -> bool:
+	for index in p_steps.size():
+		var left_output: bool = p_left.sample(_gate_command(true, false), p_steps[index])
+		var right_output: bool = p_right.sample(_gate_command(true, false), p_steps[index])
+		if left_output != right_output:
+			return false
+	return true
 
 
 func _near(a: float, b: float, tolerance: float = TOLERANCE) -> bool:
@@ -598,6 +1067,8 @@ func _finish() -> void:
 	var report := {
 		"schema": "roadstorm.input_lab.validation.v1",
 		"component": CONTROLS_SCRIPT_PATH,
+		"command_component": DRIVER_COMMAND_SCRIPT_PATH,
+		"reset_gate_component": RESET_GATE_SCRIPT_PATH,
 		"backend": str(ProjectSettings.get_setting("physics/3d/physics_engine")),
 		"engine_version": Engine.get_version_info(),
 		"checks_total": _checks,
@@ -608,8 +1079,9 @@ func _finish() -> void:
 			"Pure headless component checks only; no keyboard/gamepad event routing, device enumeration or physical controller verification.",
 			"No M3 slot ownership, joining, remapping, saved presets, assists, reverse/brake rules, gears or camera/menu actions are implemented or tested.",
 			"All deadzone, sensitivity and ramp defaults are provisional starting values, not tuned product constants.",
+			"The reset hold gate times an explicit hold only; it places no car, chooses no route anchor, integrates no RaceSession, and does not implement the Practice pause menu's immediate reset path.",
 			"The deliberate-failure case proves only that a failing check exits nonzero; it does not prove the engine harness or hardware path.",
-			"No M1/M3 acceptance claim; the coordinator independently verifies and integrates the component.",
+			"No M1/M3 acceptance claim; the coordinator independently verifies and integrates the components.",
 		],
 	}
 	print("INPUT_LAB_RESULT ", JSON.stringify(report))

@@ -30,12 +30,19 @@ extends RefCounted
 ##
 ## `reset_requested` is a rising edge: true only on a tick where
 ## `p_reset_pressed` changed from false to true. Holding the button emits one
-## request, not a stream. `clear_lifecycle_state()` discards the digital ramp.
-## If the stored reset level was held, it also arms a fresh-press requirement:
-## that same continuing hold emits nothing until it is released and pressed
-## again. A press that begins after the clear emits normally. Together these
-## rules keep held values and stale edges from surviving a focus loss, pause,
-## reassignment or reconnect.
+## request, not a stream. `reset_held` is the eligible level that carries the
+## same fresh-press rule: true while a valid fresh press is held, false while
+## released, and false throughout the post-clear suppression window, so a
+## later hold gate cannot mistake a continuing physical press for a new one.
+## The two flags are independent levels from the same input; callers such as
+## `ResetHoldGate` consume `reset_held`, not this edge.
+##
+## `clear_lifecycle_state()` discards the digital ramp. If the stored reset
+## level was held, it also arms a fresh-press requirement: that same continuing
+## hold emits neither flag until it is released and pressed again. A press that
+## begins after the clear emits normally. Together these rules keep held values
+## and stale edges from surviving a focus loss, pause, reassignment or
+## reconnect.
 ##
 ## Validation is atomic: `p_dt` must be finite and nonnegative (zero is
 ## allowed), and all four analog raw values must be finite. An invalid call
@@ -154,8 +161,11 @@ func sample(
 	else:
 		steer = _normalize_analog_steer(p_steer)
 
+	# Suppression wins over the physically held level: a continuing hold after
+	# a lifecycle clear is not an eligible hold until release and repress.
+	var eligible_reset_held := next_reset_held and not next_suppress
 	var command := DriverCommand.create(
-		steer, p_throttle, p_brake, p_handbrake, reset_edge
+		steer, p_throttle, p_brake, p_handbrake, reset_edge, eligible_reset_held
 	)
 	if command == null:
 		return null
