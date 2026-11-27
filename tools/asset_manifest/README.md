@@ -107,7 +107,7 @@ Cross-entry, once the whole registry is known:
 | Check | Rule |
 | --- | --- |
 | Output ownership | Each `identity.output_paths` entry has exactly one owning entry, and is listed once inside it (`duplicate-output-path`). Two entries claiming one output path make the provenance, lineage and hash of that file ambiguous. Sharing a *source* path is ordinary lineage and stays allowed. |
-| Path safety | Referenced paths must be regular files inside the root reached through real directories: a link at *any* component is rejected (`symlinked-path`) - the leaf and every parent directory, and on Windows a directory junction as well as a symlink, because a parent link resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for links before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed link. On POSIX that open uses no-follow, non-blocking and an `fstat` regular-file check; on Windows it uses `CreateFileW(OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT)` plus handle metadata (`FILE_ATTRIBUTE_REPARSE_POINT`, `FILE_ATTRIBUTE_DIRECTORY`) and `GetFileType == FILE_TYPE_DISK`. On any other platform offering neither POSIX flag, the guarded open fails closed. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, link-free regular file inside the root, so a rejected register path is never opened. The caller-selected manifest document uses the same guarded open: components from `--root` down must be link-free, and a symlinked/junction manifest input is `unreadable-manifest` (exit 2). |
+| Path safety | Referenced paths must be regular files inside the root reached through real directories: a link at *any* component is rejected (`symlinked-path`) - the leaf and every parent directory, and on Windows a directory junction as well as a symlink, because a parent link resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for links before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed link. On POSIX that open uses no-follow, non-blocking and an `fstat` regular-file check; on Windows it uses `CreateFileW(OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT)` plus handle metadata (`FILE_ATTRIBUTE_REPARSE_POINT`, `FILE_ATTRIBUTE_DIRECTORY`) and `GetFileType == FILE_TYPE_DISK`. On any other platform offering neither POSIX flag, the guarded open fails closed. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, link-free regular file inside the root, so a rejected register path is never opened. The caller-selected manifest document uses the same guarded open: components from `--root` down must be link-free, and a symlinked/junction manifest input is `unreadable-manifest` (exit 2). Path spellings that could alias another entry on Windows are rejected before resolution: `:` anywhere (NTFS alternate data streams), a trailing `.` or space on a component, embedded NUL, and reserved device basenames such as `CON`/`NUL`/`COM1`/`LPT1`. |
 | Dependency order | `lineage.depends_on` is acyclic (`dependency-cycle`): direct (A↔B), self (A→A) and indirect (A→B→C→A) loops are all rejected, because an asset can only be built once the entries it depends on exist. The search is iterative, so a long chain cannot exhaust the stack. |
 
 Document level:
@@ -199,6 +199,12 @@ Document level:
   manifest outside the root still validates; invalid UTF-8 stays
   `invalid-encoding`; and a leaf swapped at the open boundary is refused by the
   fd guard.
+- **path-spelling aliases**: pure cross-platform controls accept ordinary
+  Godot-style paths (`assets/generated/car/body.res`, dotted directories,
+  mixed case) and reject NTFS stream spellings (`name:stream`), trailing dot
+  or space components, embedded NUL, and reserved device basenames
+  (`CON`/`NUL`/`COM1`/`LPT1`); a native Windows control repeats the rejection
+  through the real host call path with a normal-path positive control.
 - **oversized JSON integers** (the 2026-11-27 Sol recheck finding 2): a
   decimal integer literal longer than this interpreter's conversion limit is
   the structured `invalid-json` finding, not a `ValueError` traceback -
@@ -350,9 +356,14 @@ temporary directory.
   directory replaced by a symlink or junction in that window would be
   followed, and a swap after the open is invisible. A `dir_fd`-based walk
   (POSIX) or equivalent parent-handle walk would be needed, and neither is
-  implemented. A platform offering neither `O_NOFOLLOW` nor `O_NONBLOCK`
+  implemented. A platform missing either `O_NOFOLLOW` or `O_NONBLOCK`
   fails closed.
-- **The Windows branch is implemented but unverified on a real host.**
+- **Windows status: guarded output/register reads have hosted evidence; the
+  newest slices do not.** Hosted Actions run `46005883236` at candidate
+  `04015ca` (Windows Server 2025, Python 3.12.10) executed the nine native
+  output/register/manifest-ACL controls 9/9 and the shipped empty registry
+  `--check-hashes` passed; that is the acceptance evidence for the
+  `CreateFileW`/`open_osfhandle` read path as it existed there.
   `_windows_open_regular_descriptor` uses `CreateFileW` with
   `OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT`, rejects leaf reparse points
   and directories via `GetFileInformationByHandleEx(FileAttributeTagInfo)`,
@@ -364,13 +375,23 @@ temporary directory.
   swapped in between that check and the open is still only a narrowable race.
   Fake-WinAPI unit controls cover call order, every refusal branch, handle
   ownership and the `None` error mapping on any platform, and cross-platform
-  fake-junction controls cover the component check, but real semantics
-  (reparse-handle behaviour, `open_osfhandle` round-trip, ACL denial, long
-  paths) can only be confirmed by the Windows-only native tests, which skip
-  off Windows. No claim of Windows support is made until those run on a
-  Windows host.
-- **Limited CI wiring.** The committed GitHub workflow runs the manifest CLI
-  separately; full content validation and package inventory remain open.
+  fake-junction controls cover the component check.
+  **Still open on Windows:** the manifest-input guard (linked/symlinked
+  manifest paths, `unreadable-manifest`/exit 2), the pure path-spelling alias
+  rejections, and the final runner identity/skip-drift gate were added after
+  that run and need their own hosted rerun.
+  **Residuals:** a parent component swapped between the check and the open is
+  still followed (no parent-handle walk exists); long `\\?\` paths,
+  sharing-violation opens, non-NTFS/ReFS volumes and Python versions other than
+  3.12 are untested. This is not a game-launch or provider-terms clearance.
+- **Limited CI wiring.** `.github/workflows/manifest-windows.yml` (owned here)
+  runs the Windows-hosted gate through
+  `tools/asset_manifest/tests/run_windows_manifest_ci.py`: the complete unittest
+  suite, a native-test identity/skip-drift policy that fails on skipped or
+  misattributed `WindowsNativeGuardTestCase` controls, full FAIL/ERROR detail,
+  and the shipped empty registry with `--check-hashes`. The general
+  `.github/workflows/ci.yml` is owned elsewhere. Full content validation and
+  package inventory remain open.
 - **No asset entries exist.** The positive-control entry in the tests is a
   fixture. The first real entries will exercise parts of this contract that
   fixtures cannot, and may legitimately require a `schema_version` bump.
@@ -526,19 +547,17 @@ bridge hands ownership to the CRT descriptor. All failures return `None`, so
 the existing structured findings are unchanged. There is deliberately no
 unguarded Windows `open` fallback.
 
-Status: implemented; the fake-WinAPI unit controls pass on macOS, including
-mutation checks that the refusal branches, call order, dispatch and
-single-close accounting actually bite. **Not verified on a real Windows host**,
-so Windows compatibility remains open. Real-host blockers, each needing a
-Windows runner the coordinator owns:
-
-- actual `CreateFileW`/`FILE_FLAG_OPEN_REPARSE_POINT` and
-  `GetFileInformationByHandleEx` behaviour and return codes;
-- `msvcrt.open_osfhandle` round-trip with `os.read` and correct handle
-  release on `os.close`;
-- ACL-denied and sharing-violated opens, junction/symlink creation privileges;
-- long-path (`\\?\`) policy;
-- execution of the gated native acceptance tests listed above.
+Status: hosted Windows run `46005883236` at `04015ca` (Windows Server 2025,
+Python 3.12.10) executed the nine native output/register/manifest-ACL
+controls 9/9, and the shipped empty registry passed `--check-hashes`; that
+run is the evidence for this implementation as it existed there.
+Fake-WinAPI unit controls pass on macOS, including mutation checks that the
+refusal branches, call order, dispatch and single-close accounting actually
+bite. Still open until their own hosted rerun: the later manifest-input
+guard, the path-spelling alias rejections, and the final runner identity /
+skip-drift gate. Residuals not established by any run: parent-swap TOCTOU,
+long `\\?\` paths, sharing-violation opens, non-NTFS/ReFS volumes, Python
+versions other than 3.12.
 
 ### Follow-up: static parent junctions (2026-11-27)
 
@@ -570,5 +589,5 @@ makes them fail. The native junction test was corrected to set up only through
 the outside fixture - it no longer writes through the link - and its recorded
 hash is the outside file's real digest, so an unexpected read through the
 junction would satisfy the hash and lose the expected `missing-file` finding.
-Native Windows execution remains blocked on a Windows host; no Windows
+Native Windows execution of these later slices remains pending; no Windows
 acceptance is claimed here.

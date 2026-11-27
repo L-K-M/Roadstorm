@@ -4,7 +4,7 @@
 Ownership: tools/asset_manifest/** (PLAN.md M0 provenance manifest tooling).
 
 This exists so a Windows job cannot report acceptance while the native
-guarded-open tests silently skip. It runs, in order:
+guarded-open tests silently skip or are misattributed. It runs, in order:
 
 1. the complete ``tools/asset_manifest`` unittest suite with a recording
    result;
@@ -17,10 +17,15 @@ Policy:
 * any test failure or error anywhere in the suite is a hard failure;
 * a skipped test *inside* ``WindowsNativeGuardTestCase`` is a hard failure -
   a skipped native guarded-open test certifies nothing about Windows;
-* a skipped test elsewhere is a documented platform-specific skip (on Windows
-  this is the six FIFO cases, which have no Windows equivalent); it is listed
-  and allowed, never counted as coverage;
-* the two named native controls must have run and passed;
+* native controls are identified by their fully qualified test ID
+  (``<module>.<class>.<method>``). The two named critical controls must appear
+  in the passed set under the native class itself, independently of what the
+  class happens to contain at runtime;
+* a non-native skip is allowed only when its class/method pair is in the
+  reviewed allowlist below - on Windows exactly 13 cases: 6 FIFO controls with
+  no Windows equivalent, 5 Unix mode-000 controls with native ACL
+  counterparts, and 2 POSIX-flag-only controls. Any other non-native skip is
+  unreviewed coverage loss and fails the job;
 * the shipped empty manifest must pass ``--check-hashes``.
 
 On a non-Windows host every native test is skipped, so the runner fails closed
@@ -47,14 +52,39 @@ _NATIVE_CLASS = "WindowsNativeGuardTestCase"
 
 # The two controls the CI job must never lose: one proves a valid Windows read
 # still hashes, the other proves a static intermediate junction is refused.
+# They are required by full test ID, independent of runtime discovery.
 _CRITICAL_TESTS = (
     "test_native_regular_outputs_hash_and_anchors_resolve",
     "test_native_junction_parent_is_refused",
 )
 
+# Reviewed non-native Windows skips, as (class, method). Six FIFO controls have
+# no Windows equivalent; five Unix mode-000 controls have native ACL
+# counterparts; two flag controls are POSIX-only.
+_ALLOWED_NONNATIVE_SKIPS = frozenset(
+    {
+        # FIFO controls (no Windows equivalent).
+        ("ManifestValidatorTestCase", "test_digest_refuses_a_fifo_swapped_in_at_the_open_boundary"),
+        ("ManifestValidatorTestCase", "test_register_swapped_for_a_fifo_after_the_check_does_not_block"),
+        ("ManifestValidatorTestCase", "test_register_that_is_a_fifo_is_refused_without_being_opened"),
+        ("RegisterReadGuardTestCase", "test_guarded_open_refuses_a_fifo_without_blocking"),
+        ("RegisterReadGuardTestCase", "test_refuses_a_fifo_in_place_of_the_register"),
+        ("RegisterReadGuardTestCase", "test_refuses_a_fifo_swapped_in_after_the_pre_check"),
+        # Unix mode-000 controls (native ACL counterparts exist).
+        ("ManifestValidatorTestCase", "test_cli_unreadable_manifest_exits_2"),
+        ("ManifestValidatorTestCase", "test_unreadable_output_cli_emits_json_instead_of_a_traceback"),
+        ("ManifestValidatorTestCase", "test_unreadable_output_is_a_structured_finding_not_a_traceback"),
+        ("ManifestValidatorTestCase", "test_unreadable_register_is_rejected_before_any_read"),
+        ("RegisterReadGuardTestCase", "test_refuses_an_unreadable_register"),
+        # POSIX-only guarded-open flag controls.
+        ("ManifestValidatorTestCase", "test_guarded_open_fails_closed_without_fd_protections"),
+        ("RegisterReadGuardTestCase", "test_guarded_open_fails_closed_where_flags_are_unavailable"),
+    }
+)
+
 # Outcome of the suite plus the derived policy verdict. ``problems`` is the
-# list of hard failures; ``allowed_skips`` and ``native_skips`` carry the
-# platform-skip split for reporting.
+# list of hard failures; ``allowed_skips``/``drift_skips``/``native_skips``
+# carry the skip split for reporting.
 Assessment = namedtuple(
     "Assessment",
     (
@@ -63,9 +93,11 @@ Assessment = namedtuple(
         "error_ids",
         "native_skips",
         "allowed_skips",
+        "drift_skips",
         "expected_native",
+        "critical_native",
         "native_ran",
-        "succeeded_names",
+        "succeeded_ids",
     ),
 )
 
@@ -113,8 +145,27 @@ class _RecordingResult(unittest.TextTestResult):
         self.error_ids.append(test.id())
 
 
-def _method_names(test_ids) -> set[str]:
-    return {test_id.rsplit(".", 1)[-1] for test_id in test_ids}
+def _class_and_method(test_id: str) -> tuple[str, str]:
+    """Split a unittest test ID into its trailing class and method names."""
+    parts = test_id.split(".")
+    return parts[-2], parts[-1]
+
+
+def native_control_ids(native_class):
+    """Fully qualified native test IDs, including the critical controls.
+
+    ``expected`` covers every ``test_*`` attribute found on the class.
+    ``critical`` always uses the two named control methods under this class,
+    whether or not the class currently defines them - a renamed or deleted
+    control is therefore reported instead of silently dropping out of the
+    requirement.
+    """
+    prefix = "{}.{}.".format(native_class.__module__, native_class.__qualname__)
+    expected = {
+        prefix + name for name in vars(native_class) if name.startswith("test_")
+    }
+    critical = {prefix + name for name in _CRITICAL_TESTS}
+    return expected, critical
 
 
 def load_test_module():
@@ -155,24 +206,45 @@ def print_diagnostics(result: _RecordingResult) -> None:
         result.printErrors()
 
 
-def assess(result: _RecordingResult, expected_native) -> Assessment:
+def assess(
+    result: _RecordingResult,
+    expected_native,
+    critical_native=frozenset(),
+) -> Assessment:
     """Apply the skip/failure policy to a recorded suite result.
 
     Hard failures: any failure or error anywhere; any skip inside the native
-    class; no native tests found; native tests missing from the passed set;
-    missing critical controls. Skips outside the native class are allowed and
-    returned separately for reporting.
+    class; no native tests found; a discovered native test missing from the
+    passed set; either critical control missing from the passed set; any
+    failure/error among native IDs; an unreviewed non-native skip. Allowlisted
+    non-native skips are returned for reporting only.
     """
+    expected_native = set(expected_native)
+    critical_native = set(critical_native)
+
     native_skips = [
         (test_id, reason)
         for test_id, reason in result.skipped_tests
-        if _NATIVE_CLASS in test_id
+        if _class_and_method(test_id)[0] == _NATIVE_CLASS
     ]
-    allowed_skips = [
+    other_skips = [
         (test_id, reason)
         for test_id, reason in result.skipped_tests
-        if _NATIVE_CLASS not in test_id
+        if _class_and_method(test_id)[0] != _NATIVE_CLASS
     ]
+    allowed_skips = []
+    drift_skips = []
+    for test_id, reason in other_skips:
+        if _class_and_method(test_id) in _ALLOWED_NONNATIVE_SKIPS:
+            allowed_skips.append((test_id, reason))
+        else:
+            drift_skips.append((test_id, reason))
+
+    succeeded_ids = set(result.succeeded)
+    native_failed = sorted(
+        (set(result.failed_ids) | set(result.error_ids))
+        & (expected_native | critical_native)
+    )
 
     problems: list[str] = []
     if result.failed_ids or result.error_ids:
@@ -192,21 +264,36 @@ def assess(result: _RecordingResult, expected_native) -> Assessment:
                 ),
             )
         )
-    if not expected_native:
+    if native_failed:
+        problems.append(
+            "{} native guarded-open test(s) failed or errored:\n  - {}".format(
+                len(native_failed), "\n  - ".join(native_failed)
+            )
+        )
+    if drift_skips:
+        problems.append(
+            "{} unreviewed non-native skip(s) would silently reduce coverage; "
+            "add them to the reviewed allowlist or make them run:\n  - {}".format(
+                len(drift_skips),
+                "\n  - ".join(
+                    "{} ({})".format(name, reason) for name, reason in drift_skips
+                ),
+            )
+        )
+    if not expected_native and not critical_native:
         problems.append(
             "no {} tests were found; the native guarded-open coverage is missing".format(
                 _NATIVE_CLASS
             )
         )
 
-    succeeded_names = _method_names(result.succeeded)
-    missing = sorted(expected_native - succeeded_names)
+    missing = sorted(expected_native - succeeded_ids)
     if missing:
         problems.append("native guarded-open test(s) did not run: {}".format(", ".join(missing)))
-    lost_critical = [name for name in _CRITICAL_TESTS if name in missing]
-    if lost_critical:
+    critical_missing = sorted(critical_native - succeeded_ids)
+    if critical_missing:
         problems.append(
-            "critical Windows controls did not run: {}".format(", ".join(lost_critical))
+            "critical Windows controls did not run: {}".format(", ".join(critical_missing))
         )
 
     return Assessment(
@@ -215,9 +302,11 @@ def assess(result: _RecordingResult, expected_native) -> Assessment:
         error_ids=list(result.error_ids),
         native_skips=native_skips,
         allowed_skips=allowed_skips,
-        expected_native=set(expected_native),
-        native_ran=set(expected_native) & succeeded_names,
-        succeeded_names=succeeded_names,
+        drift_skips=drift_skips,
+        expected_native=expected_native,
+        critical_native=critical_native,
+        native_ran=expected_native & succeeded_ids,
+        succeeded_ids=succeeded_ids,
     )
 
 
@@ -253,12 +342,12 @@ def main(argv=None) -> int:
     print_diagnostics(result)
 
     native_class = getattr(module, _NATIVE_CLASS, None)
-    expected_native = (
-        {name for name in vars(native_class) if name.startswith("test_")}
-        if native_class is not None
-        else set()
-    )
-    assessment = assess(result, expected_native)
+    if native_class is None:
+        expected_native: set[str] = set()
+        critical_native: set[str] = set()
+    else:
+        expected_native, critical_native = native_control_ids(native_class)
+    assessment = assess(result, expected_native, critical_native)
 
     print("")
     print(
@@ -271,14 +360,16 @@ def main(argv=None) -> int:
         )
     )
     print(
-        "skips outside the native class (documented platform cases, allowed): {}".format(
-            len(assessment.allowed_skips)
+        "non-native skips (reviewed allowlist): {} allowed, {} unreviewed".format(
+            len(assessment.allowed_skips), len(assessment.drift_skips)
         )
     )
-    if assessment.allowed_skips:
-        for name, reason in assessment.allowed_skips:
-            print("  - {} ({})".format(name, reason))
+    for name, reason in assessment.allowed_skips:
+        print("  - [allowed] {} ({})".format(name, reason))
+    for name, reason in assessment.drift_skips:
+        print("  - [unreviewed] {} ({})".format(name, reason))
     print("native guarded-open tests expected: {}".format(len(assessment.expected_native)))
+    print("native critical controls required: {}".format(len(assessment.critical_native)))
     print("native guarded-open tests executed and passed: {}".format(len(assessment.native_ran)))
 
     problems = list(assessment.problems)

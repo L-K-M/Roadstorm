@@ -404,11 +404,26 @@ def _require_enum(
 # ---------------------------------------------------------------------------
 
 
+# Windows reserved device basenames, which Win32 resolves even with an
+# extension or a trailing dot/space removed. Rejected on every platform so the
+# manifest spelling rule does not depend on the host filesystem.
+_RESERVED_WINDOWS_BASENAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {"COM{}".format(digit) for digit in range(1, 10)}
+    | {"LPT{}".format(digit) for digit in range(1, 10)}
+)
+
+
 def _path_spelling_error(value: Any) -> str | None:
     """Return why a manifest path spelling is unacceptable, or ``None``.
 
     Pure and filesystem-free, so it can gate both existence checks and
     hashing: a path that fails here must never be resolved against the root.
+    The rules are deliberately cross-platform: they reject anything that could
+    alias another entry on a Windows host - NTFS alternate data streams
+    (``name:stream``), trailing dot/space component normalization, embedded
+    NUL, and reserved device basenames - while leaving ordinary Godot resource
+    spellings alone.
     """
     if not _is_string(value) or not value.strip():
         return "must be a non-empty path string"
@@ -417,11 +432,31 @@ def _path_spelling_error(value: Any) -> str | None:
         return "must be project-relative, not absolute: {!r}".format(path)
     if "\\" in path:
         return "must use POSIX '/' separators: {!r}".format(path)
+    if ":" in path:
+        return (
+            "must not contain ':' (an NTFS alternate data stream is not a "
+            "project-relative path): {!r}".format(path)
+        )
+    if "\x00" in path:
+        return "must not contain an embedded NUL byte: {!r}".format(path)
     parts = path.split("/")
     if any(part in ("", ".", "..") for part in parts):
         return "must be a clean relative path without '', '.' or '..' segments: {!r}".format(
             path
         )
+    for part in parts:
+        if part != part.rstrip(". "):
+            return (
+                "must not end a component in '.' or ' ', which Windows "
+                "normalizes away: {!r}".format(path)
+            )
+        basename = part.split(".", 1)[0].upper()
+        if basename in _RESERVED_WINDOWS_BASENAMES:
+            return (
+                "must not use the Windows reserved device name '{}': {!r}".format(
+                    part, path
+                )
+            )
     return None
 
 
@@ -544,7 +579,7 @@ def _record_file_is_readable(root: Path, relative: str) -> bool:
 # non-blocking so a FIFO or device node swapped in its place is opened without
 # blocking. Both are ordinary POSIX flags; on Windows the same guarantees are
 # built from CreateFileW instead (see _windows_open_regular_descriptor), and on
-# any other platform that offers neither flag the guarded open fails closed.
+# any other platform missing either flag the guarded open fails closed.
 _NO_FOLLOW_FLAG = getattr(os, "O_NOFOLLOW", None)
 _NON_BLOCK_FLAG = getattr(os, "O_NONBLOCK", None)
 
@@ -552,10 +587,11 @@ _NON_BLOCK_FLAG = getattr(os, "O_NONBLOCK", None)
 def _guarded_open_flags() -> int | None:
     """Flags for an open that cannot follow a leaf or block on a special file.
 
-    Returns ``None`` when the platform offers neither guarantee, so the caller
-    refuses to open rather than read a path whose type could change underneath
-    it. This is deliberately fail-closed: a missing flag makes the whole class
-    of time-of-check/time-of-use swap undetectable at the fd level.
+    Returns ``None`` when the platform is missing either guarantee, so the
+    caller refuses to open rather than read a path whose type could change
+    underneath it. This is deliberately fail-closed: a missing flag makes the
+    whole class of time-of-check/time-of-use swap undetectable at the fd
+    level.
     """
     if _NO_FOLLOW_FLAG is None or _NON_BLOCK_FLAG is None:
         return None
@@ -573,7 +609,9 @@ class _WindowsFileApi:
     one. ``ctypes``/``msvcrt`` are imported only here, so non-Windows imports
     never touch them.
 
-    Not exercised on a real Windows host yet: see the README limitation.
+    Exercised on a real Windows host by hosted run 46005883236 at `04015ca`
+    for the native output/register controls; manifest-input and spelling
+    controls added later await their own rerun. See the README limitation.
     """
 
     def __init__(self) -> None:
@@ -724,8 +762,10 @@ def _windows_open_regular_descriptor(
     ``_symlinked_component`` now recognizes through the reparse attribute - are
     refused before this function runs; a parent directory swapped for a link
     between that check and ``CreateFileW`` remains a narrowable race, not a
-    closed one - same residual as the POSIX branch. Not verified on a real
-    Windows host.
+    closed one - same residual as the POSIX branch. Hosted run `46005883236`
+    at `04015ca` exercised this path for the nine native output/register/
+    ACL controls; later manifest-input and spelling controls await their own
+    hosted rerun.
     """
     if api is None:
         try:

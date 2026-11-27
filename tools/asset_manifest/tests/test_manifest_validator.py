@@ -2516,6 +2516,60 @@ class JunctionComponentTestCase(unittest.TestCase):
             self.assertIn("unresolved-reference", [f.code for f in references.errors])
 
 
+class ManifestPathSpellingTestCase(unittest.TestCase):
+    """Alias-prone spellings must be refused before any path resolution.
+
+    These are pure checks, so they run on every platform; the native
+    ``WindowsNativeGuardTestCase`` repeats the integration through the real
+    Windows filesystem call path.
+    """
+
+    LEGITIMATE = (
+        "assets/generated/car/body.res",
+        "content/fixture/recipe.json",
+        "assets/car.body.res",
+        "assets/v1.2/body.res",
+        "a/b.c/d_e-f.g",
+        "Assets/Generated/Fixture/Body.RES",
+    )
+
+    ALIASES = (
+        "assets/textures/body.res:stream",   # NTFS alternate data stream
+        "assets/textures/body.res:",
+        "assets/textures/body.res.",          # trailing dot normalizes away
+        "assets/textures/body.res ",          # trailing space normalizes away
+        "assets/textures/plan.",
+        "assets/CON",                          # reserved device basename
+        "assets/con.txt",
+        "assets/LPT1.res",
+        "assets/a\x00b.res",                  # embedded NUL
+    )
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_legitimate_godot_style_paths_are_accepted(self):
+        for spelling in self.LEGITIMATE:
+            self.assertIsNone(
+                manifest_validator._path_spelling_error(spelling), spelling
+            )
+
+    def test_alias_prone_spellings_are_rejected(self):
+        for spelling in self.ALIASES:
+            self.assertIsNotNone(
+                manifest_validator._path_spelling_error(spelling), repr(spelling)
+            )
+
+    def test_rejected_spelling_is_a_structured_invalid_path_finding(self):
+        entry = complete_entry()
+        entry["identity"]["output_paths"] = ["assets/textures/body.res:stream"]
+        manifest = write_manifest(self.root, [entry])
+        findings = validate(self.root, manifest)
+        self.assertIn("invalid-path", error_codes(findings))
+
+
 class ManifestInputGuardTestCase(unittest.TestCase):
     """The caller-selected manifest document must use the guarded read.
 
@@ -2860,9 +2914,11 @@ class WindowsGuardedOpenTestCase(unittest.TestCase):
 class WindowsNativeGuardTestCase(unittest.TestCase):
     """Real-host acceptance for the Windows guarded-open branch.
 
-    Skipped everywhere else. These are the only tests allowed to claim the
-    Windows behavior actually works; until a Windows runner executes them, the
-    branch stays unverified.
+    Skipped everywhere else. Hosted run `46005883236` at `04015ca` executed
+    the nine output/register/manifest-ACL controls in this class 9/9; the
+    manifest-input and path-spelling controls added afterwards await their own
+    rerun. These are the only tests allowed to claim the Windows behavior
+    actually works.
     """
 
     def setUp(self) -> None:
@@ -3157,6 +3213,28 @@ class WindowsNativeGuardTestCase(unittest.TestCase):
             findings = validate(self.root, manifest)
         self.assertIn("unreadable-manifest", error_codes(findings))
         self.assertNotIn("invalid-json", error_codes(findings))
+
+    def test_native_alias_prone_manifest_paths_are_rejected(self):
+        """Exact Windows control for stream/trailing-dot/reserved spellings."""
+        aliases = (
+            "assets/generated/fixture/body.res:stream",
+            "assets/generated/fixture/body.res.",
+            "assets/generated/fixture/body.res ",
+            "assets/CON",
+            "assets/con.txt",
+            "assets/LPT1.res",
+            "assets/a\x00b.res",
+        )
+        for spelling in aliases:
+            entry = complete_entry()
+            entry["identity"]["output_paths"] = [spelling]
+            findings = validate(self.root, write_manifest(self.root, [entry]))
+            self.assertIn("invalid-path", error_codes(findings), repr(spelling))
+        good = materialize(self.root, complete_entry())
+        findings = validate(
+            self.root, write_manifest(self.root, [good]), check_hashes=True
+        )
+        self.assertEqual(findings.errors, [], messages(findings))
 
     def test_native_oversized_integer_cli_exits_2_with_json(self):
         import contextlib
