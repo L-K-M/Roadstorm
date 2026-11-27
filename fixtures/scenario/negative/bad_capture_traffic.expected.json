@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.participants",
+      "check": "reference_capture_structure"
+    }
+  ]
+}

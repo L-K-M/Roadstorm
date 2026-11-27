@@ -27,7 +27,19 @@ The suite pins four things:
   vocabulary and shape (comparator/value/bounds, mirroring the handling
   validator), initial-state/commands/history agreement, cloning-only producer
   pinning, and the retained evidence a measured record must keep (sector
-  splits, speed samples, car/loadout/assist hashes).
+  splits, speed samples, car/loadout/assist/track/handling hashes);
+* the 2026-11-27 second-pass remediation: matched comparisons are one
+  evaluated slot plus alternative producer arms that are separate runs, not
+  simultaneous co-located cars (comparison_arms and
+  participant_pose_distinctness), the tick-level safety_interventions
+  telemetry channel, and the track/handling hashes TECHNICAL_DESIGN requires
+  alongside the car/loadout/assist hashes;
+* the 2026-11-27 correction pass for review findings R1-R10: a reference
+  capture declares exactly one calibration-driver subject, comparison arms are
+  distinct BENCHMARKS producers with coherent style inputs, a tactical family
+  needs a fixed context car, scenario and record course revisions agree,
+  participant slots and record IDs are unique, duplicate unknowns entries are
+  rejected, and standing-start records are exempt from medal arithmetic.
 """
 
 from __future__ import annotations
@@ -109,6 +121,8 @@ def build_measured_record() -> dict:
         "car_hash": FAKE_HASH,
         "loadout_hash": FAKE_HASH,
         "assist_hash": FAKE_HASH,
+        "track_hash": FAKE_HASH,
+        "handling_hash": FAKE_HASH,
     }
     record["derived_thresholds"]["bronze_s"] = 1.25 * 42.0
     record["derived_thresholds"]["silver_s"] = 1.12 * 42.0
@@ -227,6 +241,7 @@ class ValidatorMachineryTests(unittest.TestCase):
                 "driver_commands",
                 "tactical_intents",
                 "safety_corrections",
+                "safety_interventions",
                 "contacts",
                 "participant_poses",
                 "gate_crossings",
@@ -415,8 +430,10 @@ class MeasuredEvidenceCompletenessTests(unittest.TestCase):
     """A measured record retains the evidence BENCHMARKS requires.
 
     BENCHMARKS 'Reference driver and records' retains sector splits, speed
-    samples and car/loadout/assist hashes with each record; the numbers stay
-    synthetic arithmetic data from build_measured_record.
+    samples and car/loadout/assist hashes with each record, and
+    TECHNICAL_DESIGN 'Content contracts' additionally retains track/handling
+    hashes; the numbers stay synthetic arithmetic data from
+    build_measured_record.
     """
 
     @classmethod
@@ -454,6 +471,66 @@ class MeasuredEvidenceCompletenessTests(unittest.TestCase):
                 for f in failures
             ),
             msg=str(failures),
+        )
+
+    def test_measured_record_needs_the_track_and_handling_hashes(self) -> None:
+        # TECHNICAL_DESIGN 'Content contracts' lists track/handling hashes
+        # alongside the car/loadout/assist ones; a measured record that loses
+        # them has lost evidence the contract promises to keep.
+        for name in ("track_hash", "handling_hash"):
+            document = build_measured_record()
+            document["reference_records"][0]["results"]["hashes"][name] = None
+            failures = vsc.check_measured_evidence_completeness(document, self.constants)
+            self.assertTrue(
+                any(
+                    f.check == "measured_evidence_completeness"
+                    and f.path == "reference_records.0.results.hashes"
+                    and name in f.message
+                    for f in failures
+                ),
+                msg=f"{name}: {failures}",
+            )
+
+    def test_planned_records_carry_the_five_hashes_as_nulls_with_unknowns(self) -> None:
+        # The shipped planned records represent both cited documents: revisions
+        # in course/dependencies and all five content hashes in results.hashes,
+        # null until capture tooling computes them.
+        for name in (
+            "fixture.scenario.reference_capture_flying.json",
+            "fixture.scenario.arcade_rush_standing_start.json",
+            "fixture.scenario.tactical_window_slower_lead.json",
+        ):
+            document = json.loads((POSITIVE_DIR / name).read_text(encoding="utf-8"
+            ))
+            for index, record in enumerate(document["reference_records"]):
+                hashes = record["results"]["hashes"]
+                self.assertEqual(
+                    sorted(hashes),
+                    [
+                        "assist_hash",
+                        "car_hash",
+                        "handling_hash",
+                        "loadout_hash",
+                        "track_hash",
+                    ],
+                )
+                for hash_name, value in hashes.items():
+                    self.assertIsNone(value)
+                    dotted = f"reference_records.{index}.results.hashes.{hash_name}"
+                    self.assertIn(
+                        dotted,
+                        [entry["path"] for entry in document["unknowns"]],
+                    )
+
+    def test_tactical_fixture_declares_the_safety_intervention_channel(self) -> None:
+        document = json.loads(
+            (POSITIVE_DIR / "fixture.scenario.tactical_window_slower_lead.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn(
+            "safety_interventions",
+            document["scenario"]["required_telemetry"],
         )
 
     def test_measured_record_needs_sector_splits_per_clean_lap(self) -> None:
@@ -642,7 +719,7 @@ class InitialStateAgreementTests(unittest.TestCase):
         self.assertTrue(
             any(
                 f.check == "initial_state_agreement"
-                and f.path.endswith(".per_participant_state.5.slot")
+                and f.path.endswith(".per_participant_state.2.slot")
                 for f in failures
             ),
             msg=str(failures),
@@ -651,7 +728,7 @@ class InitialStateAgreementTests(unittest.TestCase):
     def test_per_participant_slot_must_not_repeat(self) -> None:
         document = json.loads(json.dumps(self.document))
         document["scenario"]["initial_state"]["per_participant_state"].append(
-            {"slot": "surge", "speed_m_s": 30}
+            {"slot": "evaluated", "speed_m_s": 30}
         )
         failures = self._check(document)
         self.assertTrue(
@@ -663,16 +740,16 @@ class InitialStateAgreementTests(unittest.TestCase):
             msg=str(failures),
         )
 
-    def test_every_matched_participant_needs_an_entry(self) -> None:
+    def test_the_evaluated_slot_needs_an_entry(self) -> None:
         document = json.loads(json.dumps(self.document))
         entries = document["scenario"]["initial_state"]["per_participant_state"]
-        entries[:] = [entry for entry in entries if entry["slot"] != "surge"]
+        entries[:] = [entry for entry in entries if entry["slot"] != "evaluated"]
         failures = self._check(document)
         self.assertTrue(
             any(
                 f.check == "initial_state_agreement"
                 and f.path == "scenario.initial_state.per_participant_state"
-                and "surge" in f.message
+                and "evaluated" in f.message
                 for f in failures
             ),
             msg=str(failures),
@@ -737,7 +814,7 @@ class InitialStateAgreementTests(unittest.TestCase):
 
 
 class DriverRevisionPinningTests(unittest.TestCase):
-    """A cloning-only participant pins its producer by revision."""
+    """Every cloning-only driver - participant or comparison arm - pins its producer."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -750,11 +827,35 @@ class DriverRevisionPinningTests(unittest.TestCase):
     def test_shipped_tactical_fixture_pins_the_producer(self) -> None:
         self.assertEqual(vsc.check_driver_revision_pinning(self.document), [])
 
-    def test_cloning_only_participant_requires_producer_revision(self) -> None:
+    def test_cloning_only_arm_requires_producer_revision(self) -> None:
         document = json.loads(json.dumps(self.document))
-        for participant in document["scenario"]["participants"]:
-            if participant["driver"]["kind"] == "cloning_only_policy":
-                participant["driver"].pop("producer_revision")
+        arm = document["scenario"]["comparison"]["arms"][1]
+        self.assertEqual(arm["arm_id"], "cloning_only")
+        arm["driver"].pop("producer_revision")
+        failures = vsc.check_driver_revision_pinning(document)
+        self.assertTrue(
+            any(
+                f.check == "driver_revision_pinning"
+                and f.path == "scenario.comparison.arms.1.driver"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_cloning_only_participant_requires_producer_revision(self) -> None:
+        # A non-evaluated participant (fixed context traffic, say) driven by the
+        # cloning-only producer is pinned the same way.
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"].append(
+            {
+                "slot": "traffic_cloning",
+                "role": "traffic",
+                "car_id": "car.balanced_starter",
+                "loadout": "stock",
+                "assists": "standard",
+                "driver": {"kind": "cloning_only_policy", "difficulty": "racer"},
+            }
+        )
         failures = vsc.check_driver_revision_pinning(document)
         self.assertTrue(
             any(
@@ -762,6 +863,469 @@ class DriverRevisionPinningTests(unittest.TestCase):
                 and f.path == "scenario.participants.2.driver"
                 for f in failures
             ),
+            msg=str(failures),
+        )
+
+
+class ComparisonArmsTests(unittest.TestCase):
+    """A matched comparison is one evaluated slot plus alternative producer runs.
+
+    BENCHMARKS 'Tactical comparison' compares Classic, cloning-only, Surge and
+    Switch from matched initial states and histories. The compared producers
+    are separate executions of the same scenario driving one evaluated slot;
+    modeling them as simultaneous participants would co-locate the compared
+    cars and break the matched histories.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.document = json.loads(
+            (POSITIVE_DIR / "fixture.scenario.tactical_window_slower_lead.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def _check(self, document: dict | None = None) -> list[vsc.Failure]:
+        return vsc.check_comparison_arms(document or self.document)
+
+    def test_shipped_tactical_fixture_declares_one_slot_and_four_arms(self) -> None:
+        scenario = self.document["scenario"]
+        evaluated = [
+            participant
+            for participant in scenario["participants"]
+            if participant["role"] == "evaluated"
+        ]
+        self.assertEqual([participant["slot"] for participant in evaluated], ["evaluated"])
+        self.assertEqual(
+            [arm["arm_id"] for arm in scenario["comparison"]["arms"]],
+            ["classic", "cloning_only", "surge", "switch"],
+        )
+        self.assertEqual(scenario["comparison"]["evaluated_slot"], "evaluated")
+        self.assertEqual(self._check(), [])
+
+    def test_shipped_capture_fixture_needs_no_comparison(self) -> None:
+        document = json.loads(
+            (POSITIVE_DIR / "fixture.scenario.reference_capture_flying.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(vsc.check_comparison_arms(document), [])
+
+    def test_tactical_family_requires_a_comparison(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"].pop("comparison")
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms"
+                and f.path == "scenario.comparison"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_evaluated_slot_must_name_the_evaluated_participant(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["comparison"]["evaluated_slot"] = "lead"
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms"
+                and f.path == "scenario.comparison.evaluated_slot"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_only_one_participant_may_be_evaluated(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"].append(
+            {
+                "slot": "evaluated_2",
+                "role": "evaluated",
+                "car_id": "car.balanced_starter",
+                "loadout": "stock",
+                "assists": "standard",
+            }
+        )
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms" and f.path == "scenario.participants"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_the_evaluated_slot_carries_no_driver_of_its_own(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"][1]["driver"] = {
+            "kind": "classic_planner",
+            "difficulty": "racer",
+            "style": "none",
+        }
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms"
+                and f.path == "scenario.participants.1.driver"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_context_participants_must_declare_their_driver(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"][0].pop("driver")
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms"
+                and f.path == "scenario.participants.0"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_arm_ids_must_be_distinguishable(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["comparison"]["arms"][3]["arm_id"] = "surge"
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms"
+                and f.path == "scenario.comparison.arms.3.arm_id"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_a_tactical_comparison_needs_at_least_two_arms(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["comparison"]["arms"] = document["scenario"]["comparison"][
+            "arms"
+        ][:1]
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arms"
+                and f.path == "scenario.comparison.arms"
+                and "at least two" in f.message
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+
+class ParticipantPoseDistinctnessTests(unittest.TestCase):
+    """No two simultaneous participants of one execution may share a pose."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.document = json.loads(
+            (POSITIVE_DIR / "fixture.scenario.tactical_window_slower_lead.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def _check(self, document: dict | None = None) -> list[vsc.Failure]:
+        return vsc.check_participant_pose_distinctness(document or self.document)
+
+    def test_shipped_fixture_has_distinguishable_participants(self) -> None:
+        self.assertEqual(self._check(), [])
+
+    def test_two_participants_at_one_pose_are_rejected(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"].append(
+            {
+                "slot": "traffic_1",
+                "role": "traffic",
+                "car_id": "car.balanced_starter",
+                "loadout": "stock",
+                "assists": "standard",
+                "driver": {"kind": "scripted"},
+            }
+        )
+        document["scenario"]["initial_state"]["per_participant_state"].append(
+            {
+                "slot": "traffic_1",
+                "forward_gap_m": 10,
+                "lateral_offset_m": 0,
+                "speed_m_s": 30,
+                "heading_offset_deg": 0,
+            }
+        )
+        failures = self._check(document)
+        self.assertTrue(
+            any(
+                f.check == "participant_pose_distinctness"
+                and f.path == "scenario.initial_state.per_participant_state.2.slot"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_entries_without_an_authored_pose_are_not_compared(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        entries = document["scenario"]["initial_state"]["per_participant_state"]
+        entries.append({"slot": "traffic_1", "note": "pose not authored"})
+        entries.append({"slot": "traffic_2", "note": "pose not authored"})
+        self.assertEqual(self._check(document), [])
+
+    def test_heading_alone_distinguishes_two_participants(self) -> None:
+        document = json.loads(json.dumps(self.document))
+        entries = document["scenario"]["initial_state"]["per_participant_state"]
+        entries.append(
+            {
+                "slot": "traffic_1",
+                "forward_gap_m": 10,
+                "lateral_offset_m": 0,
+                "speed_m_s": 30,
+                "heading_offset_deg": 5,
+            }
+        )
+        self.assertEqual(self._check(document), [])
+
+
+class ContractCorrectionTests(unittest.TestCase):
+    """The 2026-11-27 correction pass rules (review findings R1-R10).
+
+    These exercise the semantic checks added or tightened after the independent
+    review of the b8c76b03 remediation: the reference-capture subject, producer
+    arm identity/style coherence, the tactical context car, course-revision
+    linkage, participant-slot and record-id uniqueness, duplicate unknowns
+    entries, and the standing-start medal exemption.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.contracts = vsc.load_contracts(SCHEMAS_DIR)
+        cls.constants = cls.contracts.constants
+        cls.tactical = json.loads(
+            (POSITIVE_DIR / "fixture.scenario.tactical_window_slower_lead.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        cls.capture = json.loads(
+            (POSITIVE_DIR / "fixture.scenario.reference_capture_flying.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    def test_shipped_fixtures_satisfy_the_new_rules(self) -> None:
+        for path in positive_paths():
+            document = json.loads(path.read_text(encoding="utf-8"))
+            with self.subTest(fixture=path.name):
+                self.assertEqual(vsc.check_reference_capture_structure(document), [])
+                self.assertEqual(vsc.check_comparison_arm_identity(document), [])
+                self.assertEqual(vsc.check_tactical_context_required(document), [])
+                self.assertEqual(vsc.check_participant_slot_uniqueness(document), [])
+                self.assertEqual(vsc.check_reference_record_id_uniqueness(document), [])
+
+    def test_learned_reference_subject_is_rejected(self) -> None:
+        document = json.loads(json.dumps(self.capture))
+        document["scenario"]["participants"][0]["driver"] = {
+            "kind": "learned_policy",
+            "difficulty": "racer",
+            "style": "surge",
+        }
+        failures = vsc.check_reference_capture_structure(document)
+        self.assertTrue(
+            any(
+                f.check == "reference_capture_structure"
+                and f.path == "scenario.participants.0.driver.kind"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_two_subjects_or_traffic_are_rejected(self) -> None:
+        extra = {
+            "slot": "traffic_1",
+            "role": "traffic",
+            "car_id": "car.balanced_starter",
+            "loadout": "stock",
+            "assists": "standard",
+            "driver": {"kind": "scripted"},
+        }
+        document = json.loads(json.dumps(self.capture))
+        document["scenario"]["participants"].append(extra)
+        failures = vsc.check_reference_capture_structure(document)
+        self.assertTrue(
+            any(
+                f.check == "reference_capture_structure"
+                and f.path == "scenario.participants"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_duplicate_producer_arm_is_rejected(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        arms = document["scenario"]["comparison"]["arms"]
+        arms[3]["driver"] = copy.deepcopy(arms[0]["driver"])
+        failures = vsc.check_comparison_arm_identity(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.3.driver"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_classic_style_must_be_none_and_learned_style_required(self) -> None:
+        classic = json.loads(json.dumps(self.tactical))
+        classic["scenario"]["comparison"]["arms"][0]["driver"]["style"] = "surge"
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.0.driver.style"
+                for f in vsc.check_comparison_arm_identity(classic)
+            )
+        )
+        learned = json.loads(json.dumps(self.tactical))
+        learned["scenario"]["comparison"]["arms"][2]["driver"].pop("style")
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.2.driver.style"
+                for f in vsc.check_comparison_arm_identity(learned)
+            )
+        )
+
+    def test_non_producer_arm_kind_is_rejected(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        document["scenario"]["comparison"]["arms"][0]["driver"] = {"kind": "human_proxy"}
+        failures = vsc.check_comparison_arm_identity(document)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.0.driver.kind"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_three_distinct_producers_still_pass(self) -> None:
+        # The full four-producer set is a benchmark-level requirement across the
+        # six families; one scenario may instantiate any subset of >= 2.
+        document = json.loads(json.dumps(self.tactical))
+        document["scenario"]["comparison"]["arms"] = [
+            arm
+            for arm in document["scenario"]["comparison"]["arms"]
+            if arm["arm_id"] != "cloning_only"
+        ]
+        self.assertEqual(vsc.check_comparison_arm_identity(document), [])
+
+    def test_tactical_family_needs_a_context_car(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        document["scenario"]["participants"] = [
+            p
+            for p in document["scenario"]["participants"]
+            if p["role"] == "evaluated"
+        ]
+        document["scenario"]["initial_state"]["per_participant_state"] = [
+            e
+            for e in document["scenario"]["initial_state"]["per_participant_state"]
+            if e["slot"] == "evaluated"
+        ]
+        failures = vsc.check_tactical_context_required(document)
+        self.assertTrue(
+            any(
+                f.check == "tactical_context_required"
+                and f.path == "scenario.participants"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_course_revision_must_match_the_referenced_record(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        document["scenario"]["course"]["course_revision"] = "course_rev_9"
+        document["reference_records"][0]["course"]["course_revision"] = "course_rev_1"
+        failures = vsc.check_reference_linkage(document)
+        self.assertTrue(
+            any(
+                f.check == "reference_linkage"
+                and f.path == "scenario.course.course_revision"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+        document["scenario"]["course"]["course_revision"] = None
+        document["reference_records"][0]["course"]["course_revision"] = None
+        failures = vsc.check_reference_linkage(document)
+        self.assertFalse(
+            any(f.path == "scenario.course.course_revision" for f in failures)
+        )
+
+    def test_duplicate_participant_slot_is_rejected(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        document["scenario"]["participants"].append(
+            {
+                "slot": "lead",
+                "role": "traffic",
+                "car_id": "car.balanced_starter",
+                "loadout": "stock",
+                "assists": "standard",
+                "driver": {"kind": "scripted"},
+            }
+        )
+        failures = vsc.check_participant_slot_uniqueness(document)
+        self.assertTrue(
+            any(
+                f.check == "participant_slot_uniqueness"
+                and f.path == "scenario.participants.2.slot"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_duplicate_record_id_is_rejected(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        document["reference_records"].append(copy.deepcopy(document["reference_records"][0]))
+        failures = vsc.check_reference_record_id_uniqueness(document)
+        self.assertTrue(
+            any(
+                f.check == "reference_record_id_uniqueness"
+                and f.path == "reference_records.1.record_id"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_duplicate_unknowns_path_is_rejected(self) -> None:
+        document = json.loads(json.dumps(self.tactical))
+        document["unknowns"].append(
+            {"path": document["unknowns"][0]["path"], "reason": "conflicting reason"}
+        )
+        failures = vsc.check_null_unknown_pairing(document)
+        self.assertTrue(
+            any(
+                f.check == "null_unknown_pairing"
+                and f.path == document["unknowns"][0]["path"]
+                and "2 times" in f.message
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_standing_start_medal_thresholds_do_not_apply(self) -> None:
+        document = build_measured_record()
+        record = document["reference_records"][0]
+        record["kind"] = "standing_start_lap_set"
+        for field in ("bronze_s", "silver_s", "gold_s"):
+            record["derived_thresholds"][field] = None
+            document["unknowns"].append(
+                {
+                    "path": f"reference_records.0.derived_thresholds.{field}",
+                    "reason": "medal thresholds derive from the flying-lap median",
+                }
+            )
+        failures = run_record_checks(document, self.contracts)
+        self.assertFalse(
+            any(f.check == "medal_threshold_arithmetic" for f in failures),
             msg=str(failures),
         )
 

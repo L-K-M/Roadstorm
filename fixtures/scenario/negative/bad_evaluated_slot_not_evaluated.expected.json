@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.comparison.evaluated_slot",
+      "check": "comparison_arms"
+    }
+  ]
+}

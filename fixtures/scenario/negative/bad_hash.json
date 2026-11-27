@@ -4,7 +4,7 @@
   "fixture_family": "reference_lap_capture",
   "title": "NEGATIVE fixture: the content hash does not match the file",
   "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the content hash does not match the file. Derived from a shipped positive fixture; everything except the named defect is valid.",
-  "revision": "1.0.0",
+  "revision": "1.2.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -131,7 +131,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -367,6 +369,18 @@
       "reason": "1.05 x the measured flying-lap median; the median does not exist yet.",
       "blocking": true,
       "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
     }
   ],
   "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",

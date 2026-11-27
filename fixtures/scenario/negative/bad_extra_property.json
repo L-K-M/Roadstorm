@@ -4,7 +4,7 @@
   "fixture_family": "reference_lap_capture",
   "title": "NEGATIVE fixture: the fixture carries an undeclared top-level member",
   "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the fixture carries an undeclared top-level member. Derived from a shipped positive fixture; everything except the named defect is valid.",
-  "revision": "1.0.0",
+  "revision": "1.2.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -131,7 +131,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -367,9 +369,21 @@
       "reason": "1.05 x the measured flying-lap median; the median does not exist yet.",
       "blocking": true,
       "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
     }
   ],
-  "content_hash": "sha256:b7e8e2df3929d37141ae200d12109f95b4a119c212dca4499f00ecd3b9403fe9",
+  "content_hash": "sha256:9e4e7646526dabb2ecacf960a89c2922a80331774038e58643811584ca6fe4f8",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/TECHNICAL_DESIGN.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

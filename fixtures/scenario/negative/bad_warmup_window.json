@@ -4,7 +4,7 @@
   "fixture_family": "slower_lead_straight_pass",
   "title": "NEGATIVE fixture: the history warm-up is 1.5 s instead of the fixed 2 s",
   "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the history warm-up is 1.5 s instead of the fixed 2 s. Derived from a shipped positive fixture; everything except the named defect is valid.",
-  "revision": "1.1.0",
+  "revision": "1.2.0",
   "status": "example",
   "units": {
     "length": "m",
@@ -16,7 +16,7 @@
     "scenario_id": "scenario.tactical.slower_lead_straight",
     "scenario_family": "slower_lead_straight_pass",
     "title": "Slower-lead straight-pass opportunity window on Riviera Run",
-    "description": "Four evaluated drivers (Classic, cloning-only, Surge, Switch) each approach a slower-leading car on the same straight from matched initial states and histories, at Racer difficulty with Standard assists on the balanced starter at stock loadout. The lead is slower through difficulty, not through a different car or loadout.",
+    "description": "One evaluated slot approaches a slower-leading car on the same straight from a matched initial state and history, at Racer difficulty with Standard assists on the balanced starter at stock loadout; Classic, cloning-only, Surge and Switch are compared as separate runs of that slot. The lead is slower through difficulty, not through a different car or loadout.",
     "revision": "1.1.0",
     "status": "example",
     "units": {
@@ -52,59 +52,16 @@
         }
       },
       {
-        "slot": "classic",
-        "role": "matched_classic",
+        "slot": "evaluated",
+        "role": "evaluated",
         "car_id": "car.balanced_starter",
         "loadout": "stock",
-        "assists": "standard",
-        "driver": {
-          "kind": "classic_planner",
-          "difficulty": "racer",
-          "style": "none"
-        }
-      },
-      {
-        "slot": "cloning",
-        "role": "matched_cloning_only",
-        "car_id": "car.balanced_starter",
-        "loadout": "stock",
-        "assists": "standard",
-        "driver": {
-          "kind": "cloning_only_policy",
-          "difficulty": "racer",
-          "style": "none",
-          "note": "Behavioral-cloning-only producer, evaluated separately so PPO must demonstrate useful learning beyond its teacher (docs/OPPONENT_AI.md). producer_revision pins this producer; no dependencies member does, so cloning-only and the PPO-trained policy are told apart by revision rather than by convention.",
-          "producer_revision": null
-        }
-      },
-      {
-        "slot": "surge",
-        "role": "matched_surge",
-        "car_id": "car.balanced_starter",
-        "loadout": "stock",
-        "assists": "standard",
-        "driver": {
-          "kind": "learned_policy",
-          "difficulty": "racer",
-          "style": "surge"
-        }
-      },
-      {
-        "slot": "switch",
-        "role": "matched_switch",
-        "car_id": "car.balanced_starter",
-        "loadout": "stock",
-        "assists": "standard",
-        "driver": {
-          "kind": "learned_policy",
-          "difficulty": "racer",
-          "style": "switch"
-        }
+        "assists": "standard"
       }
     ],
     "initial_state": {
       "start_mode": "rolling",
-      "description": "Each evaluated driver starts the same distance behind the slower lead on the straight, at matched speed and lateral offset, with a two-second shared history before the window opens. The per-participant entries fix the matched initial states; the single-participant members are the matched values and must agree with them.",
+      "description": "The evaluated slot starts the same distance behind the slower lead on the straight, at matched speed and lateral offset, with a two-second shared history before the window opens; every compared arm starts from this one authored state. The per-participant entries fix the initial states; the single-participant members are the evaluated slot's matched values and must agree with its entry.",
       "entry_speed_m_s": 30,
       "forward_gap_m": 10,
       "lateral_offset_m": 0,
@@ -116,28 +73,7 @@
           "note": "The slower lead; its pace comes from the Rookie difficulty setting, not a different car. Its speed at the window is not authored: the window begins from the recorded scenario seed, so the lead's speed is replay output, not configuration."
         },
         {
-          "slot": "classic",
-          "forward_gap_m": 10,
-          "lateral_offset_m": 0,
-          "speed_m_s": 30,
-          "heading_offset_deg": 0
-        },
-        {
-          "slot": "cloning",
-          "forward_gap_m": 10,
-          "lateral_offset_m": 0,
-          "speed_m_s": 30,
-          "heading_offset_deg": 0
-        },
-        {
-          "slot": "surge",
-          "forward_gap_m": 10,
-          "lateral_offset_m": 0,
-          "speed_m_s": 30,
-          "heading_offset_deg": 0
-        },
-        {
-          "slot": "switch",
+          "slot": "evaluated",
           "forward_gap_m": 10,
           "lateral_offset_m": 0,
           "speed_m_s": 30,
@@ -169,6 +105,7 @@
       "driver_commands",
       "tactical_intents",
       "safety_corrections",
+      "safety_interventions",
       "contacts",
       "participant_poses",
       "gate_crossings",
@@ -195,7 +132,47 @@
         "reason": "A contact or reset invalidated the window before counting.",
         "count": 0
       }
-    ]
+    ],
+    "comparison": {
+      "evaluated_slot": "evaluated",
+      "arms": [
+        {
+          "arm_id": "classic",
+          "driver": {
+            "kind": "classic_planner",
+            "difficulty": "racer",
+            "style": "none"
+          }
+        },
+        {
+          "arm_id": "cloning_only",
+          "driver": {
+            "kind": "cloning_only_policy",
+            "difficulty": "racer",
+            "style": "none",
+            "note": "Behavioral-cloning-only producer, evaluated separately so PPO must demonstrate useful learning beyond its teacher (docs/OPPONENT_AI.md). producer_revision pins this producer; no dependencies member does, so cloning-only and the PPO-trained policy are told apart by revision rather than by convention.",
+            "producer_revision": null
+          }
+        },
+        {
+          "arm_id": "surge",
+          "driver": {
+            "kind": "learned_policy",
+            "difficulty": "racer",
+            "style": "surge"
+          }
+        },
+        {
+          "arm_id": "switch",
+          "driver": {
+            "kind": "learned_policy",
+            "difficulty": "racer",
+            "style": "switch"
+          }
+        }
+      ],
+      "note": "Each arm is a separate execution of this scenario: the same seed, the same evaluated-slot initial state and the same shared history, with exactly one arm's car on the track at a time. Arms are runs of one slot, never simultaneous participants, so the compared producers cannot be traffic for each other and their histories stay matched (BENCHMARKS 'Tactical comparison')."
+    }
   },
   "reference_records": [
     {
@@ -252,7 +229,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -291,13 +270,13 @@
       "expectation_id": "expect.telemetry",
       "check": "telemetry_required",
       "path": "scenario",
-      "statement": "The scenario declares the tactical telemetry minimum: commands, intents, safety corrections, contacts, poses, gate crossings and race RNG state."
+      "statement": "The scenario declares the tactical telemetry minimum: commands, intents, safety corrections, tick-level safety interventions, contacts, poses, gate crossings and race RNG state."
     },
     {
       "expectation_id": "expect.linkage",
       "check": "reference_linkage",
       "path": "scenario",
-      "statement": "The reference member resolves to the embedded planned record and every matched participant agrees with it on car, loadout, assists and course."
+      "statement": "The reference member resolves to the embedded planned record and the evaluated participant agrees with it on car, loadout, assists and course."
     },
     {
       "expectation_id": "expect.planned_no_results",
@@ -325,7 +304,7 @@
     }
   ],
   "comparison": {
-    "purpose": "Record the documented initial acceptance targets for the slower-lead straight-pass family across the matched Classic, cloning-only, Surge and Switch producers.",
+    "purpose": "Record the documented initial acceptance targets for the slower-lead straight-pass family across the compared Classic, cloning-only, Surge and Switch arms.",
     "metrics": [
       {
         "name": "clean_pace_ratio_min",
@@ -506,13 +485,25 @@
       "until": "M1.7"
     },
     {
-      "path": "scenario.participants.2.driver.producer_revision",
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
+    },
+    {
+      "path": "scenario.comparison.arms.1.driver.producer_revision",
       "reason": "The cloning-only producer implementation is unratified before M4B; its revision is assigned when the producer is frozen.",
       "blocking": true,
       "until": "M4B"
     }
   ],
-  "content_hash": "sha256:e606aaef88be2867b3ac46044da323b5b45034e41b2e57ea1cc9f46dd467b276",
+  "content_hash": "sha256:df9788af2bfa227fdebb271d46ae1affe949dbd795d2658aaaca66dc2a849450",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/OPPONENT_AI.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

@@ -4,7 +4,7 @@
   "fixture_family": "reference_lap_capture",
   "title": "NEGATIVE fixture: an unknowns entry points at a value that is determined",
   "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: an unknowns entry points at a value that is determined. Derived from a shipped positive fixture; everything except the named defect is valid.",
-  "revision": "1.0.0",
+  "revision": "1.2.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -131,7 +131,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -372,9 +374,21 @@
       "path": "scenario.dependencies.metric_version",
       "reason": "Bogus entry: metric_version is authored, not undetermined.",
       "blocking": false
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
     }
   ],
-  "content_hash": "sha256:f5eebc87fb73c4e677fbb090ceff6d68c945d06059208e68e667ebf27e03cfe7",
+  "content_hash": "sha256:d5580ad62596e759cbf26016f47196d7a7a84587a09b633a0613048b87d4d2f1",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/TECHNICAL_DESIGN.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

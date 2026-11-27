@@ -4,7 +4,7 @@
   "fixture_family": "reference_lap_capture",
   "title": "Planned standing-start reference capture for Arcade Rush sector budgets",
   "description": "M0.9 planned capture for the second BENCHMARKS reference kind: five clean standing-start single laps by the CalibrationDriver on the balanced starter at stock loadout with Standard assists, traffic-free, on the planned slice course. Arcade Rush uses the selected stock car's standing-start reference splits (docs/GAME_DESIGN.md): three intermediate timing gates plus the finish over four sectors, with initial budget factors 1.20/1.10/1.02 for Rookie/Racer/Expert and b_i = factor * reference_sector_seconds + measured_mistake_margin_i, rounded to milliseconds. The embedded record is planned and carries no results; the medal thresholds stay null because they derive from the flying-lap median, which is a different record. Rookie's margin must permit one brief mistake and Expert's must account for observed run variance; the margins themselves are measured values that do not exist yet.",
-  "revision": "1.1.0",
+  "revision": "1.2.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -135,7 +135,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -391,9 +393,21 @@
       "reason": "Medal thresholds derive from the flying-lap median; this is a standing-start record, so they do not apply.",
       "blocking": false,
       "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
     }
   ],
-  "content_hash": "sha256:099478518f4f8c7da03e13377d153165d4b435ab9ae0b0a0842192faf4d4aa09",
+  "content_hash": "sha256:6a3550686946d6402bc0acc3ad1fdaa035927f0d5331611d3c3f6ba574e43d79",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/GAME_DESIGN.md; docs/TECHNICAL_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

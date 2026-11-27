@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Roadstorm versioned benchmark scenario configuration (scenario schema version 1)",
-  "description": "Machine-readable contract for a benchmark scenario configuration, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'AI metrics', 'Tactical comparison') and the ReferenceRun/Scenario row of docs/TECHNICAL_DESIGN.md 'Content contracts' (fixture and driver revisions, initial state/commands/history, seeds, car/loadout/assist/track/handling hashes, measured traces, eligibility and metric version). A scenario fixes the authored configuration of a measurement or a matched comparison: the course and its revision, every dependency revision, the participants and their drivers, the initial state, the capture/comparison protocol (60 Hz fixed tick, 2 s history warm-up, 3 s opportunity window, 0.10 m / 0.10 m/s handover tolerance), the seeds, the required telemetry and the documented initial targets. The initial state covers the per-participant poses and velocities, the initial commands (an authored schedule or a controller revision) and the shared pre-window history, so two scenarios that declare the same participants cannot silently differ in history (docs/TECHNICAL_DESIGN.md 'Content contracts': initial state/commands/history; docs/BENCHMARKS.md 'Tactical comparison': matched initial states and histories). A scenario is authored configuration, never measured evidence: lap times, medians, contact rates and completed-test outcomes belong to reference records and evaluation reports produced later by M1/M4/M8 tooling, never to a scenario file. A JSON null means 'not yet determined' and MUST be paired with an entry in the enclosing fixture's 'unknowns' (see scenario_fixture.schema.json); an optional member that is absent means 'not applicable'. Provenance is recorded once by the enclosing fixture. Companion vocabulary lives in ../common.schema.json; the measured-evidence half of this contract is reference_run.schema.json.",
+  "description": "Machine-readable contract for a benchmark scenario configuration, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'AI metrics', 'Tactical comparison') and the ReferenceRun/Scenario row of docs/TECHNICAL_DESIGN.md 'Content contracts' (fixture and driver revisions, initial state/commands/history, seeds, car/loadout/assist/track/handling hashes, measured traces, eligibility and metric version). A scenario fixes the authored configuration of a measurement or a matched comparison: the course and its revision, every dependency revision, the participants of one execution (the fixed context cars plus the single evaluated slot), for a matched comparison the alternative producer arms that run the evaluated slot in separate executions from the same seed, initial state and history (BENCHMARKS compares Classic, cloning-only, Surge and Switch from matched initial states and histories; the compared producers are runs of one slot, never simultaneous cars at one pose), the initial state, the capture/comparison protocol (60 Hz fixed tick, 2 s history warm-up, 3 s opportunity window, 0.10 m / 0.10 m/s handover tolerance), the seeds, the required telemetry and the documented initial targets. The initial state covers the per-participant poses and velocities, the initial commands (an authored schedule or a controller revision) and the shared pre-window history, so two scenarios that declare the same participants cannot silently differ in history (docs/TECHNICAL_DESIGN.md 'Content contracts': initial state/commands/history; docs/BENCHMARKS.md 'Tactical comparison': matched initial states and histories). A scenario is authored configuration, never measured evidence: lap times, medians, contact rates and completed-test outcomes belong to reference records and evaluation reports produced later by M1/M4/M8 tooling, never to a scenario file. A JSON null means 'not yet determined' and MUST be paired with an entry in the enclosing fixture's 'unknowns' (see scenario_fixture.schema.json); an optional member that is absent means 'not applicable'. The safety_interventions telemetry channel is reserved by this contract for tick-level (60 Hz) safety/emergency evidence. Its linked payload lives in the TacticalIntent contract (../intent/tactical_intent.schema.json, schema version 1.1.0 as of this revision): per-tick override exposure is safety.interventions.ticks, and wholesale emergency substitution/reset including persistent Classic replacement is safety.emergency (substituted, kind, tick, persistent, reason). Material-correction magnitude belongs to the 5 Hz corrections record (safety.corrections[*].proposed/applied), not to the tick channel. No intervention payload, count or measurement is authored here; per-intervention magnitude beyond a correction's proposed/applied values and the final intervention category vocabulary remain open until preregistration (recorded in this slice's README). Provenance is recorded once by the enclosing fixture. Companion vocabulary lives in ../common.schema.json; the measured-evidence half of this contract is reference_run.schema.json.",
   "schema_version": "1.0.0",
   "type": "object",
   "additionalProperties": false,
@@ -144,7 +144,7 @@
       "minItems": 1,
       "maxItems": 8,
       "items": { "$ref": "#/$defs/participant" },
-      "description": "Cars taking part, at most the standard eight-car field."
+      "description": "Cars taking part in one execution of the scenario, at most the standard eight-car field. The compared producers of a matched comparison are not extra participants: they are the arms of the comparison member, each a separate execution of this same scenario driving one evaluated slot, so no two compared cars are ever on the track together."
     },
     "initial_state": {
       "type": "object",
@@ -156,16 +156,16 @@
         "entry_speed_m_s": {
           "type": ["number", "null"],
           "minimum": 0,
-          "description": "Authored initial forward speed of the evaluated participant. Absent when not applicable (e.g. a standing-start capture); null means undetermined and requires a fixture unknowns entry. When per_participant_state is present it must agree with every matched_* participant entry."
+          "description": "Authored initial forward speed of the evaluated participant. Absent when not applicable (e.g. a standing-start capture); null means undetermined and requires a fixture unknowns entry. When per_participant_state is present it must agree with the evaluated participant's entry."
         },
         "forward_gap_m": {
           "type": ["number", "null"],
           "exclusiveMinimum": 0,
-          "description": "Authored initial forward gap to the car ahead. Absent when not applicable. When per_participant_state is present it must agree with every matched_* participant entry."
+          "description": "Authored initial forward gap to the car ahead. Absent when not applicable. When per_participant_state is present it must agree with the evaluated participant's entry."
         },
         "lateral_offset_m": {
           "type": ["number", "null"],
-          "description": "Authored initial lateral offset from the centerline; positive is right. Absent when not applicable. When per_participant_state is present it must agree with every matched_* participant entry."
+          "description": "Authored initial lateral offset from the centerline; positive is right. Absent when not applicable. When per_participant_state is present it must agree with the evaluated participant's entry."
         },
         "note": {
           "type": "string",
@@ -175,7 +175,7 @@
         "per_participant_state": {
           "type": "array",
           "items": { "$ref": "#/$defs/participant_initial_state" },
-          "description": "Per-participant initial state. BENCHMARKS compares the evaluated drivers 'from matched initial states and histories', so a multi-participant scenario cannot be pinned by the single-participant members alone; the validator requires an entry for every matched_* participant of a tactical family and requires the single-participant members to agree with each matched entry. Absent when not applicable (e.g. a single-participant capture)."
+          "description": "Per-participant initial state. BENCHMARKS compares the evaluated drivers 'from matched initial states and histories', so a multi-participant scenario cannot be pinned by the single-participant members alone; the validator requires an entry for the evaluated participant of a tactical family, requires the single-participant members to agree with that entry, and rejects two entries that declare the same pose, because simultaneous participants must be distinguishable. Entries also cover the fixed context participants of the one execution. Absent when not applicable (e.g. a single-participant capture)."
         },
         "initial_commands": { "$ref": "#/$defs/initial_commands" },
         "history": { "$ref": "#/$defs/scenario_history" }
@@ -243,6 +243,7 @@
           "driver_commands",
           "tactical_intents",
           "safety_corrections",
+          "safety_interventions",
           "contacts",
           "resets",
           "progress_corrections",
@@ -251,7 +252,27 @@
           "validity_flags"
         ]
       },
-      "description": "Telemetry channels the capture must record for this scenario to be evaluable. The per-family minimum is fixed in $defs.constants and enforced by the validator. Telemetry distinguishes accepted swept motion, positional correction, reset and route-local projection (BENCHMARKS 'Racing and progress fixtures'); only legal swept motion crosses gates."
+      "description": "Telemetry channels the capture must record for this scenario to be evaluable. The per-family minimum is fixed in $defs.constants and enforced by the validator. Telemetry distinguishes accepted swept motion, positional correction, reset and route-local projection (BENCHMARKS 'Racing and progress fixtures'); only legal swept motion crosses gates. Two safety channels are distinguished: safety_corrections carries the proposed 5 Hz intent's material road/collision corrections with proposed/applied magnitudes (one intent corrected on several 60 Hz ticks is counted once at the intent level), while safety_interventions carries the tick-level (60 Hz) safety/emergency records behind them - the per-tick override exposure (TacticalIntent safety.interventions.ticks) and wholesale emergency substitution/reset including persistent replacement by Classic (TacticalIntent safety.emergency) - so BENCHMARKS can count emergency replacements per proposed 5 Hz intent and also report tick-level exposure (BENCHMARKS 'Tactical comparison'; OPPONENT_AI 'Safety interventions': emergency substitution/reset is separate from material corrections)."
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluated_slot", "arms"],
+      "properties": {
+        "evaluated_slot": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Slot of the single evaluated participant the arms drive. Must name a participant of this scenario whose role is 'evaluated' (the validator checks both)."
+        },
+        "arms": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/comparison_arm" },
+          "description": "The compared producers, each a driver spec. Every arm is a separate execution of this scenario with the same seed, initial state and history: exactly one arm's car is on the track at a time, so matched comparisons never place two compared cars at one pose and each compared producer is traffic only for the fixed context participants. BENCHMARKS 'Tactical comparison' compares Classic, cloning-only, Surge and Switch from matched initial states and histories; covering those four producers is a benchmark-level requirement across the six families, while each scenario must declare at least two distinct producer arms and may instantiate any subset of them. The validator enforces the per-scenario minimum plus producer identity and style coherence for the six tactical families. Arm results are reported per arm_id."
+        },
+        "note": { "type": "string", "minLength": 1 }
+      },
+      "description": "Matched-comparison structure: which slot is evaluated and which producer arms are compared in it. Required for the six tactical families (the validator enforces this); absent for a reference capture, where one calibration-driver subject runs alone."
     },
     "reference": {
       "type": "object",
@@ -299,25 +320,26 @@
     "participant": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slot", "role", "car_id", "loadout", "assists", "driver"],
+      "required": ["slot", "role", "car_id", "loadout", "assists"],
+      "anyOf": [
+        { "required": ["driver"] },
+        { "properties": { "role": { "const": "evaluated" } } }
+      ],
       "properties": {
         "slot": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9_]*$",
-          "description": "Stable slot name inside the scenario, e.g. 'lead' or 'surge'."
+          "description": "Stable slot name inside the scenario, e.g. 'lead', 'traffic_1' or 'evaluated'."
         },
         "role": {
           "enum": [
             "reference_subject",
             "slower_lead",
-            "matched_classic",
-            "matched_cloning_only",
-            "matched_surge",
-            "matched_switch",
+            "evaluated",
             "traffic",
             "proxy"
           ],
-          "description": "Role in the comparison. matched_* participants are the evaluated drivers compared from matched initial states and histories (BENCHMARKS 'Tactical comparison')."
+          "description": "Role in the comparison. 'evaluated' is the single evaluated slot of a matched comparison: BENCHMARKS compares Classic, cloning-only, Surge and Switch from matched initial states and histories, and those producers are alternative runs of this one slot declared in the scenario's comparison.arms - never simultaneous participants - so no two compared cars share a pose. Exactly one participant may carry it (the validator checks). 'reference_subject' is the single calibration-driver subject of a reference capture; 'slower_lead', 'traffic' and 'proxy' are fixed context participants present in every run of the scenario. Every non-evaluated participant declares its own driver; the evaluated slot's producers are its arms, so it carries no driver member of its own (the validator checks both directions)."
         },
         "car_id": {
           "$ref": "../common.schema.json#/$defs/stable_id",
@@ -366,6 +388,20 @@
         "note": { "type": "string", "minLength": 1 }
       }
     },
+    "comparison_arm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["arm_id", "driver"],
+      "properties": {
+        "arm_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Stable name of the compared producer within this scenario, e.g. 'classic', 'cloning_only', 'surge' or 'switch'. Unique inside the scenario (the validator checks); results are reported per arm."
+        },
+        "driver": { "$ref": "#/$defs/driver" }
+      },
+      "description": "One compared producer: a driver spec that runs the evaluated slot in a separate execution of this scenario, from the same seed, initial state and history as every other arm. An arm is a run, not a car: two arms are never on the track together, which is what keeps the matched histories of BENCHMARKS 'Tactical comparison' intact. For the six preregistered tactical families the compared producers are classic_planner, cloning_only_policy and learned_policy (Surge/Switch are learned-policy styles); human_proxy and scripted drivers are fixed context participants, not compared producers. A scenario may instantiate any subset of at least two distinct producers."
+    },
     "participant_initial_state": {
       "type": "object",
       "additionalProperties": false,
@@ -396,7 +432,7 @@
         },
         "note": { "type": "string", "minLength": 1 }
       },
-      "description": "One participant's authored initial state. Matched participants of a tactical comparison carry the same values so the compared producers start from matched initial states (BENCHMARKS 'Tactical comparison')."
+      "description": "One participant's authored initial state. The evaluated slot carries the matched initial state every arm starts from, so one authored state serves all compared runs; fixed context participants carry their own. No two participants of one execution may declare the same pose (the validator checks), because simultaneous cars must be distinguishable."
     },
     "initial_commands": {
       "type": "object",
@@ -527,12 +563,13 @@
                 "driver_commands",
                 "tactical_intents",
                 "safety_corrections",
+                "safety_interventions",
                 "contacts",
                 "participant_poses",
                 "gate_crossings",
                 "race_rng_state"
               ],
-              "description": "Minimum telemetry for a tactical comparison window: the proposed intents, safety corrections, commands, poses, contacts, gates and race RNG state the labels and rates are computed from."
+              "description": "Minimum telemetry for a tactical comparison window: the proposed intents, the 5 Hz safety corrections, the tick-level (60 Hz) safety/emergency intervention events BENCHMARKS counts per proposed 5 Hz intent with tick-level exposure also reported, and the commands, poses, contacts, gates and race RNG state the labels and rates are computed from."
             }
           }
         }

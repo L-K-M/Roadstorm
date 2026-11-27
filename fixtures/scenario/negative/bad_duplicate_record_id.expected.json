@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "reference_records.1.record_id",
+      "check": "reference_record_id_uniqueness"
+    }
+  ]
+}

@@ -4,7 +4,7 @@
   "fixture_family": "reference_lap_capture",
   "title": "Planned flying-lap reference capture for the balanced starter on Riviera Run",
   "description": "M0.9 planned capture for the BENCHMARKS reference record: five clean flying laps by the CalibrationDriver on the balanced starter at stock loadout with Standard assists, traffic-free, on the planned slice course. The scenario fixes the authored configuration (participants, initial state, seeds, required telemetry); the embedded reference record fixes the capture protocol and dependency set but carries no results, because no lap has been measured. Lap times, the median, sector splits, speed samples, hashes and the medal thresholds stay null with unknowns entries until M1/M4 capture tooling produces the measured record. Engine and backend revisions are the pinned M0.1 values; handling, driver, line and course revisions are unratified and null. Course ID course.riviera_run is the planned slice course from docs/GAME_DESIGN.md.",
-  "revision": "1.1.0",
+  "revision": "1.3.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -135,7 +135,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -207,10 +209,28 @@
       "statement": "Every comparison metric uses the documented comparator vocabulary: threshold comparators carry a numeric value and no bounds."
     },
     {
+      "expectation_id": "expect.clean_lap_accounting",
+      "check": "clean_lap_accounting",
+      "path": "reference_records.0",
+      "statement": "Once capture tooling measures the record it must retain at least five clean laps, a time for every clean lap, an invalid reason for every rejected lap, and median/min/max over the clean laps."
+    },
+    {
+      "expectation_id": "expect.medal_arithmetic",
+      "check": "medal_threshold_arithmetic",
+      "path": "reference_records.0",
+      "statement": "Once measured, the Bronze/Silver/Gold thresholds must equal the documented 1.25/1.12/1.05 factors times the measured flying-lap median."
+    },
+    {
+      "expectation_id": "expect.dependency_completeness",
+      "check": "dependency_completeness",
+      "path": "reference_records.0",
+      "statement": "Once measured, the record must name every dependency it was captured against: course, driver and line revisions, engine and handling revisions, and the platform."
+    },
+    {
       "expectation_id": "expect.measured_evidence",
       "check": "measured_evidence_completeness",
       "path": "reference_records.0",
-      "statement": "Once capture tooling measures this record it must retain speed samples, the car/loadout/assist hashes and four sector splits per clean lap, as BENCHMARKS requires."
+      "statement": "Once capture tooling measures this record it must retain speed samples, the car/loadout/assist/track/handling hashes and four sector splits per clean lap, as BENCHMARKS and TECHNICAL_DESIGN require."
     },
     {
       "expectation_id": "expect.hash",
@@ -383,9 +403,21 @@
       "reason": "1.05 x the measured flying-lap median; the median does not exist yet.",
       "blocking": true,
       "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
     }
   ],
-  "content_hash": "sha256:f2f654e3c5f5ab3408346c6c781e8a2b636e01ae067889858ab8fdb80368c7d7",
+  "content_hash": "sha256:e49024a1f10e8b4329d76785b2b8b3da9f0a132278dc226a50ebe0bd4e29e5fb",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/TECHNICAL_DESIGN.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

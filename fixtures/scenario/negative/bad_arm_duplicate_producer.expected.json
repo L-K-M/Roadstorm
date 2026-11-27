@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.comparison.arms.3.driver",
+      "check": "comparison_arm_identity"
+    }
+  ]
+}

@@ -2,7 +2,19 @@
 
 M0.9 reference/scenario-contract slice (job `847d8664-1028-4233-a67c-39f1465b4964`),
 remediated by job `f4b734f4-85a2-4f26-993f-c752e0539e49` (2026-11-27) for
-contract-review findings 5, 9, 10, 11, 12 and 13.
+contract-review findings 5, 9, 10, 11, 12 and 13, and by job
+`b8c76b03-bb34-4c2f-8721-d4b5d673ab9d` (2026-11-27) for the independent M0.9
+schema checkpoints: matched comparisons became one evaluated slot plus
+separate producer arms (Opus F2), the records gained the track/handling
+hashes (Sol 5), and the tactical telemetry minimum gained the tick-level
+`safety_interventions` channel (Sol 4 / Opus F6).
+Correction pass (job `3e9684f8-f772-40e8-b847-408673ce5fc6`, 2026-11-27)
+for the independent review of `b8c76b03`: added twelve negatives pinning the
+reference-capture subject shape, comparison-arm producer identity/style
+coherence, the tactical context car, course-revision linkage, slot/record/unknowns
+uniqueness, and the standing-start medal exemption, and corrected the stale
+measured-evidence expectation wording. This job modified only the owned
+`fixtures/scenario/**` and `schemas/scenario/**` paths.
 Owned paths: `fixtures/scenario/**`. The contracts these files implement are
 in [`../../schemas/scenario/`](../../schemas/scenario/); the checker is
 [`./validate_scenario_contract.py`](./validate_scenario_contract.py). Every
@@ -14,9 +26,9 @@ budgets), and is an authored initial contract, not a measurement.
 | --- | --- | --- | --- |
 | `positive/fixture.scenario.reference_capture_flying.json` | reference_lap_capture | 1 planned flying-lap record | balanced starter at stock/Standard; course ID `course.riviera_run`; seeds 4101/4102; engine/backend revisions are the pinned M0.1 values, all other dependency revisions null with unknowns |
 | `positive/fixture.scenario.arcade_rush_standing_start.json` | reference_lap_capture | 1 planned standing-start record | seeds 4201/4202; medal thresholds null because they derive from the flying-lap median; Arcade Rush factors 1.20/1.10/1.02 as documented targets |
-| `positive/fixture.scenario.tactical_window_slower_lead.json` | slower_lead_straight_pass | 1 planned flying record (matched reference) | status `example`: Classic/cloning-only/learned producers are unratified; 30 m/s entry and 10 m gap are authored and fixed per matched participant in `initial_state.per_participant_state`; the shared history is `replay_from_seed`; the cloning-only producer is pinned by `driver.producer_revision`; three exclusion rules with count 0; the clean-pace-ratio window is recorded as the two threshold metrics 0.90/1.10, and the AI-metric targets (heavy-contact bound, >=99% completion, evaluation timeout) are recorded as documented initial targets |
+| `positive/fixture.scenario.tactical_window_slower_lead.json` | slower_lead_straight_pass | 1 planned flying record (matched reference) | status `example`: Classic/cloning-only/learned producers are unratified; the compared producers are `comparison.arms` (`classic`, `cloning_only`, `surge`, `switch`) that each run the single `evaluated` slot in a separate execution; 30 m/s entry and 10 m gap are authored and fixed for the evaluated slot in `initial_state.per_participant_state`; the shared history is `replay_from_seed`; the cloning-only arm is pinned by `driver.producer_revision`; three exclusion rules with count 0; the clean-pace-ratio window is recorded as the two threshold metrics 0.90/1.10, and the AI-metric targets (heavy-contact bound, >=99% completion, evaluation timeout) are recorded as documented initial targets |
 
-The `negative/` directory holds 19 deliberately broken variants, each with an
+The `negative/` directory holds 41 deliberately broken variants, each with an
 `.expected.json` sidecar pinning its exact failure set: schema-level defects
 (`bad_schema_version`, `bad_extra_property`, `bad_seed_missing`,
 `bad_exclusion_negative_count`) and semantic defects (`bad_family_mismatch`,
@@ -27,6 +39,27 @@ The `negative/` directory holds 19 deliberately broken variants, each with an
 `bad_metric_value_on_range`, `bad_metric_range_missing_bounds`, `bad_hash`).
 The last two pin the metric-shape rules added in the remediation pass: a range
 comparator carrying a point `value`, and a range comparator without bounds.
+The 2026-11-27 second pass added ten more, each pinning one new rule:
+`bad_comparison_missing` (a tactical family with no comparison structure),
+`bad_single_arm` (a comparison with one arm), `bad_evaluated_slot_not_evaluated`
+(`evaluated_slot` naming a context participant),
+`bad_two_evaluated_participants` (two participants in the evaluated role, the
+co-located-cars shape Opus F2 rejected), `bad_arms_duplicate_id`,
+`bad_arms_cloning_unpinned`, `bad_evaluated_with_driver` (a second driver
+source for the evaluated slot), `bad_pose_collision` (two simultaneous
+participants at one pose), `bad_safety_interventions_missing` (the tactical
+telemetry minimum without the tick-level channel) and
+`bad_track_hash_unpaired` (a null track hash without an unknowns entry).
+The 2026-11-27 correction pass added twelve more, each pinning one rule:
+`bad_reference_subject_learned` (an evaluated driver as capture subject),
+`bad_capture_two_subjects`, `bad_capture_traffic` (a traffic-free capture with
+another car), `bad_classic_arm_style_surge`, `bad_learned_arm_no_style`,
+`bad_nonbenchmark_arm` (a human proxy as compared producer),
+`bad_arm_duplicate_producer` (one producer under two arm IDs),
+`bad_tactical_solo_evaluated` (no fixed context car),
+`bad_course_revision_drift` (scenario and record course revisions differ),
+`bad_duplicate_slot`, `bad_duplicate_record_id` and
+`bad_duplicate_unknown_path`.
 
 On 2026-11-27 the M0.9 integration pass removed a second, undeclared defect
 from `bad_exclusion_negative_count.json`: it still carried the pre-remediation
@@ -44,19 +77,35 @@ fixture's only defect is again the negative exclusion count.
   splits, contact rates and completed-test outcomes are M1/M4/M8 evidence, not
   fixture content. The validator rejects a measured or superseded record
   inside a fixture file outright, and a measured record (unit-test only) must
-  additionally retain the evidence BENCHMARKS promises: speed samples, the
-  car/loadout/assist hashes and four sector splits per clean lap.
+  additionally retain the evidence BENCHMARKS and TECHNICAL_DESIGN promise:
+  speed samples, the car/loadout/assist/track/handling hashes and four sector
+  splits per clean lap.
 * **No invented undetermined numbers.** Unratified revisions (handling,
-  calibration driver, line, course, producers, the cloning-only
+  calibration driver, line, course, producers, the cloning-only arm's
   `producer_revision`), the unrecorded platform, the unspecified warm-up lap
-  count and every result are JSON null with matching `unknowns` entries; the
-  validator rejects any null that is not explained and any explanation that
-  points at a determined value.
-* **No unpinned history.** The tactical fixture fixes the matched initial
-  states per participant and names its history source
-  (`initial_state.history`), so two scenarios with the same participants cannot
-  silently differ in history; a stored-snapshot history must name its
-  snapshot, and an authored command schedule must actually be present.
+  count, the track/handling hashes and every result are JSON null with
+  matching `unknowns` entries; the validator rejects any null that is not
+  explained and any explanation that points at a determined value.
+* **No unpinned history.** The tactical fixture fixes the evaluated slot's
+  matched initial state - the state every arm starts from - and names its
+  history source (`initial_state.history`), so two scenarios with the same
+  participants cannot silently differ in history; a stored-snapshot history
+  must name its snapshot, and an authored command schedule must actually be
+  present.
+* **No co-located compared cars.** The compared producers are arms, not
+  participants: each arm is a separate execution of the same scenario with the
+  same seed, initial state and history, and the validator rejects a second
+  evaluated participant, an evaluated slot carrying its own driver, and two
+  simultaneous participants sharing a pose. The matched state/history
+  semantics are unchanged - one authored initial state and one shared history
+  bind every arm.
+* **No fabricated safety evidence.** The `safety_interventions` telemetry
+  channel is reserved and required; it links to the intent contract's
+  `safety.interventions.ticks` and `safety.emergency` members, but no event
+  payload, intervention count or tick-level measurement is authored here. The
+  final emergency-kind vocabulary and per-intervention magnitude ownership
+  remain open until preregistration; see
+  [`../../schemas/scenario/README.md`](../../schemas/scenario/README.md).
 * **No fabricated laps even as negative examples.** The "planned record
   carrying results" and "measured record without results" rejections are
   demonstrated with a hash and a status change, not with invented lap times.
@@ -64,8 +113,8 @@ fixture's only defect is again the negative exclusion count.
   medal arithmetic) are exercised only inside the unit tests, with round
   arithmetic test data.
 * **No claim that AI exists.** The tactical fixture's Classic, cloning-only
-  and learned-policy participants are contract placeholders; the fixture
-  status is `example` and the producer revisions are null with unknowns.
+  and learned-policy arms are contract placeholders; the fixture status is
+  `example` and the producer revisions are null with unknowns.
 
 ## Running
 

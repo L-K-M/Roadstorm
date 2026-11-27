@@ -4,7 +4,7 @@
   "fixture_family": "reference_lap_capture",
   "title": "NEGATIVE fixture: the capture protocol omits the missed_gate rejection criterion",
   "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the capture protocol omits the missed_gate rejection criterion. Derived from a shipped positive fixture; everything except the named defect is valid.",
-  "revision": "1.0.0",
+  "revision": "1.2.0",
   "status": "provisional",
   "units": {
     "length": "m",
@@ -130,7 +130,9 @@
         "hashes": {
           "car_hash": null,
           "loadout_hash": null,
-          "assist_hash": null
+          "assist_hash": null,
+          "track_hash": null,
+          "handling_hash": null
         }
       },
       "seeds": {
@@ -366,9 +368,21 @@
       "reason": "1.05 x the measured flying-lap median; the median does not exist yet.",
       "blocking": true,
       "until": "M1.7"
+    },
+    {
+      "path": "reference_records.0.results.hashes.track_hash",
+      "reason": "The track content hash is computed once course content is authored (M2) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M2"
+    },
+    {
+      "path": "reference_records.0.results.hashes.handling_hash",
+      "reason": "The handling configuration hash is computed once handling is frozen (M1) and the measured record is captured (M1.7).",
+      "blocking": true,
+      "until": "M1"
     }
   ],
-  "content_hash": "sha256:0f258ebc3ed726b55dcbb338a0086385850c8070dfbe49bc9e2c029e26034f3c",
+  "content_hash": "sha256:2e04b2a256952773b18328f51faf0f4bf79e17c0469827231b329c22d037f7d2",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/TECHNICAL_DESIGN.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

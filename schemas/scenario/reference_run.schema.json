@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Roadstorm versioned benchmark reference record (reference run schema version 1)",
-  "description": "Machine-readable contract for a benchmark reference record, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'Handling fixtures', 'Numerical comparisons') and the ReferenceRun/Scenario row of docs/TECHNICAL_DESIGN.md 'Content contracts' (fixture and driver revisions, initial state/commands/history, seeds, car/loadout/assist/track/handling hashes, measured traces, eligibility and metric version). A reference record is the measured-evidence half of the benchmark contract: it names the CalibrationDriver and line revisions, the car/loadout/assist and course revisions, the engine/backend/handling revisions, the platform and the seeds it was captured against, fixes the capture protocol (five clean laps per kind after warm-up, rejecting runs with contacts, reset, missed gates, invalid progress or numerical errors), and retains the individual lap times, median, min/max, sector splits, speed samples and content hashes. Reference records are regenerated when those dependencies change. Recorded decision on the two cited documents: docs/TECHNICAL_DESIGN.md 'Content contracts' asks for 'car/loadout/assist/track/handling hashes' while docs/BENCHMARKS.md asks for 'engine/backend/handling/course revisions'; the two conflict, and this contract records the BENCHMARKS wording - car/loadout/assist hashes in results.hashes plus course and handling revisions - as the decision of record, flagged here for the documentation owner rather than silently picking one. Honesty rule: 'status' distinguishes a planned record (authored protocol and dependencies, no results) from a measured record (results captured by tooling) and a superseded one. At M0.9 no measurement exists, so only planned records are authored; the fixtures/scenario validator rejects measured or superseded records inside fixture files, and a planned record must carry no results. A JSON null means 'not yet determined' and MUST be paired with an entry in the enclosing fixture's 'unknowns' (see scenario_fixture.schema.json); an optional member that is absent means 'not applicable'. Provenance is recorded once by the enclosing fixture; a deployed measured record is a standalone evidence artifact that additionally carries its own capture-tool provenance. Companion vocabulary lives in ../common.schema.json; the authored-configuration half of this contract is scenario.schema.json.",
+  "description": "Machine-readable contract for a benchmark reference record, defined at M0.9 from docs/BENCHMARKS.md ('Reference driver and records', 'Handling fixtures', 'Numerical comparisons') and the ReferenceRun/Scenario row of docs/TECHNICAL_DESIGN.md 'Content contracts' (fixture and driver revisions, initial state/commands/history, seeds, car/loadout/assist/track/handling hashes, measured traces, eligibility and metric version). A reference record is the measured-evidence half of the benchmark contract: it names the CalibrationDriver and line revisions, the car/loadout/assist and course revisions, the engine/backend/handling revisions, the platform and the seeds it was captured against, fixes the capture protocol (five clean laps per kind after warm-up, rejecting runs with contacts, reset, missed gates, invalid progress or numerical errors), and retains the individual lap times, median, min/max, sector splits, speed samples and content hashes. Reference records are regenerated when those dependencies change. Recorded decision on the two cited documents: docs/TECHNICAL_DESIGN.md 'Content contracts' asks for 'car/loadout/assist/track/handling hashes' while docs/BENCHMARKS.md asks for 'engine/backend/handling/course revisions'. The two are complementary rather than conflicting, and this contract represents both: the revisions live in course and dependencies, and all five hashes - car, loadout, assist, track and handling - live in results.hashes, so neither document's requirement is dropped and a captured record identifies its content by hash as well as by revision. Honesty rule: 'status' distinguishes a planned record (authored protocol and dependencies, no results) from a measured record (results captured by tooling) and a superseded one. At M0.9 no measurement exists, so only planned records are authored; the fixtures/scenario validator rejects measured or superseded records inside fixture files, and a planned record must carry no results. A JSON null means 'not yet determined' and MUST be paired with an entry in the enclosing fixture's 'unknowns' (see scenario_fixture.schema.json); an optional member that is absent means 'not applicable'. Provenance is recorded once by the enclosing fixture; a deployed measured record is a standalone evidence artifact that additionally carries its own capture-tool provenance. Companion vocabulary lives in ../common.schema.json; the authored-configuration half of this contract is scenario.schema.json.",
   "schema_version": "1.0.0",
   "type": "object",
   "additionalProperties": false,
@@ -211,7 +211,13 @@
         "hashes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["car_hash", "loadout_hash", "assist_hash"],
+          "required": [
+            "car_hash",
+            "loadout_hash",
+            "assist_hash",
+            "track_hash",
+            "handling_hash"
+          ],
           "properties": {
             "car_hash": {
               "type": ["string", "null"],
@@ -227,9 +233,19 @@
               "type": ["string", "null"],
               "pattern": "^sha256:[0-9a-f]{64}$",
               "description": "Hash of the assist set captured. null in a planned record; a null requires a fixture unknowns entry."
+            },
+            "track_hash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "Hash of the track content captured - the authored centerline, width/bank/elevation, surfaces, barriers, ordered gates and sectors of docs/TECHNICAL_DESIGN.md's Track row (TECHNICAL_DESIGN 'Content contracts': car/loadout/assist/track/handling hashes). Retained together with course.course_revision, so the record identifies the track by both revision and content hash. null while course content is unratified (M2) and before capture tooling computes it; a null requires a fixture unknowns entry."
+            },
+            "handling_hash": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "Hash of the motor/car/surface handling configuration captured (TECHNICAL_DESIGN 'Content contracts': track/handling hashes), retained together with dependencies.handling_revision so the record identifies the handling by both revision and content hash. null until M1 freezes handling and capture tooling computes it; a null requires a fixture unknowns entry."
             }
           },
-          "description": "Car/loadout/assist hashes retained with the record (BENCHMARKS)."
+          "description": "Car/loadout/assist/track/handling hashes retained with the record (BENCHMARKS 'Reference driver and records' retains car/loadout/assist hashes; TECHNICAL_DESIGN 'Content contracts' additionally lists track and handling hashes; both requirements are represented here alongside the course and handling revisions)."
         }
       }
     },

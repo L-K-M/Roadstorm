@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "reference_records.0.results.hashes.track_hash",
+      "check": "null_unknown_pairing"
+    }
+  ]
+}

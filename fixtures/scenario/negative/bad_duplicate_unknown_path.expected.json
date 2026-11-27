@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.course.course_revision",
+      "check": "null_unknown_pairing"
+    }
+  ]
+}

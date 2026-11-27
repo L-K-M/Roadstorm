@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.comparison.arms.1.driver",
+      "check": "driver_revision_pinning"
+    }
+  ]
+}

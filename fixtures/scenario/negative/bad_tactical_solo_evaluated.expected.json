@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "scenario.participants",
+      "check": "tactical_context_required"
+    }
+  ]
+}
