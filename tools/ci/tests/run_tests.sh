@@ -766,32 +766,33 @@ else
 	log "note: git is not installed; the tracked-output sentinel cases were skipped"
 fi
 
-# Relative --out canonicalisation: the path must resolve against the caller's
-# directory (the workflow passes build/<name>) with ./ and ../ resolved, and an
-# absolute path must keep the spelling the caller used.
+# Relative/absolute --out canonicalisation: resolve against the caller's
+# directory with FILESYSTEM semantics (".." after a symlink follows the
+# target's parent), never lexical collapsing.
 ABS_CWD="$WORK_DIR/abs-cwd"
-mkdir -p "$ABS_CWD"
+mkdir -p "$ABS_CWD/build" "$ABS_CWD/pkg"
+_abs_base="$(cd "$ABS_CWD" && pwd -P)"
 CASES_RUN=$((CASES_RUN + 1))
 _abs_got="$(cd "$ABS_CWD" && ci_abs_path './build/../pkg/app.zip' 2>/dev/null)"
-if [ "$_abs_got" = "$ABS_CWD/pkg/app.zip" ]; then
+if [ "$_abs_got" = "$_abs_base/pkg/app.zip" ]; then
 	_ok=yes
 	CASES_OK=$((CASES_OK + 1))
 else
 	_ok=no
 fi
 log "case $CASES_RUN: a relative --out resolves against the caller and drops ./ and ../ -> $_ok"
-[ "$_ok" = "yes" ] || log "  expected '$ABS_CWD/pkg/app.zip', got '$_abs_got'" >&2
+[ "$_ok" = "yes" ] || log "  expected '$_abs_base/pkg/app.zip', got '$_abs_got'" >&2
 
 CASES_RUN=$((CASES_RUN + 1))
 _abs_got="$(cd "$ABS_CWD" && ci_abs_path 'deep/new/dir/app.zip' 2>/dev/null)"
-if [ "$_abs_got" = "$ABS_CWD/deep/new/dir/app.zip" ]; then
+if [ "$_abs_got" = "$_abs_base/deep/new/dir/app.zip" ]; then
 	_ok=yes
 	CASES_OK=$((CASES_OK + 1))
 else
 	_ok=no
 fi
 log "case $CASES_RUN: a relative --out through directories that do not exist yet is made absolute -> $_ok"
-[ "$_ok" = "yes" ] || log "  expected '$ABS_CWD/deep/new/dir/app.zip', got '$_abs_got'" >&2
+[ "$_ok" = "yes" ] || log "  expected '$_abs_base/deep/new/dir/app.zip', got '$_abs_got'" >&2
 
 ABS_REAL="$WORK_DIR/abs-real"
 ABS_LINK="$WORK_DIR/abs-link"
@@ -799,19 +800,80 @@ mkdir -p "$ABS_REAL"
 rm -f "$ABS_LINK"
 ln -s "$ABS_REAL" "$ABS_LINK" 2>/dev/null || true
 if [ -L "$ABS_LINK" ]; then
+	_abs_real="$(cd "$ABS_REAL" && pwd -P)"
 	CASES_RUN=$((CASES_RUN + 1))
 	_abs_got="$(cd "$ABS_CWD" && ci_abs_path "$ABS_LINK/file.zip" 2>/dev/null)"
-	if [ "$_abs_got" = "$ABS_LINK/file.zip" ]; then
+	if [ "$_abs_got" = "$_abs_real/file.zip" ]; then
 		_ok=yes
 		CASES_OK=$((CASES_OK + 1))
 	else
 		_ok=no
 	fi
-	log "case $CASES_RUN: an absolute --out keeps the caller's spelling through a symlinked parent -> $_ok"
-	[ "$_ok" = "yes" ] || log "  expected '$ABS_LINK/file.zip', got '$_abs_got'" >&2
+	log "case $CASES_RUN: an absolute --out through a symlinked parent follows filesystem semantics -> $_ok"
+	[ "$_ok" = "yes" ] || log "  expected '$_abs_real/file.zip', got '$_abs_got'" >&2
 else
 	log "note: symlinks are unavailable; the symlinked-parent --out case was skipped"
 fi
+
+# Sol recheck at 245ee1d: `via -> elsewhere/inner`, input `via/../package`
+# from `caller`. Opening that path reaches `elsewhere/package`; lexically
+# collapsing ".." wrote to `caller/package` instead.
+PATH_CALLER="$WORK_DIR/pathcaller"
+PATH_ELSE="$WORK_DIR/pathelsewhere"
+rm -rf "$PATH_CALLER" "$PATH_ELSE"
+mkdir -p "$PATH_CALLER" "$PATH_ELSE/inner"
+ln -s "$PATH_ELSE/inner" "$PATH_CALLER/via" 2>/dev/null || true
+if [ -L "$PATH_CALLER/via" ]; then
+	_else_base="$(cd "$PATH_ELSE" && pwd -P)"
+	CASES_RUN=$((CASES_RUN + 1))
+	_abs_got="$(cd "$PATH_CALLER" && ci_abs_path 'via/../package.zip' 2>/dev/null)"
+	if [ "$_abs_got" = "$_else_base/package.zip" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: '..' after a symlinked component follows the target's parent (Sol 245ee1d) -> $_ok"
+	[ "$_ok" = "yes" ] || log "  expected '$_else_base/package.zip', got '$_abs_got'" >&2
+else
+	log "note: symlinks are unavailable; the symlink+parent-traversal case was skipped"
+fi
+
+# Preset slugs name per-preset logs/reports without spaces or slashes.
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$(ci_preset_slug 'macOS Apple Silicon')" = "macos-apple-silicon" ] &&
+	[ "$(ci_preset_slug 'Windows x86-64')" = "windows-x86-64" ] &&
+	[ "$(ci_preset_slug 'Linux x86-64')" = "linux-x86-64" ] &&
+	[ "$(ci_preset_slug 'A/B C')" = "a-b-c" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: preset names map to safe distinct log/report slugs -> $_ok"
+
+# The scratch project copy must not inherit a previously built ./build tree
+# (F2): earlier presets' packages would otherwise land in later presets'
+# inputs and in tools/ci/out/project-copy, bloating the upload.
+COPY_SRC="$WORK_DIR/copy-src"
+COPY_DST="$WORK_DIR/copy-dst"
+rm -rf "$COPY_SRC" "$COPY_DST"
+mkdir -p "$COPY_SRC/build" "$COPY_SRC/assets"
+printf 'config_version=5\n' >"$COPY_SRC/project.godot"
+printf 'stale package\n' >"$COPY_SRC/build/stale-package.bin"
+printf 'shipped asset\n' >"$COPY_SRC/assets/keep.txt"
+CI_OUT_REL_PATTERN=""
+ci_copy_project "$COPY_SRC" "$COPY_DST"
+CASES_RUN=$((CASES_RUN + 1))
+if [ -f "$COPY_DST/project.godot" ] &&
+	[ -f "$COPY_DST/assets/keep.txt" ] &&
+	[ ! -e "$COPY_DST/build/stale-package.bin" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the scratch copy excludes ./build but preserves project resources -> $_ok"
 
 # ---------------------------------------------------------------------------
 # 10. The export-preset platform mapping and coverage.
@@ -1163,20 +1225,21 @@ if [ "$_e2e" = "yes" ]; then
 		printf 'config_version=5\n\n'
 		printf '[application]\n\n'
 		printf 'config/name="synthetic export project"\n'
-		printf 'run/main_scene="res://main.tscn"\n'
+		printf 'run/main_scene="res://scenes/boot.tscn"\n'
 		# macOS universal/arm64 exports require ETC2 ASTC import support; without
 		# this setting the engine refuses the preset before any path is written.
 		printf '\n[rendering]\n\n'
 		printf 'textures/vram_compression/import_etc2_astc=true\n'
 	} >"$SPROJ/project.godot"
-	printf 'extends Node\n\nfunc _ready() -> void:\n\tprint("synthetic export project ready")\n' \
-		>"$SPROJ/main.gd"
-	{
-		printf '[gd_scene load_steps=2 format=3]\n\n'
-		printf '[ext_resource type="Script" path="res://main.gd" id="1"]\n\n'
-		printf '[node name="Main" type="Node"]\n'
-		printf 'script = ExtResource("1")\n'
-	} >"$SPROJ/main.tscn"
+	# The committed pack-inventory policy (E4) requires the three boot scenes
+	# and scripts, plus .godot/exported and remap/gdc entries, so the synthetic
+	# project mirrors that minimal runtime shape instead of an arbitrary file.
+	mkdir -p "$SPROJ/scenes" "$SPROJ/src/boot"
+	for _fx in boot game main_menu; do
+		printf 'extends Node\n' >"$SPROJ/src/boot/$_fx.gd"
+		printf '[gd_scene load_steps=2 format=3]\n\n[ext_resource type="Script" path="res://src/boot/%s.gd" id="1"]\n\n[node name="%s" type="Node"]\nscript = ExtResource("1")\n' \
+			"$_fx" "$_fx" >"$SPROJ/scenes/$_fx.tscn"
+	done
 
 	# The engine's own template directory, under an isolated HOME.
 	SANDBOX_HOME="$WORK_DIR/sandbox-home"
@@ -1814,6 +1877,27 @@ else
 fi
 log "case $CASES_RUN: the export job installs via install-templates, not a version-directory search -> $_ok"
 
+# The export-logs artifact must be scoped to actual evidence. Uploading all of
+# tools/ci/out/ carried the scratch project copy (~100 MB with earlier preset
+# packages) into the artifact (Sol/Opus F2).
+CASES_RUN=$((CASES_RUN + 1))
+_up_block=""
+if [ -f "$WORKFLOW" ]; then
+	_up_block="$(awk '/name: Upload export logs and reports/{f=1} f{print} f && /name: Upload built packages/{exit}' "$WORKFLOW")"
+fi
+if [ -n "$_up_block" ] &&
+	printf '%s\n' "$_up_block" | grep -q 'tools/ci/out/logs/' &&
+	printf '%s\n' "$_up_block" | grep -q 'tools/ci/out/reports/' &&
+	! printf '%s\n' "$_up_block" | grep -q 'path:[[:space:]]*tools/ci/out/[[:space:]]*$' &&
+	! printf '%s\n' "$_up_block" | grep -q 'project-copy'; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the export-logs artifact uploads only logs/ and reports/, not the scratch copy -> $_ok"
+[ "$_ok" = "yes" ] || printf '%s\n' "$_up_block" | sed 's/^/  | /' >&2
+
 if command -v actionlint >/dev/null 2>&1; then
 	expect_case "actionlint accepts the committed workflow" 0 actionlint "$WORKFLOW"
 else
@@ -1853,13 +1937,16 @@ if [ "$_e2e" = "yes" ]; then
 		cp "$REAL_CFG" "$SPROJ/export_presets.cfg"
 		PKG="$WORK_DIR/pkg"
 		mkdir -p "$PKG"
+		# ci_abs_path resolves existing prefixes physically, so the report names
+		# the real path even when TMPDIR itself is a symlink (macOS /var).
+		_pkg_dir="$(cd "$PKG" && pwd -P)"
 		expect_case "export builds the Linux preset with the pinned templates" 0 \
 			ci_at_home "$REALHOME" "$SPROJ" export --export "Linux x86-64" --out "$PKG/linux"
 		# The report the run wrote must carry the sidecar's path and digest: the
 		# main Linux binary is the pinned stock template, so its digest alone
 		# says nothing about the game content that was packaged.
 		expect_contains "export reports the sidecar .pck path and digest (E3)" 0 \
-			"pck=$PKG/linux.pck" grep -h "export result=pass" \
+			"pck=$_pkg_dir/linux.pck" grep -h "export result=pass" \
 			"$SPROJ/tools/ci/out/reports/"export-*.txt
 		CASES_RUN=$((CASES_RUN + 1))
 		if [ -s "$PKG/linux.pck" ] &&
@@ -1905,11 +1992,87 @@ if [ "$_e2e" = "yes" ]; then
 			_ok=no
 		fi
 		log "case $CASES_RUN: preset '$_rp_name' did NOT write into the scratch project copy -> $_ok"
+
+		# F1: per-preset engine logs must survive, not be overwritten by the
+		# next invocation's identical export-2-export.log name.
+		_rp_slug="$(ci_preset_slug "$_rp_name")"
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ -s "$SPROJ/tools/ci/out/logs/export-${_rp_slug}-2-export.log" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: preset '$_rp_name' kept its own engine export log -> $_ok"
+
+		# F3: ci.sh runs the pack inventory on every built package and leaves a
+		# report under reports/ for the narrowed upload.
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ -s "$SPROJ/tools/ci/out/reports/export-package-inventory-${_rp_slug}.txt" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: preset '$_rp_name' produced a package inventory report -> $_ok"
+
+		# The per-run report must carry the same preset slug as the logs.
+		_rp_report_found=no
+		for _rp_f in "$SPROJ/tools/ci/out/reports/export-${_rp_slug}"-*.txt; do
+			if [ -s "$_rp_f" ]; then
+				_rp_report_found=yes
+				break
+			fi
+		done
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_rp_report_found" = "yes" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+			fi
+		log "case $CASES_RUN: preset '$_rp_name' kept its own named run report -> $_ok"
 	done <<EOF
 macOS Apple Silicon|zip
 Windows x86-64|exe
 Linux x86-64|
 EOF
+
+	# End-to-end Sol 245ee1d reproduction: `via -> elsewhere/inner` and a
+	# caller-relative --out of `via/../package`. Filesystem semantics put the
+	# package in elsewhere/, not beside the symlink.
+	SYM_CWD="$WORK_DIR/symcwd"
+	SYM_ELSE="$WORK_DIR/symelsewhere"
+	rm -rf "$SYM_CWD" "$SYM_ELSE"
+	mkdir -p "$SYM_CWD" "$SYM_ELSE/inner"
+	ln -s "$SYM_ELSE/inner" "$SYM_CWD/via"
+	if [ -L "$SYM_CWD/via" ]; then
+		expect_case "a symlink+'..' --out exports at the filesystem-resolved path" 0 \
+			ci_rel_at_home "$SYM_CWD" "$REALHOME" "$SPROJ" export --export "Linux x86-64" --out "via/../package"
+		_sym_else_real="$(cd "$SYM_ELSE" && pwd -P)"
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ -s "$_sym_else_real/package" ] && [ ! -e "$SYM_CWD/package" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: the exported package is at the resolved target parent, not the symlink parent -> $_ok"
+		[ "$_ok" = "yes" ] || log "  expected '$_sym_else_real/package', found no such file or found '$SYM_CWD/package'" >&2
+	else
+		log "note: symlinks are unavailable; the end-to-end symlink+'..' export case was skipped"
+	fi
+
+	# All three presets ran in separate processes; their export logs must all
+	# still exist with distinct names.
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$(ls -1 "$SPROJ/tools/ci/out/logs/"export-*-2-export.log 2>/dev/null | wc -l | tr -d ' ')" = "3" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: all three preset export logs survived with distinct names -> $_ok"
 	else
 		log "note: the pinned export templates are not installed on this host; the sidecar .pck export case was skipped"
 	fi

@@ -630,14 +630,20 @@ ci_copy_project() {
 		_excludes="--exclude=$CI_OUT_REL_PATTERN"
 	fi
 
+	# ./build is CI export output (root .gitignore ignores /build/), not a
+	# project resource. Excluding it keeps earlier presets' packages out of
+	# later presets' scratch copies: without this, the Windows copy carries the
+	# macOS zip and the Linux copy carries both, so each preset's input tree
+	# depends on build order and tools/ci/out/project-copy bloats with packages.
+	#
 	# tar with --exclude works with both bsdtar (macOS) and GNU tar (Linux).
-	if tar -cf - -C "$_src" --exclude=./.git --exclude=./.godot --exclude=./work $_excludes . 2>/dev/null |
+	if tar -cf - -C "$_src" --exclude=./.git --exclude=./.godot --exclude=./work --exclude=./build $_excludes . 2>/dev/null |
 		(cd "$_dst" && tar -xf - 2>/dev/null); then
 		:
 	else
 		ci_warn "tar copy failed; falling back to cp -R"
 		cp -R "$_src/." "$_dst/" 2>/dev/null || ci_die "cannot copy project to $_dst"
-		rm -rf "$_dst/.git" "$_dst/.godot" "$_dst/work" 2>/dev/null
+		rm -rf "$_dst/.git" "$_dst/.godot" "$_dst/work" "$_dst/build" 2>/dev/null
 	fi
 
 	if [ ! -f "$_dst/project.godot" ]; then
@@ -1156,15 +1162,30 @@ ci_tracked_output_paths() {
 	return 0
 }
 
+# ci_preset_slug <preset-name> : lowercase, dash-separated token safe for log
+# and report file names.
+ci_preset_slug() {
+	printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]-' '-' | tr -s '-'
+}
+
 # ci_abs_path <path> : prints <path> made absolute against the current working
-# directory, with ".", ".." and repeated separators resolved. The shell's own
-# logical $PWD is used for a relative input, so the path the caller actually
-# spelled is preserved rather than rewritten through a symlinked TMPDIR; an
-# absolute input is kept as written. What matters for correctness is that the
-# result is ABSOLUTE before Godot sees it: Godot resolves a relative export path
-# against --path (the scratch project), which is exactly the hosted-run defect
-# where the package landed under tools/ci/out/project-copy and the wrapper
-# reported "export produced no output". Returns 1 on an empty argument.
+# directory and resolved with FILESYSTEM semantics: a ".." following a
+# symlinked component follows the target's parent, exactly as opening the
+# caller's path would. Lexically collapsing ".." first is wrong --
+# `caller/via/../package` with `via -> elsewhere/inner` reaches
+# `elsewhere/package`, not `caller/package` (reproduced by Sol at 245ee1d).
+# Even `cd` cannot be used on the whole path for this: shells apply ".."
+# logically to the textual prefix, which reproduces the same error. Each
+# component is therefore resolved step by step: symlinks are followed by the
+# kernel, and ".." moves up from the PHYSICAL parent. The first component that
+# does not exist (and everything after it) is appended unchanged, which is the
+# best available answer for a path that cannot exist yet.
+#
+# A relative export --out must be canonicalised against the CALLER's directory
+# before Godot sees it: Godot resolves a relative export path against --path
+# (the scratch project), which is the hosted-run defect where the package
+# landed in tools/ci/out/project-copy and the wrapper reported "export produced
+# no output". Returns 1 on an empty argument.
 ci_abs_path() {
 	_cap_in="$1"
 	[ -n "$_cap_in" ] || return 1
@@ -1172,16 +1193,52 @@ ci_abs_path() {
 		/*) : ;;
 		*) _cap_in="${PWD:-$(pwd)}/$_cap_in" ;;
 	esac
-	printf '%s\n' "$_cap_in" | awk '
+	# Remove "." and duplicate separators ONLY. ".." must stay: whether it
+	# cancels the previous component depends on whether that component is a
+	# symlink, which only stepwise filesystem resolution can honour.
+	_cap_comps="$(printf '%s\n' "$_cap_in" | awk '
 		BEGIN { RS = "/" }
 		$0 == "" || $0 == "." { next }
-		$0 == ".." { if (n > 0) n--; next }
-		{ part[++n] = $0 }
-		END {
-			if (n == 0) { print "/"; exit }
-			out = ""
-			for (i = 1; i <= n; i++) out = out "/" part[i]
-			print out
-		}
-	'
+		{ print }
+	')"
+	_cap_cur="/"
+	_cap_tail=""
+	_cap_missing=0
+	while IFS= read -r _cap_comp; do
+		[ -n "$_cap_comp" ] || continue
+		if [ "$_cap_missing" -eq 1 ]; then
+			_cap_tail="$_cap_tail/$_cap_comp"
+			continue
+		fi
+		if [ "$_cap_comp" = ".." ]; then
+			_cap_cur="${_cap_cur%/*}"
+			[ -n "$_cap_cur" ] || _cap_cur="/"
+			continue
+		fi
+		case "$_cap_cur" in
+			/) _cap_next="/$_cap_comp" ;;
+			*) _cap_next="$_cap_cur/$_cap_comp" ;;
+		esac
+		if [ -d "$_cap_next" ]; then
+			_cap_resolved="$(cd "$_cap_next" 2>/dev/null && { pwd -P 2>/dev/null || pwd; })" || {
+				_cap_tail="$_cap_comp"
+				_cap_missing=1
+				continue
+			}
+			_cap_cur="$_cap_resolved"
+		else
+			_cap_tail="$_cap_comp"
+			_cap_missing=1
+		fi
+	done <<EOF
+$_cap_comps
+EOF
+	if [ -n "$_cap_tail" ]; then
+		case "$_cap_cur" in
+			/) _cap_cur="/$_cap_tail" ;;
+			*/) _cap_cur="${_cap_cur}${_cap_tail}" ;;
+			*) _cap_cur="$_cap_cur/$_cap_tail" ;;
+		esac
+	fi
+	printf '%s\n' "$_cap_cur"
 }

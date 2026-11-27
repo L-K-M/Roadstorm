@@ -928,14 +928,22 @@ ci_tooling_selfcheck() {
 	# the whole directory or every dotfile would defeat the check.
 	if [ -n "$CI_OUT_REL_PATH" ] && command -v git >/dev/null 2>&1 &&
 		{ [ -d "$CI_PROJECT/.git" ] || [ -f "$CI_PROJECT/.git" ]; }; then
-		_tracked_list="$(ci_tracked_output_paths "$CI_PROJECT" "$CI_OUT_REL_PATH")"
-		_tracked="$(printf '%s\n' "$_tracked_list" | ci_count_lines)"
-		if [ "$_tracked" = "0" ]; then
-			ci_ok "no tracked build output under $CI_OUT_REL_PATH (its own .gitignore sentinel is the intended exception)"
-		else
-			ci_fail "$_tracked tracked file(s) under $CI_OUT_REL_PATH - build output must not be committed:"
-			printf '%s\n' "$_tracked_list" | sed 's/^/    /'
+		# Fail closed: if Git cannot read this index (for example a
+		# "dubious ownership" refusal on a persistent runner), the check must
+		# not report an empty path list as clean.
+		if ! (cd "$CI_PROJECT" && git rev-parse --git-dir >/dev/null 2>&1); then
+			ci_fail "tracked-output check: Git cannot read this repository index (dubious ownership or broken .git); refusing to report it clean"
 			_self_rc="$CI_FAIL"
+		else
+			_tracked_list="$(ci_tracked_output_paths "$CI_PROJECT" "$CI_OUT_REL_PATH")"
+			_tracked="$(printf '%s\n' "$_tracked_list" | ci_count_lines)"
+			if [ "$_tracked" = "0" ]; then
+				ci_ok "no tracked build output under $CI_OUT_REL_PATH (its own .gitignore sentinel is the intended exception)"
+			else
+				ci_fail "$_tracked tracked file(s) under $CI_OUT_REL_PATH - build output must not be committed:"
+				printf '%s\n' "$_tracked_list" | sed 's/^/    /'
+				_self_rc="$CI_FAIL"
+			fi
 		fi
 	fi
 	# The deliberate-failure probe must exist; test depends on it.
@@ -958,7 +966,11 @@ ci_tooling_selftest() {
 		ci_fail "missing tooling self-test: $(ci_relpath "$_runner")"
 		return "$CI_FAIL"
 	fi
-	_out="$(PROJECT_DIR="$CI_PROJECT" TOOLS_CI_DIR="$CI_TOOLS_DIR" sh "$_runner" 2>&1)"
+	# Forward GODOT_BIN so the suite uses the same editor this command already
+	# resolved (on CI that is the digest-verified downloaded binary). Without it
+	# the hosted self-test cannot discover an engine and silently skips every
+	# engine-backed export --check case even though the runner has one.
+	_out="$(PROJECT_DIR="$CI_PROJECT" TOOLS_CI_DIR="$CI_TOOLS_DIR" GODOT_BIN="$GODOT_BIN" sh "$_runner" 2>&1)"
 	_status=$?
 	# Failures, notes and the summary line; the passing case lines stay in the
 	# self-test's own output so `validate` remains readable.
@@ -1781,10 +1793,10 @@ ci_export_build() {
 	# Canonicalise --out against the CALLER's directory BEFORE invoking the
 	# engine. Godot resolves a relative export path against --path (the scratch
 	# project), so a relative --out silently lands in tools/ci/out/project-copy/
-	# while this wrapper looks for it in the caller's directory -- reproduced as
-	# exit 0 followed by "export produced no output" for all three presets in
-	# hosted run 45921573623. The shell's logical $PWD is used, so the path the
-	# caller spelled stays the path reported and uploaded.
+	# while this wrapper looks for it in the caller's directory -- reproduced
+	# locally for all three presets as exit 0 followed by "export produced no
+	# output". ci_abs_path resolves the result with filesystem semantics, so a
+	# ".." after a symlink follows the target's parent as the OS would.
 	case "$_out" in
 		/*) : ;;
 		*) _out="${PWD:-$(pwd)}/$_out" ;;
@@ -1801,6 +1813,26 @@ ci_export_build() {
 		ci_fail "export --export: preset '$_preset' is not declared in export_presets.cfg"
 		ci_note "declared presets: $(ci_export_list names | tr '\n' ' ')"
 		return "$CI_FAIL"
+	fi
+
+	# Give this invocation preset-specific log/report names. Each ci.sh process
+	# starts CI_LOG_SEQ at 0, so without this every preset overwrites the
+	# previous preset's export-2-export.log and the evidence for earlier presets
+	# disappears from the uploaded logs.
+	_slug="$(ci_preset_slug "$_preset")"
+	[ -n "$_slug" ] || _slug="preset"
+	CI_RUN_NAME="export-$_slug"
+	# ci_init_report ran before dispatch and therefore used the generic command
+	# name. Give the already-written report the same preset-specific name as the
+	# logs so two presets can never share an evidence file.
+	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ]; then
+		_report_file="${CI_REPORT##*/}"
+		_report_stamp="${_report_file#export-}"
+		_report_stamp="${_report_stamp%.txt}"
+		_new_report="$CI_OUT/reports/export-${_slug}-${_report_stamp}.txt"
+		if [ "$_new_report" != "$CI_REPORT" ]; then
+			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
+	fi
 	fi
 
 	ci_prepared_copy || return "$CI_FAIL"
@@ -1876,6 +1908,53 @@ ci_export_build() {
 		ci_ok "export: PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
 		ci_report "export result=pass preset=$_preset mode=$_mode output=$_out bytes=$_size sha256=$_sha embed_pck=${_embed:-not-declared} sidecar_pck=absent"
 	fi
+
+	# Re-read the produced package with the project's own pack inventory
+	# (tools/export_smoke/lib/pack_inventory.py): it verifies the .pck parses,
+	# every pack entry's MD-5 matches its bytes, no excluded development-only
+	# path reappeared and every required runtime resource is present. This makes
+	# E4 an actual check on packages CI uploads, not only on export-smoke runs.
+	# --snapshot is deliberately omitted: CI exports the clean checkout, while
+	# byte-for-byte source comparison belongs to the frozen export-smoke
+	# candidate. The report goes under $CI_OUT/reports, which the narrowed
+	# export-logs artifact uploads.
+	_inv_plat=""
+	_inv_platform_line="$(ci_preset_table "$_cfg" 2>/dev/null | awk -F'\t' -v n="$_preset" '$2 == n { print $3; exit }')"
+	case "$_inv_platform_line" in
+		macOS) _inv_plat=macOS ;;
+		"Windows Desktop") _inv_plat=Windows ;;
+		Linux) _inv_plat=Linux ;;
+	esac
+	_inv_script="$CI_TOOLS_DIR/../export_smoke/lib/pack_inventory.py"
+	[ -f "$_inv_script" ] || _inv_script="$CI_PROJECT/tools/export_smoke/lib/pack_inventory.py"
+	if [ -z "$_inv_plat" ]; then
+		ci_fail "export: cannot map preset '$_preset' to a pack-inventory platform"
+		ci_report "export result=fail preset=$_preset reason=unknown-inventory-platform"
+		return "$CI_FAIL"
+	fi
+	if [ ! -f "$_inv_script" ]; then
+		ci_fail "export: package inventory tool is missing: $_inv_script (cannot verify the package contents)"
+		ci_report "export result=fail preset=$_preset reason=inventory-tool-missing"
+		return "$CI_FAIL"
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		ci_fail "export: python3 is required to run the package inventory check ($_inv_script)"
+		ci_report "export result=fail preset=$_preset reason=no-python3"
+		return "$CI_FAIL"
+	fi
+	_inv_report="$CI_OUT/reports/export-package-inventory-${_slug}.txt"
+	mkdir -p "$(dirname "$_inv_report")" 2>/dev/null || ci_die "cannot create report directory for $_inv_report"
+	_inv_out="$(python3 "$_inv_script" check --platform "$_inv_plat" --main "$_out" --report "$_inv_report" --quiet 2>&1)"
+	_inv_rc=$?
+	if [ "$_inv_rc" -ne 0 ]; then
+		ci_fail "export: package inventory check FAILED for preset '$_preset' ($_inv_plat); report: $_inv_report"
+		printf '%s\n' "$_inv_out" | sed 's/^/    /'
+		ci_report "export result=fail preset=$_preset reason=pack-inventory"
+		return "$CI_FAIL"
+	fi
+	ci_ok "export: package inventory passed ($_inv_plat; report $_inv_report)"
+	ci_report "export pack_inventory=pass platform=$_inv_plat report=$_inv_report"
+
 	ci_note "This is a locally built package, not a verified release: launching it on the target OS (PLAN.md M9.2) and signing/notarization (M9.3) are separate steps."
 	return "$CI_OK"
 }

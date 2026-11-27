@@ -134,13 +134,15 @@ jobs:
           tools/ci/scripts/runtime_error_gate.sh
 
       # Warning watch. Every WARNING line the checks printed is written to the
-      # run summary -- printed, never filtered -- and a warning that names the
-      # physics backend fails the job: the pinned engine emits exactly five Jolt
-      # warnings and every one means contacts were ignored or a slower allocator
-      # was used, so a run that printed one must not be reported as a clean pass
-      # (the open R7 item is the job-system one). Warnings that do not name Jolt
-      # are reported, not fatal; the ones the project has accepted live in
-      # tools/ci/warnings.allow and are labelled as accepted.
+      # run summary -- printed, never filtered -- and a warning matching one of
+      # the five known Jolt physics warning shapes fails the job: every one
+      # means contacts were ignored or a slower allocator was used, so a run that
+      # printed one must not be reported as a clean pass (the open R7 item is the
+      # job-system one). Other warnings are reported, not fatal -- including a
+      # warning that merely mentions "jolt" without being one of those shapes,
+      # such as the nested-project path res://tools/jolt_inventory. The ones the
+      # project has accepted live in tools/ci/warnings.allow and are labelled as
+      # accepted.
       #
       # `if: always()` (Sol recheck finding 5, Opus recheck W1): the step used to
       # run under the default success condition, so the Test step that failed on
@@ -360,16 +362,20 @@ jobs:
 
       # Export failures are only actionable with the engine log. Godot's export
       # configuration errors are multi-line and indented, so a filtered view of
-      # anchored ERROR lines alone hid the reason from hosted run 45921573623;
-      # ci.sh now prints the full captured log, and this upload preserves it when
-      # the job is read later. tools/ci/out/ also holds the per-run report that
-      # records the preset, exit status and output paths.
+      # anchored ERROR lines alone hid the reason; ci.sh now prints the full
+      # captured log, and this upload preserves it when the job is read later.
+      # Only logs/ and reports/ are uploaded: tools/ci/out/project-copy/ is a
+      # scratch copy of the project (~100 MB with earlier packages) and is not
+      # evidence. Reports include the per-preset pack-inventory report written
+      # by ci.sh export.
       - name: Upload export logs and reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: export-logs
-          path: tools/ci/out/
+          path: |
+            tools/ci/out/logs/
+            tools/ci/out/reports/
           if-no-files-found: warn
           retention-days: 14
 

@@ -82,6 +82,12 @@ project, so:
 - `--in-place` opts out and runs the engine against the project itself. It
   warns, because it writes `.godot/`.
 
+The copy excludes `.git/`, `.godot/`, `work/` and `./build/` (root CI export
+output). Excluding `./build/` matters when several presets are built in one job:
+without it each preset's scratch input would contain the packages built for
+earlier presets, and `tools/ci/out/project-copy/` would carry them into every
+upload of that directory.
+
 The copy is refreshed whenever the tooling itself changes (content fingerprint),
 so `--reuse-copy` cannot run a stale copy of these scripts. The tooling is also
 overlaid into the copy, so a project snapshot that carries an older or missing
@@ -108,7 +114,7 @@ path there still fails.
 | `capture --target <res://…> [--frames N] [--fps F] [--resolution WxH] [--name N]` | Deterministic AVI capture of one scene at a requested resolution. | the target does not exist, there is no display, an argument is malformed, the capture fails, or the recorded resolution differs from the requested one. |
 | `export --check` | Export preparation: pin, installed export templates for the three required platforms, and `export_presets.cfg` coverage. | templates are missing, or presets are missing/incomplete. |
 | `export --list-presets [names]` | Lists the declared export presets (`preset.N`, name, platform). | there is no `export_presets.cfg`. |
-| `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. A relative `--out` is resolved against the caller's working directory (not Godot's `--path` scratch copy) before the engine sees it. On failure the full captured engine log is printed, because Godot's configuration-error reasons are multi-line and indented. | presets are missing, the preset is unknown, the export fails, or no file is produced. |
+| `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. A relative `--out` is resolved against the caller's working directory (not Godot's `--path` scratch copy) before the engine sees it, using filesystem semantics (`..` after a symlink follows the target's parent). Each preset gets its own `export-<slug>-N-*.log` names and report, then `tools/export_smoke/lib/pack_inventory.py check` re-reads the produced package. On failure the full captured engine log is printed, because Godot's configuration-error reasons are multi-line and indented. | presets are missing, the preset is unknown, the export fails, no file is produced, the pack-inventory check fails, or python3/the inventory tool is unavailable. |
 | `verify-engine --archive <file> [--binary <file>]` | Compares a downloaded release archive, and optionally the extracted editor binary, against the pinned publisher digest in `pin/engine.txt`. Resolves no engine, so it also runs on a host with none installed. | a digest does not match, a pinned digest is missing, or the file cannot be read (exit 1, before anything is extracted or executed). |
 | `install-templates --archive <file> --dest <dir> [--mode release\|debug]` | Verifies the export-template archive against the pinned publisher digest BEFORE extraction, locates its payload by `version.txt` (the official `.tpz` packages `templates/*` at the archive root, not a `<version>.stable/` directory), validates that version, checks the staged tree against this project's presets, and only then installs it as `<dir>/<version>.stable`. Refuses to replace an existing target directory rather than deleting an installed template tree; remove it explicitly to reinstall. Resolves no engine. | the digest does not match, `<dir>/<version>.stable` already exists, `version.txt` is missing or names another version, the required template files are absent/empty, or the destination cannot be written. Nothing is placed in or removed from `<dir>` on failure. |
 | `pin [--field <name>]` | Prints the pinned engine facts (tag, version, official URLs, pinned digests) as `key=value` lines. One source of truth for the workflow. | a requested digest field is not recorded. |
@@ -159,6 +165,14 @@ never reported as a pass.
    the private temporary directory rather than reading the checkout's index.
    Both directions are covered, so a check that stops checking fails the suite
    instead of passing silently.
+
+   Hosted coverage: `ci_tooling_selftest` forwards `GODOT_BIN`, so the runner's
+   digest-verified editor is used and the engine-backed `export --check` cases
+   run there. Cases that need real installed templates (sidecar `.pck`,
+   relative-path and symlink traversal exports) only run where those templates
+   exist -- on CI that is the export job after its verified installation.
+   `actionlint` and `ffmpeg` are not installed on the runner, so the workflow
+   lint case and the positive capture probe skip; both run locally.
 5. **Content-contract inventory** (`contracts.list`): reports which planned
    content paths exist. This is an **inventory, not validation** — content
    validation (T09/T15) is not implemented and is not claimed. Entries marked
