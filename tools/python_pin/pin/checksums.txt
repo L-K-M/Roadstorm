@@ -8,7 +8,11 @@
 #
 # The interpreter whose version matches the pin (3.15.2) is the Homebrew
 # build. The official python.org artifact for 3.15.2 is a different file with
-# a different digest (published in pin/python.txt, not verified here).
+# a different digest (published in pin/python.txt). Publisher artifact bytes
+# were separately authenticated on 2026-11-27 (digest + Sigstore); that says
+# nothing about this installed build, which is NOT publisher-authenticated.
+# Homebrew channel/signature issues remain open; see
+# docs/PYTHON_TOOLCHAIN.md.
 #
 # An empty field means "not recorded"; tools/python_pin/verify.sh reports
 # those as NOT RECORDED and never treats them as verified.

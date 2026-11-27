@@ -20,6 +20,11 @@
 #     python.org's Sigstore procedure (artifact + .sigstore bundle + signer
 #     identity hugo@python.org via the GitHub OIDC issuer), which this script
 #     does not perform.
+#   * RECORDED EVIDENCE: pin/python.txt carries narrowly scoped, dated statuses
+#     for publisher artifact bytes (digest match and Sigstore verification
+#     performed by the independent job recorded in
+#     docs/PYTHON_TOOLCHAIN_EVIDENCE.md). This script REPORTS those records;
+#     it does not repeat them and they never describe an installed binary.
 #   * It downloads nothing, installs nothing and never touches a global
 #     Python installation.
 #
@@ -122,7 +127,17 @@ load_pin() {
 	PIN_MINOR="$(pin_get minor)"
 	PIN_PATCH="$(pin_get patch)"
 	PIN_RELEASE_PAGE="$(pin_get release_page)"
-	PIN_UPSTREAM_VERIFIED="$(pin_get upstream_verified)"
+	PIN_PUB_DIGEST_DATE="$(pin_get publisher_digest_match_date)"
+	PIN_PUB_DIGEST_RESULT="$(pin_get publisher_digest_match_result)"
+	PIN_PUB_SIGSTORE_DATE="$(pin_get publisher_sigstore_date)"
+	PIN_PUB_SIGSTORE_RESULT="$(pin_get publisher_sigstore_result)"
+	PIN_SIGSTORE_VERIFIER="$(pin_get sigstore_verifier)"
+	PIN_VERIFICATION_RECORD="$(pin_get verification_record)"
+	PIN_SIGSTORE_EMAIL="$(pin_get sigstore_signer_email)"
+	PIN_SIGSTORE_ISSUER="$(pin_get sigstore_oidc_issuer)"
+	PIN_SIGSTORE_DOC="$(pin_get sigstore_doc)"
+	PIN_INSTALLED_AUTH="$(pin_get installed_interpreter_publisher_authenticated)"
+	PIN_HOMEBREW_VERIFIED="$(pin_get homebrew_channel_fully_verified)"
 
 	[ -n "$PIN_VERSION" ] || die "pin file has no version: $PIN_FILE"
 	case "$PIN_VERSION" in
@@ -228,6 +243,7 @@ check_interpreter_digest() {
 		bad "interpreter sha256 changed: observed $_observed, recorded $_expected (a local build changed; this is not an upstream verification)"
 	fi
 	info "interpreter sha256: $_observed"
+	info "  provenance: LOCAL observation only; not publisher-authenticated"
 }
 
 # --- Official artifact check (--archive) ------------------------------------
@@ -242,10 +258,12 @@ check_archive() {
 	_name="${_path##*/}"
 	_expected=""
 	_url=""
+	_role=""
 	for _key in macos_pkg windows_amd64_exe source_tarxz source_tgzz; do
 		if [ "$(pin_get "${_key}_file")" = "$_name" ]; then
 			_expected="$(pin_get "${_key}_sha256")"
 			_url="$(pin_get "${_key}_url")"
+			_role="$(pin_get "${_key}_role")"
 		fi
 	done
 	if [ -z "$_expected" ]; then
@@ -258,6 +276,7 @@ check_archive() {
 	fi
 	info "archive: $_path"
 	info "  official source: ${_url:-unknown}"
+	info "  artifact role:  ${_role:-unknown (not recorded)}"
 	if [ "$_observed" = "$_expected" ]; then
 		ok "$_name sha256 matches the digest python.org PUBLISHED for $PIN_VERSION"
 	else
@@ -265,30 +284,55 @@ check_archive() {
 	fi
 	info "  observed sha256: $_observed"
 	info "  published sha256: $_expected"
-	info "  note: a published-digest match is not Sigstore authentication; run the"
-	info "        .sigstore procedure from $(pin_get sigstore_doc) to authenticate the publisher."
+	if [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
+		info "  recorded evidence: downloaded bytes matched the published digest on"
+		info "        $PIN_PUB_DIGEST_DATE, and this artifact's .sigstore bundle verified on"
+		info "        $PIN_PUB_SIGSTORE_DATE against ${PIN_SIGSTORE_EMAIL:-hugo@python.org} via"
+		info "        ${PIN_SIGSTORE_ISSUER:-https://github.com/login/oauth}. This check did not"
+		info "        perform Sigstore; see ${PIN_VERIFICATION_RECORD:-docs/PYTHON_TOOLCHAIN_EVIDENCE.md}."
+	else
+		info "  note: a published-digest match is not Sigstore authentication; run the"
+		info "        .sigstore procedure from ${PIN_SIGSTORE_DOC:-the python.org Sigstore guide} to authenticate the publisher."
+	fi
 }
 
 # --- The distinction this pin exists to keep visible -------------------------
 print_distinction() {
 	info ""
-	info "authenticated archive vs installed interpreter:"
+	info "verification scope (publisher artifact bytes vs installed binary):"
+	if [ -n "$PIN_PUB_DIGEST_DATE" ]; then
+		info "  * publisher digest match: $PIN_PUB_DIGEST_RESULT on $PIN_PUB_DIGEST_DATE"
+		info "    (official artifact bytes downloaded over HTTPS vs the release-page SHA-256)."
+	else
+		info "  * publisher digest match: NOT RECORDED."
+	fi
+	if [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
+		info "  * publisher Sigstore signature: $PIN_PUB_SIGSTORE_RESULT on $PIN_PUB_SIGSTORE_DATE"
+		info "    (signer ${PIN_SIGSTORE_EMAIL:-hugo@python.org}, issuer ${PIN_SIGSTORE_ISSUER:-https://github.com/login/oauth};"
+		info "    $PIN_SIGSTORE_VERIFIER). Wrong-identity/wrong-issuer/tampered controls failed."
+		info "    Record: ${PIN_VERIFICATION_RECORD:-docs/PYTHON_TOOLCHAIN_EVIDENCE.md} sections 4-5."
+	else
+		info "  * publisher Sigstore signature: NOT RECORDED."
+	fi
+	info "  * Source vs target: the .tgz/.tar.xz artifacts are source-of-record"
+	info "    archives; the macOS pkg and Windows amd64 exe are separate target"
+	info "    installers. Matching an installer authenticates those installer bytes"
+	info "    only; it does not authenticate any interpreter built from the source."
 	if [ -n "$ARCHIVE_FILES" ]; then
-		info "  * --archive checked official python.org artifact(s) against the"
-		info "    publisher's published SHA-256. That is artifact-vs-published-digest."
+		info "  * This run also compared the given --archive file(s) with the published digest."
 	else
 		info "  * No official artifact was checked in this run. Pass --archive <file>"
 		info "    to compare a downloaded official artifact with the published digest."
 	fi
-	info "  * Any interpreter listed above is a LOCAL BUILD. Its version string"
-	info "    matching the pin is not authentication, and its sha256 only detects"
-	info "    local change. A local build is never evidence about python.org bytes."
-	if [ "${PIN_UPSTREAM_VERIFIED:-no}" = "yes" ]; then
-		info "  * pin records upstream_verified=yes (see docs/PYTHON_TOOLCHAIN.md for scope)."
-	else
-		info "  * pin records upstream_verified=no: not all pinned published digests have been"
-		info "    compared with downloaded artifact bytes. See docs/evidence for the source check;"
-		info "    not verified (docs/PYTHON_TOOLCHAIN.md, Open items)."
+	info "  * Installed interpreters are LOCAL BUILDS. A version match plus the"
+	info "    recorded local sha256 detects drift only; neither is publisher"
+	info "    authentication, and no local build is evidence about python.org bytes."
+	if [ "${PIN_INSTALLED_AUTH:-}" = "no" ]; then
+		info "  * pin records installed_interpreter_publisher_authenticated=no."
+	fi
+	if [ "${PIN_HOMEBREW_VERIFIED:-}" = "no" ]; then
+		info "  * Homebrew channel is checksum-only here: ad-hoc-signed bottle, API JWS"
+		info "    unverified, framework bundle signature question OPEN (docs/PYTHON_TOOLCHAIN.md)."
 	fi
 }
 
@@ -299,7 +343,8 @@ record_digests() {
 	{
 		printf '# Observed digests recorded by tools/python_pin/verify.sh --record\n'
 		printf '# Recorded %s on %s (%s %s)\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(hostname)" "$(uname -s)" "$(uname -m)"
-		printf '# LOCAL observations only. Not upstream verification.\n'
+		printf '# LOCAL observations only. An installed interpreter is a local build;\n'
+		printf '# these digests are NOT publisher authentication (see pin/python.txt).\n'
 		printf 'pinned_version=%s\n' "$PIN_VERSION"
 		_recorded=""
 		for _py in $(python_candidates); do
@@ -376,12 +421,22 @@ done
 print_distinction
 record_digests
 
+PUB_EVIDENCE="not recorded"
+if [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
+	PUB_EVIDENCE="digest+Sigstore recorded $PIN_PUB_DIGEST_DATE"
+elif [ -n "$PIN_PUB_DIGEST_DATE" ] || [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
+	PUB_EVIDENCE="partially recorded"
+fi
+INSTALLED_SCOPE="local build, not publisher-authenticated"
+[ "${PIN_INSTALLED_AUTH:-}" = "yes" ] && INSTALLED_SCOPE="publisher-authenticated"
+
 info ""
 if [ "$RC" -eq 0 ]; then
-	printf '%s[ok]%s   python pin verification: PASS (local interpreter observations; official-artifact checks: %s; published-digest upstream verification: %s)\n' \
+	printf '%s[ok]%s   python pin verification: PASS (local interpreter observations; official-artifact checks: %s; publisher artifact evidence: %s; installed binary: %s)\n' \
 		"$C_GREEN" "$C_RESET" \
 		"$([ -n "$ARCHIVE_FILES" ] && printf 'performed' || printf 'none')" \
-		"${PIN_UPSTREAM_VERIFIED:-no}"
+		"$PUB_EVIDENCE" \
+		"$INSTALLED_SCOPE"
 else
 	printf '%s[fail]%s python pin verification: FAIL\n' "$C_RED" "$C_RESET"
 fi

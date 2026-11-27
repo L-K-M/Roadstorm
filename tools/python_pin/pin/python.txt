@@ -6,11 +6,13 @@
 # narrative record in docs/PYTHON_TOOLCHAIN.md.
 #
 # Rules that this file must never break:
-#   * The SHA-256 values below are TRANSCRIBED from the publisher's release
-#     page over HTTPS. They are the publisher's published digests, but no
-#     artifact was downloaded to compare them against artifact bytes (every
-#     pinned artifact is >= 26.7 MB; the recording job's limit was 1 MB), so
-#     upstream_verified=no. `no` must never be reported as verified.
+#   * The SHA-256 values below are the publisher's published digests, read
+#     from the release page over HTTPS on 2026-11-26. On 2026-11-27 all four
+#     artifacts were downloaded over HTTPS and their bytes matched these
+#     values; each artifact's .sigstore bundle was then verified against the
+#     signer identity below. That authenticates the official artifact BYTES
+#     only -- never a locally installed interpreter (see the narrowly scoped
+#     status fields at the end of this file).
 #   * Never invent, guess or copy a digest from an unofficial mirror. If a
 #     digest is unknown, leave the field empty and let the verifier report
 #     NOT RECORDED.
@@ -48,40 +50,81 @@ sigstore_doc=https://www.python.org/download/sigstore/
 # Signer identity for Sigstore verification of this release (PEP 790):
 sigstore_signer_email=hugo@python.org
 sigstore_oidc_issuer=https://github.com/login/oauth
+# Independent verification record (owned elsewhere): command logs, retained
+# bundles, certificate details and transparency-log indexes are under the job
+# directory named in that document.
+verification_record=docs/PYTHON_TOOLCHAIN_EVIDENCE.md
 
 # --- Pinned official artifacts and their published SHA-256 digests ----------
-# Coverage of the three PLAN.md target platforms:
-#   macOS (universal2, macOS 10.15+), Windows x86-64, and the source tarball
-#   from which a Linux x86-64 interpreter is built (python.org publishes no
-#   Linux binary artifact). URL liveness was confirmed with HTTP range/HEAD
-#   requests only; no content was downloaded.
+# Roles: "target installer" = a built platform binary; "source archive" =
+# upstream source of record (the Linux x86-64 target has no publisher binary,
+# so it would be built from the source archive). A target installer matching
+# its digest authenticates those installer bytes; it says nothing about a
+# separately built interpreter. A source archive matching its digest ties the
+# source of record, not any built binary.
+#
+# Coverage of the three PLAN.md target platforms: macOS (universal2, macOS
+# 10.15+), Windows x86-64, and the source tarballs from which a Linux x86-64
+# interpreter is built (python.org publishes no Linux binary artifact). Bytes
+# below are the server Content-Length observed when the artifacts were
+# downloaded for verification on 2026-11-27.
 macos_pkg_file=python-3.15.2-macos11.pkg
 macos_pkg_url=https://www.python.org/ftp/python/3.15.2/python-3.15.2-macos11.pkg
+macos_pkg_role=target installer (macOS universal2)
 macos_pkg_size=78.1 MB
+macos_pkg_size_bytes=81894859
 macos_pkg_sha256=2c6104475535b720b45774c68b0dfc9fcca2235353cf9ff81e05488f89845396
+macos_pkg_sigstore_bundle_sha256=2e7a16ed396c33c8c201f9d0e42c4f0fc213ab474bf9389c54adbd58d70a15f2
 
 windows_amd64_exe_file=python-3.15.2-amd64.exe
 windows_amd64_exe_url=https://www.python.org/ftp/python/3.15.2/python-3.15.2-amd64.exe
+windows_amd64_exe_role=target installer (Windows x86-64)
 windows_amd64_exe_size=35.9 MB
+windows_amd64_exe_size_bytes=37694360
 windows_amd64_exe_sha256=06e225a228191b0f4d1dcf6905fbb21bf9f6970d13a2ec63137ab9bee76f15aa
+windows_amd64_exe_sigstore_bundle_sha256=8b5a848f5e218ee4d0267897c218f6d61a19a620af4fb984ddfcb6c8b2541580
 
 source_tarxz_file=Python-3.15.2.tar.xz
 source_tarxz_url=https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz
+source_tarxz_role=source archive (xz-compressed source of record)
 source_tarxz_size=26.7 MB
+source_tarxz_size_bytes=27960396
 source_tarxz_sha256=8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de
+source_tarxz_sigstore_bundle_sha256=d1bbd6bb4bd3865d18f5c2cc1ae0da08c2d9f09d6e82729b527ca06f572d62fa
 
 source_tgzz_file=Python-3.15.2.tgz
 source_tgzz_url=https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tgz
+source_tgzz_role=source archive (gzip source of record)
 source_tgzz_size=34.2 MB
+source_tgzz_size_bytes=35882840
 source_tgzz_sha256=f74e1db0eabd651cd01e4e2a00201bd41866abe74869ab716f9bf33cbbaa0943
+source_tgzz_sigstore_bundle_sha256=0fdedee6c00fa4abd2cd377db69737b6ef129cf238546344280ef65a590220a2
 
-# Upstream verification performed? Values: no | yes. `no` means the published
-# digests above have NOT been compared against downloaded artifact bytes.
-# What would close it (see docs/PYTHON_TOOLCHAIN.md "Open items"): download
-# each pinned artifact and its .sigstore bundle, compare the artifact's
-# SHA-256 with the value above, and verify the bundle with a Sigstore client
-# against the signer identity hugo@python.org (GitHub OIDC issuer). That
-# requires multi-megabyte downloads this recording job was not permitted to
-# make, so it remains open. A local interpreter's version or digest is NOT
-# upstream verification of anything.
-upstream_verified=no
+# --- Verification status: publisher artifact bytes vs installed binary ------
+# Narrowly scoped and dated. NONE of these statuses authenticates a locally
+# installed interpreter; they are about official python.org artifact bytes.
+#
+# Performed 2026-11-27 (job 4dca64d7-9068-48dc-8c3a-c563400d7d85, record in
+# docs/PYTHON_TOOLCHAIN_EVIDENCE.md sections 4-5):
+#   * all four artifacts downloaded over HTTPS; each SHA-256 matched the
+#     published value above;
+#   * each artifact's .sigstore bundle verified against sigstore_signer_email
+#     and sigstore_oidc_issuer with sigstore-python 4.6.0 (hash-pinned
+#     requirements, isolated venv); wrong-identity, wrong-issuer and
+#     tampered-artifact negative controls failed.
+publisher_digest_match_date=2026-11-27
+publisher_digest_match_result=all four pinned artifacts matched
+publisher_sigstore_date=2026-11-27
+publisher_sigstore_result=all four pinned bundles OK
+sigstore_verifier=sigstore-python 4.6.0 (hash-pinned requirements, isolated venv)
+#
+# Installed interpreters are local builds. No publisher check above applies to
+# them. This stays `no` until an official python.org artifact is actually
+# installed and its local files are tied to the verified artifact bytes.
+installed_interpreter_publisher_authenticated=no
+#
+# Distributor-channel caveats still OPEN for the Homebrew build (not part of
+# the python.org artifact verification): ad-hoc-signed bottle, Homebrew API
+# JWS not cryptographically verified, installed framework bundle signature/
+# resource-sealing question. See docs/PYTHON_TOOLCHAIN.md, "Open items".
+homebrew_channel_fully_verified=no

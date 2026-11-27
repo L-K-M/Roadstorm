@@ -12,8 +12,19 @@ Original project code under the Unlicense. Ownership: `tools/python_pin/**`
 | `verify.sh` | Executable check of the locally installed interpreters against the pin, and — only when given `--archive` — of an official python.org artifact against the publisher's published digest. |
 
 The narrative record — what was inventoried, what the official sources are,
-what was verified, what is open and why — is `docs/PYTHON_TOOLCHAIN.md`. Read
-it before trusting any line this directory prints.
+what was verified, what is open and why — is `docs/PYTHON_TOOLCHAIN.md`. The
+independent verification logs behind the statuses below are in
+`docs/PYTHON_TOOLCHAIN_EVIDENCE.md`. Read both before trusting any line this
+directory prints.
+
+## Recorded verification status (2026-11-27)
+
+| Scope | Status |
+| --- | --- |
+| Four pinned publisher artifacts: downloaded bytes vs release-page SHA-256 | matched |
+| Four `.sigstore` bundles vs `hugo@python.org` / GitHub OIDC issuer | OK; wrong-identity, wrong-issuer and tampered-bytes controls fail |
+| Installed Homebrew 3.15.2 build | **LOCAL observation only**; not publisher-authenticated |
+| Homebrew channel trust (API JWS, bottle/installed code signatures) | OPEN; checksum agreement only |
 
 ## Usage
 
@@ -40,17 +51,19 @@ that gap is accepted.
    uv/astral-sh and distro builds are local builds. A matching version string
    says the interpreter *reports* 3.15.2; it authenticates nothing about
    python.org's bytes. `verify.sh` prints this distinction on every run.
-2. **A local digest is not upstream verification.** `pin/checksums.txt` records
-   what is installed on the recording machine so later runs can detect change.
-   `pin/python.txt`'s `upstream_verified=no` means the publisher's published
-   digests have **not all** been compared with downloaded artifact bytes — not every
-   pinned artifact is at least 26.7 MB and the recording job could not
-   download them. Never report `no` as verified.
+2. **A local digest is not publisher authentication.** `pin/checksums.txt`
+   records what is installed on the recording machine so later runs can detect
+   change. None of those files is a python.org artifact, and a matching version
+   string says only that the interpreter *reports* 3.15.2. `verify.sh` reports
+   `installed_interpreter_publisher_authenticated=no` from `pin/python.txt`.
 3. **A published-digest match is not Sigstore authentication.** `--archive`
-   compares a downloaded file with the digest python.org published.
-   Authenticating the publisher additionally needs the `.sigstore` bundle and
-   the signer identity (`hugo@python.org`, GitHub OIDC issuer) per
-   <https://www.python.org/download/sigstore/>; this script does not do that.
+   compares a downloaded file with the digest python.org published; it does not
+   verify signatures. `pin/python.txt` separately records that all four pinned
+   bundles were Sigstore-verified on 2026-11-27 against `hugo@python.org` via
+   the GitHub OIDC issuer (sigstore-python 4.6.0, hash-pinned requirements,
+   isolated venv; negative controls failed). Those statuses authenticate
+   publisher artifact bytes only, never an installed binary; full logs are in
+   `docs/PYTHON_TOOLCHAIN_EVIDENCE.md`.
 4. **No installs, no downloads, no global changes.** `verify.sh` only reads
    local files and runs `--version`-style probes. It never installs a Python,
    never writes outside `--record`'s target, and never touches a global
