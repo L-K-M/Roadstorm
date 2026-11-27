@@ -11,3 +11,5 @@ This is a concise provenance ledger. Private prompts, sessions, scratch captures
 - One worker reported deleting a pre-existing `/tmp/roadstorm-baseline-206edf5` scratch copy it did not create. Another ran a GUI check without the desktop lease. These deviations were recorded in status; neither implies loss of tracked repository content.
 
 This is an interim log, not an assertion that any M0–M9 gate has passed.
+
+- On 2026-11-27, the coordinator committed the CI attempt-bound inventory interface (`6cb434c`, 230/230 self-tests under `sh` and `dash`), recorded exact tick rechecks (`a63ee3c`), and merged user-approved PR #1 into shared `main` (`ea02d6d`). The merge retained the newer in-process lock implementation and scoped PR #1's generic workflow instructions. It was pushed normally; hosted checks are pending. M0 CI, tick and rights gates remain open.
