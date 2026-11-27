@@ -307,6 +307,32 @@ _ci_assert_publishable_report() {
 		ci_report "export result=fail reason=no-attempt-id"
 		return "$CI_FAIL"
 	fi
+	if ! ci_report_has_attempt_header "$CI_REPORT" "$CI_ATTEMPT_ID"; then
+		ci_fail "export --export: the report source $CI_REPORT does not carry this attempt's attempt-id header; refusing to publish or record a verdict in a foreign/headerless report"
+		return "$CI_FAIL"
+	fi
+	return "$CI_OK"
+}
+
+# _ci_assert_inventory_capable <preset> <mode> <out> : fail closed when the
+# package inventory checker cannot run, BEFORE locks, scratch preparation or any
+# export writer. command -v alone is not a usability claim: probe the interpreter
+# with the exact standard-library imports pack_inventory.py needs.
+_ci_assert_inventory_capable() {
+	_iic_preset="$1"; _iic_mode="$2"; _iic_out="$3"
+	_iic_script="$CI_TOOLS_DIR/../export_smoke/lib/pack_inventory.py"
+	[ -f "$_iic_script" ] || _iic_script="$CI_PROJECT/tools/export_smoke/lib/pack_inventory.py"
+	if [ ! -f "$_iic_script" ]; then
+		ci_fail "export --export: package inventory tool is missing: $_iic_script (cannot verify the package contents)"
+		ci_report "export result=fail preset=$_iic_preset mode=$_iic_mode reason=inventory-tool-missing output=$_iic_out"
+		return "$CI_FAIL"
+	fi
+	if ! command -v python3 >/dev/null 2>&1 ||
+		! ci_run_bounded 10 python3 -I -c 'import argparse, fnmatch, hashlib, json, os, struct, sys, tempfile, zipfile' >/dev/null 2>&1; then
+		ci_fail "export --export: python3 is missing or unusable for the package inventory checker ($_iic_script); refusing before scratch preparation or the export writer"
+		ci_report "export result=fail preset=$_iic_preset mode=$_iic_mode reason=inventory-python-unavailable output=$_iic_out"
+		return "$CI_FAIL"
+	fi
 	return "$CI_OK"
 }
 
@@ -2203,6 +2229,14 @@ ci_export_build_inner() {
 		return "$CI_FAIL"
 	fi
 
+	# Validate the package inventory capability BEFORE taking locks, preparing a
+	# scratch copy or invoking the writer. On a Python-less Linux host the report
+	# may still be linkable via ln -T, but an export whose package cannot be
+	# verified must not write a package first.
+	if ! _ci_assert_inventory_capable "$_preset" "$_mode" "$_out"; then
+		return "$CI_FAIL"
+	fi
+
 	# Acquire both destination locks IN THIS PROCESS before the stale-output
 	# check. fd-form flock/lockf associate the advisory lock with the open file
 	# description held by this shell, so the kernel releases it when the actual
@@ -2462,12 +2496,22 @@ EOF
 	# succeeded. Printing or recording a passing verdict first let a rejected
 	# package look successful and left it eligible for the package upload
 	# (Sol recheck 8c6c928).
-	ci_ok "export: $_pass_msg"
-	ci_ok "export: package inventory passed ($_inv_plat; report $_inv_report)"
+	#
+	# Bind the final verdict to the still-present, attempt-bound report. If the
+	# reserved file disappeared after publication, >> would silently recreate a
+	# headerless report and print success while the real evidence is gone; fail
+	# closed instead. POSIX shell cannot atomically append without O_CREAT, so a
+	# hostile unlink in the narrow window between this check and the append is a
+	# documented residual race; observable disappearance fails closed.
+	if ! _ci_assert_publishable_report; then
+		return "$CI_FAIL"
+	fi
 	if ! ci_report "export result=pass preset=$_preset mode=$_mode $_pass_fields pack_inventory=pass platform=$_inv_plat report=$_inv_report"; then
 		ci_fail "export: the passing verdict could not be appended to $CI_REPORT; refusing to report an unrecorded pass"
 		return "$CI_FAIL"
 	fi
+	ci_ok "export: $_pass_msg"
+	ci_ok "export: package inventory passed ($_inv_plat; report $_inv_report)"
 
 	ci_note "This is a locally built package, not a verified release: launching it on the target OS (PLAN.md M9.2) and signing/notarization (M9.3) are separate steps."
 	return "$CI_OK"

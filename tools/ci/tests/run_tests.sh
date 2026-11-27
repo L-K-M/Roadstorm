@@ -391,6 +391,27 @@ fi
 CASES_RUN=$((CASES_RUN + 1))
 log "case $CASES_RUN: a published report stays coherent through both names -> $_ok"
 
+# Attempt binding must require the exact header line, not a substring or
+# comment that merely contains it.
+HDR_MATCH="$WORK_DIR/report-header-match"
+rm -rf "$HDR_MATCH"; mkdir -p "$HDR_MATCH"
+printf 'attempt-id: hdr-test-1\ncommand: pin\n' >"$HDR_MATCH/proper.txt"
+printf '# attempt-id: hdr-test-1\n' >"$HDR_MATCH/comment.txt"
+printf 'xx attempt-id: hdr-test-1\n' >"$HDR_MATCH/prefix.txt"
+printf 'attempt-id: hdr-test-1 extra\n' >"$HDR_MATCH/suffix.txt"
+_ok=no
+if ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "hdr-test-1" &&
+	! ci_report_has_attempt_header "$HDR_MATCH/comment.txt" "hdr-test-1" &&
+	! ci_report_has_attempt_header "$HDR_MATCH/prefix.txt" "hdr-test-1" &&
+	! ci_report_has_attempt_header "$HDR_MATCH/suffix.txt" "hdr-test-1" &&
+	! ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "other-id" &&
+	! ci_report_has_attempt_header "$HDR_MATCH/proper.txt" "bad/id"; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: attempt binding requires the exact bounded header line -> $_ok"
+
 # ---------------------------------------------------------------------------
 # 5. Viewport helpers: the capture-resolution fix depends on them.
 # ---------------------------------------------------------------------------
@@ -3440,31 +3461,247 @@ EOF
 	log "case $CASES_RUN: an empty attempt id aborts publication before writer -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-noattempt.log" >&2; }
 
-	# No usable hard-link mechanism must fail immediately and clearly, not
-	# retry the reservation 101 times.
-	PY_MISSING="$CONC/py-missing"
-	rm -rf "$PY_MISSING" "$CONC/mktemp-count" "$CONC/py-missing-out"
-	mkdir -p "$PY_MISSING"
-	printf '#!/bin/sh\nexit 127\n' >"$PY_MISSING/python3"
+	# A regular but headerless inherited ROADSTORM_CI_REPORT must not pass the
+	# publication handoff at either call site.
+	HDR_OUT="$CONC/pub-hdrless-outer"
+	rm -rf "$HDR_OUT" "$CONC/hdrcwd-o" "$PUB_WRITER"
+	mkdir -p "$HDR_OUT/reports" "$CONC/hdrcwd-o"
+	printf 'foreign bytes with no attempt header\n' >"$HDR_OUT/reports/hdrless-o.txt"
+	( export TMPDIR="$CONC/tmp-hdr-o" ROADSTORM_CI_REPORT="$HDR_OUT/reports/hdrless-o.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=hdr1
+		ci_rel_at_home "$CONC/hdrcwd-o" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$HDR_OUT" export --export "Linux x86-64" --out "$CONC/hdrcwd-o/pkg" ) >"$CONC/pub-hdrless-outer.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'does not carry this attempt' "$CONC/pub-hdrless-outer.log" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/hdrcwd-o/pkg" ] &&
+		[ ! -e "$CONC/hdrcwd-o/pkg.ci-lock" ] && [ ! -d "$HDR_OUT/attempts" ] &&
+		[ "$(cat "$HDR_OUT/reports/hdrless-o.txt")" = "foreign bytes with no attempt header" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a headerless inherited outer report is refused before writer -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-hdrless-outer.log" >&2; }
+
+	HDR_INNER="$CONC/pub-hdrless-inner"
+	rm -rf "$HDR_INNER" "$CONC/hdrcwd-i" "$PUB_WRITER"
+	mkdir -p "$HDR_INNER/reports" "$CONC/hdrcwd-i"
+	printf 'foreign bytes with no attempt header\n' >"$HDR_INNER/reports/hdrless-i.txt"
+	( export TMPDIR="$CONC/tmp-hdr-i" ROADSTORM_CI_REPORT="$HDR_INNER/reports/hdrless-i.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=hdr2
+		ci_rel_at_home "$CONC/hdrcwd-i" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$HDR_INNER" __export-inner "Linux x86-64" release "$CONC/hdrcwd-i/pkg" ) >"$CONC/pub-hdrless-inner.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'does not carry this attempt' "$CONC/pub-hdrless-inner.log" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/hdrcwd-i/pkg" ] &&
+		[ ! -e "$CONC/hdrcwd-i/pkg.ci-lock" ] && [ ! -d "$HDR_INNER/attempts" ] &&
+		[ "$(cat "$HDR_INNER/reports/hdrless-i.txt")" = "foreign bytes with no attempt header" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a headerless inherited direct inner report is refused -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-hdrless-inner.log" >&2; }
+
+	# Post-publication disappearance: after a successful writer/inventory run,
+	# remove the reserved report and require the final verdict to fail closed
+	# instead of being recreated by >> and printed as a success.
+	POST_DEL="$CONC/godot-post-delete"
+	cat >"$POST_DEL" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CONC/post-del-calls.log"
+case " \$* " in
+	*" --export-"*)
+		"$_e2e_bin" "\$@"
+		_pd_rc=\$?
+		[ -n "\$FAKE_DELETE_AFTER_EXPORT" ] && rm -f "\$FAKE_DELETE_AFTER_EXPORT" 2>/dev/null
+		exit "\$_pd_rc"
+		;;
+esac
+exec "$_e2e_bin" "\$@"
+EOF
+	chmod +x "$POST_DEL"
+	PD_OUT="$CONC/pub-post-disappear"
+	PD_REPORT="$PD_OUT/reports/export-linux-x86-64-pd1.txt"
+	rm -rf "$PD_OUT" "$CONC/pdcwd" "$CONC/post-del-calls.log"
+	mkdir -p "$PD_OUT/reports" "$CONC/pdcwd"
+	printf 'attempt-id: pd1\ncommand: export-linux-x86-64\n' >"$PD_REPORT"
+	( export HOME="$REALHOME"; unset GODOT_TEMPLATES_DIR
+		export ROADSTORM_CI_REPORT="$PD_REPORT" ROADSTORM_CI_ATTEMPT_ID=pd1 \
+			FAKE_DELETE_AFTER_EXPORT="$PD_REPORT"
+		sh "$CI_SH" --project "$SPROJ" --godot "$POST_DEL" --out "$PD_OUT" \
+			__export-inner "Linux x86-64" release "$CONC/pdcwd/pkg" ) >"$CONC/pub-post-disappear.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && [ ! -e "$PD_REPORT" ] && [ -s "$CONC/pdcwd/pkg" ] &&
+		grep -q 'not a regular file' "$CONC/pub-post-disappear.log" &&
+		! grep -q '\[ci:ok\] export:' "$CONC/pub-post-disappear.log" &&
+		! grep -q 'export result=pass' "$CONC/pub-post-disappear.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a report deleted after publication is not recreated as a pass -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc report=$([ -e "$PD_REPORT" ] && echo present || echo absent)" >&2; sed 's/^/  | /' "$CONC/pub-post-disappear.log" >&2; }
+
+	# Simulated Linux without usable Python: the ln -T report fallback still
+	# lets pin reserve, but the export must refuse before scratch or writer.
+	PY_LIN="$CONC/py-broken-linux"
+	rm -rf "$PY_LIN" "$CONC/py-lin-pin-out" "$PUB_WRITER"
+	mkdir -p "$PY_LIN"
+	printf '#!/bin/sh\necho Linux\n' >"$PY_LIN/uname"
+	printf '#!/bin/sh\nexit 127\n' >"$PY_LIN/python3"
+	_real_python2="$(command -v python3)"
+	if [ -n "$_real_python2" ]; then
+		cat >"$PY_LIN/ln" <<EOF
+#!/bin/sh
+[ "\$1" = "-T" ] && shift
+[ "\$1" = "--" ] && shift
+"$_real_python2" -I -c 'import os, sys
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except OSError as exc:
+    sys.exit(exc.errno or 1)' "\$1" "\$2"
+EOF
+		chmod +x "$PY_LIN/uname" "$PY_LIN/python3" "$PY_LIN/ln"
+		( export PATH="$PY_LIN:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/py-lin-pin-out" pin ) >"$CONC/py-lin-pin.log" 2>&1
+		_py_pin_rc=$?
+		rm -rf "$CONC/py-lin-inner-out"; mkdir -p "$CONC/py-lin-inner-out/reports" "$CONC/pycwd"
+		( export PATH="$PY_LIN:$PATH" TMPDIR="$CONC/tmp-py-lin"
+			ci_rel_at_home "$CONC/pycwd" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+				--out "$CONC/py-lin-inner-out" __export-inner "Linux x86-64" release "$CONC/pycwd/pkg" ) >"$CONC/py-lin-inner.log" 2>&1
+		_py_in_rc=$?
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_py_pin_rc" -eq 0 ] && [ "$_py_in_rc" -ne 0 ] &&
+			grep -rq 'reason=inventory-python-unavailable' "$CONC/py-lin-inner-out/reports" 2>/dev/null &&
+			[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pycwd/pkg" ] &&
+			[ ! -e "$CONC/pycwd/pkg.ci-lock" ] && [ ! -d "$CONC/py-lin-inner-out/attempts" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: broken Python blocks the writer while pin still reserves via ln -T -> $_ok"
+		[ "$_ok" = "yes" ] || { echo "  pin=$_py_pin_rc inner=$_py_in_rc writer=$([ -e "$PUB_WRITER" ] && echo y || echo n) pkg=$([ -e "$CONC/pycwd/pkg" ] && echo y || echo n) lock=$([ -e "$CONC/pycwd/pkg.ci-lock" ] && echo y || echo n) attempts=$([ -d "$CONC/py-lin-inner-out/attempts" ] && echo y || echo n)" >&2; sed 's/^/  | /' "$CONC/py-lin-inner.log" >&2; }
+	else
+		log "note: no real python3 available to emulate ln -T; the broken-Python Linux case was skipped"
+	fi
+
+	# Host-independent no-mechanism seam: a broken python3 plus a non-Linux
+	# uname forces the none branch on every host. The previous version relied on
+	# the host being macOS and silently passed on Ubuntu's working ln -T.
+	NO_MECH="$CONC/no-mechanism"
+	rm -rf "$NO_MECH" "$CONC/mktemp-count" "$CONC/no-mech-out"
+	mkdir -p "$NO_MECH"
+	printf '#!/bin/sh\necho Darwin\n' >"$NO_MECH/uname"
+	printf '#!/bin/sh\nexit 127\n' >"$NO_MECH/python3"
 	_real_mktemp2="$(command -v mktemp)"
-	cat >"$PY_MISSING/mktemp" <<EOF
+	cat >"$NO_MECH/mktemp" <<EOF
 #!/bin/sh
 printf 'x\\n' >> "$CONC/mktemp-count"
 exec "$_real_mktemp2" "\$@"
 EOF
-	chmod +x "$PY_MISSING/python3" "$PY_MISSING/mktemp"
-	( export PATH="$PY_MISSING:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/py-missing-out" pin ) >"$CONC/py-missing.log" 2>&1
+	chmod +x "$NO_MECH/uname" "$NO_MECH/python3" "$NO_MECH/mktemp"
+	( export PATH="$NO_MECH:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/no-mech-out" pin ) >"$CONC/no-mechanism.log" 2>&1
 	_pub_rc=$?
 	CASES_RUN=$((CASES_RUN + 1))
-	if [ "$_pub_rc" -eq 2 ] && grep -q 'no atomic hard-link mechanism' "$CONC/py-missing.log" &&
+	if [ "$_pub_rc" -eq 2 ] && grep -q 'atomic report reservation is unavailable' "$CONC/no-mechanism.log" &&
 		[ "$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" = "1" ]; then
 		_ok=yes
 		CASES_OK=$((CASES_OK + 1))
 	else
 		_ok=no
 	fi
-	log "case $CASES_RUN: a missing hard-link mechanism fails once, clearly and immediately -> $_ok"
-	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc mktemp=$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" >&2; sed 's/^/  | /' "$CONC/py-missing.log" >&2; }
+	log "case $CASES_RUN: no usable hard-link mechanism fails once on any host -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc mktemp=$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" >&2; sed 's/^/  | /' "$CONC/no-mechanism.log" >&2; }
+
+	# Simulated Linux semantics for the real GNU/busybox ln -T fallback: an
+	# unusable python3, uname Linux, and an ln -T emulator backed by the real
+	# interpreter. pin must still reserve a report, and the helper must preserve
+	# exact-destination and occupant-refusal behaviour through ln -T.
+	LIN_LN="$CONC/linux-ln-fallback"
+	_real_python="$(command -v python3)"
+	_lin_fallback_ok=no
+	if [ -n "$_real_python" ]; then
+		rm -rf "$LIN_LN" "$CONC/lin-pin-out"
+		mkdir -p "$LIN_LN"
+		printf '#!/bin/sh\necho Linux\n' >"$LIN_LN/uname"
+		printf '#!/bin/sh\nexit 127\n' >"$LIN_LN/python3"
+		cat >"$LIN_LN/ln" <<EOF
+#!/bin/sh
+[ "\$1" = "-T" ] && shift
+[ "\$1" = "--" ] && shift
+"$_real_python" -I -c 'import os, sys
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except OSError as exc:
+    sys.exit(exc.errno or 1)' "\$1" "\$2"
+EOF
+		chmod +x "$LIN_LN/uname" "$LIN_LN/python3" "$LIN_LN/ln"
+		( export PATH="$LIN_LN:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/lin-pin-out" pin ) >"$CONC/linux-ln-pin.log" 2>&1
+		_lin_pin_rc=$?
+		printf 'fallback body\n' >"$LIN_LN/src.txt"
+		(
+			export PATH="$LIN_LN:$PATH"
+			. "$COMMON_SH" >/dev/null 2>&1
+			_r=0
+			ci_link_create_only "$LIN_LN/src.txt" "$LIN_LN/new.txt" || _r=$?
+			[ "$_r" -eq 0 ] || exit 1
+			[ "$(_inode "$LIN_LN/src.txt")" = "$(_inode "$LIN_LN/new.txt")" ] || exit 1
+			printf 'foreign\n' >"$LIN_LN/existing.txt"
+			ci_link_create_only "$LIN_LN/src.txt" "$LIN_LN/existing.txt" && exit 1
+			[ "$(cat "$LIN_LN/existing.txt")" = "foreign" ] || exit 1
+			rm -rf "$LIN_LN/dir"; mkdir -p "$LIN_LN/dir"
+			ci_link_create_only "$LIN_LN/src.txt" "$LIN_LN/dir" && exit 1
+			[ -z "$(ls -A "$LIN_LN/dir" 2>/dev/null)" ] || exit 1
+			exit 0
+		)
+		_lin_probe_rc=$?
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_lin_pin_rc" -eq 0 ] && [ -n "$(ls "$CONC/lin-pin-out/reports/"*.txt 2>/dev/null)" ] &&
+			[ "$_lin_probe_rc" -eq 0 ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: simulated Linux ln -T fallback links exactly and refuses occupants -> $_ok"
+		[ "$_ok" = "yes" ] || { echo "  pin=$_lin_pin_rc probe=$_lin_probe_rc" >&2; sed 's/^/  | /' "$CONC/linux-ln-pin.log" >&2; }
+	else
+		log "note: no real python3 to emulate ln -T; the simulated Linux fallback case was skipped"
+	fi
+
+	# A detected ln -T that fails with no occupant must fail fast instead of
+	# retrying 101 times and mislabelling the cause as an occupied name.
+	LIN_BAD="$CONC/linux-ln-broken"
+	rm -rf "$LIN_BAD" "$CONC/mktemp-count" "$CONC/lin-bad-out"
+	mkdir -p "$LIN_BAD"
+	printf '#!/bin/sh\necho Linux\n' >"$LIN_BAD/uname"
+	printf '#!/bin/sh\nexit 127\n' >"$LIN_BAD/python3"
+	printf '#!/bin/sh\nexit 1\n' >"$LIN_BAD/ln"
+	cat >"$LIN_BAD/mktemp" <<EOF
+#!/bin/sh
+printf 'x\\n' >> "$CONC/mktemp-count"
+exec "$_real_mktemp2" "\$@"
+EOF
+	chmod +x "$LIN_BAD/uname" "$LIN_BAD/python3" "$LIN_BAD/ln" "$LIN_BAD/mktemp"
+	( export PATH="$LIN_BAD:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/lin-bad-out" pin ) >"$CONC/linux-ln-broken.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -eq 2 ] && grep -q 'atomic report reservation is unavailable' "$CONC/linux-ln-broken.log" &&
+		[ "$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" = "1" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a detected but broken ln -T fails fast without retry -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc mktemp=$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" >&2; sed 's/^/  | /' "$CONC/linux-ln-broken.log" >&2; }
 
 	# A pre-existing symlink at the lock path is refused and never followed.
 	LOCK_SYM_CWD="$CONC/lock-symlink"

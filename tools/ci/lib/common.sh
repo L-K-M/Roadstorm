@@ -1074,7 +1074,7 @@ ci_init_report() {
 			CI_ATTEMPT_ID="${_stamp}-${_rand}"
 		fi
 		_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${CI_ATTEMPT_ID}.txt"
-		{
+		if ! {
 			printf 'attempt-id: %s\n' "$CI_ATTEMPT_ID"
 			printf 'command: %s\n' "${CI_RUN_NAME:-run}"
 			printf 'utc: %s\n' "$_stamp"
@@ -1082,7 +1082,10 @@ ci_init_report() {
 			printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}"
 			printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
 			printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
-		} >"$_body" 2>/dev/null
+		} >"$_body" 2>/dev/null; then
+			rm -f "$_body" 2>/dev/null
+			ci_die "could not write the reserved report body $_body in $CI_OUT/reports (unwritable filesystem or exhausted disk); refusing to link an unverified report"
+		fi
 		_link_rc=0
 		ci_link_create_only "$_body" "$_new_report" || _link_rc=$?
 		if [ "$_link_rc" -eq 0 ]; then
@@ -1092,7 +1095,7 @@ ci_init_report() {
 		fi
 		rm -f "$_body" 2>/dev/null
 		if [ "$_link_rc" -eq 2 ]; then
-			ci_die "no atomic hard-link mechanism is available (need a working python3, or GNU/busybox ln -T on Linux); refusing to reserve a report in $CI_OUT/reports"
+			ci_die "atomic report reservation is unavailable: no working python3/GNU ln -T, or the link failed for a non-collision reason (permission, cross-device, unwritable path); refusing to reserve a report in $CI_OUT/reports"
 		fi
 		_try=$((_try + 1))
 	done
@@ -1109,6 +1112,18 @@ ci_report() {
 	printf '%s\n' "$*" >>"$CI_REPORT" 2>/dev/null
 }
 
+# ci_report_has_attempt_header <file> <attempt-id> : true only when the
+# reserved report contains EXACTLY this attempt's header line. A substring,
+# comment, prefix or suffix match is not evidence: the whole line must equal
+# "attempt-id: <id>" and the id must use the bounded token alphabet.
+ci_report_has_attempt_header() {
+	[ -n "$1" ] && [ -n "$2" ] || return 1
+	case "$2" in
+	'' | *[!A-Za-z0-9._-]*) return 1 ;;
+	esac
+	awk -v _crah_id="$2" '$0 == "attempt-id: " _crah_id { _crah_found = 1 } END { exit _crah_found ? 0 : 1 }' "$1" 2>/dev/null
+}
+
 # ci_new_evidence_file <dir> : create-only evidence file. mktemp guarantees a
 # name that did not exist and is unique among concurrent attempts; the caller
 # owns the resulting inode and may write it directly. Never overwrites.
@@ -1118,25 +1133,24 @@ ci_new_evidence_file() {
 	mktemp "$_nef_dir/ci-evidence.XXXXXX" 2>/dev/null
 }
 
-# ci_link_mechanism : print the available exact-destination link(2)
-# mechanism once per process: python3 (os.link), lnT (GNU/busybox ln -T on
-# Linux) or none. The Python probe is bounded so a missing or broken interpreter
-# cannot turn a reserved-name collision into 101 slow retries.
+# ci_link_mechanism : detect the available exact-destination link(2)
+# mechanism once per process and cache it in _ci_LINK_MECHANISM (python3, lnT
+# or none). Returns 0 when a mechanism is available, 1 when none is. Callers
+# must use the variable directly: running this through command substitution
+# would lose the cache assignment to a subshell and re-probe every call.
 _ci_LINK_MECHANISM=""
 ci_link_mechanism() {
-	if [ -n "$_ci_LINK_MECHANISM" ]; then
-		printf '%s\n' "$_ci_LINK_MECHANISM"
-		return 0
+	if [ -z "$_ci_LINK_MECHANISM" ]; then
+		if command -v python3 >/dev/null 2>&1 &&
+			ci_run_bounded 10 python3 -I -c 'import os' >/dev/null 2>&1; then
+			_ci_LINK_MECHANISM="python3"
+		elif [ "$(uname -s 2>/dev/null)" = "Linux" ] && command -v ln >/dev/null 2>&1; then
+			_ci_LINK_MECHANISM="lnT"
+		else
+			_ci_LINK_MECHANISM="none"
+		fi
 	fi
-	if command -v python3 >/dev/null 2>&1 &&
-		ci_run_bounded 10 python3 -I -c 'import os' >/dev/null 2>&1; then
-		_ci_LINK_MECHANISM="python3"
-	elif [ "$(uname -s 2>/dev/null)" = "Linux" ] && command -v ln >/dev/null 2>&1; then
-		_ci_LINK_MECHANISM="lnT"
-	else
-		_ci_LINK_MECHANISM="none"
-	fi
-	printf '%s\n' "$_ci_LINK_MECHANISM"
+	[ "$_ci_LINK_MECHANISM" != "none" ]
 }
 
 # ci_link_create_only <source> <destination> : create a hard link at exactly
@@ -1152,34 +1166,47 @@ ci_link_mechanism() {
 # GNU coreutils/busybox `ln -T` provides the same exact-destination link(2)
 # semantics on Linux. Returns 0 only when the link exists at <destination>;
 # every failure leaves the destination byte/link-exact. Returns 2 when no
-# linker mechanism is available at all (distinct from an occupied name, so the
-# caller can fail fast instead of retrying).
+# usable mechanism exists or a non-collision error (permission, cross-device,
+# unwritable path, broken interpreter) makes retrying pointless; returns 1 for
+# an occupant at the exact destination, which is the only case where trying
+# another candidate name can help.
 ci_link_create_only() {
 	_lco_src="$1"
 	_lco_dst="$2"
 	[ -n "$_lco_src" ] && [ -n "$_lco_dst" ] || return 1
 	[ -f "$_lco_src" ] || return 1
-	case "$(ci_link_mechanism)" in
+	if ! ci_link_mechanism; then
+		return 2
+	fi
+	case "$_ci_LINK_MECHANISM" in
 	python3)
 		python3 -I -c 'import os, sys
 try:
     os.link(sys.argv[1], sys.argv[2])
-except OSError:
-    sys.exit(1)' "$_lco_src" "$_lco_dst" 2>/dev/null
+except OSError as exc:
+    sys.exit(exc.errno or 1)' "$_lco_src" "$_lco_dst" 2>/dev/null
 		_lco_rc=$?
-		# 126/127 mean the interpreter itself is unusable now; that is not an
-		# occupied destination and must not be retried as one.
-		[ "$_lco_rc" -ge 126 ] && return 2
-		return "$_lco_rc"
+		# EEXIST/EISDIR/ENOTDIR: the exact name is occupied or unusable as a
+		# link target -- a candidate-name collision, safe to retry.
+		case "$_lco_rc" in
+		0) return 0 ;;
+		17 | 20 | 21) return 1 ;;	# EEXIST, ENOTDIR, EISDIR
+		*) return 2 ;;		# EACCES/EPERM/EXDEV/ENOENT/broken interpreter
+		esac
 		;;
 	lnT)
-		ln -T -- "$_lco_src" "$_lco_dst" 2>/dev/null && return 0
-		return 1
-		;;
-	*)
+		if ln -T -- "$_lco_src" "$_lco_dst" 2>/dev/null; then
+			return 0
+		fi
+		# Classify AFTER the failed syscall: an occupant explains the refusal,
+		# anything else is permanent and must fail fast rather than loop.
+		if [ -e "$_lco_dst" ] || [ -L "$_lco_dst" ]; then
+			return 1
+		fi
 		return 2
 		;;
 	esac
+	return 2
 }
 
 # ci_publish_report_exclusive <source> <final-name> : publish an existing report
