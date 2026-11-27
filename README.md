@@ -1,8 +1,15 @@
 # Roadstorm Racer!
 
+> [!IMPORTANT]
+> LLM disclosure: This codebase was written with substantial help from large language models: AI coding agents working from the [`AGENTS.md`](AGENTS.md) brief in this repo.
+
+**Latest release:** none yet. Packaging and publication are planned for M9.
+
 An original, colorful arcade racer inspired by the energy of early polygonal racing games: generous drifting, memorable roads, lively scenery, assertive opponents, and four-player local split-screen.
 
-The project is at the planning stage. No playable game or build system has been implemented yet.
+Implementation is in progress. A placeholder shell, validation tooling and
+desktop smoke exports exist; a playable game and public release are not yet
+verified. See [current status](docs/STATUS.md) for measured gates and limits.
 
 ## Implementation execution
 
@@ -18,11 +25,16 @@ To start or resume the full build, follow [plan/IMPLEMENTATION.md](plan/IMPLEMEN
 - [Benchmarks and acceptance contracts](docs/BENCHMARKS.md) — reference drivers, fixtures, measurable AI/handling gates, performance evidence, and experience review.
 - [Review responses](docs/REVIEW_RESPONSE.md) — dispositions of the ten initial reviews and resulting plan changes.
 
-All new project-specific implementation and creative production will be authored by LLM agents. Existing engines and tools remain third-party infrastructure. The planned engine is Godot 4.7.2 with typed GDScript; the first implementation milestone will pin and verify the toolchain.
+Project-specific implementation and creative production use LLM agents.
+Existing engines and tools remain third-party infrastructure. The development
+engine is pinned to Godot 4.7.2 with typed GDScript; the toolchain decision and
+its current verification limits are recorded in [M0.1 evidence](docs/evidence/m01-pin-decision-20261127.md).
 
 ## Independent plan reviews
 
-Review agents should follow [REVIEW_PROMPT.md](REVIEW_PROMPT.md). Each reviewer works in one chat without subagents, writes a unique `review/<uuid>.md` report, and commits/pushes only that report using the existing shared checkout.
+Historical plan reviewers followed [REVIEW_PROMPT.md](REVIEW_PROMPT.md).
+Implementation checkpoint reviewers follow [plan/IMPLEMENTATION.md](plan/IMPLEMENTATION.md):
+they review independently, and the coordinator integrates their reports.
 
 ## License
 
