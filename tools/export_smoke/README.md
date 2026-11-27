@@ -59,8 +59,10 @@ fresh directory under `<project>/work/agents/export-smoke/outputs/`
 (`run.XXXXXX`), so ordinary repeated runs never collide. The runner resolves one
 immutable commit SHA before archiving; the report's `head_commit`,
 `head_tree`, `archive_sha256` and `presets_sha256` all describe the exact bytes
-that were extracted and exported (`presets_sha256` is hashed from the copied
-frozen preset file, not re-read from the live tree).
+that were extracted and exported. The presets are captured from
+`<head_commit>:export_presets.cfg` with `git show`; the live working-tree copy
+is never read or overlaid (the report adds `presets_source=head-commit` and
+`presets_live_matches_commit=true|false` for diagnosis).
 
 Environment: `GODOT_BIN`, `OUT_DIR`, `NO_COLOR`. Exit codes: `0` = every
 requested platform exported (and macOS launched), `1` = a platform was

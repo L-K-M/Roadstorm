@@ -547,7 +547,12 @@ _rep_cand="$(sed -n 's/^candidate_digest=//p' "$RREP" | head -n 1)"
 printf '%s\n%s\n' "$_rep_arch" "$(es_sha256 "$REPO/export_presets.cfg")" >"$WORK/cand-input.txt"
 assert_eq "report candidate digest consistent" "$(es_sha256 "$WORK/cand-input.txt")" "$_rep_cand"
 assert_exists "private digest evidence retained in the output" "$RF_OUT/.candidate-snapshot.archive-sha256"
-assert_contains "retained evidence still records both digests" "$(cat "$RF_OUT/.candidate-snapshot.archive-sha256")" "presets_sha256=$(es_sha256 "$REPO/export_presets.cfg")"
+_exp_pre_live="$(es_sha256 "$REPO/export_presets.cfg")"
+assert_contains "retained evidence still records both digests" "$(cat "$RF_OUT/.candidate-snapshot.archive-sha256")" "presets_sha256=$_exp_pre_live"
+_rep_live_match="$(sed -n 's/^presets_live_matches_commit=//p' "$RREP" | head -n 1)"
+assert_eq "runner reports live presets match commit" "true" "$_rep_live_match"
+_rep_src="$(sed -n 's/^presets_source=//p' "$RREP" | head -n 1)"
+assert_eq "runner reports commit-bound presets source" "head-commit" "$_rep_src"
 
 # --- 18. Sol adversarial repros ---------------------------------------------
 # (a) An archive-provided symlink must be rejected before extraction.
@@ -628,8 +633,9 @@ PRE_BACKUP="$WORK/preswap-backup"
 mv "$PRE_DEST" "$PRE_BACKUP"
 ln -s "$PRE_VICTIM" "$PRE_DEST"
 ( cd "$REPO" && git archive --format=tar HEAD ) >"$WORK/preswap.tar" 2>/dev/null
+( cd "$REPO" && git show HEAD:export_presets.cfg ) >"$WORK/preswap-presrc.txt" 2>/dev/null
 mkdir -p "$WORK/preswap-stage"
-_out="$( es_build_reserved "$PRE_DEST" "$PRE_IDS" "$WORK/preswap.tar" "$WORK/preswap.err" "$WORK/preswap-stage" "$REPO" 2>&1 )"; _rc=$?
+_out="$( es_build_reserved "$PRE_DEST" "$PRE_IDS" "$WORK/preswap.tar" "$WORK/preswap-stage" "$REPO" "$WORK/preswap-presrc.txt" 2>&1 )"; _rc=$?
 assert_rc_nonzero "swap before cd refused before any write" "$_rc"
 assert_contains "cwd identity rejection reported" "$_out" "replaced before it was entered"
 assert_file_eq "pre-cd victim sentinel untouched" "preswap-victim-keep" "$PRE_VICTIM/sentinel.txt"
@@ -642,7 +648,7 @@ OKB_DEST="$WORK/out-heldok/candidate-snapshot"
 mkdir -p "$OKB_DEST"
 OKB_IDS="$(_es_path_ids "$OKB_DEST")" || { printf 'cannot identify held fixture\n' >&2; exit 2; }
 mkdir -p "$WORK/heldok-stage"
-_out="$( es_build_reserved "$OKB_DEST" "$OKB_IDS" "$WORK/preswap.tar" "$WORK/heldok.err" "$WORK/heldok-stage" "$REPO" 2>&1 )"; _rc=$?
+_out="$( es_build_reserved "$OKB_DEST" "$OKB_IDS" "$WORK/preswap.tar" "$WORK/heldok-stage" "$REPO" "$WORK/preswap-presrc.txt" 2>&1 )"; _rc=$?
 assert_rc_zero "held-directory build succeeds" "$_rc"
 assert_exists "held build extracted project.godot" "$OKB_DEST/project.godot"
 assert_file_eq "held build overlaid presets" "preset-tiny" "$OKB_DEST/export_presets.cfg"
@@ -774,6 +780,75 @@ _out="$( ( hash -r 2>/dev/null || :; export PATH="$FAKERM_DIR:$FAKETAR:$PATH"; e
 assert_rc_nonzero "failure path under rm shim still fails closed" "$_rc"
 assert_absent "no rm invocation during snapshot failure handling" "$WORK/rm-marker"
 assert_stage_retained "$NORM_OUT" "failure under rm shim retains its staging dir"
+
+# --- 21. commit-bound presets, bounded capture, validated source copy -------
+# (a) The live preset file differs from HEAD: the COMMITTED bytes are built.
+LP_REPO="$WORK/live-preset-repo"
+make_tiny_repo "$LP_REPO" yes || { printf 'fixture repo failed\n' >&2; exit 2; }
+( cd "$LP_REPO" && git show HEAD:export_presets.cfg ) >"$WORK/lp-committed.txt" 2>/dev/null
+LP_COMMITTED_SHA="$(es_sha256 "$WORK/lp-committed.txt")"
+printf 'preset-LIVE-uncommitted\n' >"$LP_REPO/export_presets.cfg"
+LP_LIVE_SHA="$(es_sha256 "$LP_REPO/export_presets.cfg")"
+LP_C1_SHA="$(es_resolve_head "$LP_REPO")"
+if [ "$LP_COMMITTED_SHA" != "$LP_LIVE_SHA" ]; then ok "fixture has live presets differing from HEAD"; else bad "fixture presets do not differ"; fi
+LP_OUT="$WORK/out-live-preset"
+LP_SNAP="$LP_OUT/candidate-snapshot"
+LP_DIG="$LP_OUT/archive.sha256"
+_out="$( es_make_frozen_snapshot "$LP_REPO" "$LP_SNAP" "$LP_DIG" 2>&1 )"; _rc=$?
+assert_rc_zero "snapshot builds from committed presets when live differs" "$_rc"
+assert_file_eq "candidate presets are the committed bytes" "preset-tiny" "$LP_SNAP/export_presets.cfg"
+assert_contains "recorded presets digest is the committed-bytes digest" "$(cat "$LP_DIG")" "presets_sha256=$LP_COMMITTED_SHA"
+
+# Runner-level diagnostic with a live preset differing from HEAD.
+LP_RUN_OUT="$WORK/out-live-preset-runner"
+_out="$( PROJECT_DIR="$LP_REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" sh "$RUNNER" --platform Linux --out "$LP_RUN_OUT" 2>&1 )"; _rc=$?
+assert_eq "live-preset runner still reaches the export stage (rc 1)" "1" "$_rc"
+LP_REP="$LP_RUN_OUT/export-smoke-report.txt"
+assert_exists "live-preset runner wrote a report" "$LP_REP"
+assert_contains "runner warns about differing live presets" "$_out" "differs from $LP_C1_SHA:export_presets.cfg"
+LP_MATCH="$(sed -n 's/^presets_live_matches_commit=//p' "$LP_REP" | head -n 1)"
+assert_eq "runner reports live presets differ" "false" "$LP_MATCH"
+LP_SRC="$(sed -n 's/^presets_source=//p' "$LP_REP" | head -n 1)"
+assert_eq "runner reports commit-bound presets source" "head-commit" "$LP_SRC"
+LP_ARCH="$(sed -n 's/^archive_sha256=//p' "$LP_REP" | head -n 1)"
+LP_SHA="$(es_resolve_head "$LP_REPO")"
+( cd "$LP_REPO" && git archive --format=tar "$LP_SHA" ) >"$WORK/lp-runner-expected.tar" 2>/dev/null
+assert_eq "runner archive digest binds the exact commit" "$(es_sha256 "$WORK/lp-runner-expected.tar")" "$LP_ARCH"
+
+# (b) >=1 MiB on stderr must not deadlock; direct descriptors and bounded run.
+BIG="$WORK/out-bigrun"
+mkdir -p "$BIG"
+_bt0="$(date +%s)"
+( export ES_EXCLUSIVE_TIMEOUT=5; es_run_exclusive . "$BIG/out.bin" "$BIG/err.bin" -- sh -c 'printf ok; head -c 1048576 /dev/zero >&2' ) 2>/dev/null; _brc=$?
+_bt1="$(date +%s)"
+assert_rc_zero "1 MiB stderr capture succeeds" "$_brc"
+assert_file_eq "stdout captured exactly" "ok" "$BIG/out.bin"
+_errsz="$(wc -c <"$BIG/err.bin" | tr -d ' ')"
+assert_eq "full 1 MiB stderr captured" "1048576" "$_errsz"
+if [ $((_bt1 - _bt0)) -le 5 ]; then ok "large capture stayed within its bound"; else bad "large capture exceeded its bound"; fi
+
+# (c) A FIFO source is refused without blocking and creates no destination.
+FIFO_SRC="$WORK/copy-fifo-src"
+mkfifo "$FIFO_SRC"
+FIFO_OUT="$WORK/out-fifo"
+mkdir -p "$FIFO_OUT"
+_ft0="$(date +%s)"
+( export ES_EXCLUSIVE_TIMEOUT=3; _es_copy_exclusive "$FIFO_SRC" "$FIFO_OUT/dst" "$FIFO_OUT/err" ) 2>/dev/null; _frc=$?
+_ft1="$(date +%s)"
+assert_rc_nonzero "FIFO source refused" "$_frc"
+assert_absent "no destination created from a FIFO" "$FIFO_OUT/dst"
+if [ -p "$FIFO_SRC" ]; then ok "FIFO left intact"; else bad "FIFO was consumed or removed"; fi
+if [ $((_ft1 - _ft0)) -le 3 ]; then ok "FIFO refusal stayed within its bound"; else bad "FIFO open exceeded its bound"; fi
+assert_contains "non-regular source reason recorded" "$(cat "$FIFO_OUT/err" 2>/dev/null)" "not a regular file"
+
+# (d) A symlinked source is refused without following it.
+SL_TARGET="$WORK/link-src-target.txt"
+printf 'target-keep\n' >"$SL_TARGET"
+ln -s "$SL_TARGET" "$WORK/link-src"
+_es_copy_exclusive "$WORK/link-src" "$FIFO_OUT/dst2" "$FIFO_OUT/err2" 2>/dev/null; _src=$?
+assert_rc_nonzero "symlink source refused" "$_src"
+assert_file_eq "symlink target untouched" "target-keep" "$SL_TARGET"
+assert_absent "no destination created through a symlink source" "$FIFO_OUT/dst2"
 
 printf '[export-smoke-tests] summary pass=%s fail=%s\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then

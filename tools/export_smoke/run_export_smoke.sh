@@ -223,6 +223,16 @@ fi
 if ! es_is_hex_sha256 "$PRESETS_SHA"; then
 	die 2 "frozen presets SHA-256 is missing or invalid: '$PRESETS_SHA'"
 fi
+# Presets are commit-bound. Diagnose (but do not use) a differing live copy.
+LIVE_PRE_SHA="$(es_sha256 "$PROJECT_DIR/export_presets.cfg" 2>/dev/null)"
+if [ -n "$LIVE_PRE_SHA" ] && [ "$LIVE_PRE_SHA" = "$PRESETS_SHA" ]; then
+	PRESETS_LIVE_MATCH=true
+else
+	PRESETS_LIVE_MATCH=false
+	if [ -n "$LIVE_PRE_SHA" ]; then
+		warn "live export_presets.cfg differs from $SRC_SHA:export_presets.cfg; the committed bytes were built and reported"
+	fi
+fi
 # The evidence file is left in place: deleting it through a mutable pathname
 # could remove a concurrently planted foreign file. It is a small dotfile in
 # the reserved output directory.
@@ -357,6 +367,8 @@ es_check_package() {
 	printf 'head_tree=%s\n' "$SRC_TREE"
 	printf 'archive_sha256=%s\n' "$ARCHIVE_SHA"
 	printf 'presets_sha256=%s\n' "$PRESETS_SHA"
+	printf 'presets_source=head-commit\n'
+	printf 'presets_live_matches_commit=%s\n' "$PRESETS_LIVE_MATCH"
 	printf 'candidate_digest=%s\n' "$CANDIDATE_SHA"
 	printf 'diagnostic_enable_etc2_astc=%s\n' "$DIAG_ETC2"
 	printf 'launch_probe=%s\n' "$LAUNCH_PROBE"

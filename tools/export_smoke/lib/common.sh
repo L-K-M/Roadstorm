@@ -200,11 +200,16 @@ try:
 except OSError:
     sys.exit(3)
 data=sys.stdin.buffer.read()
-try:
-    with os.fdopen(fd,"wb") as f:
-        f.write(data)
-except OSError:
-    sys.exit(4)
+off=0
+while off<len(data):
+    try:
+        n=os.write(fd,data[off:])
+    except OSError:
+        sys.exit(4)
+    if n<=0:
+        sys.exit(4)
+    off+=n
+os.close(fd)
 ' "$_file" 2>/dev/null
 	else
 		printf '' | python3 -c '
@@ -231,13 +236,13 @@ es_run_exclusive() {
 	[ "$1" = "--" ] && shift
 	es_require_python || return 1
 	python3 -c '
-import os,subprocess,sys
+import os,signal,subprocess,sys
 wd,out,err=sys.argv[1],sys.argv[2],sys.argv[3]
 cmd=sys.argv[4:]
 def op(p):
     return os.open(p,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
 try:
-    fd_o=op(out)
+    fd_o=op(out) if out else None
 except OSError:
     sys.exit(3)
 fd_e=None
@@ -245,30 +250,46 @@ if err:
     try:
         fd_e=op(err)
     except OSError:
-        os.close(fd_o)
+        if fd_o is not None:
+            os.close(fd_o)
         sys.exit(3)
+def note(msg):
+    if fd_e is not None:
+        try:
+            os.write(fd_e,msg.encode())
+        except OSError:
+            pass
 try:
-    p=subprocess.Popen(cmd,cwd=wd or None,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    p=subprocess.Popen(cmd,cwd=wd or None,
+        stdout=fd_o if fd_o is not None else subprocess.DEVNULL,
+        stderr=fd_e if fd_e is not None else subprocess.DEVNULL,
+        start_new_session=True)
 except OSError as e:
-    sys.stderr.write("exec failed: %s\n"%e)
+    note("exec failed: %s\n"%e)
+    if fd_o is not None:
+        os.close(fd_o)
+    if fd_e is not None:
+        os.close(fd_e)
     sys.exit(127)
-while True:
-    c=p.stdout.read(65536)
-    if not c: break
-    os.write(fd_o,c)
-p.stdout.close()
-if fd_e is not None:
-    while True:
-        c=p.stderr.read(65536)
-        if not c: break
-        os.write(fd_e,c)
-else:
-    p.stderr.read()
-p.stderr.close()
-os.close(fd_o)
+if fd_o is not None:
+    os.close(fd_o)
 if fd_e is not None:
     os.close(fd_e)
-sys.exit(p.wait())
+try:
+    t=float(os.environ.get("ES_EXCLUSIVE_TIMEOUT","300") or 300)
+except ValueError:
+    t=300.0
+try:
+    rc=p.wait(timeout=t)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(os.getpgid(p.pid),signal.SIGKILL)
+    except OSError:
+        p.kill()
+    p.wait()
+    note("timed out after %.0fs\n"%t)
+    sys.exit(124)
+sys.exit(rc)
 ' "$_rx_wd" "$_rx_out" "$_rx_err" "$@" 2>/dev/null
 }
 
@@ -280,7 +301,7 @@ _es_copy_exclusive() {
 	_cp_src="$1"; _cp_dst="$2"; _cp_err="$3"
 	es_require_python || return 1
 	python3 -c '
-import os,sys
+import errno,fcntl,os,stat,sys
 src,dst,err=sys.argv[1],sys.argv[2],sys.argv[3]
 def op(p):
     return os.open(p,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
@@ -292,24 +313,40 @@ if err:
         sys.exit(3)
 def fail(msg,code):
     if fd_e is not None:
-        try: os.write(fd_e,msg.encode())
-        except OSError: pass
+        try:
+            os.write(fd_e,msg.encode())
+        except OSError:
+            pass
     sys.exit(code)
 try:
-    fs=os.open(src,os.O_RDONLY)
+    fs=os.open(src,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
 except OSError as e:
-    fail("cannot open source: %s\n"%e,1)
+    fail("cannot open source (regular file required): %s\n"%e,1)
+st=os.fstat(fs)
+if not stat.S_ISREG(st.st_mode):
+    os.close(fs)
+    fail("source is not a regular file; refusing\n",1)
+fl=fcntl.fcntl(fs,fcntl.F_GETFL)
+fcntl.fcntl(fs,fcntl.F_SETFL,fl & ~os.O_NONBLOCK)
 try:
-    fd=dst and op(dst)
+    fd=op(dst)
 except OSError as e:
-    os.close(fs); fail("destination exists or uncreatable: %s\n"%e,3)
+    os.close(fs)
+    fail("destination exists or uncreatable: %s\n"%e,3)
 try:
     while True:
         c=os.read(fs,65536)
-        if not c: break
-        os.write(fd,c)
+        if not c:
+            break
+        w=0
+        while w<len(c):
+            n=os.write(fd,c[w:])
+            if n<=0:
+                raise OSError("short write")
+            w+=n
 finally:
-    os.close(fs); os.close(fd)
+    os.close(fs)
+    os.close(fd)
 if fd_e is not None:
     os.close(fd_e)
 ' "$_cp_src" "$_cp_dst" "$_cp_err" 2>/dev/null
@@ -354,15 +391,16 @@ es_validate_archive() {
 	return 0
 }
 
-# es_build_reserved <snap-abs> <res-ids> <archive> <errfile> <stage> <proj-abs>
+# es_build_reserved <snap-abs> <res-ids> <archive> <stage> <proj-abs> <presets-src>
 # Extracts and overlays INSIDE an already-reserved directory while holding it
 # as cwd. The first action after cd verifies that the process current directory
 # (.) still has the reserved device:inode, so a pathname swapped before cd is
 # detected before any write; a later swap cannot redirect writes because cwd
 # stays bound to the original inode. Re-verified immediately before preset temp
-# creation. Returns nonzero with diagnostics on stderr.
+# creation. <presets-src> is the commit-captured export_presets.cfg bytes, not
+# the live working-tree file. Returns nonzero with diagnostics on stderr.
 es_build_reserved() {
-	_br_snap="$1"; _br_ids="$2"; _br_archive="$3"; _br_err="$4"; _br_stage="$5"; _br_proj="$6"
+	_br_snap="$1"; _br_ids="$2"; _br_archive="$3"; _br_stage="$4"; _br_proj="$5"; _br_presrc="$6"
 	(
 		if ! cd "$_br_snap" 2>/dev/null; then
 			printf '[export-smoke] FAIL: cannot enter the reserved snapshot dir\n' >&2
@@ -376,13 +414,13 @@ es_build_reserved() {
 			printf '[export-smoke] FAIL: the reserved snapshot dir was replaced before it was entered; refusing to write\n' >&2
 			exit 1
 		fi
-		if ! tar -x -f "$_br_archive" -C . 2>"$_br_err"; then
+		if ! es_run_exclusive . "" "$_br_stage/extract.err" -- tar -x -f "$_br_archive" -C .; then
 			printf '[export-smoke] FAIL: extracting the frozen archive failed\n' >&2
-			sed -n '1,5p' "$_br_err" 2>/dev/null | sed 's/^/[export-smoke]   /' >&2
+			sed -n '1,5p' "$_br_stage/extract.err" 2>/dev/null | sed 's/^/[export-smoke]   /' >&2
 			exit 1
 		fi
-		if [ ! -f "$_br_proj/export_presets.cfg" ]; then
-			printf '[export-smoke] FAIL: project has no export_presets.cfg to overlay\n' >&2
+		if [ ! -f "$_br_presrc" ]; then
+			printf '[export-smoke] FAIL: committed export_presets.cfg capture is missing\n' >&2
 			exit 1
 		fi
 		_cwd_ids="$(_es_path_ids ".")" || {
@@ -396,7 +434,7 @@ es_build_reserved() {
 		# Copy through an atomic O_EXCL open of a deterministic name in the
 		# held directory; a swapped or pre-existing destination fails closed.
 		_ptmp="./.roadstorm-presets.$$"
-		if ! _es_copy_exclusive "$_br_proj/export_presets.cfg" "$_ptmp" "$_br_stage/presets.copy.err"; then
+		if ! _es_copy_exclusive "$_br_presrc" "$_ptmp" "$_br_stage/presets.copy.err"; then
 			printf '[export-smoke] FAIL: could not copy export_presets.cfg exclusively\n' >&2
 			exit 1
 		fi
@@ -432,10 +470,11 @@ es_build_reserved() {
 #     extracted to <snapshot-dir>. With no commit-sha it archives HEAD. The
 #     SHA must be an immutable 40-digit hex commit, so a moving shared HEAD
 #     cannot change what gets archived between resolution and extraction.
-#   * Overlay ONLY the owned export presets (export_presets.cfg), written
-#     through a private temporary file and renamed into place, so a symlink at
-#     the destination (from the archive or a concurrent replacement) is never
-#     followed.
+#   * Overlay the COMMITTED export_presets.cfg bytes for <commit-sha>,
+#     captured with `git show <sha>:export_presets.cfg`; the live working-tree
+#     file is never read, hashed or overlaid. It is copied through an
+#     O_EXCL-created file and renamed into place, so a symlink at the
+#     destination (archive-provided or concurrently placed) is never followed.
 #   * With the optional <archive-digest-file>, writes two labelled lines with
 #     the SHA-256 of the exact archive bytes extracted and of the exact copied
 #     preset bytes (no second live read). That file must not already exist; it
@@ -592,6 +631,22 @@ es_make_frozen_snapshot() {
 		return 1
 	fi
 
+	# Capture the COMMITTED export_presets.cfg bytes for this exact revision.
+	# The live working-tree copy is never read, hashed or overlaid.
+	if ! ( cd "$_proj_abs" && git cat-file -e "$_archive_rev:export_presets.cfg" ) >/dev/null 2>&1; then
+		printf '[export-smoke] FAIL: head commit has no export_presets.cfg: %s:export_presets.cfg\n' "$_archive_rev" >&2
+		_es_cleanup_stage "$_stage" "$_stage_ids"
+		_note_left
+		return 1
+	fi
+	if ! es_run_exclusive "$_proj_abs" "$_stage/presets.committed" "$_stage/presets.capture.err" -- git show "$_archive_rev:export_presets.cfg"; then
+		printf '[export-smoke] FAIL: could not read %s:export_presets.cfg\n' "$_archive_rev" >&2
+		sed -n '1,5p' "$_stage/presets.capture.err" 2>/dev/null | sed 's/^/[export-smoke]   /' >&2
+		_es_cleanup_stage "$_stage" "$_stage_ids"
+		_note_left
+		return 1
+	fi
+
 	# Stage 2a: reject unsafe archive content BEFORE extraction. Only regular
 	# files and directories are accepted; symlinks, hard links, devices and
 	# fifos could otherwise make later writes escape the private root.
@@ -608,7 +663,7 @@ es_make_frozen_snapshot() {
 	fi
 
 	# Stage 2b: extract and overlay with the reservation held as cwd.
-	if ! es_build_reserved "$_snap_abs" "$_res_ids" "$_archive" "$_err" "$_stage" "$_proj_abs"; then
+	if ! es_build_reserved "$_snap_abs" "$_res_ids" "$_archive" "$_stage" "$_proj_abs" "$_stage/presets.committed"; then
 		_es_cleanup_stage "$_stage" "$_stage_ids"
 		_note_left
 		return 1
