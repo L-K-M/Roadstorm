@@ -1,0 +1,219 @@
+{
+  "base_commit": "d562755c83af1129b4ddf7043baee8d8a742d358",
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "evidence_sha256": {
+    "README.md": "8f05cc66fb1b36ed2defc057c4f185f8cb8aeb9eb73ce76a0bcc33f15aa4683c",
+    "compare-modes.txt": "08def4f17db728bb4d4c86f532c24f66629cf80351d02f650b9dfac764f92b60",
+    "concurrent-load/compare.txt": "84a8fca547af5135cba98d74edb5a68479506a4c88297c95cd14000762ff80e9",
+    "concurrent-load/contract-default.txt": "ec8301ad5c6892075851c5f1567134324199bcb3a01a2bf9e5f313c3502f14ad",
+    "concurrent-load/contract-fixed.txt": "4b97a343846e803ddf5a3c4586564713781b552aa1f31d51ca4d576398c21f6f",
+    "concurrent-load/contract-max.txt": "e06f27d4bdc0adb874296abc443af2d7b272b38458ea78f33ac3eb873ddba754",
+    "concurrent-load/structural.txt": "389e3a3e6472dd4997933c3fafba9209fcec2633138d594c3030fa926d9510c8",
+    "contract-default/contract-tests.json": "118cb82fe7d203c39394767dfe0f04419c40750b4cff5565d79e719e4d1454e4",
+    "contract-default/contract-tests.txt": "4c00d494b47f4467424c82489c364c91ac24771a14bd7fd3776672f5244ea9e7",
+    "contract-default/run.txt": "ec8301ad5c6892075851c5f1567134324199bcb3a01a2bf9e5f313c3502f14ad",
+    "contract-fixed/contract-tests.json": "118cb82fe7d203c39394767dfe0f04419c40750b4cff5565d79e719e4d1454e4",
+    "contract-fixed/contract-tests.txt": "4c00d494b47f4467424c82489c364c91ac24771a14bd7fd3776672f5244ea9e7",
+    "contract-fixed/run.txt": "4b97a343846e803ddf5a3c4586564713781b552aa1f31d51ca4d576398c21f6f",
+    "contract-max/contract-tests.json": "118cb82fe7d203c39394767dfe0f04419c40750b4cff5565d79e719e4d1454e4",
+    "contract-max/contract-tests.txt": "4c00d494b47f4467424c82489c364c91ac24771a14bd7fd3776672f5244ea9e7",
+    "contract-max/run.txt": "e06f27d4bdc0adb874296abc443af2d7b272b38458ea78f33ac3eb873ddba754",
+    "exit-code-selftest.txt": "013bb86430d903966948ec765ef9e5aa1855c9e06458b61a2029fb3acd0a21b1",
+    "harness-timing/post-fix-boundary-concurrent-1.txt": "7db35ac533f797d0449dff7f51f885b5e1199c353db336b5ca8642c000817858",
+    "harness-timing/post-fix-boundary-concurrent-2.txt": "4fb714ffc52af22da17eb425f9cd11ae651a50e64131ede0e42f10450203f812",
+    "harness-timing/post-fix-boundary-concurrent-3.txt": "4fb714ffc52af22da17eb425f9cd11ae651a50e64131ede0e42f10450203f812",
+    "harness-timing/post-fix-boundary-concurrent-4.txt": "7db35ac533f797d0449dff7f51f885b5e1199c353db336b5ca8642c000817858",
+    "harness-timing/post-fix-boundary-concurrent-5.txt": "4fb714ffc52af22da17eb425f9cd11ae651a50e64131ede0e42f10450203f812",
+    "harness-timing/post-fix-boundary-concurrent-6.txt": "190580f50d4ed8c876987208c127510688f8f068e3a5228cfe0696e9268588bf",
+    "harness-timing/post-fix-boundary-concurrent-7.txt": "7db35ac533f797d0449dff7f51f885b5e1199c353db336b5ca8642c000817858",
+    "harness-timing/post-fix-boundary-concurrent-8.txt": "4fb714ffc52af22da17eb425f9cd11ae651a50e64131ede0e42f10450203f812",
+    "harness-timing/post-fix-boundary-serial.txt": "4fb714ffc52af22da17eb425f9cd11ae651a50e64131ede0e42f10450203f812",
+    "harness-timing/pre-fix-post-poll-concurrent.txt": "4afe29f0060d4500776e2894b687275abd1adaa9f29643186825d1825bca044b",
+    "mutation-sensitivity.txt": "6f540396f8f1c3d9c0f43a8d4d9f307a78343a14d135902e4fed24ccc4f09197",
+    "post-fix-edge-verification.txt": "5b308a12f9080b4a630257d4fc704d572bb00e780e278b1a96f46f82bb1b341a",
+    "pre-fix-edge-reproduction.txt": "4a94eec018aaa9d30c95db4b75eb6be2f27c5192bc3d5ea3ca2b14dadbf376e9",
+    "structural-default.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-default.json": "c9c92cb22f235412510c60674fb2dba2b0ee4d71d3bf25e7bb0c2bddafe9bfdf",
+    "structural-default.raw.txt": "c0c1ef5b037cf19222690a5393b4a912676a1d373c804442996c865e1c1c550f",
+    "structural-fixed-fps.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-fixed-fps.json": "179f6d80c166a7e1b0759bfbd2a21e5d79fda6bb56ab8a30caa107aa74ae38a3",
+    "structural-fixed-fps.raw.txt": "389e3a3e6472dd4997933c3fafba9209fcec2633138d594c3030fa926d9510c8",
+    "structural-max-fps-60.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-max-fps-60.json": "179f6d80c166a7e1b0759bfbd2a21e5d79fda6bb56ab8a30caa107aa74ae38a3",
+    "structural-max-fps-60.raw.txt": "389e3a3e6472dd4997933c3fafba9209fcec2633138d594c3030fa926d9510c8"
+  },
+  "file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "0b29eb8302ca7894dab0312f926d7d7b5e4c6319d2015ef00f81abd52ae1917e",
+    "compare_modes.py": "e055ba13766c005af6c5dfcdad884979dba5f1601dea4f1cde5391777f25cbcc",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "8f1aa7e38eb728c9942e5d467d0a653ee18e136c419e4cb0e73b8c78013ae8b5",
+    "src/tick_coordinator.gd": "c4913f46eba654a7c16b7f11f8dce30571fb35d43c0d41999a135f22322c2204",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/contract_driver.gd": "7fff63a4d954ee094d3765671b5ba2aa2621569135706028f0e0307adb658d91",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/run_contract_tests.py": "531bad65b0f51e1f464eae71c69842214dc223a63ebf61c7f53a4ded612e5bf4"
+  },
+  "followup_report": "review/implementation/m0-tick-sol-recheck-bdb0a98.md",
+  "limits": [
+    "One-car CharacterBody3D probe; not full M1 motor, AI, contact resolver, multi-car reset, interactive invocation or full simulation.",
+    "Same-host determinism only; cross-platform byte equality is not claimed.",
+    "Backend identity inferred from the pinned setting plus historical contrast; not directly observable.",
+    "Concurrent-load timing numbers are host-specific.",
+    "Negative/zero-tick/refusal API behavior is enforced by boolean returns and counter bookkeeping; callers that ignore return values can still misorder calls."
+  ],
+  "machine": "arm64",
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "prior_manifest_verification": {
+    "candidate": "bdb0a9820b847d23628cce35a9070bb63ae17acd",
+    "entries": 34,
+    "manifest": "evidence/2026-11-27-apple-m4-max-jolt-waitguard/manifest.sha256",
+    "mismatch": 0,
+    "note": "every entry recomputed with git show bdb0a98:<path> and matched byte-for-byte",
+    "ok": 34
+  },
+  "python": "3.15.2",
+  "reviewed_candidate_commit": "bdb0a9820b847d23628cce35a9070bb63ae17acd",
+  "reviewed_candidate_file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "1a6ae2ff057ca7e01e2b25a5e898823f9574fcc53aa1ead51ce82b3266ee3672",
+    "compare_modes.py": "e055ba13766c005af6c5dfcdad884979dba5f1601dea4f1cde5391777f25cbcc",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "426cf0bd63168780f5e53585c004ff168437fec50f6ae8438b4f108af8876bbe",
+    "src/tick_coordinator.gd": "aefb158e5dcb68ce671d71639a8d1661c15628131c6f24bae9f33acea027af02",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/contract_driver.gd": "0916b1451d55b3455f3a6bd2d2a6b7768f3f066d1816dac339d72bf93ecf07f3",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/run_contract_tests.py": "4670823760665b508c56394edc67900ba14c84db33582df0c3a80ce3d1d98914"
+  },
+  "reviewed_candidate_short": "bdb0a98",
+  "run_policy": "headless isolated copies; no HOME override; XDG/TMPDIR redirected by the contract runner; each run <= 30 s; no GUI, Git or installed-tool mutation",
+  "runs": [
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "command": "godot --headless --fixed-fps 60 --path <isolated> --script res://src/tick_probe.gd -- mode=structural",
+      "exit": 0,
+      "name": "structural-fixed-fps",
+      "wall_s": 0
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "command": "godot --headless --path <isolated> --script res://src/tick_probe.gd -- mode=structural",
+      "exit": 0,
+      "name": "structural-default",
+      "wall_s": 9
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "command": "godot --headless --max-fps 60 --path <isolated> --script res://src/tick_probe.gd -- mode=structural",
+      "exit": 0,
+      "name": "structural-max-fps-60",
+      "wall_s": 11
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 69,
+      "command": "python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --timeout 25",
+      "exit": 0,
+      "name": "contract-fixed",
+      "wall_s": 0
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 69,
+      "command": "python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --timeout 25",
+      "exit": 0,
+      "name": "contract-default",
+      "wall_s": 6
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 69,
+      "command": "python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --timeout 25",
+      "exit": 0,
+      "name": "contract-max",
+      "wall_s": 5
+    },
+    {
+      "command": "python3 tools/tick_probe/compare_modes.py --project <isolated> --timeout 25",
+      "exit": 0,
+      "name": "compare-modes",
+      "result": "COMPARISON PASS",
+      "throughput_passes": 9,
+      "trace_max_abs_diff_m": 0.0,
+      "trace_passes": 2,
+      "wall_s": 14
+    },
+    {
+      "command": "contract fixed+default+max, structural and compare launched together",
+      "exit": 0,
+      "name": "concurrent-load",
+      "results": {
+        "compare": "COMPARISON PASS",
+        "contract_default": "69/69",
+        "contract_fixed": "69/69",
+        "contract_max": "69/69",
+        "structural": "108/108"
+      }
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 5,
+      "command": "godot --headless --fixed-fps 60 --path <isolated> --script res://src/tick_probe.gd -- mode=throughput requests=2 inject_failure=1",
+      "exit": 1,
+      "expected_failure": "injected failure (exit-code self-test)",
+      "name": "exit-code-selftest"
+    },
+    {
+      "command": "godot --headless --fixed-fps 60 --path <pristine bdb0a98 copy> --script res://src/edge_entry.gd",
+      "exit": 0,
+      "name": "pre-fix-edge-reproduction",
+      "observed": {
+        "cap0_reset_terminal": "none",
+        "negative_after_terminal_accepted": true,
+        "zero_tick_signal_paused": false
+      }
+    },
+    {
+      "command": "godot --headless --fixed-fps 60 --path <fixed copy> --script res://src/edge_entry.gd",
+      "exit": 0,
+      "name": "post-fix-edge-verification",
+      "observed": {
+        "cap0_reset_terminal": "truncated",
+        "negative_after_terminal_accepted": false,
+        "negative_refusal_reason": "negative requested_ticks",
+        "zero_tick_signal_paused": true
+      }
+    },
+    {
+      "command": "6 concurrent max-FPS polling stress processes on pristine bdb0a98",
+      "name": "harness-timing-pre-fix",
+      "observed": {
+        "of_requests": 100,
+        "one_run_overcounts": 10,
+        "tick_delta_always": 1
+      }
+    },
+    {
+      "command": "serial + 8 concurrent boundary-stress processes",
+      "name": "harness-timing-post-fix",
+      "observed": {
+        "boundary_mismatches_all_runs": 0,
+        "max_post_poll_overcount": 30,
+        "requests_per_process": 100,
+        "sim_advance_mismatches_all_runs": 0
+      }
+    },
+    {
+      "checks_failed": 7,
+      "checks_total": 69,
+      "command": "godot --headless --fixed-fps 60 --path <scratch copy with three fixes disabled> --script res://tests/contract_entry.gd",
+      "exit": 1,
+      "name": "mutation-sensitivity"
+    }
+  ],
+  "schema": "roadstorm.tick_probe.apiedges_evidence.v1"
+}

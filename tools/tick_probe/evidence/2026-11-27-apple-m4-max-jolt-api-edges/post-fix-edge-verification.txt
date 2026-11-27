@@ -1,0 +1,8 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+NEG_TERM_PRE terminal=truncated elapsed=1 ticks=1 refusals=0
+NEG_TERM accepted=false pending=false signal={ "paused_at_signal": true, "requested_ticks": 12, "elapsed_ticks": 1, "terminal": "truncated", "signal_tick_count": 1, "coord_tick_count": 1 } result_req=none result_elapsed=none result_terminal=none ticks=1 refusals=1 refusal=negative requested_ticks
+ZERO_SIG accepted=true pending=true signal={ "paused_at_signal": true, "requested_ticks": 0, "elapsed_ticks": 0, "terminal": "none", "signal_tick_count": 0, "coord_tick_count": 0 } tree_paused_after=true result_elapsed=0 result_terminal=none ticks=0
+CAP0_RESET terminal=truncated paused=true ticks=0
+CAP0_BEGIN accepted=true terminal=truncated elapsed=0 ticks=0 paused=true
+EDGE_DONE

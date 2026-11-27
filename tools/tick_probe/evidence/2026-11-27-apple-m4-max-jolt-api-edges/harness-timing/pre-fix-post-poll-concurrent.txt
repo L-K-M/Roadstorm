@@ -1,0 +1,11 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+STRESS requests=100 mismatches=10 sim_advance_mismatch=0
+STRESS_SAMPLE i=5 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=9 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=14 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=26 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=40 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=66 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=72 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1
+STRESS_SAMPLE i=82 elapsed=1 ext_delta=2 coord_delta=2 tick_delta=1

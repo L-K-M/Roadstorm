@@ -67,9 +67,16 @@ def run_probe(
         f"mode={mode}",
         f"label={label}",
     ]
+    pacing = "fixed" if "--fixed-fps" in flags else ("max" if "--max-fps" in flags else "default")
+    cmd.append(f"pacing={pacing}")
     if extra:
         cmd.extend(extra)
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    combined = proc.stdout + proc.stderr
+    # N3: never accept a run whose script failed to compile or was truncated.
+    for marker in ("SCRIPT ERROR", "Parse Error", "Failed to load script"):
+        if marker in combined:
+            raise RuntimeError(f"{label} {mode} probe reported {marker!r}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
     if proc.returncode != 0:
         raise RuntimeError(
             f"{label} {mode} probe exited {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
@@ -80,14 +87,26 @@ def run_probe(
     return report
 
 
-def run_mode(godot: str, project: Path, label: str, flags: list[str], requests: int, timeout: float) -> dict:
-    return run_probe(godot, project, label, flags, "throughput", timeout, [f"requests={requests}"])[
-        "scenarios"
-    ]["throughput"]
+def run_mode(godot: str, project: Path, label: str, flags: list[str], requests: int, timeout: float,
+             expect_checks: int = 0) -> dict:
+    report = run_probe(godot, project, label, flags, "throughput", timeout, [f"requests={requests}"])
+    _enforce_expected_checks(label, "throughput", report, expect_checks)
+    return report["scenarios"]["throughput"]
 
 
-def run_trace(godot: str, project: Path, label: str, flags: list[str], timeout: float) -> dict:
-    return run_probe(godot, project, label, flags, "trace", timeout)["scenarios"]["trace"]
+def run_trace(godot: str, project: Path, label: str, flags: list[str], timeout: float,
+              expect_checks: int = 0) -> dict:
+    report = run_probe(godot, project, label, flags, "trace", timeout)
+    _enforce_expected_checks(label, "trace", report, expect_checks)
+    return report["scenarios"]["trace"]
+
+
+def _enforce_expected_checks(label: str, mode: str, report: dict, expected: int) -> None:
+    if not expected:
+        return
+    actual = int(report.get("checks_total", -1))
+    if actual != expected:
+        raise RuntimeError(f"{label} {mode} probe reported {actual} checks, expected {expected}")
 
 
 def _is_number(value: object) -> bool:
@@ -132,6 +151,10 @@ def main() -> int:
     parser.add_argument("--project", default=None, help="probe project directory (default: this script's directory)")
     parser.add_argument("--requests", type=int, default=50, help="training requests of 12 ticks (default: 50)")
     parser.add_argument("--timeout", type=float, default=30.0, help="per-run timeout in seconds")
+    parser.add_argument("--expect-throughput-checks", type=int, default=0,
+                        help="fail unless throughput reports exactly this many checks (0 disables)")
+    parser.add_argument("--expect-trace-checks", type=int, default=0,
+                        help="fail unless trace reports exactly this many checks (0 disables)")
     args = parser.parse_args()
 
     project = Path(args.project).resolve() if args.project else Path(__file__).resolve().parent
@@ -140,12 +163,29 @@ def main() -> int:
         return 1
 
     try:
-        accelerated = run_mode(args.godot, project, "accelerated", ["--fixed-fps", "60"], args.requests, args.timeout)
-        realtime = run_mode(args.godot, project, "realtime", ["--max-fps", "60"], args.requests, args.timeout)
-        acc_trace = run_trace(args.godot, project, "accelerated", ["--fixed-fps", "60"], args.timeout)
-        rt_trace = run_trace(args.godot, project, "realtime", ["--max-fps", "60"], args.timeout)
-        def_trace = run_trace(args.godot, project, "default", [], args.timeout)
-    except (subprocess.TimeoutExpired, RuntimeError) as exc:
+        accelerated = run_mode(args.godot, project, "accelerated", ["--fixed-fps", "60"], args.requests,
+                                args.timeout, args.expect_throughput_checks)
+        realtime = run_mode(args.godot, project, "realtime", ["--max-fps", "60"], args.requests,
+                            args.timeout, args.expect_throughput_checks)
+        acc_trace = run_trace(args.godot, project, "accelerated", ["--fixed-fps", "60"], args.timeout,
+                             args.expect_trace_checks)
+        rt_trace = run_trace(args.godot, project, "realtime", ["--max-fps", "60"], args.timeout,
+                            args.expect_trace_checks)
+        def_trace = run_trace(args.godot, project, "default", [], args.timeout, args.expect_trace_checks)
+    except subprocess.TimeoutExpired as exc:
+        partial = ""
+        for stream in (exc.stdout, exc.stderr):
+            if isinstance(stream, bytes):
+                partial += stream.decode("utf-8", "replace")
+            elif stream:
+                partial += str(stream)
+        for marker in ("SCRIPT ERROR", "Parse Error", "Failed to load script"):
+            if marker in partial:
+                print(f"ERROR: engine reported {marker!r} before the per-run timeout", file=sys.stderr)
+                return 1
+        print(f"ERROR: probe exceeded the per-run timeout", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

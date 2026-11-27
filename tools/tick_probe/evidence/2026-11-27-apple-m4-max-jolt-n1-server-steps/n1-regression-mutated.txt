@@ -1,0 +1,9 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+PASS n1: cold-start warm-up stays within one server step
+FAIL n1: 12-tick request integrates exactly 12 physics-server steps (#1) | delta=11 elapsed=12 paused=true
+FAIL n1: 12-tick request integrates exactly 12 physics-server steps (#2) | delta=11 elapsed=12 paused=true
+PASS n1: continuous 12-frame control integrates exactly 12 server steps
+PASS n1: frozen waiting integrates no server step and moves no body
+N1_RESULT {"checks_failed":2,"checks_total":5,"failures":["FAIL n1: 12-tick request integrates exactly 12 physics-server steps (#1) | delta=11 elapsed=12 paused=true","FAIL n1: 12-tick request integrates exactly 12 physics-server steps (#2) | delta=11 elapsed=12 paused=true"],"schema":"roadstorm.tick_probe.n1.v1"}
+N1_TOTAL=5 N1_FAILED=2

@@ -1,0 +1,268 @@
+{
+  "base_commit": "d562755c83af1129b4ddf7043baee8d8a742d358",
+  "candidate_identity": {
+    "current_worktree_includes_uncommitted_n1_server_step_fix": true,
+    "current_worktree_includes_uncommitted_sol_api_edge_fixes": true,
+    "files_absent_from_reported_candidate": [
+      "tests/counting_body.gd",
+      "tests/n1_regression_entry.gd",
+      "tests/n1_regression_driver.gd"
+    ],
+    "files_changed_since_reported_candidate": [
+      "README.md",
+      "compare_modes.py",
+      "src/tick_coordinator.gd",
+      "src/probe_driver.gd",
+      "tests/contract_driver.gd",
+      "tests/run_contract_tests.py"
+    ],
+    "note": "follow-up contents under file_sha256; reported blobs under reviewed_candidate_file_sha256",
+    "reported_candidate": "bdb0a9820b847d23628cce35a9070bb63ae17acd"
+  },
+  "cold_start_measurement": {
+    "continuous_cold_baseline_fixed": {
+      "12_frames": 11,
+      "1_frame": 0
+    },
+    "earlier_caveat_status": "withdrawn: continuous baseline registration latency explained the apparent first-request miss; direct request measurement is exact",
+    "fresh_first_requests_bdb0a98": {
+      "12_ticks": 11,
+      "1_tick": 0,
+      "repeated_12_ticks": [
+        11,
+        11
+      ]
+    },
+    "fresh_first_requests_fixed": {
+      "12_ticks": 12,
+      "1_tick": 1,
+      "24_tick_scratch": 24,
+      "repeated_12_ticks": [
+        12,
+        12
+      ]
+    },
+    "frozen_wait_steps": 0,
+    "pause_callback_engine_frame_delta": "n+1 while counted integrations equal n"
+  },
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "evidence_sha256": {
+    "README.md": "9ff5c021d453201584630231af092f678a6f06ce1ddea20dfb636e9a2c9e87f7",
+    "compare-modes.txt": "4cc65f9897f82da95d7e23c08d3af76c57105358a074b73076f7448843c55365",
+    "contract-default/contract-tests.json": "f3d51d455b7bac247d9f0189b422404d28514dc319d51d75290755eaed576508",
+    "contract-default/contract-tests.txt": "13e69be706558ab226207e407b904e9c0148c8f3bbd13fcb6b5f29445af35385",
+    "contract-default/run.txt": "817fbec761cd0b2f9f27cf6911112b801c060244efe871fa96923749f73a5402",
+    "contract-fixed/contract-tests.json": "f3d51d455b7bac247d9f0189b422404d28514dc319d51d75290755eaed576508",
+    "contract-fixed/contract-tests.txt": "13e69be706558ab226207e407b904e9c0148c8f3bbd13fcb6b5f29445af35385",
+    "contract-fixed/run.txt": "fc2eeb9565d413d06c521bc6e8bf572a7507ba7c1763f8bada3ba0cc2261814c",
+    "contract-max/contract-tests.json": "f3d51d455b7bac247d9f0189b422404d28514dc319d51d75290755eaed576508",
+    "contract-max/contract-tests.txt": "13e69be706558ab226207e407b904e9c0148c8f3bbd13fcb6b5f29445af35385",
+    "contract-max/run.txt": "3bbf25b66358fca12d1642f3cb7c6f7b8ff6d35af606532b9b5b2f8cd4cb0826",
+    "exit-code-selftest.txt": "718277a4ccfa9cdd876b044f17642b1cb4a1062ff56f1ccfaeb165b38a4afa1b",
+    "mutation-sensitivity.txt": "87386b899a1561e29aeba53875fcb50b054ddba30e4d2bea3e80ff8ac1ee8234",
+    "n1-regression-fixed-default.txt": "4cd5f22087dbdddaf3c462a0f6746a1292f2cce2a49170124da580c3f8b6a849",
+    "n1-regression-fixed-fixed.txt": "479e68e37480656caa4ae0c4e638cc5542e94380dc202a6424857956f81cc613",
+    "n1-regression-fixed-max.txt": "4cd5f22087dbdddaf3c462a0f6746a1292f2cce2a49170124da580c3f8b6a849",
+    "n1-regression-mutated.txt": "dde9abaf890ef147c406ed71b8d7c79420dc1d2357b8b6a6c9604b6907f87a1f",
+    "n1-regression-original-bdb0a98.txt": "dde9abaf890ef147c406ed71b8d7c79420dc1d2357b8b6a6c9604b6907f87a1f",
+    "runner-script-error.txt": "52d197605a8fad4eea5de5ee3d2653ffd636a21946d9272dbf0fb88b399e2666",
+    "runner-wrong-count.txt": "b8a246d06ec53f6c3d353ed286ce9586f0ce0fc686b2bd8e5788bc3f2dabaf2e",
+    "structural-default.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-default.json": "ec024b23399a26da5e52077abdc5e2a774f803b948cdc5493d91e9a1f36ffcd5",
+    "structural-default.raw.txt": "5b64a6a03327aec21fdcd161e222d716a8434a4f49659ec23c771339334b4eca",
+    "structural-fixed-fps.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-fixed-fps.json": "3c81fd27a93a9a1a09c3eb10003c5c518d49158ac51fc3ea3f5b6dd5658a7ea9",
+    "structural-fixed-fps.raw.txt": "0f1976065a67bf3817940499b587da7c7ceb5dac3dea0c26adc41c60280d0fcf",
+    "structural-max-fps-60.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-max-fps-60.json": "48ca69dae246855d403743773e5f45deb61992a13dc2c9f9937866f974aa9153",
+    "structural-max-fps-60.raw.txt": "b3939451f7441bf4e9fa22484900c30da1f4ec5b2f27a2432ad098be6c08a6ba"
+  },
+  "file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "32ad62eaee8497bdf3b3c0b5bee1bc90d58ef5f72f4e842342313a55ba244e70",
+    "compare_modes.py": "0b23d5b70e3f5ac1c1053a5a1f50fa33074a9ed53082c2ac7e631a5f243a1981",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "937e6cec01cfa96ea1b4e1a200f2943123742ee48b342c524614da740595c88d",
+    "src/tick_coordinator.gd": "ee06da1707909b373a4cf0a89563b415b0e2a76e10791e131235b18b3aea6e0b",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/contract_driver.gd": "16734478044d44237e6eb40c6dc641fa150e9d96935069425de95039be6cbbed",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/counting_body.gd": "750239f40462597aa1b709bcd600cc9e3c4f399349293d76d81afd08fb8a917f",
+    "tests/n1_regression_driver.gd": "9f525b03b0be629c64715b7de6db3cb3f160bc8d6ac24f3e443cfe2fa9a7af2c",
+    "tests/n1_regression_entry.gd": "ccabe1fc6396106f2c3f33e75566bc1df349d0d7bc1b96d3b6421ded640fc8fc",
+    "tests/run_contract_tests.py": "c7bbe81acb51742785ea6c2f63784a3fafafa405a6b1592280fcbbf44a9eac91"
+  },
+  "followup_inputs": [
+    "review/implementation/m0-tick-opus-5-5-bdb0a98-independent.md",
+    "evidence/2026-11-27-apple-m4-max-jolt-n1-server-steps/"
+  ],
+  "limits": [
+    "One-car probe plus one counting RigidBody3D; not full M1 motor/AI/contacts/multi-car reset/interactive/full simulation.",
+    "Integration semantics measured on Godot 4.7.2-stable/Jolt; cross-version/platform equivalence not claimed.",
+    "Continuous cold baselines show registration latency; request-path first-request behavior asserted directly and exact.",
+    "Wall times host-dependent."
+  ],
+  "machine": "arm64",
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "prior_manifest_verification": {
+    "n1_server_steps_manifest": {
+      "manifest": "evidence/2026-11-27-apple-m4-max-jolt-n1-server-steps/manifest.sha256",
+      "preserved_unchanged": true,
+      "status": "historical; later cold-start/test revisions changed its source files, so it cannot be re-verified against the current worktree"
+    },
+    "waitguard_manifest": {
+      "candidate": "bdb0a9820b847d23628cce35a9070bb63ae17acd",
+      "entries": 34,
+      "manifest": "evidence/2026-11-27-apple-m4-max-jolt-waitguard/manifest.sha256",
+      "mismatch": 0,
+      "ok": 34
+    }
+  },
+  "python": "3.15.2",
+  "reported_candidate_commit": "bdb0a9820b847d23628cce35a9070bb63ae17acd",
+  "reported_candidate_short": "bdb0a98",
+  "reviewed_candidate_file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "1a6ae2ff057ca7e01e2b25a5e898823f9574fcc53aa1ead51ce82b3266ee3672",
+    "compare_modes.py": "e055ba13766c005af6c5dfcdad884979dba5f1601dea4f1cde5391777f25cbcc",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "426cf0bd63168780f5e53585c004ff168437fec50f6ae8438b4f108af8876bbe",
+    "src/tick_coordinator.gd": "aefb158e5dcb68ce671d71639a8d1661c15628131c6f24bae9f33acea027af02",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/contract_driver.gd": "0916b1451d55b3455f3a6bd2d2a6b7768f3f066d1816dac339d72bf93ecf07f3",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/counting_body.gd": null,
+    "tests/n1_regression_driver.gd": null,
+    "tests/n1_regression_entry.gd": null,
+    "tests/run_contract_tests.py": "4670823760665b508c56394edc67900ba14c84db33582df0c3a80ce3d1d98914"
+  },
+  "run_policy": "headless isolated copies + git-archive bdb0a98 snapshot in ignored scratch; no HOME reassignment; XDG/TMPDIR redirected; each run <= 30 s; no GUI/Git/installed-tool mutation",
+  "runs": [
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "exit": 0,
+      "name": "structural-fixed-fps",
+      "wall_s": 3
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "exit": 0,
+      "name": "structural-default",
+      "wall_s": 8
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "exit": 0,
+      "name": "structural-max-fps-60",
+      "wall_s": 12
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 77,
+      "exit": 0,
+      "name": "contract-fixed",
+      "wall_s": 0
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 77,
+      "exit": 0,
+      "name": "contract-default",
+      "wall_s": 7
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 77,
+      "exit": 0,
+      "name": "contract-max",
+      "wall_s": 7
+    },
+    {
+      "exit": 0,
+      "name": "compare-modes",
+      "result": "COMPARISON PASS",
+      "throughput_passes": 9,
+      "trace_max_abs_diff_m": 0.0,
+      "trace_passes": 2,
+      "wall_s": 14
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 14,
+      "exit": 0,
+      "metrics": {
+        "continuous_1": 0,
+        "continuous_12": 11,
+        "frozen_wait": 0,
+        "repeated_12": [
+          12,
+          12
+        ],
+        "single_1": 1,
+        "single_12": 12
+      },
+      "name": "n1-regression-fixed-fixed"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 14,
+      "exit": 0,
+      "name": "n1-regression-fixed-default"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 14,
+      "exit": 0,
+      "name": "n1-regression-fixed-max"
+    },
+    {
+      "checks_failed": 8,
+      "checks_total": 14,
+      "exit": 1,
+      "metrics": {
+        "continuous_12": 11,
+        "frozen_wait": 0,
+        "repeated_12": [
+          11,
+          11
+        ],
+        "single_1": 0,
+        "single_12": 11
+      },
+      "name": "n1-regression-original-bdb0a98"
+    },
+    {
+      "checks_failed": 9,
+      "checks_total": 77,
+      "exit": 1,
+      "name": "mutation-sensitivity"
+    },
+    {
+      "checks_failed": 8,
+      "checks_total": 14,
+      "exit": 1,
+      "name": "n1-regression-mutated"
+    },
+    {
+      "detected": "SCRIPT ERROR at timeout",
+      "exit": 1,
+      "name": "runner-script-error"
+    },
+    {
+      "actual": 77,
+      "exit": 1,
+      "expected": 76,
+      "name": "runner-wrong-count"
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 5,
+      "exit": 1,
+      "name": "exit-code-selftest"
+    }
+  ],
+  "schema": "roadstorm.tick_probe.coldstart_evidence.v1"
+}

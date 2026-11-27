@@ -32,6 +32,10 @@ extends Node3D
 ## results and negative budgets instead of silently restarting accounting.
 
 signal step_finished(result: Dictionary)
+## Emitted at the final logical tick, before the waiting freeze completes.
+## Carries the accounting snapshot for tests that must distinguish active
+## engine callbacks from the later pause/emission callback.
+signal step_accounted(result: Dictionary)
 
 const DT := 1.0 / 60.0
 const DEFAULT_TICKS_PER_STEP := 12
@@ -96,6 +100,12 @@ var _step_elapsed := 0
 var _freeze := false
 var _pending_result := false
 var _result := {}
+## True between a normal request's final physics callback and the idle-phase
+## emission below. The physics server must integrate the final tick before the
+## tree pauses; pausing inside the physics callback would suppress that step.
+var _emit_scheduled := false
+var _deferred_terminal := "none"
+var _deferred_result := {}
 var _last_grounded := true
 
 
@@ -170,7 +180,9 @@ func _reset_state() -> void:
 	commanded_distance = 0.0
 	rng_draws.clear()
 	events.clear()
-	episode_terminal = "none"
+	# An exhausted budget (max_ticks <= 0) starts the episode already
+	# truncated, so observe() agrees with the documented initial state.
+	episode_terminal = "truncated" if max_ticks <= 0 else "none"
 	last_step_terminal = "none"
 	engine_physics_frames = 0
 	frozen_physics_frames = 0
@@ -191,6 +203,9 @@ func _reset_state() -> void:
 	_step_elapsed = 0
 	_freeze = false
 	_pending_result = false
+	_emit_scheduled = false
+	_deferred_terminal = "none"
+	_deferred_result = {}
 	# Reset must not leave a pre-reset step result retrievable through
 	# take_result(); an empty dict is the explicit "no result" value.
 	_result = {}
@@ -219,9 +234,14 @@ func set_frozen(frozen: bool) -> void:
 
 
 ## Start a request. Returns true when the request was accepted, false when it
-## was refused (overlapping in-flight step, untaken previous result, or a
-## negative budget); a refusal leaves coordinator state untouched.
+## was refused (negative budget, overlapping in-flight step, or untaken
+## previous result); a refusal leaves coordinator state untouched. Negative
+## budgets are validated before every fast path, including terminal episodes.
 func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
+	if requested_ticks < 0:
+		return _refuse_begin_step("negative requested_ticks")
+	if _emit_scheduled:
+		return _refuse_begin_step("result awaiting emission")
 	if _pending_result:
 		return _refuse_begin_step("previous result not consumed")
 	if episode_terminal != "none":
@@ -231,8 +251,6 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 		return true
 	if _budget > 0:
 		return _refuse_begin_step("step already in flight")
-	if requested_ticks < 0:
-		return _refuse_begin_step("negative requested_ticks")
 	if max_ticks <= 0:
 		# Exhausted-budget semantics: a non-positive scenario cap allows zero
 		# ticks, so the episode starts (and stays) truncated. The world stays
@@ -245,11 +263,14 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 	_budget = _requested_ticks
 	_step_elapsed = 0
 	_pending_result = false
+	if _requested_ticks == 0:
+		# Empty-request completion is published with the waiting freeze already
+		# in effect; no observer may see an unpaused tree during the signal.
+		set_frozen(true)
+		_emit_result(0, 0, "none")
+		return true
 	if _freeze or get_tree().paused:
 		set_frozen(false)
-	if _requested_ticks == 0:
-		_emit_result(0, 0, "none")
-		set_frozen(true)
 	return true
 
 
@@ -277,6 +298,18 @@ func take_result() -> Dictionary:
 	return result
 
 
+func _build_result(requested_ticks: int, elapsed_ticks: int, terminal: String) -> Dictionary:
+	return {
+		"schema": "roadstorm.tick_probe.step.v1",
+		"requested_ticks": requested_ticks,
+		"elapsed_ticks": elapsed_ticks,
+		"terminal": terminal,
+		"tick_count": tick_count,
+		"sim_time": tick_count * DT,
+		"observation": observe(),
+	}
+
+
 func observe() -> Dictionary:
 	var p := body.global_position
 	return {
@@ -292,6 +325,18 @@ func observe() -> Dictionary:
 
 
 func _physics_process(delta: float) -> void:
+	# A normal request keeps the tree unpaused through the final tick's
+	# physics-server step. The next physics callback pauses the tree before its
+	# own server step, publishes the result and refuses further ticks. This
+	# preserves one server step per logical tick even when the engine catches up
+	# with several physics iterations in one frame.
+	if _emit_scheduled:
+		_emit_scheduled = false
+		get_tree().paused = true
+		_result = _deferred_result
+		_pending_result = true
+		step_finished.emit(_result)
+		return
 	# A freeze requested by the previous tick must hold even if the engine
 	# delivers one more callback before SceneTree.paused takes effect.
 	if _freeze or _budget <= 0 or episode_terminal != "none" or tick_count >= max_ticks:
@@ -329,7 +374,7 @@ func _physics_process(delta: float) -> void:
 	if terminal != "none":
 		episode_terminal = terminal
 	if terminal != "none" or _budget == 0:
-		_finish_step(terminal)
+		_finish_step(terminal, true)
 
 
 ## Returns true when the bounded work cap left an unapplied remainder; the
@@ -415,6 +460,9 @@ func _execute_tick(_delta: float) -> bool:
 	if not contact_stopped and remaining.length() > MOTION_BOUND_EPSILON_M:
 		motion_bound_violations += 1
 		last_motion_bound_deficit_m = maxf(last_motion_bound_deficit_m, remaining.length())
+		# This tick is not counted, so roll the probe car back to the tick-start
+		# pose: the emitted observation must correspond to accounted ticks only.
+		body.global_transform = start
 		return true
 
 	grounded = _probe_grounded()
@@ -429,10 +477,16 @@ func _execute_tick(_delta: float) -> bool:
 	var draw := rng.randf()
 	rng_draws.append(draw)
 	events.append({"tick": tick_count + 1, "kind": "tick", "draw": draw})
+	var start_rot_y := rad_to_deg(start.basis.get_euler().y)
+	var end_rot_y := rad_to_deg(body.global_rotation.y)
 	tick_log.append({
 		"tick": tick_count + 1,
 		"start_z": start.origin.z,
 		"end_z": body.global_position.z,
+		"start_pos": [start.origin.x, start.origin.y, start.origin.z],
+		"end_pos": [body.global_position.x, body.global_position.y, body.global_position.z],
+		"start_rot_y_deg": start_rot_y,
+		"end_rot_y_deg": end_rot_y,
 		"accepted_len": accepted.length(),
 		"substeps": substeps,
 		"grounded": grounded,
@@ -454,26 +508,31 @@ func _probe_grounded() -> bool:
 	return not hit.is_empty() and hit.position.y < 0.05
 
 
-func _finish_step(terminal: String) -> void:
+func _finish_step(terminal: String, defer_pause: bool = false) -> void:
 	_budget = 0
 	last_step_terminal = terminal
 	if terminal != "none":
 		episode_terminal = terminal
 		events.append({"tick": tick_count, "kind": terminal})
 	_freeze = true
+	var result := _build_result(_requested_ticks, _step_elapsed, terminal)
+	# Accounting observers sample here, at the final logical tick, before the
+	# pause callback adds an engine callback of its own.
+	step_accounted.emit(result)
+	if defer_pause:
+		# Stay unpaused for this iteration so the final tick's physics-server
+		# step runs; pause and publish on the next physics callback.
+		_emit_scheduled = true
+		_deferred_terminal = terminal
+		_deferred_result = result
+		return
 	get_tree().paused = true
-	_emit_result(_requested_ticks, _step_elapsed, terminal)
+	_result = result
+	_pending_result = true
+	step_finished.emit(_result)
 
 
 func _emit_result(requested_ticks: int, elapsed_ticks: int, terminal: String) -> void:
-	_result = {
-		"schema": "roadstorm.tick_probe.step.v1",
-		"requested_ticks": requested_ticks,
-		"elapsed_ticks": elapsed_ticks,
-		"terminal": terminal,
-		"tick_count": tick_count,
-		"sim_time": tick_count * DT,
-		"observation": observe(),
-	}
+	_result = _build_result(requested_ticks, elapsed_ticks, terminal)
 	_pending_result = true
 	step_finished.emit(_result)

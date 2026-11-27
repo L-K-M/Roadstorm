@@ -8,9 +8,12 @@ extends Node
 ## evidence of accounted logical ticks.
 
 const CoordinatorScript := preload("res://src/tick_coordinator.gd")
+const CountingBody := preload("res://tests/counting_body.gd")
 
 var coord
 var ext_physics_frames := 0
+var last_signal := {}
+var last_accounting := {}
 var failures: Array[String] = []
 var checks := 0
 
@@ -20,6 +23,8 @@ func _ready() -> void:
 	get_tree().physics_frame.connect(_on_engine_physics_frame)
 	coord = CoordinatorScript.new()
 	get_tree().root.add_child(coord)
+	coord.step_finished.connect(_on_step_finished)
+	coord.step_accounted.connect(_on_step_accounted)
 	await get_tree().process_frame
 	await _test_frame_accounting()
 	await _test_frozen_zero_advance()
@@ -27,7 +32,9 @@ func _ready() -> void:
 	await _test_zero_tick_budget()
 	await _test_motion_bound()
 	await _test_wait_guard()
+	await _test_dynamic_server_steps()
 	await _test_begin_step_refusals()
+	await _test_api_edges()
 	await _test_bypass_negative_control()
 	await _test_pause_ownership()
 	_finish()
@@ -35,6 +42,34 @@ func _ready() -> void:
 
 func _on_engine_physics_frame() -> void:
 	ext_physics_frames += 1
+
+
+## Snapshot the independent tallies at the exact step_finished boundary. A
+## trailing engine callback can land after completion/freeze; measuring there
+## would mix harness polling timing into the accounting evidence.
+func _on_step_finished(result: Dictionary) -> void:
+	last_signal = {
+		"ext_physics_frames": ext_physics_frames,
+		"coord_engine_physics_frames": coord.engine_physics_frames,
+		"tick_count": coord.tick_count,
+		"paused": get_tree().paused,
+		"requested_ticks": int(result.requested_ticks),
+		"elapsed_ticks": int(result.elapsed_ticks),
+		"terminal": str(result.terminal),
+	}
+
+
+## Accounting boundary at the final logical tick (before the pause callback).
+func _on_step_accounted(result: Dictionary) -> void:
+	last_accounting = {
+		"ext_physics_frames": ext_physics_frames,
+		"coord_engine_physics_frames": coord.engine_physics_frames,
+		"tick_count": coord.tick_count,
+		"paused": get_tree().paused,
+		"requested_ticks": int(result.requested_ticks),
+		"elapsed_ticks": int(result.elapsed_ticks),
+		"terminal": str(result.terminal),
+	}
 
 
 func _check(condition: bool, label: String, detail: String = "") -> void:
@@ -125,15 +160,26 @@ func _test_frame_accounting() -> void:
 		var t0: int = coord.tick_count
 		var result: Dictionary = await _step(requested)
 		var elapsed := int(result.elapsed_ticks)
-		var ext_delta := ext_physics_frames - ef0
-		var coord_delta: int = coord.engine_physics_frames - cf0
+		var snap: Dictionary = last_accounting
+		var ext_delta := int(snap.get("ext_physics_frames", -1)) - ef0
+		var coord_delta := int(snap.get("coord_engine_physics_frames", -1)) - cf0
 		_check(elapsed == requested,
 			"frame-account: request %d consumed exactly %d logical ticks" % [requested, requested],
 			"elapsed=%d terminal=%s" % [elapsed, str(result.terminal)])
-		_check(ext_delta == elapsed and coord_delta == elapsed and coord.tick_count == t0 + elapsed,
-			"frame-account: independent physics-frame count matches logical ticks",
+		_check(int(snap.get("elapsed_ticks", -1)) == elapsed
+			and int(snap.get("tick_count", -1)) == t0 + elapsed,
+			"frame-account: step_accounted boundary reports exactly %d accounted ticks" % requested,
+			"snap_elapsed=%s snap_ticks=%s" % [
+				snap.get("elapsed_ticks"), snap.get("tick_count")])
+		_check(ext_delta == elapsed and coord_delta == elapsed,
+			"frame-account: independent physics-frame tally at step_accounted matches logical ticks",
 			"requested=%d elapsed=%d ext_frames=%d coord_frames=%d tick_count=%d->%d" % [
 				requested, elapsed, ext_delta, coord_delta, t0, coord.tick_count])
+		# Any trailing engine callback after completion must not advance the sim.
+		await _wait_physics_frames(1)
+		_check(coord.tick_count == t0 + elapsed,
+			"frame-account: trailing frozen callback advanced no logical tick",
+			"ticks=%d expected=%d" % [coord.tick_count, t0 + elapsed])
 
 
 ## While the trainer wait is frozen, engine frames continue but no logical tick
@@ -360,6 +406,117 @@ func _test_begin_step_refusals() -> void:
 	var third: Dictionary = coord.take_result()
 	_check(int(third.elapsed_ticks) == 12,
 		"begin-step: pending result still readable after a refusal")
+
+
+## A positive request must receive one physics-server integration per logical
+## tick once the world is warm. Freezing inside the physics callback would
+## suppress the final tick's engine step; the counting body measures it.
+func _spawn_counting_body() -> RigidBody3D:
+	var dyn: RigidBody3D = CountingBody.new()
+	dyn.can_sleep = false
+	dyn.linear_damp = 0.0
+	dyn.gravity_scale = 1.0
+	var shape := CollisionShape3D.new()
+	var sphere := SphereShape3D.new()
+	sphere.radius = 0.5
+	shape.shape = sphere
+	dyn.add_child(shape)
+	dyn.position = Vector3(5, 1000, 0)
+	coord.add_child(dyn)
+	return dyn
+
+
+func _test_dynamic_server_steps() -> void:
+	# First request from a frozen world with a freshly created active body:
+	# exactly one server integration, not a registration-delayed zero.
+	await _configure(10.0)
+	coord.reset()
+	var first: RigidBody3D = _spawn_counting_body()
+	var first_result: Dictionary = await _step(1)
+	_check(first.server_steps == 1,
+		"dynamic-steps: first one-tick request integrates exactly one server step",
+		"server_steps=%d elapsed=%d" % [first.server_steps, int(first_result.elapsed_ticks)])
+	_check(bool(last_signal.get("paused", false)),
+		"dynamic-steps: first request publishes while frozen")
+	first.queue_free()
+
+	# Fresh body, no warm-up: repeated 12-tick requests integrate exactly 12.
+	await _configure(10.0)
+	coord.reset()
+	var dyn: RigidBody3D = _spawn_counting_body()
+	for i in 2:
+		var before: int = dyn.server_steps
+		var result: Dictionary = await _step(12)
+		var delta: int = dyn.server_steps - before
+		_check(delta == 12,
+			"dynamic-steps: 12-tick request integrates exactly 12 server steps (#%d)" % (i + 1),
+			"server_steps_delta=%d elapsed=%d" % [delta, int(result.elapsed_ticks)])
+		_check(bool(last_signal.get("paused", false)),
+			"dynamic-steps: request completion publishes while frozen (#%d)" % (i + 1))
+
+	var s_wait: int = dyn.server_steps
+	var y_wait: float = dyn.global_position.y
+	var v_wait: float = dyn.last_state_linear_velocity.y
+	await _wait_physics_frames(30)
+	_check(dyn.server_steps == s_wait,
+		"dynamic-steps: frozen wait adds no server steps",
+		"steps=%d->%d" % [s_wait, dyn.server_steps])
+	_check(dyn.global_position.y == y_wait and dyn.last_state_linear_velocity.y == v_wait,
+		"dynamic-steps: frozen wait has zero body drift",
+		"y=%.9f->%.9f" % [y_wait, dyn.global_position.y])
+	dyn.queue_free()
+
+
+## API edge regressions: negative requests are refused even on a consumed
+## terminal episode; zero-tick completion publishes while frozen; an exhausted
+## budget starts the observation in the truncated state.
+func _test_api_edges() -> void:
+	await _configure(10.0, INF, 1)
+	coord.reset()
+	var terminal_result: Dictionary = await _step(12)
+	_check(str(terminal_result.terminal) == "truncated",
+		"api-edge: one-tick cap reaches a consumed terminal result",
+		"elapsed=%d terminal=%s" % [int(terminal_result.elapsed_ticks), str(terminal_result.terminal)])
+	var ticks_before: int = coord.tick_count
+	var refusals_before: int = coord.begin_step_refusals
+	var accepted_negative: bool = coord.begin_step(-2)
+	_check(not accepted_negative and coord.begin_step_refusals == refusals_before + 1,
+		"api-edge: negative request refused after consumed terminal",
+		"accepted=%s refusals=%d reason=%s" % [str(accepted_negative), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	_check(not coord.has_pending_result(),
+		"api-edge: negative terminal request published no result")
+	_check(coord.tick_count == ticks_before,
+		"api-edge: negative terminal request changed no tick",
+		"ticks=%d expected=%d" % [coord.tick_count, ticks_before])
+	_check(int(last_signal.get("requested_ticks", -1)) == int(terminal_result.requested_ticks),
+		"api-edge: last signal still belongs to the consumed step")
+
+	# Zero-tick completion must be published with the waiting freeze in effect.
+	await _configure(10.0)
+	coord.reset()
+	var accepted_zero: bool = coord.begin_step(0)
+	var snap_zero: Dictionary = last_signal
+	_check(accepted_zero and bool(snap_zero.get("paused", false)),
+		"api-edge: zero-tick signal observed with the world frozen",
+		"accepted=%s paused_at_signal=%s" % [str(accepted_zero), snap_zero.get("paused")])
+	_check(int(snap_zero.get("elapsed_ticks", -1)) == 0
+		and str(snap_zero.get("terminal", "")) == "none",
+		"api-edge: zero-tick signal carries an empty nonterminal result",
+		"elapsed=%s terminal=%s" % [snap_zero.get("elapsed_ticks"), snap_zero.get("terminal")])
+	var zero_result: Dictionary = coord.take_result()
+	_check(int(zero_result.elapsed_ticks) == 0 and get_tree().paused,
+		"api-edge: zero-tick request leaves the frozen waiting state")
+
+	# An exhausted budget starts truncated in the observation too.
+	await _configure(10.0, INF, 0)
+	var obs: Dictionary = coord.reset()
+	_check(str(obs.terminal) == "truncated",
+		"api-edge: cap-0 reset observation starts truncated",
+		"terminal=%s paused=%s" % [str(obs.terminal), str(get_tree().paused)])
+	var capped: Dictionary = await _step(12)
+	_check(int(capped.elapsed_ticks) == 0 and str(capped.terminal) == "truncated",
+		"api-edge: cap-0 request stays zero-tick truncated",
+		"elapsed=%d terminal=%s" % [int(capped.elapsed_ticks), str(capped.terminal)])
 
 
 ## Negative control: twelve direct physics calls outside any coordinator request

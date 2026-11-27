@@ -17,6 +17,9 @@ var frames := 0
 var mode := "structural"
 var label := "local"
 var engine_frames := 0
+var signal_paused := false
+var signal_snapshot := {}
+var requested_pacing := ""
 var throughput_requests := DEFAULT_REQUESTS
 var inject_failure := false
 var env := {}
@@ -29,6 +32,7 @@ func _ready() -> void:
 	_parse_args(OS.get_cmdline_user_args())
 	coord = CoordinatorScript.new()
 	get_tree().root.add_child(coord)
+	coord.step_finished.connect(_on_step_finished)
 	await get_tree().process_frame
 	_collect_environment()
 	match mode:
@@ -50,6 +54,17 @@ func _process(_delta: float) -> void:
 
 func _on_engine_physics_frame() -> void:
 	engine_frames += 1
+
+
+func _on_step_finished(result: Dictionary) -> void:
+	signal_paused = get_tree().paused
+	signal_snapshot = {
+		"requested_ticks": int(result.requested_ticks),
+		"elapsed_ticks": int(result.elapsed_ticks),
+		"terminal": str(result.terminal),
+		"tick_count": int(result.tick_count),
+		"paused": signal_paused,
+	}
 
 
 func _wait_engine_frames(count: int) -> void:
@@ -95,6 +110,8 @@ func _parse_args(args: Array) -> void:
 			label = arg.substr(6)
 		elif arg.begins_with("requests="):
 			throughput_requests = maxi(1, int(arg.substr(9)))
+		elif arg.begins_with("pacing="):
+			requested_pacing = arg.substr(7)
 		elif arg == "inject_failure=1":
 			inject_failure = true
 
@@ -110,6 +127,9 @@ func _collect_environment() -> void:
 		"processor_count": OS.get_processor_count(),
 		"processor_name": OS.get_processor_name() if OS.has_method("get_processor_name") else "",
 		"physics_ticks_per_second": ProjectSettings.get_setting("physics/common/physics_ticks_per_second"),
+		"engine_pacing": _detect_pacing(),
+		"engine_max_fps": Engine.max_fps,
+		"requested_pacing": requested_pacing,
 		"swept_cast_margin_m": CoordinatorScript.CAST_QUERY_MARGIN,
 		"character_body_safe_margin_m": CoordinatorScript.SAFE_MARGIN,
 		"max_tick_travel_m": CoordinatorScript.MAX_TICK_TRAVEL_M,
@@ -123,6 +143,15 @@ func _collect_environment() -> void:
 	_check(env.physics_engine_setting == "Jolt Physics",
 		"pinned 3D physics backend is Jolt Physics",
 		"setting=%s allowed=%s" % [str(env.physics_engine_setting), str(env.physics_engine_allowed)])
+
+
+## The engine exposes --max-fps through Engine.max_fps but has no observable
+## flag for --fixed-fps; record the detected bound plus the externally
+## requested pacing argument so evidence states exactly what was asked for.
+func _detect_pacing() -> String:
+	if Engine.max_fps > 0:
+		return "max-fps"
+	return "unbounded"
 
 
 ## Allowed values of physics/3d/physics_engine from the engine property list.
@@ -187,6 +216,7 @@ func _run_structural() -> void:
 	await _scenario_bounded_work_envelope()
 	await _scenario_wait_guard()
 	await _scenario_begin_step_refusals()
+	await _scenario_api_edges()
 	await _scenario_reset_replay()
 	await _scenario_wall_swept_motion()
 	await _scenario_max_speed_no_tunnel()
@@ -596,6 +626,53 @@ func _scenario_begin_step_refusals() -> void:
 	}
 
 
+## API edge regressions: negative requests are refused even after a consumed
+## terminal result, zero-tick completion publishes while frozen, and an
+## exhausted-budget reset starts truncated in the observation.
+func _scenario_api_edges() -> void:
+	await _configure(10.0, INF, 1)
+	coord.reset()
+	var terminal_result: Dictionary = await _step(12)
+	_check(str(terminal_result.terminal) == "truncated",
+		"api-edge: one-tick cap reaches a consumed terminal result")
+	var ticks_before: int = coord.tick_count
+	var refusals_before: int = coord.begin_step_refusals
+	var accepted_negative: bool = coord.begin_step(-2)
+	_check(not accepted_negative and coord.begin_step_refusals == refusals_before + 1,
+		"api-edge: negative request refused after consumed terminal",
+		"accepted=%s refusals=%d reason=%s" % [str(accepted_negative), coord.begin_step_refusals, coord.last_begin_step_refusal])
+	_check(not coord.has_pending_result(),
+		"api-edge: negative terminal request published no result")
+	_check(coord.tick_count == ticks_before,
+		"api-edge: negative terminal request changed no tick")
+
+	await _configure(10.0)
+	coord.reset()
+	var accepted_zero: bool = coord.begin_step(0)
+	_check(accepted_zero and signal_paused,
+		"api-edge: zero-tick signal observed with the world frozen",
+		"accepted=%s paused_at_signal=%s" % [str(accepted_zero), str(signal_paused)])
+	var zero: Dictionary = coord.take_result()
+	_check(int(zero.elapsed_ticks) == 0 and str(zero.terminal) == "none",
+		"api-edge: zero-tick request is an empty nonterminal step")
+	_check(get_tree().paused, "api-edge: zero-tick request leaves the world frozen")
+
+	await _configure(10.0, INF, 0)
+	var obs: Dictionary = coord.reset()
+	_check(str(obs.terminal) == "truncated",
+		"api-edge: cap-0 reset observation starts truncated",
+		"terminal=%s" % str(obs.terminal))
+	var capped: Dictionary = await _step(12)
+	_check(int(capped.elapsed_ticks) == 0 and str(capped.terminal) == "truncated",
+		"api-edge: cap-0 request stays zero-tick truncated")
+
+	scenario_report["api_edges"] = {
+		"negative_after_terminal_refused": not accepted_negative,
+		"zero_tick_signal_frozen": signal_paused,
+		"cap0_reset_terminal": str(obs.terminal),
+	}
+
+
 func _scenario_reset_replay() -> void:
 	await _configure(10.0)
 	var initial: Dictionary = coord.reset()
@@ -837,6 +914,10 @@ func _trace_segment(name: String) -> Dictionary:
 			"tick": int(entry.tick),
 			"start_z": float(entry.start_z),
 			"end_z": float(entry.end_z),
+			"start_pos": entry.start_pos,
+			"end_pos": entry.end_pos,
+			"start_rot_y_deg": float(entry.start_rot_y_deg),
+			"end_rot_y_deg": float(entry.end_rot_y_deg),
 			"accepted_len": float(entry.accepted_len),
 			"substeps": int(entry.substeps),
 			"grounded": bool(entry.grounded),

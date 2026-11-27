@@ -32,7 +32,7 @@ is implemented or claimed here.
 | `src/tick_coordinator.gd` | logical-tick owner: budget, freeze gate, reset, swept movement, queries |
 | `tests/contract_entry.gd` | entry point for the independent focused contract tests |
 | `tests/contract_driver.gd` | independent contract tests with their own `SceneTree.physics_frame` counting and negative controls |
-| `tests/run_contract_tests.py` | runs the contract tests in an isolated copy (temp dir, private `HOME`/`TMPDIR`, bounded timeout), with `--pacing fixed\|default\|max` |
+| `tests/run_contract_tests.py` | runs the contract tests in an isolated copy (temp dir, XDG/TMPDIR redirected, no `HOME` reassignment, bounded timeout), with `--pacing fixed\|default\|max` and optional `--expect-checks N` |
 | `compare_modes.py` | runs accelerated/real-time throughput checks and a per-tick trace digest comparison across three pacing modes |
 | `.gitignore` | ignores the generated `.godot/` cache |
 
@@ -52,26 +52,31 @@ From the repository root:
 ```sh
 # Broad structural scenarios, deterministic locked stepping (1 frame = 1 physics tick)
 godot --headless --fixed-fps 60 --path tools/tick_probe \
-    --script res://src/tick_probe.gd -- mode=structural
+    --script res://src/tick_probe.gd -- mode=structural pacing=fixed
 
 # Same scenarios under default headless pacing and near-real-time pacing
 godot --headless --path tools/tick_probe \
-    --script res://src/tick_probe.gd -- mode=structural
+    --script res://src/tick_probe.gd -- mode=structural pacing=default
 godot --headless --max-fps 60 --path tools/tick_probe \
-    --script res://src/tick_probe.gd -- mode=structural
+    --script res://src/tick_probe.gd -- mode=structural pacing=max
 
-# Independent focused contract tests (isolated copy, private HOME/TMPDIR, <=30 s).
+# Independent focused contract tests (isolated copy, XDG/TMPDIR redirected, <=30 s).
 # Run them under every pacing mode: --pacing fixed|default|max.
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing default
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing max
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 76
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 76
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 76
+
+# Dynamic server-step regression (one physics-server step per logical tick)
+godot --headless --fixed-fps 60 --path tools/tick_probe \
+    --script res://tests/n1_regression_entry.gd
 
 # Deterministic per-tick trace for the cross-pacing digest comparison
 godot --headless --fixed-fps 60 --path tools/tick_probe \
     --script res://src/tick_probe.gd -- mode=trace
 
 # Accelerated vs real-time fidelity, throughput and trace digests (600 ticks each)
-python3 tools/tick_probe/compare_modes.py
+python3 tools/tick_probe/compare_modes.py \
+    --expect-throughput-checks 4 --expect-trace-checks 2
 
 # Prove a failing check exits nonzero
 godot --headless --fixed-fps 60 --path tools/tick_probe \
@@ -84,8 +89,8 @@ Each run prints `PASS`/`FAIL` lines and one machine-readable
 Exit code `0` means every check passed, `1` means at least one failed.
 `TICK_PROBE_DEBUG=1` additionally prints per-substep query/commit diagnostics.
 
-The broad structural suite currently has **99 checks**; the independent
-contract suite has **51 checks** and passes under `--fixed-fps 60`, default
+The broad structural suite currently has **108 checks**; the independent
+contract suite has **77 checks** and passes under `--fixed-fps 60`, default
 and `--max-fps 60` pacing. Recorded totals and outputs live under `evidence/`.
 
 ## Coordinator contract
@@ -123,11 +128,12 @@ and the total stays at 30 ticks.
 
 **Zero/negative tick budget.** `max_ticks` is the total number of logical ticks
 an episode may execute. `max_ticks <= 0` has explicit exhausted-budget
-semantics: the episode starts `truncated`, every request returns
-`elapsed_ticks = 0` with `terminal = "truncated"`, the world is left frozen,
-and **no** physics callback advances it. This closes the old off-by-one where
-`max_ticks = 0` executed one unintended tick. `max_ticks = 1` executes exactly
-one tick. Negative caps behave as zero, not as one tick.
+semantics: `reset()` reports `terminal = "truncated"` immediately, every
+request returns `elapsed_ticks = 0` with `terminal = "truncated"`, the world
+is left frozen, and **no** physics callback advances it. This closes the old
+off-by-one where `max_ticks = 0` executed one unintended tick, and makes the
+observation agree with the documented initial state. `max_ticks = 1` executes
+exactly one tick. Negative caps behave as zero, not as one tick.
 
 **Bounded work envelope.** One tick can apply at most
 `MAX_SUBSTEPS * SUBSTEP_MAX_LEN = 16 * 0.25 = 4.0 m`, i.e. a supported speed of
@@ -151,7 +157,22 @@ bit-for-bit. Reset ends with the authoritative world **frozen for waiting**;
 the next `begin_step()` unfreezes it. Reset also clears the stored step result.
 `take_result()` consumes the pending result and returns an empty `Dictionary`
 when none is pending, so a prior episode's result cannot be read back through
-the API.
+the API. Two completion signals are published: `step_accounted` fires at the
+final logical tick with the accounting snapshot (before the pause callback),
+and `step_finished` fires once the tree is paused and the result is pending.
+
+**Server steps per tick, including the first request.** A normal request keeps
+the tree unpaused through its final physics callback so that tick's
+`PhysicsServer3D` step still runs; the coordinator pauses on the next physics
+callback, before that iteration's own server step. A freshly created active
+`RigidBody3D` added to the frozen world receives exactly one counted
+`_integrate_forces` step per requested tick, including the first request of
+1, 12 and 24 ticks (measured fixed-fps, default and max-fps pacing). The pause
+callback adds one engine frame beyond the logical ticks (`engine_pf_delta =
+n + 1`), which the accounting boundary separates from integration count.
+Freezing directly inside the final callback suppresses that step (measured at
+11 steps per 12-tick request on the original); `tests/n1_regression_entry.gd`
+fails on the unfixed behavior with eight failures.
 
 **Waiting.** The authoritative world is frozen whenever the coordinator is
 waiting: after every finished request, after `reset()`, after a zero-tick
@@ -159,11 +180,12 @@ request (`begin_step(0)`), and after an exhausted-budget early return. Only
 `begin_step()` with a positive budget unfreezes it. An independent
 `RigidBody3D` added to the probe world proves the freeze is physical, not just
 a logical tick counter: after reset and after a zero-tick request it does not
-drift across 30 engine physics frames while `tick_count` stays unchanged. A
-trainer wait between requests likewise consumes zero ticks and resumes with
-exactly 12. An autonomous `RigidBody3D` also stops under `SceneTree.paused`
-(exact) and under `Engine.time_scale = 0` (after the engine applies the
-change).
+drift across 30 engine physics frames while `tick_count` stays unchanged. The
+zero-tick completion signal itself is published with the tree already frozen;
+a synchronous `step_finished` listener observes `paused == true`. A trainer
+wait between requests likewise consumes zero ticks and resumes with exactly
+12. An autonomous `RigidBody3D` also stops under `SceneTree.paused` (exact) and
+under `Engine.time_scale = 0` (after the engine applies the change).
 
 **Query/physics fidelity.** Each tick casts the car hull nonmutating with
 `DirectSpaceState3D.cast_motion` **at margin 0** (the real hull) from an
@@ -218,10 +240,20 @@ suite checks both directions: it sets an external pause, verifies
 ticks to execute; it also verifies that reset and zero-tick requests leave an
 independent physics body stationary.
 
-`begin_step()` is non-reentrant: overlapping calls, calls made before the
-previous result was consumed, and negative budgets are refused (`false`) with
+`begin_step()` is non-reentrant: negative budgets (validated before every
+fast path, including terminal episodes), overlapping calls, and calls made
+before the previous result was consumed are refused (`false`) with
 `begin_step_refusals` / `last_begin_step_refusal` recording the reason, leaving
 current accounting untouched.
+
+**Frame accounting boundary.** The contract suite snapshots its independent
+`SceneTree.physics_frame` tally inside `step_finished` rather than after polling
+for the pending result. Under `--max-fps 60` with concurrent host load a
+trailing engine callback can land after completion/freeze; post-poll sampling
+overcounted by up to 23 callbacks in 100 one-tick requests on the recorded
+host, while the simulation advanced exactly one tick each time. The
+signal-boundary tally matched the logical elapsed count in every run, and a
+frozen trailing callback never advanced `tick_count`.
 
 ## Measured limitations (do not overread)
 
@@ -271,10 +303,21 @@ current accounting untouched.
   not clamped, because silently dropping the remainder was the original bug.
   Speeds within the envelope are subdivided into substeps of at most 0.25 m.
   The pre-tick envelope check is what normal configurations hit; the in-loop
-  residual backstop is defence-in-depth for states that bypass the pre-check
-  and now also ends the request with `motion_bound`. It cannot be reached by
-  the probe's public constant-speed configuration within the 1e-6 tolerance
-  band, so it is documented rather than claimed as independently exercised.
+  residual backstop is defence-in-depth for states that bypass the pre-check,
+  ends the request with `motion_bound`, and rolls the probe car back to the
+  last accounted tick-start pose so the observation never shows uncounted
+  motion. It cannot be reached by the probe's public constant-speed
+  configuration within the 1e-6 tolerance band, so it is documented rather
+  than claimed as independently exercised.
+- A body created while the world is paused is registered on its first
+  unpaused server step and integrates from the second; a continuous cold
+  baseline therefore advances `k - 1` steps over `k` frames (registration
+  latency). This baseline is recorded as a control only. Under the
+  coordinator's request lifecycle, a freshly created body receives exactly its
+  requested number of integrations even on the first request, because the
+  finishing iteration stays unpaused until the following physics callback.
+  The two effects are measured separately; matching a continuous cold
+  baseline alone would not establish first-request semantics.
 - `begin_step()` refusals are API contract, not runtime failure injection:
   overlapping/in-flight calls, untaken previous results and negative budgets
   return `false` and leave accounting untouched. A bridge that ignores the
@@ -293,13 +336,24 @@ current accounting untouched.
 
 ## Evidence
 
-- `evidence/2026-11-27-apple-m4-max-jolt-waitguard/` — **current**: follow-up
-  evidence against committed candidate `d562755`, covering the physical
-  wait-freeze enforcement, begin-step refusal API, mid-request motion-bound
-  refusal, contract suite under fixed/default/max pacing, the per-tick trace
-  digest comparison across three pacings, pre/post-fix reproductions,
-  mutation sensitivity, and `manifest.sha256` / `provenance.json` bound to the
-  exact reviewed candidate plus follow-up file hashes.
+- `evidence/2026-11-27-apple-m4-max-jolt-cold-start/` — **current**: cold-start
+  characterization proving the first request is exact (one counted server
+  integration per logical tick for a freshly created body), separating body
+  registration latency (continuous baseline `k-1`), pause-callback observation
+  frame (`engine_pf_delta = n+1`) and true missed integration; includes the
+  strengthened regression failing on pristine `bdb0a98`, refreshed
+  three-pacing contract/structural evidence, and hash-bound manifests.
+- `evidence/2026-11-27-apple-m4-max-jolt-n1-server-steps/` — historical: N1
+  server-step measurement/fix against `bdb0a98` plus Sol API-edge fixes,
+  backstop rollback, runner strictness, mutation coverage and pacing metadata.
+- `evidence/2026-11-27-apple-m4-max-jolt-api-edges/` — historical: the Sol
+  API-edge follow-up against `bdb0a98`, covering negative-after-terminal,
+  zero-tick signal freeze, cap-0 observation, signal-boundary accounting,
+  concurrent-load timing and mutation sensitivity.
+- `evidence/2026-11-27-apple-m4-max-jolt-waitguard/` — historical: the wait-guard
+  revision against candidate `d562755`, covering physical wait-freeze
+  enforcement, begin-step refusals, mid-request motion-bound refusal,
+  three-pacing contract suite and per-tick trace digests.
 - `evidence/2026-11-27-apple-m4-max-jolt-contract/` — historical: the first
   audit-response revision (stale result, zero budget, motion bound) against
   base candidate `55b04ce`; superseded by the wait-guard directory.
@@ -338,5 +392,30 @@ produced for the M0.8 Opus-recheck follow-up job against committed candidate
 `d562755c83af1129b4ddf7043baee8d8a742d358`, following
 `review/implementation/m0-tick-opus-recheck-64cbe5b0-7cc7-4130-80a3-cfc7d4d59f43.md`.
 Hashes bind the reviewed candidate and the follow-up worktree contents in
-`evidence/2026-11-27-apple-m4-max-jolt-waitguard/manifest.sha256`. Engine:
+`evidence/2026-11-27-apple-m4-max-jolt-waitguard/manifest.sha256`.
+
+The API-edge follow-up fixes (negative request validated before terminal
+fast paths, zero-tick completion published while frozen, cap-0 reset
+observation starts truncated, `step_finished`-boundary frame accounting with
+independent physics and signal-callback observations) were produced for the
+M0.8 Sol-recheck follow-up job against committed candidate
+`bdb0a9820b847d23628cce35a9070bb63ae17acd`, following
+`review/implementation/m0-tick-sol-recheck-bdb0a98.md`. Hashes bind that
+candidate and the follow-up worktree contents in
+`evidence/2026-11-27-apple-m4-max-jolt-api-edges/manifest.sha256`.
+
+The N1 server-step follow-up (deferred pause until after the final tick's
+`PhysicsServer3D` step, counting-body regression, backstop rollback, runner
+strictness, pacing metadata) responds to
+`review/implementation/m0-tick-opus-5-5-bdb0a98-independent.md` for reported
+candidate `bdb0a9820b847d23628cce35a9070bb63ae17acd`. The worktree also carries
+the uncommitted Sol API-edge fixes described above; hashes distinguish the
+reported candidate from the follow-up files in
+`evidence/2026-11-27-apple-m4-max-jolt-n1-server-steps/provenance.json`.
+
+The cold-start follow-up (fresh-first-request regression with counted
+`_integrate_forces`, continuous registration-latency control, engine-frame
+observation separation) was produced after that N1 revision; it supersedes
+the earlier cold-start caveat. Hashes bind the worktree in
+`evidence/2026-11-27-apple-m4-max-jolt-cold-start/manifest.sha256`. Engine:
 Godot 4.7.2-stable (official). No third-party assets or network services.
