@@ -2,7 +2,9 @@
 
 Owned file: `docs/MACHINE_INVENTORY.md` (PLAN.md M0.6 — "Record machines/OS/controllers,
 provisional renderer and capture methods. Inventory visual/audio/control review
-capabilities"). Nothing else in this repository was created or modified by this task.
+capabilities"). The original inventory was produced by job
+`9370f30f-fbd7-42cb-b401-a69ff4d7a2b5`; the current reconciliation was produced by job
+`e3a69af4-46c2-461c-90ff-26a62922606f` and edited only this file. Read §0 first.
 
 Baseline under inventory: `ee0ec19` ("Add initial Godot boot shell and smoke check").
 Observed 2026-11-26, ~22:05–22:30 local time, on the single development Mac available to
@@ -16,6 +18,40 @@ upgrades an untested platform to a verified one.
 No serial numbers, hardware UUIDs, Bluetooth addresses, account names, hostnames, signing
 identities or credentials were collected or recorded. Values that were read while probing
 but deliberately excluded from this file are noted in [Deliberately not recorded](#deliberately-not-recorded).
+
+---
+
+## 0. Reconciliation status (read this first)
+
+This record was reconciled on 2026-11-27 by job `e3a69af4-46c2-461c-90ff-26a62922606f`
+(LongCat 2.5 via Pi) against the specified input `94fd0ec` ("Record Python verifier safety
+rechecks") and later committed evidence/review commits. The shared checkout advanced during
+reconciliation; the latest commit read was `d8cd39c` ("Clarify Python pin evidence and
+comparison results"). Between them sit review/evidence commits (`5f69dd2`, `2049beb`) and
+one CI-tooling commit (`675ec1c`, owned elsewhere) whose committed evidence is read here.
+The reconciliation edited only `docs/MACHINE_INVENTORY.md`; every fact below comes from
+committed Git objects, committed evidence/review files, or the job reports they cite. It
+performed no GUI/desktop, controller, audio, perceptual or cross-platform observation, and
+it re-ran only the local identity spot-checks listed in §13.4.
+
+**Sections 1–12 are the historical `ee0ec19` baseline** (observed 2026-11-26 by job
+`9370f30f-fbd7-42cb-b401-a69ff4d7a2b5`, StepFun 5 Preview). They are preserved as history
+with their attribution. Parenthetical *(updated, §13.x)* notes mark rows that later committed
+evidence supersedes; §13 details each change. Nothing in §§1–12 is presented as a fresh
+measurement by the reconciliation.
+
+| Baseline (`ee0ec19`) | Committed evidence at the observed tip |
+| --- | --- |
+| 3D physics backend left at `DEFAULT` (§4) | `project.godot` sets `"Jolt Physics"` explicitly; interpolation on; 60 Hz. A committed contrast run shows `DEFAULT` behaved as **GodotPhysics3D**, so the baseline inference is superseded. `docs/evidence/jolt-settings.md` inventories all 32 Jolt settings (none overridden); warning open |
+| `export_presets.cfg` absent; no package could be built (§2, §10.7) | `export_presets.cfg` tracked since `7b27c2f`, refined `245ee1d`/`8c6c928`: three placeholder desktop presets (macOS universal ad-hoc mode 1, Windows x86-64, Linux x86-64), unnotarized, exclude filter verified |
+| Windowed boot-scene run only | Known launch: mode-1 macOS export + headless launch on `d4501e3` (job `e2ecffdc…`) exited 0 and reached the placeholder menu; ad-hoc, Gatekeeper-rejected. Earlier `7b27c2f` windowed mode-3 smoke remains history. Not windowed/current-mode/Intel/Windows/Linux |
+| Templates present; no Windows/Linux host (§9) | Hosted Ubuntu runs built all three presets: runs 45924755902 (`245ee1d`), 45928824558 (`8c6c928`), and 45934306464 (`675ec1c`, four jobs green). Packages uploaded, never launched on Windows/Linux; named reviews keep the CI/export gate open |
+| Local SHA-256 only; `expected_sha256` empty (§2, §10.6) | Editor binary and selected templates match publisher SHA-512/SHA-256 archives (`docs/evidence/godot-4.7.2-archive-verification.md`; pin files `upstream_verified=yes`). Four python.org 3.15.2 artifacts digest- and Sigstore-verified; installed Homebrew build not authenticated by those signatures |
+| `gl_compatibility` provisional until M3 (§3) | Unchanged at the observed tip; still provisional; M3's representative tests remain authoritative. No new renderer measurement |
+| No controller, no audio input, capture-mediated visual review (§5–§7) | Unchanged; hardware/perceptual gates remain open |
+
+An export template, a cross-export or a hosted export is not a target-OS launch. The
+baseline's untested platforms stay untested.
 
 ---
 
@@ -50,7 +86,7 @@ Consequences for the project:
 | Engine | Godot **4.7.2.stable.official.ed1daf0bf** (Standard, official build) | `godot --headless --version` |
 | Binary | `/opt/homebrew/bin/godot` → `/Applications/Godot.app/Contents/MacOS/Godot` (351,312,912 bytes) | `readlink -f`, `ls -l` |
 | Locally computed SHA-256 | `c7cccbf8fb143e34e02fd6521e09be2c2b974f0d5db080b19071c9c570718ccf` | `shasum -a 256` |
-| Checksum provenance | **Not verified by this task.** `tools/ci/pin/engine.txt` leaves `expected_sha256` empty and `ci.sh capture --check` reports "engine checksum: NOT RECORDED". The value above is what this host has installed, computed locally. An independent verification record produced by the toolchain job (`docs/evidence/godot-4.7.2-archive-verification.md`, `tools/toolchain/pin/checksums.txt`) reports the same editor SHA-256, so the two agree; this task did not repeat the archive download | `tools/ci/pin/engine.txt`, `sh tools/ci/ci.sh capture --check` |
+| Checksum provenance | **Not verified by this task.** `tools/ci/pin/engine.txt` leaves `expected_sha256` empty and `ci.sh capture --check` reports "engine checksum: NOT RECORDED". The value above is what this host has installed, computed locally. An independent verification record produced by the toolchain job (`docs/evidence/godot-4.7.2-archive-verification.md`, `tools/toolchain/pin/checksums.txt`) reports the same editor SHA-256, so the two agree; this task did not repeat the archive download. (Updated, §13.4: the editor binary and selected templates are publisher-checksummed in committed evidence; scope is selected files only.) | `tools/ci/pin/engine.txt`, `sh tools/ci/ci.sh capture --check` |
 | Export templates | `~/Library/Application Support/Godot/export_templates/4.7.2.stable` (1.9 GiB), `version.txt` = `4.7.2.stable` | `ls`, `cat version.txt` |
 | Template platforms present | macOS (`macos.zip`), Windows (release/debug × x86_32, x86_64, arm64), Linux (release/debug × x86_32, x86_64, arm32, arm64), Web, Android, iOS | directory listing |
 | Python | Python 3.15.2 (`/opt/homebrew/bin/python3`) | `python3 --version` |
@@ -67,9 +103,10 @@ Consequences for the project:
 * Templates for Windows and Linux exist locally, but a template file is not a launch test.
   `docs/TECHNICAL_DESIGN.md` requires native tests on each OS before any supported-platform
   claim; **no Windows or Linux host is available to this project**, so those remain untested.
-* `export_presets.cfg` does not exist in the checkout, so `ci.sh export` cannot build a
-  package yet. That is an M0.4/M0.5 gap owned elsewhere, recorded here because it bounds what
-  this host could demonstrate.
+* `export_presets.cfg` did not exist at this baseline, so `ci.sh export` could not build a
+  package then. (Updated, §13.2: the file is now tracked with three placeholder desktop
+  presets; they are not verified release packages.) That gap is closed as a file, not as a
+  verified platform.
 
 ## 3. Renderer and GPU behaviour on this host
 
@@ -90,18 +127,23 @@ GPU. **No frame-time, memory, draw-call or visual-quality comparison has been ma
 representative one/four-view measurements remain the authority for renderer selection; the
 `mobile` renderer was not started here and its behaviour on this host is unknown.
 
+(Updated, §0: the committed project still sets `gl_compatibility`; it remains
+provisional until M3, and this reconciliation made no new renderer measurement.)
+
 ## 4. Physics backend
 
 | Fact | Observed value | Command |
 | --- | --- | --- |
-| 3D physics engine setting | `physics/3d/physics_engine` = `DEFAULT` | Godot probe |
+| 3D physics engine setting | `physics/3d/physics_engine` = `DEFAULT` **(updated: committed HEAD sets `"Jolt Physics"`, §13.1)** | Godot probe |
 | Available backends (engine property hints) | `DEFAULT, Jolt Physics, GodotPhysics3D, Dummy` | `ProjectSettings.get_property_list()` |
 | Jolt settings compiled in | Yes — `physics/jolt_physics_3d/simulation/...` and `.../queries/...` properties exist | same probe |
 | Tick rate | 60 Hz (`physics/common/physics_ticks_per_second=60`), physics interpolation on | `project.godot`, probe |
 
-`DEFAULT` resolves to the built-in Jolt Physics backend in this engine build, consistent with
-`docs/TECHNICAL_DESIGN.md`. The Jolt-specific tuning values themselves have not been
-inventoried or pinned here (that belongs to M0.1).
+At this baseline the project left the backend at `DEFAULT` and inferred Jolt from the engine
+build. Committed evidence now shows `DEFAULT` behaved as **GodotPhysics3D** on this build, and
+the committed project selects `"Jolt Physics"` explicitly (§13.1); the inference above is
+superseded. `docs/evidence/jolt-settings.md` inventories all 32 Jolt-specific settings — none
+overridden by the game — and the intermittent job-system warning remains open.
 
 ## 5. Controllers and input
 
@@ -183,7 +225,7 @@ created while this work was in progress (see §10 item 12).
 | 12 | Project capture readiness | `sh tools/ci/ci.sh capture --check` (in a scratch copy) | PASS: engine pin matches, templates installed, display available, 3 scenes listed; checksum reported NOT RECORDED |
 | 13 | Project capture probe | `sh tools/ci/ci.sh capture --probe` (in a scratch copy) | PASS: `res://scenes/boot.tscn`, 6 frames, 0.2 s, 283,444 bytes, "100% of real-time speed". `ci.sh` reported the requested `resolution=640x360`, but `ffprobe` shows the recorded video stream is **1920×1080** mjpeg with a 48 kHz PCM audio track |
 | 14 | Project capture at panel resolution | `sh tools/ci/ci.sh capture --target res://scenes/main_menu.tscn --frames 60 --fps 60 --resolution 960x540` | PASS: 60 frames, 1.0 s, 2,759,500 bytes. The engine logged "Movie Maker mode enabled, recording movie in 1920×1080 @ 60 FPS" and `ffprobe` confirms **1920×1080** mjpeg plus a 48 kHz PCM audio track — the requested `--resolution 960x540` was not honoured. Reported CPU render time for the placeholder menu averaged 0.19 ms/frame — a placeholder-shell figure, not a performance result |
-| 15 | Project environment report script | `godot [--headless] --script res://tools/ci/scripts/environment_report.gd` | **Fails to parse**: `Static function "get_output_device_name()" not found in base "GDScriptNativeClass"` at line 33. `ci.sh doctor` therefore cannot run on any host until that line is fixed. Reported here as an observed defect; `tools/ci/**` is owned by another job and was not modified |
+| 15 | Project environment report script | `godot [--headless] --script res://tools/ci/scripts/environment_report.gd` | **Fails to parse**: `Static function "get_output_device_name()" not found in base "GDScriptNativeClass"` at line 33. `ci.sh doctor` therefore cannot run on any host until that line is fixed. Reported here as an observed defect; `tools/ci/**` is owned by another job and was not modified. (Updated, §13.5: the committed script uses `AudioServer.output_device` and parses.) |
 
 Checks 13 and 14 share one discrepancy: the `--resolution` value passed to the capture path is
 not honoured on this host. Both recordings came out at the project's 1920×1080 window size, so
@@ -207,6 +249,12 @@ isolated measurements.
 An installed export template is not evidence that a package launches, and a successful export
 would not verify a platform. Cross-platform claims stay open.
 
+(Updated at the observed tip, §§13.2–13.3.) The committed project now carries placeholder
+export presets. A macOS mode-1 package was exported and launched **headless** on this host
+(`d4501e3`), and hosted Ubuntu runs built all three presets (`245ee1d`, `8c6c928`). Those runs
+do not launch a Windows, Linux or Intel target; the untested statuses above stand, and the
+CI/export gate remains open.
+
 ## 10. Gaps, unknowns and open items
 
 Recorded explicitly, per M0.6 and M0's acceptance ("Record missing target hardware
@@ -224,15 +272,23 @@ explicitly"):
 6. **Engine checksum.** The locally computed SHA-256 in §2 was not compared with an archive
    download by this task; the toolchain job's record (`docs/evidence/godot-4.7.2-archive-verification.md`)
    reports the same editor digest, so the two agree. M0.1's own pin file still leaves
-   `expected_sha256` empty.
-7. **`export_presets.cfg` missing**, so no native package can be produced yet (M0.4/M0.5).
-8. **`tools/ci/scripts/environment_report.gd` does not parse** (`AudioServer.get_output_device_name()`),
-   so `ci.sh doctor` — the project's own environment recorder — fails on every host. Owner:
+   `expected_sha256` empty. (Updated, §13.4: the editor binary and selected templates are now
+   publisher-checksummed, and both pin files carry `upstream_verified=yes` for their stated scope;
+   the empty local-install field is superseded.)
+7. **`export_presets.cfg` was missing at this baseline**, so no native package could be produced then
+   (M0.4/M0.5). (Updated, §13.2: the file now exists with three placeholder presets;
+   producing packages is no longer blocked by its absence, though no package is a verified
+   release.)
+8. **`tools/ci/scripts/environment_report.gd` did not parse at this baseline** (`AudioServer.get_output_device_name()`),
+   so `ci.sh doctor` — the project's own environment recorder — failed on every host. Owner:
    `tools/ci/**` (job `93555487-a479-4ecb-ac23-9e95067144cf`). Audio facts in §7 were obtained
-   with an equivalent probe instead.
-9. **Capture resolution is not honoured** by the current capture path: both `capture --probe`
+   with an equivalent probe instead. (Updated, §13.5: the committed script parses via
+   `AudioServer.output_device`; follow-up owner `6848aca2…`.)
+9. **Capture resolution was not honoured** by the capture path tested at this baseline: both `capture --probe`
    (requested 640×360) and `capture --target ... --resolution 960x540` recorded 1920×1080
-   (checks 13–14). Owner: `tools/ci/**`.
+   (checks 13–14). Owner: `tools/ci/**`. (Updated, §13.5: committed `ci.sh` applies a
+   viewport override for `--resolution` and verifies the recorded resolution with `ffprobe`;
+   not re-run by this reconciliation.)
 10. **Usable desktop height is 1920×960** while the display is 1920×1080 (a 30 px top inset
     plus a further 90 px reserved). The cause was not determined; it affects any full-screen
     1080p layout check.
@@ -242,7 +298,9 @@ explicitly"):
     (created by the toolchain job, which recorded `godot-4.7.2-archive-verification.md` there).
     The captures produced for §8 were kept in `/tmp` and deleted, because this task owns only
     this file; when the evidence directory's ownership and naming are settled, the checks in §8
-    should be re-run there with their outputs retained.
+    should be re-run there with their outputs retained. (Updated: `docs/evidence/` is now
+    committed and holds the Godot archive verification, Jolt settings/warning and Python
+    source-verification records.)
 13. **Concurrency.** Other delegated jobs were running on this machine during these checks;
     nothing here is an isolated benchmark.
 
@@ -273,6 +331,141 @@ Renderer, physics-backend, audio-device and joypad facts need a small `SceneTree
 with `--script` (see checks 5–8); the same script must be run twice, once `--headless` and once
 with a display driver, because the headless drivers report dummies.
 
-## Follow-up: CI tooling
+## 13. Committed evidence behind the reconciliation
 
-The observations above describe the tooling snapshot tested at the time. Follow-up job `6848aca2-16e6-42f1-abfd-4e493b125af5` reports corrections to the doctor parse and capture-resolution defects; the coordinator has independently run the 53-case CI self-test. A clean GitHub-hosted runner and target-platform launch remain unverified.
+Each item cites a committed file or report; the reconciliation did not re-run these checks.
+The baseline reproduction commands remain in §12.
+
+### 13.1 Explicit Jolt selection (supersedes §4's `DEFAULT`)
+
+* `project.godot` at the observed tip sets `physics/3d/physics_engine="Jolt Physics"`, with
+  `common/physics_interpolation=true` and `common/physics_ticks_per_second=60`. The
+  baseline's `DEFAULT` observation was true at `ee0ec19` and is retained as history.
+* `tools/tick_probe/evidence/2026-11-26-apple-m4-max-jolt/README.md` records that the earlier
+  DEFAULT-backend probe results are superseded: the contrast run under explicit
+  `GodotPhysics3D` reproduces them bit-for-bit on every contact metric, so `DEFAULT`
+  behaved as GodotPhysics3D on this build. Re-recorded Jolt runs passed 58/58 structural
+  checks in three pacing modes and matched 600-tick accelerated/realtime endpoints. Direct
+  backend identity remains unobservable from GDScript; the pin is verified through the
+  setting value plus that contrast (`docs/STATUS.md` job `9725ba2c…`).
+* `docs/evidence/jolt-settings.md` (committed `10d9e51`, job `52ab36a7…`) inventoried all 32
+  `physics/jolt_physics_3d/*` settings of the pinned build: the game overrides exactly three
+  physics entries (backend, interpolation, tick rate) and sets **none** of the 32 Jolt-specific
+  values, which therefore run at engine defaults. Nothing was pinned by that job.
+* `docs/evidence/jolt-job-warning-2026-11-27.md` (committed `063dd2c`, job `4f8a5b52…`)
+  records the intermittent job-system capacity warning: pinned source waits and reclaims
+  completed jobs when the free list is exhausted; capacity is 2,048 jobs; the warning was
+  absent across the investigation's reruns, and liveness/capacity for representative workloads
+  remains open.
+
+### 13.2 Export presets and the known mode-1 macOS headless launch
+
+* `export_presets.cfg` is tracked (added `7b27c2f`; `245ee1d` fixed hosted validation;
+  `8c6c928` preserved per-preset evidence). It defines three placeholder desktop presets:
+  `macOS Apple Silicon` (universal architecture, min macOS 14.0, built-in ad-hoc signing
+  mode 1, `notarization/notarization=0`), `Windows x86-64`, and `Linux x86-64`. Each carries
+  an exclude filter checked by `tools/export_smoke/lib/pack_inventory.py`. The file's own
+  header states that it is not a verified release package and that Windows/Linux builds are
+  cross-exports not launched here.
+* Known launch evidence, mode 1, headless: job `e2ecffdc-e0d2-4b5f-8d1a-624e762f3911`
+  (LongCat, candidate `d4501e3`) exported the committed macOS preset with the pinned editor
+  and ran the exported bundle through `launch_macos_app.sh --skip-windowed`: headless exit 0,
+  log reached `[boot] handing off to menu` / `[menu] placeholder menu shown`; `codesign
+  --verify` passed as ad-hoc; `spctl` rejected the unnotarized build; ZIP SHA-256
+  `e1553e8a9dce3d10189147a19d9f8947718bcfd7d78ac6b11a04b45b62bff4be`. `docs/STATUS.md`
+  records the coordinator checking that hash and log. This is not windowed, current-mode,
+  Intel, Windows or Linux launch evidence, and not gameplay or a release.
+* Earlier windowed history: the coordinator launched the `7b27c2f` macOS smoke ZIP windowed
+  and saw the placeholder menu in a captured image (`docs/STATUS.md`). That build predates
+  the mode-1 change and remains a local shell smoke, not a supported-platform claim.
+
+### 13.3 Hosted Linux cross-exports
+
+* Hosted Ubuntu runs have built all three presets on the pinned editor. Run 45924755902
+  (`245ee1d`) completed all three jobs including validation and exports; run 45928824558
+  (`8c6c928`) completed all three jobs with passing pack inventories for macOS, Windows and
+  Linux and a 21-file scoped `export-logs` artifact (`review/implementation/
+  m0-ci-sol-recheck-245ee1d.md`, `m0-ci-sol-recheck-8c6c928.md`). These prove package
+  creation and upload, not target launches.
+* Latest observed hosted result: run 45934306464 on `675ec1c` passed all four jobs. Sol's
+  recheck confirmed sequential exports of all three presets, filenames tied to the candidate
+  SHA, success-gated package upload, and the new Godot-independent contract suites; it still
+  returned **changes required** for a medium concurrent-invocation provenance defect and a
+  low attempt-identifier gap (`review/implementation/m0-ci-sol-recheck-675ec1c.md`). The
+  independent Opus 5.5 review also returned **changes required**, static only, for a
+  test-coverage/documentation defect plus non-blocking nits (`review/implementation/
+  m0-ci-opus-5-5-675ec1c-independent.md`).
+* `675ec1c` added index-status propagation, stale-report removal and success-gated upload in
+  response to the `8c6c928` findings. Because both named reviews of `675ec1c` remain
+  changes-required and no Windows/Linux launch exists, the CI/export gate stays open.
+* Package follow-up `f463de0e…` exported all three platforms locally from `f9779b5` plus the
+  then-uncommitted preset overlay; inventories passed and macOS launched headless;
+  Windows/Linux were not launched (`docs/STATUS.md`).
+
+### 13.4 Pinned checksum and Sigstore evidence
+
+* Godot: `docs/evidence/godot-4.7.2-archive-verification.md` records the official release
+  `SHA512-SUMS.txt` matching the macOS editor ZIP (`38aa16e5…`) and export-template TPZ
+  (`ca4d71c4…`), and the installed editor binary SHA-256 `c7cccbf8…`, `version.txt`,
+  `macos.zip`, `windows_release_x86_64.exe` and `linux_release.x86_64` matching verified
+  archive members. `tools/toolchain/pin/engine.txt` and `tools/ci/pin/engine.txt` carry
+  `upstream_verified=yes` with scope notes; the CI pin also pins the Linux editor ZIP and TPZ
+  SHA-512 digests that `ci.sh` verifies before extraction. Scope is selected files only;
+  other bundle files and non-target templates were not compared, and no target platform was
+  launched. A CI test job once truncated the installed Linux template during a corruption
+  test; it was restored from a matching local copy and `tools/toolchain/verify.sh` confirmed
+  the pinned digests afterwards (`docs/STATUS.md`).
+* Python: `docs/PYTHON_TOOLCHAIN_EVIDENCE.md` records the selected interpreter as Homebrew core
+  `python@3.15` 3.15.2 (arm64 bottle poured 2026-11-06) and ties the distribution channel to
+  Homebrew-published digests. All four pinned python.org 3.15.2 artifacts matched published
+  SHA-256, and Sigstore verification against `hugo@python.org` /
+  `https://github.com/login/oauth` passed with wrong-identity, wrong-issuer and tampered-bytes
+  controls failing. This authenticates publisher artifact bytes only; the installed Homebrew
+  build is not authenticated by those signatures, its API JWS was not verified, and the
+  framework code-signature anomaly remains open.
+* Reconciliation spot-checks performed for this section (read-only; latest run during
+  reconciliation):
+
+```sh
+$ git rev-parse HEAD
+d8cd39cbfe926ba5321f59b4cc1ada727fd44b08
+$ sw_vers
+ProductName: macOS / ProductVersion: 27.0.1 / BuildVersion: 26A434
+$ uname -a
+Darwin <host-redacted> 27.0.0 Darwin Kernel Version 27.0.0: ... RELEASE_ARM64_T6041 arm64
+$ sysctl -n hw.model hw.ncpu hw.memsize
+Mac16,9 / 14 / 38654705664
+$ godot --headless --version
+4.7.2.stable.official.ed1daf0bf
+$ shasum -a 256 /Applications/Godot.app/Contents/MacOS/Godot
+c7cccbf8fb143e34e02fd6521e09be2c2b974f0d5db080b19071c9c570718ccf
+```
+
+These agree with §§1–2 and are not new hardware, controller, audio, perceptual or launch
+observations.
+
+### 13.5 Baseline tooling defects superseded
+
+* `tools/ci/scripts/environment_report.gd` at the observed tip uses `AudioServer.output_device`
+  (line 33); the baseline parse error (`get_output_device_name()`) is gone in committed code.
+* `tools/ci/ci.sh` at the observed tip applies a viewport override for `--resolution` (line
+  1505) and verifies the recorded resolution with `ffprobe`, failing on mismatch (lines
+  1532–1539). Both are owned by the CI job and were not re-run by this reconciliation.
+
+### 13.6 Limits that remain unchanged
+
+No physical controller; no audio input; agents cannot view the display directly; no Windows,
+Linux or Intel Mac host; renderer still provisional until M3; every perceptual gate needs a
+human or capable reviewer; a cross-export, hosted export or installed template is not a
+target-OS launch. See §§5–7, §9 and §10.
+
+## Follow-up: committed evidence after the baseline
+
+The baseline's tooling snapshot was extended by later committed work owned elsewhere: CI and
+export repair `a3a8cdb9…` (committed `245ee1d`, `8c6c928`), package-content follow-up
+`f463de0e…`, mode-1 macOS smoke `e2ecffdc…`, CI hardening `675ec1c`, and its independent
+reviews (`2049beb`). None of it closes M0: both named reviews of `675ec1c` remain
+changes-required, a clean GitHub-hosted runner for the current candidate has no recorded
+result, and Windows/Linux/Intel launches, controller/audio/perceptual verification, and M3
+renderer measurements remain open. `docs/STATUS.md` (owned elsewhere) is the running
+record; this file owns only the machine/capability inventory.
