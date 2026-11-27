@@ -161,6 +161,68 @@ class PckError(Exception):
     pass
 
 
+# Base names Windows reserves regardless of extension (CON.txt, COM1, ...).
+WINDOWS_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL", "CLOCK$"]
+    + ["COM%d" % i for i in range(1, 10)]
+    + ["LPT%d" % i for i in range(1, 10)]
+)
+
+
+def inspect_resource_path(raw, index):
+    """Validate one pack-entry path. Returns (canonical_path_or_None, problem).
+
+    A canonical Godot resource path is relative, uses only "/", and has no
+    empty, "." or ".." components. Absolute/drive/scheme forms, host-specific
+    separators (backslash), NUL/control characters and non-UTF-8 bytes are
+    rejected, so neither the dev-only policy nor a snapshot join can be fed a
+    spelling that escapes the frozen candidate.
+    """
+    if isinstance(raw, str):
+        path = raw
+    else:
+        trimmed = raw.rstrip(b"\x00")
+        if b"\x00" in trimmed:
+            return None, "entry %d path contains an embedded NUL byte" % index
+        try:
+            path = trimmed.decode("utf-8")
+        except UnicodeDecodeError:
+            return None, "entry %d path is not valid UTF-8" % index
+    if path == "":
+        return None, "entry %d has an empty path" % index
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        return None, "entry %d path contains control characters: %r" % (index, path)
+    if "\\" in path:
+        return None, "entry %d path uses a non-canonical separator (backslash): %r" % (index, path)
+    if path.startswith("/") or "://" in path:
+        return None, "entry %d path is absolute or scheme-qualified: %r" % (index, path)
+    if len(path) >= 2 and path[1] == ":":
+        return None, "entry %d path looks drive-qualified: %r" % (index, path)
+    if ":" in path:
+        return None, ("entry %d path contains a colon (NTFS alternate-data-stream "
+                      "or host-specific spelling): %r") % (index, path)
+    for part in path.split("/"):
+        if part == "":
+            return None, "entry %d path has an empty component: %r" % (index, path)
+        if part in (".", ".."):
+            return None, "entry %d path is not canonical (dot component): %r" % (index, path)
+        if part != part.rstrip(". "):
+            return None, ("entry %d path component has a trailing dot or space "
+                          "(Windows alias spelling): %r") % (index, path)
+        stem = part.split(".", 1)[0].upper()
+        if stem in WINDOWS_RESERVED_NAMES:
+            return None, ("entry %d path uses a Windows reserved device name: %r"
+                          ) % (index, part)
+    return path, None
+
+
+def canonical_resource_path(raw, index):
+    path, problem = inspect_resource_path(raw, index)
+    if problem:
+        raise PckError(problem)
+    return path
+
+
 def parse_pck(data):
     """Parse a Godot 4.7 PCK. Returns a dict describing header and entries.
 
@@ -193,7 +255,7 @@ def parse_pck(data):
         if path_len == 0 or path_len > 4096:
             raise PckError("implausible path length %d at entry %d" % (path_len, index))
         raw_path = data[pos + 4:pos + 4 + path_len]
-        path = raw_path.rstrip(b"\x00").decode("utf-8", "replace")
+        path = canonical_resource_path(raw_path, index)
         q = pos + 4 + path_len
         if q + 36 > len(data):
             raise PckError("truncated entry %d (%s)" % (index, path))
@@ -357,21 +419,34 @@ def is_dev_only(path):
 
 
 def check_pack_contents(pck, snapshot):
-    """Apply the E4 policy to the parsed pack. Returns a result dict."""
+    """Apply the E4 policy to the parsed pack. Returns a result dict.
+
+    Every entry path is validated BEFORE any dev-only policy decision or
+    snapshot path join. Malformed spellings are reported separately and never
+    counted as a source match.
+    """
     dev_only = []
-    paths = [entry["path"] for entry in pck["entries"]]
+    invalid_paths = []
+    valid_entries = []
+    for index, entry in enumerate(pck["entries"]):
+        _canonical, problem = inspect_resource_path(entry["path"], index)
+        if problem:
+            invalid_paths.append({"path": entry["path"], "reason": problem})
+        else:
+            valid_entries.append(entry)
+    paths = [entry["path"] for entry in valid_entries]
     required_missing = [r for r in REQUIRED_RUNTIME if r not in paths]
     for prefix in REQUIRED_RUNTIME_PREFIXES:
         if not any(p.startswith(prefix) for p in paths):
             required_missing.append(prefix + "*")
-    for entry in pck["entries"]:
+    for entry in valid_entries:
         pattern = is_dev_only(entry["path"])
         if pattern:
             dev_only.append({"path": entry["path"], "matched": pattern})
 
     source = {"compared": 0, "matched": 0, "engine_generated": 0, "absent": [], "mismatched": []}
     if snapshot:
-        for entry in pck["entries"]:
+        for entry in valid_entries:
             path = entry["path"]
             if is_engine_generated(path):
                 source["engine_generated"] += 1
@@ -390,6 +465,7 @@ def check_pack_contents(pck, snapshot):
     return {
         "dev_only": dev_only,
         "required_missing": required_missing,
+        "invalid_paths": invalid_paths,
         "source_match": source,
     }
 
@@ -406,6 +482,12 @@ def verdict_for(base_used, verified, failures, policy):
     if failures:
         problems.append("%d pack entr%s failed MD-5 verification: %s" % (
             len(failures), "y" if len(failures) == 1 else "ies", _shorten([f[0] for f in failures])))
+    if policy["invalid_paths"]:
+        problems.append("%d pack entr%s ha%s an unsafe/non-canonical path: %s" % (
+            len(policy["invalid_paths"]),
+            "y" if len(policy["invalid_paths"]) == 1 else "ies",
+            "s" if len(policy["invalid_paths"]) == 1 else "ve",
+            _shorten(["%s (%s)" % (d["path"], d["reason"]) for d in policy["invalid_paths"]])))
     if policy["dev_only"]:
         problems.append("%d development-only path(s) are inside the package: %s" % (
             len(policy["dev_only"]), _shorten([d["path"] for d in policy["dev_only"]])))
@@ -428,9 +510,19 @@ def verdict_for(base_used, verified, failures, policy):
 # Reporting
 # --------------------------------------------------------------------------
 
-def write_report(path, lines):
-    with open(path, "w") as fh:
-        fh.write("\n".join(lines) + "\n")
+def render_report(lines):
+    return "\n".join(lines) + "\n"
+
+
+def reserve_exclusive(path):
+    """Create-only reservation of a caller-selected output.
+
+    Uses O_CREAT|O_EXCL|O_WRONLY on the final pathname, so an existing regular
+    file, directory, symlink (dangling included) or a concurrent reservation
+    fails without changing existing bytes or following a link. The caller keeps
+    the descriptor and writes through it; nothing is ever truncated here.
+    """
+    return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
 
 
 def build_lines(platform, main_path, components, pck_info, policy, problems, base_used, template):
@@ -480,6 +572,9 @@ def build_lines(platform, main_path, components, pck_info, policy, problems, bas
             add("entry=%s bytes=%d md5=%s" % (entry["path"], entry["size"], entry["md5"]))
         add("")
         add("## Policy checks (E4)")
+        add("invalid_pack_paths=%d" % len(policy.get("invalid_paths", [])))
+        for item in policy.get("invalid_paths", []):
+            add("invalid_pack_path=%s (%s)" % (item["path"], item["reason"]))
         add("dev_only_present=%d" % len(policy["dev_only"]))
         for item in policy["dev_only"]:
             add("dev_only_path=%s (matched %s)" % (item["path"], item["matched"]))
@@ -645,7 +740,7 @@ def cmd_check(args):
         policy = check_pack_contents(pck, args.snapshot)
         problems.extend(verdict_for(base_used, verified, failures, policy))
     if pck_info is None:
-        policy = {"dev_only": [], "required_missing": [],
+        policy = {"dev_only": [], "required_missing": [], "invalid_paths": [],
                   "source_match": {"compared": 0, "matched": 0, "engine_generated": 0,
                                    "absent": [], "mismatched": []}}
 
@@ -655,15 +750,34 @@ def cmd_check(args):
 
     lines = build_lines(platform, args.main, components, pck_info, policy, problems, base_used, template)
 
-    if args.report:
-        write_report(args.report, lines)
-    if args.sums:
-        with open(args.sums, "a") as fh:
-            for comp in components:
-                fh.write("%s  %s\n" % (comp["sha256"], comp["name"]))
-    if args.json:
-        with open(args.json, "w") as fh:
-            json.dump({
+    # Reserve every caller-selected output create-only BEFORE writing content,
+    # so a failure on the second reservation cannot leave a half-written pair.
+    report_fd = None
+    json_fd = None
+    try:
+        if args.report:
+            report_fd = reserve_exclusive(args.report)
+        if args.json:
+            json_fd = reserve_exclusive(args.json)
+    except OSError as exc:
+        for held in (report_fd, json_fd):
+            if held is not None:
+                os.close(held)
+        die(2, "cannot create output exclusively (existing file/directory/symlink "
+               "or concurrent reservation): %s (%s)" % (exc.filename or "?", exc))
+
+    try:
+        if report_fd is not None:
+            with os.fdopen(report_fd, "w") as fh:
+                fh.write(render_report(lines))
+            report_fd = None
+        if args.sums:
+            with open(args.sums, "a") as fh:
+                for comp in components:
+                    fh.write("%s  %s\n" % (comp["sha256"], comp["name"]))
+        if json_fd is not None:
+            with os.fdopen(json_fd, "w") as fh:
+                json.dump({
                 "platform": platform,
                 "main": os.path.basename(args.main),
                 "app": app_name,
@@ -680,12 +794,19 @@ def cmd_check(args):
                 "policy": {
                     "dev_only": policy["dev_only"],
                     "required_missing": policy["required_missing"],
+                    "invalid_paths": policy.get("invalid_paths", []),
                     "source_match": policy["source_match"],
                 },
                 "template": template,
                 "problems": problems,
                 "verdict": "FAIL" if problems else "PASS",
-            }, fh, indent=2, sort_keys=True)
+                }, fh, indent=2, sort_keys=True)
+            json_fd = None
+    except OSError as exc:
+        for held in (report_fd, json_fd):
+            if held is not None:
+                os.close(held)
+        die(2, "could not write reserved output: %s" % exc)
 
     if args.format == "json":
         print(json.dumps({"verdict": "FAIL" if problems else "PASS", "problems": problems}, indent=2))
@@ -728,9 +849,10 @@ def main(argv):
     p_check.add_argument("--main", required=True, help="the produced package (zip/exe/binary)")
     p_check.add_argument("--pck", help="sidecar .pck (default: <main-without-ext>.pck)")
     p_check.add_argument("--snapshot", help="frozen candidate dir, to compare pack entries against")
-    p_check.add_argument("--report")
-    p_check.add_argument("--sums", help="append SHA256SUMS lines here")
-    p_check.add_argument("--json")
+    p_check.add_argument("--report", help="create-only human-readable report (fails if the path exists)")
+    p_check.add_argument("--sums", help="append SHA256SUMS lines here (separate append contract; "
+                                         "unlike --report/--json this may target an existing file)")
+    p_check.add_argument("--json", help="create-only JSON report (fails if the path exists)")
     p_check.add_argument("--format", choices=("text", "json"), default="text")
     p_check.add_argument("--quiet", action="store_true",
                          help="print only the one-line summary; the full report goes to --report")

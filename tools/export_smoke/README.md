@@ -58,8 +58,11 @@ truncated or replaced. Without `--out`, each invocation reserves a unique
 fresh directory under `<project>/work/agents/export-smoke/outputs/`
 (`run.XXXXXX`), so ordinary repeated runs never collide. The runner resolves one
 immutable commit SHA before archiving; the report's `head_commit`,
-`head_tree`, `archive_sha256` and `presets_sha256` all describe the exact bytes
-that were extracted and exported. The presets are captured from
+`head_tree`, `archive_sha256`, `presets_sha256` and `project_godot_sha256`
+describe the exact bytes that were extracted and exported;
+`candidate_digest` is the SHA-256 of those three labelled digests, so it binds
+the frozen project settings after any `--diagnostic-enable-etc2-astc` patch.
+The presets are captured from
 `<head_commit>:export_presets.cfg` with `git show`; the live working-tree copy
 is never read or overlaid (the report adds `presets_source=head-commit` and
 `presets_live_matches_commit=true|false` for diagnosis).
@@ -117,6 +120,15 @@ list), `package-inventory-<platform>.json` (machine-readable), and
 `SHA256SUMS.txt`. Note that the macOS `.app` component paths in `SHA256SUMS.txt`
 are relative to the extracted bundle, so `shasum -c SHA256SUMS.txt` only
 verifies the top-level artifacts.
+
+Output-safety semantics: `lib/pack_inventory.py --report` and `--json` are
+**create-only** (`O_CREAT|O_EXCL`, written through the held descriptor). An
+existing regular file, directory, symlink (dangling included) or a concurrent
+reservation fails without changing existing bytes or link targets; when both
+are requested, neither receives content unless both were reserved first. The
+`--sums` option deliberately keeps its separate **append** contract (it may
+target an existing file); the runner passes it inside its reserved fresh
+output directory.
 
 Before this check existed, a Linux export could leave a **0-byte** main binary
 and still be reported as `EXPORTED`: the runner only checked that the output

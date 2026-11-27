@@ -258,11 +258,49 @@ fi
 # could remove a concurrently planted foreign file. It is a small dotfile in
 # the reserved output directory.
 
-# Both component digests describe the frozen candidate, so the combined
-# candidate digest can be computed from them without re-reading anything.
-# The input temp is created exclusively and also left for inspection.
+# --- optional diagnostic project-setting patch (snapshot only) -------------
+if [ "$DIAG_ETC2" -eq 1 ]; then
+	warn "DIAGNOSTIC: enabling import_etc2_astc in the SNAPSHOT project.godot only"
+	warn "DIAGNOSTIC: the tracked project.godot is NOT modified; this proves the"
+	warn "DIAGNOSTIC: macOS preset is otherwise correct and the package launches."
+	if [ -L "$SNAP/project.godot" ] || [ ! -f "$SNAP/project.godot" ]; then
+		die 2 "snapshot project.godot is missing or not a regular file; refusing the diagnostic patch"
+	fi
+	# Patch only when the setting is not already true: a =false line must be
+	# replaced, not skipped. Only $SNAP is ever written; the live checkout and
+	# the tracked file stay untouched.
+	if grep -Eq '(^|[[:space:]])textures/vram_compression/import_etc2_astc[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$SNAP/project.godot"; then
+		:
+	else
+		python3 - "$SNAP/project.godot" <<'PY' 2>/dev/null || \
+			sed -i '' 's/^\(.*import_etc2_astc.*\)=.*/\1=true/' "$SNAP/project.godot" 2>/dev/null || \
+			die 2 "could not apply the diagnostic project-setting patch"
+import re, sys
+line = "textures/vram_compression/import_etc2_astc"
+p = sys.argv[1]
+s = open(p).read()
+pattern = r"(?m)^([ \t]*" + re.escape(line) + r"[ \t]*=[ \t]*).*$"
+if re.search(pattern, s):
+    s = re.sub(pattern, r"\1true", s)
+elif "[rendering]\n" in s:
+    s = s.replace("[rendering]\n", "[rendering]\n" + line + "=true\n", 1)
+else:
+    if not s.endswith("\n"):
+        s += "\n"
+    s += "\n[rendering]\n" + line + "=true\n"
+open(p, "w").write(s)
+PY
+	fi
+fi
+
+# Candidate evidence binds every exported input: the archive bytes, the frozen
+# presets and the frozen project.godot as actually used (after any diagnostic
+# patch). Missing/unreadable/symlinked/invalid inputs fail closed before PASS.
+_ev="$(es_candidate_evidence "$ARCHIVE_SHA" "$PRESETS_SHA" "$SNAP")" || \
+	die 2 "candidate evidence validation failed (see above)"
+PROJECT_GODOT_SHA="$(printf '%s\n' "$_ev" | sed -n 's/^project_godot_sha256=//p')"
 _cand_input="$OUT_DIR/.candidate-digest-input"
-if ! _es_create_exclusive "$_cand_input" "$(printf '%s\n%s' "$ARCHIVE_SHA" "$PRESETS_SHA")"; then
+if ! _es_create_exclusive "$_cand_input" "$(printf '%s' "$_ev")"; then
 	die 2 "could not create the candidate-digest input exclusively: $_cand_input"
 fi
 CANDIDATE_SHA="$(es_sha256 "$_cand_input")"
@@ -272,28 +310,8 @@ fi
 
 log "candidate archive sha256: $ARCHIVE_SHA"
 log "candidate presets sha256: $PRESETS_SHA"
+log "candidate project.godot sha256: $PROJECT_GODOT_SHA"
 log "candidate digest:         $CANDIDATE_SHA"
-
-# --- optional diagnostic project-setting patch (snapshot only) -------------
-if [ "$DIAG_ETC2" -eq 1 ]; then
-	warn "DIAGNOSTIC: enabling import_etc2_astc in the SNAPSHOT project.godot only"
-	warn "DIAGNOSTIC: the tracked project.godot is NOT modified; this proves the"
-	warn "DIAGNOSTIC: macOS preset is otherwise correct and the package launches."
-	if grep -q 'import_etc2_astc' "$SNAP/project.godot"; then
-		:
-	else
-		python3 - "$SNAP/project.godot" <<'PY' 2>/dev/null || \
-			sed -i '' 's/^\[rendering\]$/[rendering]\ntextures\/vram_compression\/import_etc2_astc=true/' "$SNAP/project.godot" 2>/dev/null || \
-			die 2 "could not apply the diagnostic project-setting patch"
-import sys
-p = sys.argv[1]
-s = open(p).read()
-if 'import_etc2_astc' not in s:
-    s = s.replace('[rendering]\n', '[rendering]\ntextures/vram_compression/import_etc2_astc=true\n', 1)
-open(p, 'w').write(s)
-PY
-	fi
-fi
 
 # --- per-platform export ----------------------------------------------------
 REPORT="$OUT_DIR/export-smoke-report.txt"
@@ -385,6 +403,7 @@ es_check_package() {
 	printf 'head_tree=%s\n' "$SRC_TREE"
 	printf 'archive_sha256=%s\n' "$ARCHIVE_SHA"
 	printf 'presets_sha256=%s\n' "$PRESETS_SHA"
+	printf 'project_godot_sha256=%s\n' "$PROJECT_GODOT_SHA"
 	printf 'presets_source=head-commit\n'
 	printf 'presets_live_matches_commit=%s\n' "$PRESETS_LIVE_MATCH"
 	printf 'candidate_digest=%s\n' "$CANDIDATE_SHA"
@@ -456,6 +475,7 @@ Re-run with --diagnostic-enable-etc2-astc to prove the preset otherwise works."
 				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --timeout "$LAUNCH_TIMEOUT" --skip-windowed \
 					>>"$OUT_DIR/macos-launch.log" 2>&1
 			fi
+			lstatus=$?
 			_llog="$OUT_DIR/macos-launch.log"
 			_lv="$(grep '^VERDICT=' "$_llog" | tail -n 1 | cut -d= -f2-)"
 			_ls="$(grep '^SIGNATURE=' "$_llog" | tail -n 1 | cut -d= -f2-)"
@@ -463,16 +483,26 @@ Re-run with --diagnostic-enable-etc2-astc to prove the preset otherwise works."
 			_lsh="$(grep '^SCREENSHOT=' "$_llog" | tail -n 1 | cut -d= -f2-)"
 			_le="$(grep '^EXECUTABLE_EXECUTED=' "$_llog" | tail -n 1 | cut -d= -f2-)"
 			[ -n "$_lv" ] || _lv=FAIL
-			printf '  macos_launch=%s\n' "$( [ "$_lv" = PASS ] && printf PASS || printf FAIL)" >>"$REPORT"
+			_launch_ok=false
+			if [ "$lstatus" -ne 0 ]; then
+				if [ "$_lv" = PASS ]; then
+					warn "launcher printed VERDICT=PASS but exited $lstatus; refusing the marker alone"
+				fi
+			elif [ "$_lv" != PASS ]; then
+				_launch_ok=false
+			else
+				_launch_ok=true
+			fi
+			printf '  macos_launch=%s\n' "$( [ "$_launch_ok" = true ] && printf PASS || printf FAIL)" >>"$REPORT"
 			printf '  macos_signature=%s\n' "${_ls:-NOT_CHECKED}" >>"$REPORT"
 			printf '  macos_windowed=%s\n' "${_lw:-UNKNOWN}" >>"$REPORT"
 			printf '  macos_screenshot=%s\n' "${_lsh:-UNKNOWN}" >>"$REPORT"
 			printf '  macos_executable_executed=%s\n' "${_le:-false}" >>"$REPORT"
-			if [ "$_lv" != "PASS" ]; then
-				log "macOS launch test FAILED (see macos-launch.log)"
+			if [ "$_launch_ok" != "true" ]; then
+				log "macOS launch test FAILED (exit=$lstatus verdict=$_lv; see macos-launch.log)"
 				FAILED=1
 			else
-				log "macOS launch test PASSED"
+				log "macOS launch test PASSED (exit=0, VERDICT=PASS observed)"
 			fi
 			if [ "$_ls" = "ad-hoc" ]; then
 				printf '  ad_hoc_signature_observed=true\n' >>"$REPORT"

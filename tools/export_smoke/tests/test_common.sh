@@ -561,8 +561,9 @@ _rep_arch="$(sed -n 's/^archive_sha256=//p' "$RREP" | head -n 1)"
 ( cd "$REPO" && git archive --format=tar "$RUN_SHA" ) >"$WORK/report-expected.tar" 2>/dev/null
 assert_eq "report archive digest = sha256(git archive <resolved SHA>)" "$(es_sha256 "$WORK/report-expected.tar")" "$_rep_arch"
 _rep_cand="$(sed -n 's/^candidate_digest=//p' "$RREP" | head -n 1)"
-printf '%s\n%s\n' "$_rep_arch" "$(es_sha256 "$REPO/export_presets.cfg")" >"$WORK/cand-input.txt"
-assert_eq "report candidate digest consistent" "$(es_sha256 "$WORK/cand-input.txt")" "$_rep_cand"
+_rep_pg="$(sed -n 's/^project_godot_sha256=//p' "$RREP" | head -n 1)"
+printf 'archive_sha256=%s\npresets_sha256=%s\nproject_godot_sha256=%s\n' "$_rep_arch" "$(es_sha256 "$REPO/export_presets.cfg")" "$_rep_pg" >"$WORK/cand-input.txt"
+assert_eq "report candidate digest covers archive, presets and frozen settings" "$(es_sha256 "$WORK/cand-input.txt")" "$_rep_cand"
 assert_exists "private digest evidence retained in the output" "$RF_OUT/.candidate-snapshot.archive-sha256"
 _exp_pre_live="$(es_sha256 "$REPO/export_presets.cfg")"
 assert_contains "retained evidence still records both digests" "$(cat "$RF_OUT/.candidate-snapshot.archive-sha256")" "presets_sha256=$_exp_pre_live"
@@ -994,6 +995,140 @@ assert_eq "headless probe records windowed skipped" "skipped" "$(_rep_val macos_
 assert_contains "headless probe records screenshot not run" "$(_rep_val macos_screenshot "$MAC_H_REP")" "not-attempted"
 assert_absent "headless probe creates no screenshot" "$MAC_H/macos-launch-windowed.png"
 assert_contains "headless note makes no window/arm64 claim" "$(_rep_val macos_launch_note "$MAC_H_REP")" "NOT_RUN"
+
+# --- 23. launch verdict requires exit status AND a PASS marker -------------
+# A private copy of the runner with a replaceable launcher proves the two
+# failure modes cannot be reported as success.
+RC="$WORK/runner-copy"
+mkdir -p "$RC/lib"
+cp "$RUNNER" "$RC/run_export_smoke.sh"
+cp "$TESTS_DIR/../lib/common.sh" "$RC/lib/common.sh"
+cp "$TESTS_DIR/../lib/pack_inventory.py" "$RC/lib/pack_inventory.py"
+cat >"$RC/launch_macos_app.sh" <<'RC_LAUNCH_EOF'
+#!/bin/sh
+if [ "${FAKE_LAUNCH_PRINT_PASS:-0}" = "1" ]; then
+	printf 'LAUNCH_PROBE=full\nHEADLESS_EXIT=0\nWINDOWED=ran\nSCREENSHOT=captured\nSIGNATURE=ad-hoc\nEXECUTABLE_EXECUTED=true\nVERDICT=PASS\n'
+fi
+exit "${FAKE_LAUNCH_EXIT:-0}"
+RC_LAUNCH_EOF
+chmod +x "$RC/launch_macos_app.sh"
+
+# PASS marker printed, launcher exits nonzero -> must fail closed.
+LP_EXIT_OUT="$WORK/out-launch-pass-exit7"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_LAUNCH_PRINT_PASS=1 FAKE_LAUNCH_EXIT=7 \
+	sh "$RC/run_export_smoke.sh" --platform macOS --launch-probe full --out "$LP_EXIT_OUT" 2>&1 )"; _rc=$?
+LP_EXIT_REP="$LP_EXIT_OUT/export-smoke-report.txt"
+assert_rc_nonzero "PASS marker with nonzero launcher exit fails the run" "$_rc"
+assert_eq "PASS marker with nonzero exit is not accepted" "FAIL" "$(_rep_val macos_launch "$LP_EXIT_REP")"
+assert_contains "explicit refusal of the marker alone" "$_out" "refusing the marker alone"
+
+# Exit 0 without a PASS marker -> must fail closed.
+LP_NOMARK_OUT="$WORK/out-launch-exit0-nopass"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_LAUNCH_PRINT_PASS=0 FAKE_LAUNCH_EXIT=0 \
+	sh "$RC/run_export_smoke.sh" --platform macOS --launch-probe full --out "$LP_NOMARK_OUT" 2>&1 )"; _rc=$?
+LP_NOMARK_REP="$LP_NOMARK_OUT/export-smoke-report.txt"
+assert_rc_nonzero "missing PASS marker with exit 0 fails the run" "$_rc"
+assert_eq "missing PASS marker is not accepted" "FAIL" "$(_rep_val macos_launch "$LP_NOMARK_REP")"
+
+# Both present -> PASS recorded.
+LP_OK_OUT="$WORK/out-launch-ok"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_LAUNCH_PRINT_PASS=1 FAKE_LAUNCH_EXIT=0 \
+	sh "$RC/run_export_smoke.sh" --platform macOS --launch-probe full --out "$LP_OK_OUT" 2>&1 )"; _rc=$?
+LP_OK_REP="$LP_OK_OUT/export-smoke-report.txt"
+assert_rc_nonzero "launch PASS still leaves the fake-package inventory failure" "$_rc"
+assert_eq "exit 0 plus observed PASS is accepted" "PASS" "$(_rep_val macos_launch "$LP_OK_REP")"
+
+# --- 24. candidate digest binds post-diagnostic frozen inputs --------------
+EV_DIR="$WORK/out-evidence"
+mkdir -p "$EV_DIR/snap"
+printf 'frozen settings\n' >"$EV_DIR/snap/project.godot"
+_GOOD_A="$(printf 'a%.0s' $(seq 1 64) 2>/dev/null || printf 'a%.0s' 1 2 3 4 5 6 7 8)"
+# seq may be unavailable; rebuild deterministically without it
+_GOOD_A=""; _i=0; while [ "$_i" -lt 64 ]; do _GOOD_A="${_GOOD_A}a"; _i=$((_i + 1)); done
+_GOOD_P=""; _i=0; while [ "$_i" -lt 64 ]; do _GOOD_P="${_GOOD_P}b"; _i=$((_i + 1)); done
+unset _i
+_ev="$(es_candidate_evidence "$_GOOD_A" "$_GOOD_P" "$EV_DIR/snap" 2>"$EV_DIR/err")"; _rc=$?
+assert_rc_zero "valid evidence inputs accepted" "$_rc"
+assert_contains "evidence records archive digest" "$_ev" "archive_sha256=$_GOOD_A"
+assert_contains "evidence records presets digest" "$_ev" "presets_sha256=$_GOOD_P"
+assert_eq "evidence records frozen project-setting digest" "$(es_sha256 "$EV_DIR/snap/project.godot")" 	"$(printf '%s\n' "$_ev" | sed -n 's/^project_godot_sha256=//p')"
+
+_out="$(es_candidate_evidence "$_GOOD_A" "$_GOOD_P" "$WORK/no-such-snapshot" 2>&1)"; _rc=$?
+assert_rc_nonzero "missing snapshot project.godot refused" "$_rc"
+assert_contains "missing settings reason reported" "$_out" "no project.godot"
+_EV_SNAP="$EV_DIR/snap-symlink"
+mkdir -p "$_EV_SNAP"
+printf 'target-settings\n' >"$EV_DIR/target.txt"
+ln -s "$EV_DIR/target.txt" "$_EV_SNAP/project.godot"
+_out="$(es_candidate_evidence "$_GOOD_A" "$_GOOD_P" "$_EV_SNAP" 2>&1)"; _rc=$?
+assert_rc_nonzero "symlinked project.godot refused" "$_rc"
+assert_contains "symlink settings reason reported" "$_out" "symlink"
+assert_file_eq "symlink target untouched" "target-settings" "$EV_DIR/target.txt"
+EV_RO="$EV_DIR/snap-unreadable"
+mkdir -p "$EV_RO"
+printf 'secret settings\n' >"$EV_RO/project.godot"
+chmod 000 "$EV_RO/project.godot"
+if [ "$(id -u 2>/dev/null || printf '0')" -eq 0 ]; then
+	printf 'note unreadable-settings control skipped (running as root)\n'
+else
+	_out="$(es_candidate_evidence "$_GOOD_A" "$_GOOD_P" "$EV_RO" 2>&1)"; _rc=$?
+	assert_rc_nonzero "unreadable project.godot refused" "$_rc"
+	assert_contains "unreadable settings reason reported" "$_out" "unreadable"
+fi
+chmod 600 "$EV_RO/project.godot"
+_Z64=""; _i=0; while [ "$_i" -lt 64 ]; do _Z64="${_Z64}z"; _i=$((_i + 1)); done; unset _i
+_out="$(es_candidate_evidence "$_Z64" "$_GOOD_P" "$EV_DIR/snap" 2>&1)"; _rc=$?
+assert_rc_nonzero "non-hex archive digest refused" "$_rc"
+assert_contains "invalid archive digest reason" "$_out" "invalid archive SHA-256"
+_out="$(es_candidate_evidence "$_GOOD_A" "" "$EV_DIR/snap" 2>&1)"; _rc=$?
+assert_rc_nonzero "missing presets digest refused" "$_rc"
+assert_contains "invalid presets digest reason" "$_out" "invalid presets SHA-256"
+
+# Runner path: same commit and presets, normal vs diagnostic. The fake engine
+# fails the export (rc 1), but the report and evidence are produced first.
+DG_REPO="$WORK/diag-repo"
+make_tiny_repo "$DG_REPO" yes || { printf 'fixture repo failed\n' >&2; exit 2; }
+printf '\n[rendering]\ntextures/vram_compression/import_etc2_astc=false\n' >>"$DG_REPO/project.godot"
+(
+	cd "$DG_REPO" &&
+	git add -A &&
+	git -c commit.gpgsign=false commit -qm rendering
+) || { printf 'fixture commit failed\n' >&2; exit 2; }
+DG_LIVE_BEFORE="$(es_sha256 "$DG_REPO/project.godot")"
+DG_SHA="$(es_resolve_head "$DG_REPO")"
+
+DG_N_OUT="$WORK/out-diag-normal"
+_out="$( PROJECT_DIR="$DG_REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" sh "$RUNNER" --platform Linux --out "$DG_N_OUT" 2>&1 )"; _rc=$?
+DG_N_REP="$DG_N_OUT/export-smoke-report.txt"
+assert_eq "normal diagnostic-mode run reaches report stage (rc 1 fake export)" "1" "$_rc"
+DG_N_CAND="$(_rep_val candidate_digest "$DG_N_REP")"
+DG_N_PG="$(_rep_val project_godot_sha256 "$DG_N_REP")"
+DG_N_ARCH="$(_rep_val archive_sha256 "$DG_N_REP")"
+DG_N_PRE="$(_rep_val presets_sha256 "$DG_N_REP")"
+assert_eq "normal report setting digest matches its frozen snapshot" 	"$(es_sha256 "$DG_N_OUT/candidate-snapshot/project.godot")" "$DG_N_PG"
+printf 'archive_sha256=%s\npresets_sha256=%s\nproject_godot_sha256=%s\n' "$DG_N_ARCH" "$DG_N_PRE" "$DG_N_PG" >"$WORK/dg-exp-cand.txt"
+assert_eq "normal candidate digest equals hash of labelled evidence" "$(es_sha256 "$WORK/dg-exp-cand.txt")" "$DG_N_CAND"
+assert_file_eq "digest input retains labelled evidence" "$(cat "$WORK/dg-exp-cand.txt")" "$DG_N_OUT/.candidate-digest-input"
+
+DG_D_OUT="$WORK/out-diag-patched"
+_out="$( PROJECT_DIR="$DG_REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" sh "$RUNNER" --platform Linux --diagnostic-enable-etc2-astc --out "$DG_D_OUT" 2>&1 )"; _rc=$?
+DG_D_REP="$DG_D_OUT/export-smoke-report.txt"
+assert_eq "diagnostic run reaches report stage (rc 1 fake export)" "1" "$_rc"
+DG_D_CAND="$(_rep_val candidate_digest "$DG_D_REP")"
+DG_D_PG="$(_rep_val project_godot_sha256 "$DG_D_REP")"
+assert_eq "diagnostic report setting digest matches patched snapshot" 	"$(es_sha256 "$DG_D_OUT/candidate-snapshot/project.godot")" "$DG_D_PG"
+if [ "$DG_N_CAND" != "$DG_D_CAND" ]; then ok "normal and diagnostic candidate digests differ"; else bad "diagnostic digest did not change"; fi
+if [ "$DG_N_PG" != "$DG_D_PG" ]; then ok "normal and diagnostic project-setting digests differ"; else bad "project-setting digest did not change"; fi
+assert_contains "patched snapshot enables import_etc2_astc" "$(cat "$DG_D_OUT/candidate-snapshot/project.godot")" "import_etc2_astc=true"
+DG_LIVE_AFTER="$(es_sha256 "$DG_REPO/project.godot")"
+assert_eq "live checkout project.godot unchanged by diagnostic flag" "$DG_LIVE_BEFORE" "$DG_LIVE_AFTER"
+
+DG_R_OUT="$WORK/out-diag-repeat"
+_out="$( PROJECT_DIR="$DG_REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" sh "$RUNNER" --platform Linux --out "$DG_R_OUT" 2>&1 )"; _rc=$?
+assert_eq "repeated normal run candidate digest is identical" "$DG_N_CAND" "$(_rep_val candidate_digest "$DG_R_OUT/export-smoke-report.txt")"
 
 printf '[export-smoke-tests] summary pass=%s fail=%s\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then

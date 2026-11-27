@@ -224,6 +224,44 @@ os.close(fd)
 	fi
 }
 
+# es_candidate_evidence <archive_sha> <presets_sha> <snapshot_dir>
+# Validate every candidate input and print labelled evidence lines:
+#   archive_sha256=<hex>, presets_sha256=<hex>, project_godot_sha256=<hex>
+# Fails closed (nonzero with a reason on stderr) when a digest is not 64
+# lowercase hex digits, or the frozen snapshot project.godot is missing,
+# unreadable, a symlink, or unhashable. The setting digest always comes from
+# the frozen snapshot, never from the live checkout.
+es_candidate_evidence() {
+	_ev_a="$1"; _ev_p="$2"; _ev_snap="$3"
+	es_is_hex_sha256 "$_ev_a" || {
+		printf '[export-smoke] FAIL: invalid archive SHA-256: %s\n' "$_ev_a" >&2
+		return 1
+	}
+	es_is_hex_sha256 "$_ev_p" || {
+		printf '[export-smoke] FAIL: invalid presets SHA-256: %s\n' "$_ev_p" >&2
+		return 1
+	}
+	_ev_godot="$_ev_snap/project.godot"
+	if [ -L "$_ev_godot" ]; then
+		printf '[export-smoke] FAIL: snapshot project.godot is a symlink; refusing to bind evidence\n' >&2
+		return 1
+	fi
+	if [ ! -f "$_ev_godot" ]; then
+		printf '[export-smoke] FAIL: frozen snapshot has no project.godot\n' >&2
+		return 1
+	fi
+	if [ ! -r "$_ev_godot" ]; then
+		printf '[export-smoke] FAIL: frozen snapshot project.godot is unreadable\n' >&2
+		return 1
+	fi
+	_ev_g="$(es_sha256 "$_ev_godot")" || _ev_g=""
+	es_is_hex_sha256 "$_ev_g" || {
+		printf '[export-smoke] FAIL: could not hash the frozen project settings: %s\n' "$_ev_g" >&2
+		return 1
+	}
+	printf 'archive_sha256=%s\npresets_sha256=%s\nproject_godot_sha256=%s\n' "$_ev_a" "$_ev_p" "$_ev_g"
+}
+
 # es_run_exclusive <workdir> <outfile> <errfile-or-empty> -- <cmd...>
 # Runs <cmd...> with cwd <workdir>, creating <outfile> and (unless empty)
 # <errfile> atomically and streaming the child's stdout/stderr through those
