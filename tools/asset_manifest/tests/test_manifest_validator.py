@@ -352,7 +352,10 @@ def spy_on_register_reads():
 
     def spy_guarded_open(root, relative):
         descriptor = real_guarded_open(root, relative)
-        attempts.note_guarded(root / relative, descriptor)
+        # The manifest input calls the primitive with root=None and an
+        # absolute path; record that spelling too.
+        target = Path(relative) if root is None else root / relative
+        attempts.note_guarded(target, descriptor)
         return descriptor
 
     try:
@@ -2513,6 +2516,119 @@ class JunctionComponentTestCase(unittest.TestCase):
             self.assertIn("unresolved-reference", [f.code for f in references.errors])
 
 
+class ManifestInputGuardTestCase(unittest.TestCase):
+    """The caller-selected manifest document must use the guarded read.
+
+    A manifest symlink to a valid document outside the root must be refused
+    as ``unreadable-manifest`` (exit 2), not read through. An explicitly
+    supplied real regular manifest outside the project root stays accepted,
+    as long as its leaf is opened guarded and no checked component is a link.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "assets").mkdir(parents=True)
+        self.manifest = self.root / "assets" / "manifest.json"
+        self.manifest.write_text(
+            SHIPPED_MANIFEST.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        self.outside_dir = self.root.parent / ("roadstorm-input-outside-" + self.root.name)
+        self.outside_dir.mkdir()
+        self.addCleanup(shutil.rmtree, self.outside_dir, True)
+        self.outside = self.outside_dir / "manifest.json"
+        shutil.copyfile(SHIPPED_MANIFEST, self.outside)
+
+    def make_symlink(self, link: Path, target: Path) -> None:
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        try:
+            link.symlink_to(target)
+        except OSError as exc:
+            self.skipTest("cannot create a symlink on this host: {}".format(exc))
+
+    def test_external_regular_manifest_is_accepted(self):
+        """An operator-supplied real manifest outside the root still validates."""
+        findings = validate(self.root, self.outside)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_symlinked_manifest_is_refused_not_read_through(self):
+        """A valid outside document must not PASS through a linked manifest path."""
+        self.make_symlink(self.manifest, self.outside)
+        # The target itself is a perfectly valid empty registry: if the reader
+        # followed the link this control would show zero findings.
+        control = validate(self.root, self.outside)
+        self.assertEqual(control.errors, [], messages(control))
+        findings = validate(self.root, self.manifest)
+        codes = error_codes(findings)
+        self.assertIn("unreadable-manifest", codes)
+        self.assertNotIn("invalid-json", codes)
+        self.assertNotIn("invalid-encoding", codes)
+        self.assertIn("link", messages(findings))
+
+    def test_symlinked_manifest_cli_exits_2_with_json(self):
+        import contextlib
+        import io
+
+        self.make_symlink(self.manifest, self.outside)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = main([str(self.manifest), "--root", str(self.root), "--json"])
+        self.assertEqual(exit_code, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(
+            [error["code"] for error in payload["errors"]], ["unreadable-manifest"]
+        )
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_manifest_parent_link_component_is_refused(self):
+        """A junction/symlink-like intermediate directory fails closed too."""
+        from types import SimpleNamespace
+
+        reparse = manifest_validator._FILE_ATTRIBUTE_REPARSE_POINT
+
+        def fake_lstat(path):
+            normalized = str(path).replace("\\", "/")
+            value = reparse if normalized.endswith("/assets") else 0
+            return SimpleNamespace(st_file_attributes=value)
+
+        with mock.patch.object(Path, "is_symlink", lambda self: False), mock.patch.object(
+            manifest_validator.os, "lstat", fake_lstat
+        ):
+            findings = validate(self.root, self.manifest)
+        self.assertIn("unreadable-manifest", error_codes(findings))
+        self.assertIn("link", messages(findings))
+
+    def test_manifest_leaf_swapped_after_the_component_check_is_refused(self):
+        """Open-boundary control: the guard, not just the precheck, refuses.
+
+        The manifest is replaced by a symlink to the valid outside document at
+        the moment the component check is asked, exactly the window before the
+        open. Reading through it would produce zero findings.
+        """
+        control = validate(self.root, self.outside)
+        self.assertEqual(control.errors, [], messages(control))
+        original = manifest_validator._manifest_input_problem
+
+        def swapped(manifest, root):
+            problem = original(manifest, root)
+            if problem is None:
+                manifest.unlink()
+                self.make_symlink(manifest, self.outside)
+            return problem
+
+        with mock.patch.object(manifest_validator, "_manifest_input_problem", swapped):
+            findings = validate(self.root, self.manifest)
+        self.assertIn("unreadable-manifest", error_codes(findings))
+        self.assertIn("link", messages(findings))
+
+    def test_invalid_utf8_manifest_still_reports_invalid_encoding(self):
+        """The guard must not change the decoding contract."""
+        self.manifest.write_bytes(b'{"registry_status": "\xff"}')
+        findings = validate(self.root, self.manifest)
+        self.assertEqual([f.code for f in findings.errors], ["invalid-encoding"])
+
+
 class FakeWindowsFileApi:
     """Recorded Win32 answers for the Windows guarded-open branch.
 
@@ -2965,6 +3081,82 @@ class WindowsNativeGuardTestCase(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual([e["code"] for e in payload["errors"]], ["unreadable-manifest"])
         self.assertEqual(stderr.getvalue(), "")
+
+    def native_input_paths(self):
+        """A real manifest under the root and a valid copy outside it."""
+        assets = self.root / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        manifest = assets / "manifest.json"
+        manifest.write_text(SHIPPED_MANIFEST.read_text(encoding="utf-8"), encoding="utf-8")
+        outside_dir = self.root.parent / ("roadstorm-native-input-" + self.root.name)
+        outside_dir.mkdir()
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        outside = outside_dir / "manifest.json"
+        shutil.copyfile(SHIPPED_MANIFEST, outside)
+        return manifest, outside
+
+    def test_native_external_regular_manifest_is_accepted(self):
+        _manifest, outside = self.native_input_paths()
+        findings = validate(self.root, outside)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_native_manifest_symlink_is_refused_not_read_through(self):
+        """The manifest document itself must not be read through a link."""
+        manifest, outside = self.native_input_paths()
+        control = validate(self.root, outside)
+        self.assertEqual(control.errors, [], messages(control))
+        target = manifest
+        target.unlink()
+        try:
+            target.symlink_to(outside)
+        except OSError as exc:
+            self.skipTest("cannot create a symlink on this host: {}".format(exc))
+        findings = validate(self.root, target)
+        self.assertIn("unreadable-manifest", error_codes(findings))
+        self.assertIn("link", messages(findings))
+
+    def test_native_manifest_junction_parent_is_refused(self):
+        assets = self.root / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        outside_dir = self.root.parent / ("roadstorm-native-jlink-" + self.root.name)
+        outside_dir.mkdir()
+        self.addCleanup(shutil.rmtree, outside_dir, True)
+        outside = outside_dir / "manifest.json"
+        shutil.copyfile(SHIPPED_MANIFEST, outside)
+        link = assets / "jlinked"
+        if not self.make_junction(link, outside_dir):
+            self.skipTest("mklink /J unavailable on this host")
+        self.addCleanup(self.remove_link, link)
+        # The same document validates directly; only the junction path fails.
+        control = validate(self.root, outside)
+        self.assertEqual(control.errors, [], messages(control))
+        findings = validate(self.root, link / "manifest.json")
+        self.assertIn("unreadable-manifest", error_codes(findings))
+        self.assertIn("link", messages(findings))
+
+    def test_native_manifest_leaf_swapped_at_the_guarded_open_boundary(self):
+        """Open-boundary leaf swap on a real Windows path is refused by the fd guard."""
+        manifest, outside = self.native_input_paths()
+        control = validate(self.root, outside)
+        self.assertEqual(control.errors, [], messages(control))
+        original = manifest_validator._manifest_input_problem
+
+        def swapped(path, root):
+            problem = original(path, root)
+            if problem is None:
+                path.unlink()
+                try:
+                    path.symlink_to(outside)
+                except OSError as exc:
+                    raise AssertionError(
+                        "native seam test needs a symlink: {}".format(exc)
+                    ) from exc
+            return problem
+
+        with mock.patch.object(manifest_validator, "_manifest_input_problem", swapped):
+            findings = validate(self.root, manifest)
+        self.assertIn("unreadable-manifest", error_codes(findings))
+        self.assertNotIn("invalid-json", error_codes(findings))
 
     def test_native_oversized_integer_cli_exits_2_with_json(self):
         import contextlib

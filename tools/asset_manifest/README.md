@@ -107,7 +107,7 @@ Cross-entry, once the whole registry is known:
 | Check | Rule |
 | --- | --- |
 | Output ownership | Each `identity.output_paths` entry has exactly one owning entry, and is listed once inside it (`duplicate-output-path`). Two entries claiming one output path make the provenance, lineage and hash of that file ambiguous. Sharing a *source* path is ordinary lineage and stays allowed. |
-| Path safety | Referenced paths must be regular files inside the root reached through real directories: a link at *any* component is rejected (`symlinked-path`) - the leaf and every parent directory, and on Windows a directory junction as well as a symlink, because a parent link resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for links before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed link. On POSIX that open uses no-follow, non-blocking and an `fstat` regular-file check; on Windows it uses `CreateFileW(OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT)` plus handle metadata (`FILE_ATTRIBUTE_REPARSE_POINT`, `FILE_ATTRIBUTE_DIRECTORY`) and `GetFileType == FILE_TYPE_DISK`. On any other platform offering neither POSIX flag, the guarded open fails closed. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, link-free regular file inside the root, so a rejected register path is never opened. |
+| Path safety | Referenced paths must be regular files inside the root reached through real directories: a link at *any* component is rejected (`symlinked-path`) - the leaf and every parent directory, and on Windows a directory junction as well as a symlink, because a parent link resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for links before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed link. On POSIX that open uses no-follow, non-blocking and an `fstat` regular-file check; on Windows it uses `CreateFileW(OPEN_EXISTING | FILE_FLAG_OPEN_REPARSE_POINT)` plus handle metadata (`FILE_ATTRIBUTE_REPARSE_POINT`, `FILE_ATTRIBUTE_DIRECTORY`) and `GetFileType == FILE_TYPE_DISK`. On any other platform offering neither POSIX flag, the guarded open fails closed. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, link-free regular file inside the root, so a rejected register path is never opened. The caller-selected manifest document uses the same guarded open: components from `--root` down must be link-free, and a symlinked/junction manifest input is `unreadable-manifest` (exit 2). |
 | Dependency order | `lineage.depends_on` is acyclic (`dependency-cycle`): direct (A↔B), self (A→A) and indirect (A→B→C→A) loops are all rejected, because an asset can only be built once the entries it depends on exist. The search is iterative, so a long chain cannot exhaust the stack. |
 
 Document level:
@@ -191,6 +191,14 @@ Document level:
   descriptor for a regular file, refuses a FIFO without blocking and a
   symlinked leaf, and fails closed when no-follow/non-blocking flags are
   unavailable.
+- **manifest input guard**: the caller-selected document is read through the
+  guarded descriptor, never `read_bytes()`. A symlink to a valid manifest
+  outside the root is `unreadable-manifest`/exit 2 (the outside document
+  itself validates directly, so reading through would otherwise PASS); a
+  junction-like parent component fails closed; an explicit real regular
+  manifest outside the root still validates; invalid UTF-8 stays
+  `invalid-encoding`; and a leaf swapped at the open boundary is refused by the
+  fd guard.
 - **oversized JSON integers** (the 2026-11-27 Sol recheck finding 2): a
   decimal integer literal longer than this interpreter's conversion limit is
   the structured `invalid-json` finding, not a `ValueError` traceback -
@@ -313,6 +321,21 @@ temporary directory.
   production dependency order. `generation.input_asset_ids` records which
   registered assets a recipe consumed, not the build order, so it is checked
   for registration (dangling references) but not for cycles.
+- **Manifest input boundary.** `validate_manifest()` reads the caller-supplied
+  document through the guarded descriptor shared with outputs and the
+  register - never `Path.read_bytes()`, and no precheck followed by an
+  unchecked reopen. Components below `--root` (or below the derived
+  grandparent when `--root` is omitted) must be free of symlinks and
+  junctions; the leaf must be a real regular file. A caller-supplied manifest
+  *outside* the root stays accepted as a real regular file, but only its leaf
+  is inspected rather than arbitrary ancestors (walking all ancestors would
+  reject ordinary paths through platform-standard links such as `/var` on
+  macOS). Unreadable, non-file and linked inputs are the structured
+  `unreadable-manifest` finding (exit 2); invalid UTF-8 stays
+  `invalid-encoding` (exit 1) and invalid JSON `invalid-json` (exit 2). A leaf
+  swapped at the open boundary is refused by the fd-level guard; a parent
+  swapped between the component check and the open remains the documented
+  residual race.
 - **Existence is local.** Path checks resolve against the given root on the
   machine running the check, and referenced files must be regular files
   reached through real directories: a link at any component - including a

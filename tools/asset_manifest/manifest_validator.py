@@ -684,7 +684,23 @@ def _windows_file_api() -> "_WindowsFileApi":
     return _WINDOWS_FILE_API
 
 
-def _windows_open_regular_descriptor(root: Path, relative: str, api=None) -> int | None:
+def _guarded_open_target(root: Path | None, relative: str) -> Path:
+    """Resolve a guarded-open target.
+
+    ``root`` is ``None`` for an already absolute path (the manifest input);
+    an absolute ``relative`` is used as-is in every case, so callers can pass
+    either a root-relative reference or a direct path through the same
+    primitive.
+    """
+    candidate = Path(relative)
+    if root is None or candidate.is_absolute():
+        return candidate
+    return root / candidate
+
+
+def _windows_open_regular_descriptor(
+    root: Path | None, relative: str, api=None
+) -> int | None:
     """Windows counterpart of the POSIX guarded open, or ``None``.
 
     Mirrors the POSIX contract - readable regular file inside the root, or
@@ -719,7 +735,7 @@ def _windows_open_regular_descriptor(root: Path, relative: str, api=None) -> int
             # than fall back to an unguarded open.
             return None
     try:
-        handle = api.create_file(str(root / relative))
+        handle = api.create_file(str(_guarded_open_target(root, relative)))
     except OSError:
         return None
     if handle is None:
@@ -745,19 +761,23 @@ def _windows_open_regular_descriptor(root: Path, relative: str, api=None) -> int
     return descriptor
 
 
-def _open_regular_file_descriptor(root: Path, relative: str) -> int | None:
-    """Open ``root/relative`` as a real regular file, or ``None``.
+def _open_regular_file_descriptor(root: Path | None, relative: str) -> int | None:
+    """Open a real regular file through the guarded primitive, or ``None``.
 
-    Callers validate the path with ``_record_file_is_readable`` first; this
-    function adds what only an open can guarantee. On POSIX the descriptor must
-    describe a regular file, so a path swapped for a FIFO or device node
-    between the check and here is closed unread; ``O_NOFOLLOW`` refuses a leaf
-    that became a symlink and ``O_NONBLOCK`` keeps a swapped-in FIFO from
-    blocking, then blocking is restored so the caller's streaming reads behave
-    normally. Windows uses ``_windows_open_regular_descriptor`` instead, since
-    those flags do not exist there. Any other platform offering neither flag
-    fails closed rather than opening unchecked.
+    ``relative`` is interpreted against ``root`` unless it is already
+    absolute (or ``root`` is ``None``), which lets the caller-selected manifest
+    document use exactly the same open as root-relative records and hash
+    files. Callers validate spelling/link components first; this function adds
+    what only an open can guarantee. On POSIX the descriptor must describe a
+    regular file, so a path swapped for a FIFO or device node between the
+    check and here is closed unread; ``O_NOFOLLOW`` refuses a leaf that became
+    a symlink and ``O_NONBLOCK`` keeps a swapped-in FIFO from blocking, then
+    blocking is restored so the caller's streaming reads behave normally.
+    Windows uses ``_windows_open_regular_descriptor`` instead, since those
+    flags do not exist there. Any other platform offering neither flag fails
+    closed rather than opening unchecked.
     """
+    target = _guarded_open_target(root, relative)
     if os.name == "nt":
         return _windows_open_regular_descriptor(root, relative)
     flags = _guarded_open_flags()
@@ -766,7 +786,7 @@ def _open_regular_file_descriptor(root: Path, relative: str) -> int | None:
         # path that cannot be checked against the filesystem's own answer.
         return None
     try:
-        descriptor = os.open(root / relative, flags)
+        descriptor = os.open(target, flags)
     except OSError:
         return None
     try:
@@ -830,6 +850,96 @@ def _read_record_text(root: Path, relative: str) -> str | None:
 # where the stat module does not publish it (simulated environments); a real
 # POSIX lstat result has no st_file_attributes, so it never fires there.
 _FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _absolute_lexical_path(path: Path) -> Path:
+    """Absolute form of ``path`` without resolving links.
+
+    ``os.path.abspath`` normalizes lexically only, so the component checks see
+    the same spelling the operator supplied instead of a resolved target.
+    """
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _manifest_components_to_check(manifest: Path, root: Path) -> list[Path]:
+    """Components of the manifest path that must be free of links/reparse points.
+
+    The project root is operator-designated and trusted: every component from
+    the root down to the manifest is checked. A caller-supplied manifest
+    *outside* that root is accepted when its leaf is a real regular file, but
+    only that leaf is inspected - walking arbitrary ancestors would reject
+    ordinary paths through platform-standard links such as ``/var`` on macOS.
+    A leaf swapped at the open boundary is still refused by the guarded open.
+    """
+    manifest_abs = _absolute_lexical_path(manifest)
+    root_abs = _absolute_lexical_path(root)
+    try:
+        relative = manifest_abs.relative_to(root_abs)
+    except ValueError:
+        return [manifest_abs]
+    components: list[Path] = []
+    prefix = root_abs
+    for part in Path(relative).parts:
+        prefix = prefix / part
+        components.append(prefix)
+    return components
+
+
+def _manifest_input_problem(manifest: Path, root: Path) -> str | None:
+    """Why the caller-selected manifest document cannot be read, or ``None``.
+
+    Every checked component must be free of symlinks, junctions and other
+    reparse points, and the file itself must exist as a regular file this
+    process may read. The actual open is the guarded descriptor shared with
+    outputs and the register, so a leaf swapped at the boundary is refused
+    there too. A missing/unreadable/non-file/link input all map to a reason;
+    the caller reports the structured ``unreadable-manifest`` finding.
+    """
+    absolute = _absolute_lexical_path(manifest)
+    for component in _manifest_components_to_check(manifest, root):
+        if _component_is_link(component):
+            return (
+                "resolves through the link '{}'; the manifest document must be a "
+                "regular file reached without following symlinks or junctions".format(
+                    component
+                )
+            )
+    try:
+        if not absolute.is_file():
+            return "is not an existing regular file"
+        if not os.access(absolute, os.R_OK):
+            return "cannot be read by this process"
+    except OSError as exc:
+        return "cannot be checked ({})".format(exc)
+    return None
+
+
+def _read_manifest_bytes(manifest: Path, root: Path) -> tuple[bytes | None, str | None]:
+    """Read the manifest document through the guarded regular-file descriptor.
+
+    Returns ``(bytes, None)`` on success or ``(None, reason)``. The component
+    check runs immediately before the same guarded open used for output and
+    register reads: there is no unguarded ``read_bytes()`` and no precheck
+    followed by a second, unchecked open.
+    """
+    problem = _manifest_input_problem(manifest, root)
+    if problem is not None:
+        return None, problem
+    descriptor = _open_regular_file_descriptor(None, str(_absolute_lexical_path(manifest)))
+    if descriptor is None:
+        return None, "the guarded open refused it as not a readable regular file"
+    chunks: list[bytes] = []
+    try:
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError as exc:
+        return None, "could not be read ({})".format(exc)
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks), None
 
 
 class PathChecker:
@@ -1379,15 +1489,27 @@ def validate_manifest(
 ) -> Findings:
     """Validate one manifest document and return all findings.
 
-    ``root`` is the project root that manifest-relative paths resolve
-    against. It defaults to the parent of the manifest's directory (the
-    manifest lives at ``<root>/assets/manifest.json``).
+    ``root`` is the project root that manifest-relative paths resolve against.
+    It defaults to the manifest's grandparent directory (the manifest lives at
+    ``<root>/assets/manifest.json``), computed lexically so a link in the path
+    is not resolved before the input guard runs.
+
+    The manifest document itself is an operator-supplied path, so it goes
+    through the same guarded read as every record and hash file: components
+    below ``root`` must be free of symlinks/junctions, the leaf must be a real
+    regular file, and the bytes come from the guarded descriptor - never from
+    ``Path.read_bytes()``. A caller-supplied manifest outside ``root`` is
+    accepted as a real regular file with a guarded leaf (see
+    ``_manifest_components_to_check``). Unreadable, non-file and linked inputs
+    are the structured ``unreadable-manifest`` finding (exit 2); invalid UTF-8
+    stays ``invalid-encoding`` (exit 1).
     """
     findings = Findings()
 
     manifest_path = Path(manifest_path)
+    absolute_manifest = _absolute_lexical_path(manifest_path)
     if root is None:
-        root = manifest_path.resolve().parent.parent
+        root = absolute_manifest.parent.parent
     root = Path(root)
     if not root.is_dir():
         findings.error(
@@ -1397,15 +1519,19 @@ def validate_manifest(
         )
         return findings
 
-    try:
-        raw = manifest_path.read_bytes().decode("utf-8")
-    except OSError as exc:
+    payload, problem = _read_manifest_bytes(manifest_path, root)
+    if payload is None:
         findings.error(
             "unreadable-manifest",
             "<manifest>",
-            "cannot read {}: {}".format(manifest_path, exc),
+            "cannot read manifest input {}: {} (the manifest document must be opened "
+            "as a real regular file through the guarded descriptor, never followed "
+            "as a link)".format(absolute_manifest, problem),
         )
         return findings
+
+    try:
+        raw = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
         findings.error(
             "invalid-encoding",
@@ -2627,7 +2753,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.root:
         root = Path(args.root)
     else:
-        root = manifest_path.resolve().parent.parent
+        # Derived lexically by validate_manifest from the manifest's own
+        # location, so a link in that path is refused rather than resolved.
+        root = None
 
     if not manifest_path.is_file():
         print("[error] manifest file not found: {}".format(manifest_path), file=sys.stderr)
@@ -2647,11 +2775,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     # --root, or bytes that are not JSON at all. A document that decodes but
     # breaks the contract (including invalid UTF-8) is a content defect: 1.
     unreadable = any(f.code in READ_FAILURE_CODES for f in findings.errors)
+    display_root = (
+        Path(root)
+        if root is not None
+        else _absolute_lexical_path(manifest_path).parent.parent
+    )
 
     if args.as_json:
         payload = {
             "manifest": str(manifest_path),
-            "root": str(root),
+            "root": str(display_root),
             "errors": [f.as_dict() for f in findings.errors],
             "warnings": [f.as_dict() for f in findings.warnings],
             "result": "pass" if findings.ok else "fail",
@@ -2660,7 +2793,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         if not args.quiet:
             print("manifest: {}".format(manifest_path))
-            print("root:     {}".format(root))
+            print("root:     {}".format(display_root))
             for finding in findings:
                 print(finding.render())
             print("")
