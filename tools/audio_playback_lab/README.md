@@ -28,14 +28,18 @@ silently run as project checks.
   (`FORMAT_16_BITS`, mono, `LOOP_FORWARD`, `loop_begin=0`,
   `loop_end=frame_count`), and assigns each stream once. Conversion preserves
   the synth bytes exactly.
-- `apply(car_state, command)` reads committed speed, slip, grounded and
-  normalized throttle, then writes only `pitch_scale`/`volume_db`. It never
-  re-synthesizes, replaces or rebuilds a stream and allocates no per-tick
-  container.
-- Inputs and every derived target are validated before any playback write. A
-  refusal leaves the last accepted pitch/gain and both stream assignments
-  untouched, leaves the rejected records untouched, and records a reason in
-  `get_last_error()`.
+- `apply(car_state, command)` accepts actual `CarState`/`DriverCommand`
+  instances, reads committed road-plane motion, grounded and normalized
+  throttle, maps motion through the synth's shared direction-relative tire
+  slip, then writes only `pitch_scale`/`volume_db`. Straight forward and
+  straight reverse are silent tires; genuine lateral slip stays audible. It
+  never re-synthesizes, replaces or rebuilds a stream and allocates no
+  per-tick container.
+- Inputs and every derived target are validated before any playback write.
+  Primitives and partially compatible objects are refused with a reason rather
+  than raising a script error. A refusal leaves the last accepted pitch/gain
+  and both stream assignments untouched, leaves the rejected records
+  untouched, and records a reason in `get_last_error()`.
 - Setup memory is bounded by two segments at the synth frame ceiling
   (`MAX_SETUP_BYTES = 768000` bytes of PCM).
 - `teardown()` removes both players and drops both streams; `setup()` can run
@@ -85,7 +89,7 @@ requires `--case=intentional_failure` to exit nonzero with `"pass":false`.
 
 `nodes_and_streams`, `stream_stability_no_resynthesis`, `response_bounds`,
 `invalid_atomic_refusal`, `deterministic_setup`, `teardown`,
-`headless_play_flag`.
+`headless_play_flag`, `reverse_direction_slip`, `mapping_consistency`.
 
 Coverage includes actual node classes and counts, `AudioStreamWAV` format,
 mono flag, mix rate, PCM byte sizes, exact zero seam bytes, loop mode and loop
@@ -94,7 +98,11 @@ and unchanged PCM across 240 updates, bounded/monotonic idle-to-fast and
 grip-to-slide response, atomic refusal for null, NaN, infinite,
 overflow-to-infinite-speed, out-of-range and incompatible inputs, caller-state
 immutability, byte-identical setup, teardown/re-setup and the dummy-driver
-play/stop flag.
+play/stop flag. The reverse-slip case checks straight forward/reverse silence,
+forward/reverse lateral-drift audibility, a mid-slip expected value from an
+independent geometric oracle and the documented map, plus a broken-behavior
+marker proving the raw nose slip would have saturated. The mapping-consistency
+case pins the playback coefficients to the committed synth defaults.
 
 ## Failure proof and limits
 

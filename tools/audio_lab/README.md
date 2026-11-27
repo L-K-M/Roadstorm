@@ -25,6 +25,11 @@ checks.
 - Every render is stateless: identical validated inputs and seed produce
   byte-identical signed 16-bit little-endian mono PCM. Noise uses a local
   seeded `RandomNumberGenerator`; no global RNG.
+- Tire scrub follows direction-relative tire slip: the unsigned angle between
+  the travel direction and the nose axis line. Straight forward and straight
+  reverse both map to zero; lateral motion rises toward 90 deg. The signed
+  nose-relative `CarState.slip_deg()` remains available in bundle telemetry for
+  diagnostics.
 - Requests are explicit records (`EngineParams`, `TireParams`) with finite,
   normalized fields. Nonfinite values, nonpositive durations and out-of-range
   loop modes are refused; failed `set_from_raw()` leaves prior values intact.
@@ -43,10 +48,14 @@ checks.
 - Output records carry `source`, sample rate, frame count, requested/actual
   duration, clamping flag, loop mode, seed, pre-limit peak, limiter gain,
   post-limit peak/RMS/DC, fade length and effective-coefficient metadata.
-- `render_bundle(car_state, command)` reads committed `CarState` speed/slip/
-  grounded and `DriverCommand` throttle only. It returns separate `engine` and
-  `tire` segments plus telemetry naming both sources. It writes no simulation
-  state and has no force, score, assist or AI effect.
+- `render_bundle(car_state, command)` accepts only actual `CarState` and
+  `DriverCommand` instances and reads committed road-plane motion, grounded
+  and normalized throttle. It maps motion through the shared
+  `direction_relative_slip_deg()` helper, so straight reverse does not scrub.
+  It returns separate `engine` and `tire` segments plus telemetry naming both
+  sources and both the raw nose-relative `slip_deg` and the mapped
+  `tire_slip_deg`. It writes no simulation state and has no force, score,
+  assist or AI effect.
 
 ### Provisional coefficients
 
@@ -57,7 +66,7 @@ audio specification. They require perceptual review.
 | --- | --- | --- | --- |
 | sample rate | 44100 Hz | sample rate | 44100 Hz |
 | max speed | 65 m/s (~234 km/h) | max speed | 65 m/s |
-| idle / top fundamental | 55 / 240 Hz | slip threshold / full | 2 / 35 deg |
+| idle / top fundamental | 55 / 240 Hz | direction-relative slip threshold / full | 2 / 35 deg |
 | throttle pitch lift | 1.25x | noise band centre | 1500 Hz |
 | harmonics | 8, base 0.55, rolloff 1.15 | resonance tone | 2200 Hz |
 | sub-octave / detune | 0.22 / 0.28 at 9 cents | tone / noise gain | 0.35 / 0.55 |
@@ -70,8 +79,8 @@ Partial gains are normalized by their summed magnitude so ordinary full-level
 operation stays near the peak budget; `output_gain` above one deliberately
 exercises the limiter and is clamped by it. Engine pitch maps exponentially
 across normalized speed with throttle lift. Tire intensity uses smoothstep over
-normalized absolute slip above the threshold, scaled by a speed gate and
-silenced while airborne.
+normalized direction-relative tire slip above the threshold, scaled by a speed
+gate and silenced while airborne.
 
 ## Run
 
@@ -102,7 +111,7 @@ godot --headless --fixed-fps 60 --path <isolated-project> \
 `deterministic_replay`, `nonfinite_and_invalid_input`, `length_bounds`,
 `engine_speed_throttle_response`, `tire_intensity_vs_slip`,
 `clipping_peak_dc_limits`, `loop_endpoints`, `car_independence`,
-`extreme_finite_tuning`.
+`extreme_finite_tuning`, `direction_relative_reverse_slip`.
 
 Coverage includes identical-input byte equality, seed sensitivity, NaN/inf and
 range refusal, duration/rate limits and clamping, low/medium/high speed and
@@ -112,7 +121,11 @@ limiter fixture, peak/DC/16-bit limits, exact zero loop endpoints, and
 one/two-car independence with source-labelled telemetry, and rejection of
 finite gains past the float32 sample-buffer range (`tone_gain=1e100`, an
 engine induction-noise extreme) alongside a loud-but-finite configuration
-that renders and clips safely.
+that renders and clips safely. The reverse-slip case checks straight forward
+and straight reverse silence, forward/reverse lateral drift audibility and an
+independent geometric slip oracle against the bundle telemetry and rendered
+intensity, with a broken-behavior marker proving the raw nose slip would have
+saturated.
 
 ## Local WAV preview
 

@@ -36,7 +36,21 @@ const CASE_IDS := [
 	"loop_endpoints",
 	"car_independence",
 	"extreme_finite_tuning",
+	"direction_relative_reverse_slip",
 ]
+
+
+## Partially compatible stand-ins for the bundle-boundary probes. Each passes
+## the old duck-typed first guard but lacks a member the old code called
+## unchecked; only an actual type check refuses them with a reason.
+class AudioLabPartialState extends RefCounted:
+	func is_finite() -> bool:
+		return true
+
+
+class AudioLabPartialCommand extends RefCounted:
+	func is_normalized() -> bool:
+		return true
 
 var _checks := 0
 var _failures: Array[String] = []
@@ -113,6 +127,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_car_independence(driver)
 		"extreme_finite_tuning":
 			_case_extreme_finite_tuning(driver)
+		"direction_relative_reverse_slip":
+			_case_direction_relative_reverse_slip(driver)
 	_checks += driver.checks
 	for failure in driver.failures:
 		_failures.append("%s: %s" % [case_id, failure])
@@ -280,6 +296,36 @@ func _case_nonfinite_and_invalid_input(driver) -> void:
 	driver.check(bad_bundle.get("engine") == null, "refused bundle has no engine segment")
 	var null_command_bundle = driver.render_bundle(driver.make_car(20.0), null, 1)
 	driver.check(null_command_bundle.get("valid") == false, "missing command bundle refused")
+
+	# The bundle boundary must refuse primitives and partially compatible
+	# objects with a reason rather than raising on member access.
+	var primitive_state_bundle = driver.render_bundle(17, driver.command(0.5), 1)
+	driver.check(
+		primitive_state_bundle.get("valid") == false,
+		"primitive CarState bundle refused",
+	)
+	driver.check(
+		String(primitive_state_bundle.get("error", "")) != "",
+		"primitive CarState refusal reports a reason",
+	)
+	driver.check(
+		primitive_state_bundle.get("engine") == null,
+		"primitive CarState refusal has no engine segment",
+	)
+	var partial_state_bundle = driver.render_bundle(
+		AudioLabPartialState.new(), driver.command(0.5), 1
+	)
+	driver.check(
+		partial_state_bundle.get("valid") == false,
+		"partially compatible state bundle refused",
+	)
+	var partial_command_bundle = driver.render_bundle(
+		driver.make_car(20.0), AudioLabPartialCommand.new(), 1
+	)
+	driver.check(
+		partial_command_bundle.get("valid") == false,
+		"partially compatible command bundle refused",
+	)
 
 
 func _case_length_bounds(driver) -> void:
@@ -780,6 +826,129 @@ func _case_extreme_finite_tuning(driver) -> void:
 		driver.render_tire(driver.tire_params(slip_deg, speed_m_s), 7, frequency_extreme) == null,
 		"nonfinite resonance intermediate refuses rendering"
 	)
+
+
+func _case_direction_relative_reverse_slip(driver) -> void:
+	# The synth bundle must feed tire scrub with the direction-relative slip:
+	# straight forward and straight reverse are both zero, while lateral motion
+	# stays audible. Expected values come from an independent geometric oracle
+	# and the documented provisional intensity map.
+	var tuning = driver.default_tire_tuning()
+	var command = driver.command(0.5)
+	var drift := deg_to_rad(35.0)
+
+	var cases := [
+		{
+			"label": "straight_forward",
+			"state": driver.make_car(30.0, 0.0),
+			"expected_slip_deg": 0.0,
+			"expect_silent": true,
+		},
+		{
+			"label": "straight_reverse",
+			"state": driver.make_car(-30.0, 0.0),
+			"expected_slip_deg": 0.0,
+			"expect_silent": true,
+		},
+		{
+			"label": "forward_drift_35deg",
+			"state": driver.make_car(cos(drift) * 30.0, sin(drift) * 30.0),
+			"expected_slip_deg": 35.0,
+			"expect_silent": false,
+		},
+		{
+			"label": "reverse_lateral_drift_35deg",
+			"state": driver.make_car(-cos(drift) * 30.0, -sin(drift) * 30.0),
+			"expected_slip_deg": 35.0,
+			"expect_silent": false,
+		},
+		{
+			"label": "pure_lateral_90deg",
+			"state": driver.make_car(0.0, 30.0),
+			"expected_slip_deg": 90.0,
+			"expect_silent": false,
+		},
+	]
+	for entry in cases:
+		var state = entry["state"]
+		var label := String(entry["label"])
+		var expected_slip: float = driver.expected_direction_relative_slip_deg(
+			state.velocity_m_s, state.heading_rad
+		)
+		driver.check_close(
+			expected_slip,
+			float(entry["expected_slip_deg"]),
+			1e-4,
+			"%s: independent slip oracle" % label,
+		)
+		var bundle = driver.render_bundle(state, command, 41)
+		driver.check(bundle.get("valid") == true, "%s: bundle valid" % label)
+		if bundle.get("valid") != true:
+			continue
+		var telemetry = bundle["telemetry"]
+		var tire_segment = bundle["tire"]
+		driver.check_close(
+			float(telemetry["tire_slip_deg"]),
+			expected_slip,
+			1e-6,
+			"%s: telemetry direction-relative tire slip" % label,
+		)
+		driver.check_close(
+			float(telemetry["slip_deg"]),
+			state.slip_deg(),
+			1e-6,
+			"%s: telemetry keeps raw nose-relative slip" % label,
+		)
+		var expected_intensity: float = driver.expected_tire_intensity(
+			tuning, expected_slip, state.speed_m_s(), state.grounded
+		)
+		driver.check_close(
+			float(tire_segment.metadata["intensity"]),
+			expected_intensity,
+			1e-9,
+			"%s: rendered tire intensity matches the independent map" % label,
+		)
+		var samples = driver.decode_segment(tire_segment)
+		if bool(entry["expect_silent"]):
+			driver.check(
+				driver.max_abs(samples) <= 1e-6,
+				"%s: rendered tire segment is silent" % label,
+			)
+		else:
+			driver.check(
+				driver.rms(samples) > 0.0,
+				"%s: genuine lateral slip renders energy" % label,
+			)
+		driver.measure("tire_slip_" + label, expected_slip)
+
+	# Broken-behavior negative control: the raw signed nose slip is saturated in
+	# straight reverse, so feeding it directly to the tire renderer would be
+	# loud. The bundle must instead report zero and render silence.
+	var reverse_state = driver.make_car(-30.0, 0.0)
+	reverse_state.reverse_engaged = true
+	driver.check(
+		absf(reverse_state.slip_deg()) >= tuning.slip_full_deg,
+		"straight-reverse raw nose slip remains saturated (broken-behavior marker)",
+	)
+	var reverse_bundle = driver.render_bundle(reverse_state, command, 42)
+	driver.check(reverse_bundle.get("valid") == true, "straight-reverse bundle valid")
+	if reverse_bundle.get("valid") == true:
+		driver.check_close(
+			float(reverse_bundle["telemetry"]["tire_slip_deg"]),
+			0.0,
+			1e-6,
+			"straight reverse maps to zero direction-relative tire slip",
+		)
+		driver.check_close(
+			float(reverse_bundle["tire"].metadata["intensity"]),
+			0.0,
+			1e-9,
+			"straight reverse renders zero tire intensity",
+		)
+		driver.check(
+			driver.max_abs(driver.decode_segment(reverse_bundle["tire"])) <= 1e-6,
+			"straight reverse renders a silent tire segment",
+		)
 
 
 # --- Deliberate failure proof ----------------------------------------------

@@ -191,6 +191,40 @@ func expected_engine_fundamental_hz(tuning, speed_m_s: float, throttle: float) -
 	return tuning.idle_hz * pow(ratio, speed_norm) * (1.0 + tuning.throttle_pitch_lift * throttle)
 
 
+## Expected direction-relative tire slip from road-plane motion. This is an
+## independent geometric oracle: the unsigned angle between the travel
+## direction and the nose axis line, so straight forward and straight reverse
+## both give zero. It does not call the synth helper.
+func expected_direction_relative_slip_deg(velocity_m_s: Vector2, heading_rad: float) -> float:
+	var speed := velocity_m_s.length()
+	if speed <= 0.0:
+		return 0.0
+	var nose := Vector2(sin(heading_rad), cos(heading_rad))
+	var cosine := clampf(absf(velocity_m_s.normalized().dot(nose)), 0.0, 1.0)
+	return rad_to_deg(acos(cosine))
+
+
+## Expected tire intensity from the documented provisional map, independent of
+## the synth's private implementation.
+func expected_tire_intensity(
+	tuning,
+	slip_deg: float,
+	speed_m_s: float,
+	grounded: bool
+) -> float:
+	if not grounded:
+		return 0.0
+	var threshold_norm := clampf(tuning.slip_threshold_deg / tuning.slip_full_deg, 0.0, 1.0)
+	var slip_norm := clampf(absf(slip_deg) / tuning.slip_full_deg, 0.0, 1.0)
+	var speed_factor := clampf(
+		(speed_m_s - tuning.min_speed_m_s)
+		/ (tuning.reference_speed_m_s - tuning.min_speed_m_s),
+		0.0,
+		1.0,
+	)
+	return smoothstep(threshold_norm, 1.0, slip_norm) * speed_factor
+
+
 func snapshots_equal(a, b) -> bool:
 	if a == null or b == null:
 		return a == b

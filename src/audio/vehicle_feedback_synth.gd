@@ -19,12 +19,20 @@ extends RefCounted
 ##
 ## The engine tone and tire scrub are separate sources with separate telemetry:
 ## engine pitch follows normalized speed and throttle, while tire intensity
-## follows absolute slip angle and forward speed. Neither source influences the
-## other's synthesis path.
+## follows the direction-relative tire slip and ground speed. Tire slip is the
+## unsigned angle between the travel direction and the nose axis line, so
+## straight forward and straight reverse both read zero. Neither source
+## influences the other's synthesis path.
 ##
 ## All coefficients are provisional laboratory choices for M1.5 feedback
 ## prototyping, not frozen M1.5/M5 audio specification. Release clearance for
 ## LongCat-authored creative source remains open (provenance OI-02).
+
+## Committed simulation records accepted by `render_bundle()`. Preloaded so the
+## bundle boundary can reject primitives and partially compatible objects with
+## a reason instead of raising a script error on member access.
+const CarStateScript = preload("res://src/simulation/car_state.gd")
+const DriverCommandScript = preload("res://src/simulation/driver_command.gd")
 
 ## Default and accepted sample-rate bounds. Segments are mono; the director
 ## owns any stereo placement.
@@ -190,15 +198,17 @@ class EngineTuning extends RefCounted:
 		return value > 0
 
 
-## Provisional tire scrub coefficients. Slip is signed in degrees; only its
-## magnitude drives intensity.
+## Provisional tire scrub coefficients. Slip is the direction-relative tire
+## slip in degrees; only its magnitude drives intensity, so the sign carries no
+## scrub information.
 class TireTuning extends RefCounted:
 	var sample_rate_hz := DEFAULT_SAMPLE_RATE_HZ
 	## Speed mapped to the top of the normalized range, m/s.
 	var max_speed_m_s := 65.0
-	## Absolute slip angle at which scrub intensity saturates, degrees.
+	## Direction-relative tire slip at which scrub intensity saturates,
+	## degrees. Zero covers straight forward and straight reverse.
 	var slip_full_deg := 35.0
-	## Absolute slip angle below which scrub is silent, degrees.
+	## Direction-relative tire slip below which scrub is silent, degrees.
 	var slip_threshold_deg := 2.0
 	## Centre of the filtered noise band, Hz.
 	var band_center_hz := 1500.0
@@ -346,7 +356,8 @@ class EngineParams extends RefCounted:
 
 ## Validated tire scrub render request.
 class TireParams extends RefCounted:
-	## Signed slip angle in degrees; only magnitude drives intensity.
+	## Direction-relative tire slip angle in degrees; only magnitude drives
+	## intensity. Straight forward and straight reverse both use zero.
 	var slip_deg := 0.0
 	## Forward ground speed, m/s.
 	var speed_m_s := 0.0
@@ -627,15 +638,22 @@ static func render_bundle(
 ) -> Dictionary:
 	if car_state == null or command == null:
 		return _invalid_bundle("missing CarState or DriverCommand")
+	if not car_state is CarStateScript:
+		return _invalid_bundle("incompatible CarState")
+	if not command is DriverCommandScript:
+		return _invalid_bundle("incompatible DriverCommand")
 	if not car_state.is_finite():
 		return _invalid_bundle("nonfinite CarState")
 	if not command.is_normalized():
 		return _invalid_bundle("non-normalized or nonfinite DriverCommand")
+	var tire_slip := direction_relative_slip_deg(
+		car_state.velocity_m_s, car_state.heading_rad
+	)
 	var engine_params := EngineParams.create(
 		car_state.speed_m_s(), command.throttle, 0.5, LoopMode.ONE_SHOT
 	)
 	var tire_params := TireParams.create(
-		car_state.slip_deg(), car_state.speed_m_s(), car_state.grounded, 0.5, LoopMode.ONE_SHOT
+		tire_slip, car_state.speed_m_s(), car_state.grounded, 0.5, LoopMode.ONE_SHOT
 	)
 	if engine_params == null or tire_params == null:
 		return _invalid_bundle("unrenderable car/command values")
@@ -652,7 +670,10 @@ static func render_bundle(
 			"speed_m_s": car_state.speed_m_s(),
 			"forward_speed_m_s": car_state.forward_speed_m_s(),
 			"throttle": command.throttle,
+			# Raw signed nose-relative slip is kept for diagnostics; the tire voice
+			# uses the direction-relative value below.
 			"slip_deg": car_state.slip_deg(),
+			"tire_slip_deg": tire_slip,
 			"grounded": car_state.grounded,
 			"engine_source": engine.source,
 			"tire_source": tire.source,
@@ -662,6 +683,25 @@ static func render_bundle(
 
 
 # --- Internal synthesis -----------------------------------------------------
+
+
+## Direction-relative tire slip angle in degrees for committed road-plane
+## motion. Tire scrub depends on the angle between the travel direction and
+## the nose axis line, not on which end of the car leads: straight forward and
+## straight reverse both give 0 deg, while lateral motion rises toward 90 deg.
+## This is the shared definition used by `render_bundle()` and by the playback
+## component, so both layers feed the same quantity to the tire renderer.
+## `velocity_m_s` uses the `CarState` convention (x lateral right, y
+## longitudinal forward); `heading_rad` is the signed nose angle. Inputs must
+## be finite; callers validate the committed record first.
+static func direction_relative_slip_deg(velocity_m_s: Vector2, heading_rad: float) -> float:
+	var forward := Vector2(sin(heading_rad), cos(heading_rad))
+	var right := Vector2(forward.y, -forward.x)
+	var forward_component := velocity_m_s.dot(forward)
+	var lateral_component := velocity_m_s.dot(right)
+	if is_zero_approx(forward_component) and is_zero_approx(lateral_component):
+		return 0.0
+	return rad_to_deg(atan2(absf(lateral_component), absf(forward_component)))
 
 
 static func _engine_tuning(tuning) -> EngineTuning:

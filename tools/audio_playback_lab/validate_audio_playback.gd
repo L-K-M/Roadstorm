@@ -32,7 +32,28 @@ const CASE_IDS := [
 	"deterministic_setup",
 	"teardown",
 	"headless_play_flag",
+	"reverse_direction_slip",
+	"mapping_consistency",
 ]
+
+
+## Partially compatible stand-ins for the atomic-refusal probes. Each passes
+## the old duck-typed first guard but lacks a member the old code called
+## unchecked, so only an actual `CarState`/`DriverCommand` type check refuses
+## them without a script error.
+class PartialPlaybackState extends RefCounted:
+	var grounded := true
+
+	func is_finite() -> bool:
+		return true
+
+	func speed_m_s() -> float:
+		return 20.0
+
+
+class PartialPlaybackCommand extends RefCounted:
+	func is_normalized() -> bool:
+		return true
 
 var _checks := 0
 var _failures: Array[String] = []
@@ -129,6 +150,10 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_teardown()
 		"headless_play_flag":
 			_case_headless_play_flag()
+		"reverse_direction_slip":
+			_case_reverse_direction_slip()
+		"mapping_consistency":
+			_case_mapping_consistency()
 	var checks := _end_case()
 	var case_failures: Array[String] = []
 	for i in range(before_failures, _failures.size()):
@@ -449,6 +474,8 @@ func _case_invalid_atomic_refusal() -> void:
 	var snapshot_last_pitch: float = player.get_last_engine_pitch_scale()
 	var snapshot_last_engine_db: float = player.get_last_engine_volume_db()
 	var snapshot_last_tire_db: float = player.get_last_tire_volume_db()
+	var snapshot_engine_voice: AudioStreamPlayer = player.get_engine_player()
+	var snapshot_tire_voice: AudioStreamPlayer = player.get_tire_player()
 
 	var nan_state = _make_car(20.0, 0.0)
 	nan_state.velocity_m_s = Vector2(NAN, 20.0)
@@ -473,6 +500,18 @@ func _case_invalid_atomic_refusal() -> void:
 		{"label": "direct out-of-range command field", "state": good_state, "command": direct_range_command},
 		{"label": "incompatible state object", "state": incompatible_state, "command": good_command},
 		{"label": "incompatible command object", "state": good_state, "command": incompatible_command},
+		{"label": "primitive int state", "state": 17, "command": good_command},
+		{"label": "primitive float command", "state": good_state, "command": 2.5},
+		{
+		"label": "partially compatible state object",
+		"state": PartialPlaybackState.new(),
+		"command": good_command,
+		},
+		{
+		"label": "partially compatible command object",
+		"state": good_state,
+		"command": PartialPlaybackCommand.new(),
+		},
 	]
 	var refusals := 0
 	for entry in invalid_inputs:
@@ -490,6 +529,9 @@ func _case_invalid_atomic_refusal() -> void:
 		check_eq(player.get_tire_player().volume_db, snapshot_tire_db, "refusal keeps tire gain")
 		check_eq(player.get_engine_stream(), snapshot_engine_stream, "refusal keeps engine stream")
 		check_eq(player.get_tire_stream(), snapshot_tire_stream, "refusal keeps tire stream")
+		check_eq(player.get_engine_player(), snapshot_engine_voice, "refusal keeps the engine voice instance")
+		check_eq(player.get_tire_player(), snapshot_tire_voice, "refusal keeps the tire voice instance")
+		check_eq(player.get_child_count(), 2, "refusal keeps exactly two child voices")
 		check_eq(player.get_last_engine_pitch_scale(), snapshot_last_pitch, "refusal keeps last pitch")
 		check_eq(player.get_last_engine_volume_db(), snapshot_last_engine_db, "refusal keeps last engine gain")
 		check_eq(player.get_last_tire_volume_db(), snapshot_last_tire_db, "refusal keeps last tire gain")
@@ -612,6 +654,187 @@ func _case_headless_play_flag() -> void:
 	check(not tire_player.playing, "stop clears the tire playing flag")
 	_measured["headless_play_flag_supported"] = 1
 	player.free()
+
+
+func _case_reverse_direction_slip() -> void:
+	# Direction-relative tire slip: straight forward and straight reverse are
+	# both zero, while genuine lateral slip stays audible. Expected values use
+	# an independent geometric oracle (unsigned angle between travel direction
+	# and nose axis) plus the documented synth intensity map.
+	var player = _make_player(44100, 0.25, 2024)
+	check(player.is_setup_complete(), "reverse-slip fixture setup completes")
+	var command = _make_command(0.5)
+	var tuning := Synth.TireTuning.new()
+
+	var drift := deg_to_rad(35.0)
+	var cases := [
+		{
+			"label": "straight forward at 30 m/s",
+			"state": _make_car(30.0, 0.0),
+			"expected_slip_deg": 0.0,
+			"expect_silent": true,
+		},
+		{
+			"label": "straight reverse at 30 m/s",
+			"state": _make_car(-30.0, 0.0),
+			"expected_slip_deg": 0.0,
+			"expect_silent": true,
+		},
+		{
+			"label": "forward drift at 35 deg",
+			"state": _make_car(cos(drift) * 30.0, sin(drift) * 30.0),
+			"expected_slip_deg": 35.0,
+			"expect_silent": false,
+		},
+		{
+			"label": "reverse lateral drift at 35 deg",
+			"state": _make_car(-cos(drift) * 30.0, -sin(drift) * 30.0),
+			"expected_slip_deg": 35.0,
+			"expect_silent": false,
+		},
+		{
+			"label": "pure lateral slide at 90 deg",
+			"state": _make_car(0.0, 30.0),
+			"expected_slip_deg": 90.0,
+			"expect_silent": false,
+		},
+	]
+	for entry in cases:
+		var state = entry["state"]
+		var label := String(entry["label"])
+		var speed: float = state.speed_m_s()
+		var expected_slip := _expected_direction_slip_deg(
+			state.velocity_m_s, state.heading_rad
+		)
+		check_close(
+			expected_slip,
+			float(entry["expected_slip_deg"]),
+			1e-4,
+			"independent slip oracle for %s" % label,
+		)
+		check(player.apply(state, command), "%s input accepted" % label)
+		var observed_db: float = player.get_tire_player().volume_db
+		var expected_db := _expected_tire_db(tuning, expected_slip, speed)
+		check_close(
+			observed_db,
+			expected_db,
+			1e-6,
+			"%s tire gain matches the independent expected value" % label,
+		)
+		if bool(entry["expect_silent"]):
+			check_close(
+				observed_db,
+				PlayerScript.MIN_VOLUME_DB,
+				1e-6,
+				"%s leaves the tire voice silent" % label,
+			)
+		else:
+			check(
+				observed_db > PlayerScript.MIN_VOLUME_DB + 1e-6,
+				"%s keeps genuine lateral slip audible" % label,
+			)
+
+	# Broken-behavior negative control: the raw signed nose-relative slip is
+	# still saturated in straight reverse, so a regression that maps it directly
+	# onto tire intensity must fail the silent expectation above.
+	var reverse_state = _make_car(-30.0, 0.0)
+	reverse_state.reverse_engaged = true
+	check(
+		absf(reverse_state.slip_deg()) >= tuning.slip_full_deg,
+		"straight-reverse raw nose slip remains saturated (broken-behavior marker)",
+	)
+	var reverse_bundle_slip := Synth.direction_relative_slip_deg(
+		reverse_state.velocity_m_s, reverse_state.heading_rad
+	)
+	check_close(
+		reverse_bundle_slip,
+		0.0,
+		1e-6,
+		"shared helper maps straight reverse to zero",
+	)
+	check(player.apply(reverse_state, command), "straight-reverse state accepted")
+	check_close(
+		player.get_tire_player().volume_db,
+		PlayerScript.MIN_VOLUME_DB,
+		1e-6,
+		"straight reverse is silent after the direction-relative fix",
+	)
+	_measured["reverse_raw_slip_deg"] = absf(reverse_state.slip_deg())
+	_measured["reverse_tire_slip_deg"] = reverse_bundle_slip
+	player.free()
+
+
+func _case_mapping_consistency() -> void:
+	# The playback component mirrors the committed synth defaults. Pin that
+	# parity so a change on either side cannot silently drift.
+	var engine_tuning := Synth.EngineTuning.new()
+	var tire_tuning := Synth.TireTuning.new()
+	check_eq(
+		PlayerScript.SPEED_FULL_M_S,
+		engine_tuning.max_speed_m_s,
+		"engine full-speed constant matches synth",
+	)
+	check_eq(
+		PlayerScript.SPEED_FULL_M_S,
+		tire_tuning.max_speed_m_s,
+		"tire full-speed constant matches synth",
+	)
+	check_eq(PlayerScript.IDLE_HZ, engine_tuning.idle_hz, "idle fundamental matches synth")
+	check_eq(PlayerScript.TOP_HZ, engine_tuning.top_hz, "top fundamental matches synth")
+	check_eq(
+		PlayerScript.THROTTLE_PITCH_LIFT,
+		engine_tuning.throttle_pitch_lift,
+		"throttle pitch lift matches synth",
+	)
+	check_eq(PlayerScript.IDLE_LEVEL, engine_tuning.idle_level, "idle level matches synth")
+	check_eq(
+		PlayerScript.TIRE_SLIP_FULL_DEG,
+		tire_tuning.slip_full_deg,
+		"tire full-slip constant matches synth",
+	)
+	check_eq(
+		PlayerScript.TIRE_SLIP_THRESHOLD_DEG,
+		tire_tuning.slip_threshold_deg,
+		"tire slip threshold matches synth",
+	)
+	check_eq(
+		PlayerScript.TIRE_MIN_SPEED_M_S,
+		tire_tuning.min_speed_m_s,
+		"tire minimum speed matches synth",
+	)
+	check_eq(
+		PlayerScript.TIRE_REFERENCE_SPEED_M_S,
+		tire_tuning.reference_speed_m_s,
+		"tire reference speed matches synth",
+	)
+
+
+## Independent expected-value helpers for the direction-relative case. They
+## mirror the documented provisional map and geometry rather than calling the
+## playback component's private mapping.
+static func _expected_direction_slip_deg(velocity_m_s: Vector2, heading_rad: float) -> float:
+	var speed := velocity_m_s.length()
+	if speed <= 0.0:
+		return 0.0
+	var nose := Vector2(sin(heading_rad), cos(heading_rad))
+	var cosine := clampf(absf(velocity_m_s.normalized().dot(nose)), 0.0, 1.0)
+	return rad_to_deg(acos(cosine))
+
+
+static func _expected_tire_db(tuning, slip_deg: float, speed_m_s: float) -> float:
+	var threshold_norm := clampf(tuning.slip_threshold_deg / tuning.slip_full_deg, 0.0, 1.0)
+	var slip_norm := clampf(absf(slip_deg) / tuning.slip_full_deg, 0.0, 1.0)
+	var speed_factor := clampf(
+		(speed_m_s - tuning.min_speed_m_s)
+		/ (tuning.reference_speed_m_s - tuning.min_speed_m_s),
+		0.0,
+		1.0,
+	)
+	var intensity := smoothstep(threshold_norm, 1.0, slip_norm) * speed_factor
+	var bounded := maxf(intensity, PlayerScript.SILENCE_LINEAR)
+	return clampf(
+		linear_to_db(bounded), PlayerScript.MIN_VOLUME_DB, PlayerScript.MAX_VOLUME_DB
+	)
 
 
 # --- Deliberate failure proof ----------------------------------------------

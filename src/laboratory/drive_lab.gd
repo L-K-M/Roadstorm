@@ -56,6 +56,13 @@ extends Node3D
 ## state and the installed body basis both point along the authored bay forward.
 ## An authored zero yaw stays exactly positive zero.
 ##
+## Course station: the straight has a fixed authored axis, established once at
+## spawn from whichever input supplied the heading. `get_road_station_m()` and
+## both course limits project road-plane displacement onto that axis, so a
+## rotated bay measures travel along its own forward rather than along world
+## road +y. A zero-yaw spawn produces the exact axis `(0, 1)`, which keeps the
+## original y-difference arithmetic bit-for-bit unchanged.
+##
 ## Headless scripted mode never reads GUI input. Keyboard mode is a separate
 ## convenience path for interactive use.
 
@@ -124,6 +131,9 @@ var audio_error := ""
 var state: CarState = null
 var last_result: MotorBodyAdapter.Result = null
 var start_position_m := Vector2.ZERO
+## Unit road-plane direction of the authored straight, fixed at spawn. At a
+## zero-yaw spawn this is exactly `(0, 1)`.
+var _straight_axis_m := Vector2(0.0, 1.0)
 
 var steps_called := 0
 var ticks_committed := 0
@@ -528,7 +538,14 @@ func is_visually_failed() -> bool:
 func get_road_station_m() -> float:
 	if state == null:
 		return 0.0
-	return state.position_m.y - start_position_m.y
+	return (state.position_m - start_position_m).dot(_straight_axis_m)
+
+
+## Read-only course-envelope query over the projected station, mirroring the
+## private limit check that gates `step_once()`. Validation uses it to pin both
+## limits without driving an adapter tick from a synthetic pose.
+func is_course_limit_reached() -> bool:
+	return _course_limit_reached()
 
 
 func get_telemetry() -> Dictionary:
@@ -681,6 +698,10 @@ func _apply_start_pose() -> void:
 	state.position_m = AdapterScript.world_vector_to_road(spawn)
 	state.heading_rad = heading
 	start_position_m = state.position_m
+	# The authored straight axis comes from the same converted heading that
+	# sets the nose and the installed body basis. Deriving it from `state`
+	# keeps the three consumers consistent; a zero heading gives (0, 1) exactly.
+	_straight_axis_m = Vector2(sin(state.heading_rad), cos(state.heading_rad))
 	if body == null or hull_shape == null:
 		return
 	var support_y := hull_shape.size.y * 0.5 + HULL_REST_CLEARANCE_M
@@ -709,7 +730,7 @@ func _sample_keyboard_command():
 func _course_limit_reached() -> bool:
 	if state == null or hull_shape == null:
 		return false
-	var station := state.position_m.y - start_position_m.y
+	var station := (state.position_m - start_position_m).dot(_straight_axis_m)
 	var half_length := hull_shape.size.z * 0.5
 	if station + half_length >= _straight_length_m - COURSE_END_MARGIN_M:
 		return true

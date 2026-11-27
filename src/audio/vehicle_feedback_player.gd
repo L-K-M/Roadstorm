@@ -9,8 +9,10 @@ extends Node
 ## (16-bit mono, forward loop over the whole segment) and assigns the streams
 ## once. Later calls to `apply()` only map committed `CarState` and normalized
 ## `DriverCommand` values onto `AudioStreamPlayer.pitch_scale` / `volume_db`;
-## they never re-render, replace or rebuild a stream, and they allocate no
-## per-tick container.
+## tire scrub uses the synth's direction-relative tire slip (zero when rolling
+## straight forward or straight backward), so reverse no longer saturates it.
+## They never re-render, replace or rebuild a stream, and allocate no per-tick
+## container.
 ##
 ## Scope seams (deliberately absent):
 ##   * no `AudioDirector`, listener, bus routing, stereo pan, attenuation,
@@ -20,9 +22,12 @@ extends Node
 ##   * no `CarState`/`DriverCommand` writes of any kind, including steering,
 ##     brake or handbrake interpretation beyond reading `throttle`.
 ##
-## Failure contract: `apply()` validates both inputs and every derived target
-## before touching playback. A refusal leaves the last accepted pitch/gain and
-## both stream assignments untouched and records a reason in `last_error`
+## Failure contract: `apply()` requires actual `CarState`/`DriverCommand`
+## instances and validates both inputs and every derived target before touching
+## playback. Primitives and partially compatible objects are refused with a
+## reason rather than raising a script error. A refusal leaves the last accepted
+## pitch/gain and both stream assignments untouched and records a reason in
+## `last_error`
 ## (readable through `get_last_error()`). `setup()` refuses an out-of-range
 ## configuration and any synth refusal; the node stays inert and setup can be
 ## retried after the caller repairs its configuration.
@@ -31,7 +36,9 @@ extends Node
 ## `sample_rate_hz`, each at most 192000 frames (`MAX_SETUP_BYTES` total).
 ##
 ## Provisional coefficients: the pitch, level and tire-intensity maps mirror
-## the committed synth defaults documented in `tools/audio_lab/README.md`. They
+## the committed synth defaults documented in `tools/audio_lab/README.md`; the
+## playback lab asserts that parity. Tire intensity consumes the
+## direction-relative tire slip defined by `Synth`. They
 ## are laboratory starting points, not frozen M1.5/M5 audio specification, and
 ## require perceptual review. Pitch shifting a fixed reference loop changes
 ## timbre with speed and is a prototyping convenience, not a production model.
@@ -41,6 +48,8 @@ extends Node
 ## or comfort. Only real-device listening can.
 
 const Synth = preload("res://src/audio/vehicle_feedback_synth.gd")
+const CarStateScript = preload("res://src/simulation/car_state.gd")
+const DriverCommandScript = preload("res://src/simulation/driver_command.gd")
 
 # --- Setup contract --------------------------------------------------------
 
@@ -204,8 +213,8 @@ func teardown() -> void:
 ## Map one committed `CarState` plus one normalized `DriverCommand` onto the
 ## already-built voices. Reads only. Returns false without changing the last
 ## accepted pitch/gain or stream assignments when either input is null,
-## nonfinite, out of range or incompatible, or when a derived target is
-## nonfinite. On success clears the last error.
+## nonfinite, out of range, not an actual `CarState`/`DriverCommand`, or when a
+## derived target is nonfinite. On success clears the last error.
 func apply(car_state, command) -> bool:
 	if not _setup_complete or _engine_player == null or _tire_player == null:
 		return _reject("playback is not set up")
@@ -213,17 +222,19 @@ func apply(car_state, command) -> bool:
 		return _reject("missing CarState")
 	if command == null:
 		return _reject("missing DriverCommand")
-	if not car_state.has_method("is_finite") or not car_state.is_finite():
-		return _reject("nonfinite or incompatible CarState")
-	if not command.has_method("is_normalized") or not command.is_normalized():
+	if not car_state is CarStateScript:
+		return _reject("incompatible CarState")
+	if not command is DriverCommandScript:
+		return _reject("incompatible DriverCommand")
+	if not car_state.is_finite():
+		return _reject("nonfinite CarState")
+	if not command.is_normalized():
 		return _reject("non-normalized or nonfinite DriverCommand")
 
-	var grounded_value = car_state.get("grounded")
-	if typeof(grounded_value) != TYPE_BOOL:
-		return _reject("CarState has no boolean grounded field")
-
 	var speed := float(car_state.speed_m_s())
-	var slip := float(car_state.slip_deg())
+	var slip := Synth.direction_relative_slip_deg(
+		car_state.velocity_m_s, car_state.heading_rad
+	)
 	var throttle := clampf(float(command.throttle), 0.0, 1.0)
 	if not (_finite(speed) and _finite(slip) and _finite(throttle)):
 		return _reject("nonfinite derived playback input")
@@ -236,7 +247,7 @@ func apply(car_state, command) -> bool:
 	)
 	var engine_db := _linear_to_bounded_db(_engine_level(speed_norm, throttle))
 	var tire_db := _linear_to_bounded_db(
-		_tire_intensity(slip, speed, bool(grounded_value))
+		_tire_intensity(slip, speed, bool(car_state.grounded))
 	)
 	if not (_finite(pitch) and _finite(engine_db) and _finite(tire_db)):
 		return _reject("nonfinite playback target")
@@ -379,8 +390,9 @@ static func _engine_level(speed_norm: float, throttle: float) -> float:
 	return IDLE_LEVEL + (1.0 - IDLE_LEVEL) * drive
 
 
-## Mirrors the committed synth's tire intensity map: smooth onset above the
-## slip threshold, a speed gate, and silence while airborne.
+## Mirrors the committed synth's tire intensity map over direction-relative
+## tire slip: smooth onset above the slip threshold, a speed gate, and silence
+## while airborne.
 static func _tire_intensity(slip_deg: float, speed_m_s: float, grounded: bool) -> float:
 	if not grounded:
 		return 0.0

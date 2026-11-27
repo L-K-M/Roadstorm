@@ -32,6 +32,10 @@ const PRESENTATION_TICKS := 30
 ## Bounded tick counts for the M1.5 audio feedback integration case.
 const AUDIO_TICKS := 60
 const AUDIO_REFUSAL_HEAD_TICKS := 10
+## Brake-only ticks for the straight-reverse tire-slip regression. The first
+## ticks satisfy the design reverse hold; the remainder reverses in a straight
+## line, where direction-relative tire slip must stay silent.
+const AUDIO_REVERSE_TICKS := 80
 ## Must match the movement_from_rest schedule used as the committed-trace
 ## baseline; the audio case replays it with audio wired.
 const AUDIO_BASELINE_TICKS := 90
@@ -60,9 +64,17 @@ const FOCUS_COAST_TICKS := 20
 const FOCUS_FRESH_TICKS := 20
 ## Authored bay yaw for the rotated-spawn heading-convention case.
 const ROTATED_SPAWN_YAW_DEG := 30.0
+## A right-angle bay makes the raw road-y station differ maximally from the
+## projected authored-axis station.
+const ROTATED_SPAWN_YAW_90_DEG := 90.0
 const ROTATED_SPAWN_ORIGIN := Vector3(-360.0, 0.0, 60.0)
 ## Bounded throttle ticks proving the rotated car tracks its authored forward.
 const ROTATED_SPAWN_TICKS := 30
+## Synthetic stations used to pin the authored-axis projection and both course
+## limits without driving an adapter tick from each probe pose.
+const ROTATED_SPAWN_FORWARD_STATION_M := 12.5
+const ROTATED_SPAWN_REVERSE_STATION_M := -4.0
+const ROTATED_SPAWN_LIMIT_EPSILON_M := 1e-3
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
@@ -407,20 +419,21 @@ func _case_scene_and_manifest() -> void:
 ## Both real spawn inputs are exercised: the marker-metadata path and the
 ## manifest fallback. The zero-yaw control pins the unchanged baseline.
 func _case_rotated_spawn_heading() -> void:
-	await _rotated_spawn_variant("marker", true)
-	await _rotated_spawn_variant("manifest_fallback", false)
+	await _rotated_spawn_variant("marker", true, ROTATED_SPAWN_YAW_DEG)
+	await _rotated_spawn_variant("manifest_fallback", false, ROTATED_SPAWN_YAW_DEG)
+	await _rotated_spawn_variant("marker_right_angle", true, ROTATED_SPAWN_YAW_90_DEG)
 	await _rotated_spawn_zero_control()
 
 
-func _rotated_spawn_variant(label: String, use_marker: bool) -> void:
+func _rotated_spawn_variant(label: String, use_marker: bool, yaw_deg: float) -> void:
 	var commands: Array = []
 	for _index in range(ROTATED_SPAWN_TICKS):
 		commands.append(d.throttle_command(1.0))
-	var lab = _make_real_geometry_lab(ROTATED_SPAWN_YAW_DEG, use_marker, commands)
+	var lab = _make_real_geometry_lab(yaw_deg, use_marker, commands)
 	if lab == null:
 		return
 	await _settle()
-	var authored_heading := deg_to_rad(ROTATED_SPAWN_YAW_DEG)
+	var authored_heading := deg_to_rad(yaw_deg)
 	var builder_forward := HandlingLabBuilderScript._forward(authored_heading)
 	var expected_state_heading := 0.0 - authored_heading
 
@@ -472,9 +485,58 @@ func _rotated_spawn_variant(label: String, use_marker: bool) -> void:
 		)
 	else:
 		d.check(false, label + ".velocity_nonzero_after_throttle")
+	_rotated_station_and_limit_checks(lab, label, builder_forward)
 	measurements[label + "_state_heading_rad"] = lab.state.heading_rad
 	measurements[label + "_builder_forward"] = str(builder_forward)
 	await _teardown_lab(lab)
+
+
+## Pins the authored-axis station projection and both course limits for a
+## rotated spawn. The station probes place the committed state directly on the
+## authored axis; the limit probes query the same predicate `step_once()` gates
+## on, then confirm one projected-limit halt consumes no adapter call.
+func _rotated_station_and_limit_checks(lab, label: String, builder_forward: Vector3) -> void:
+	var axis := Vector2(builder_forward.x, -builder_forward.z)
+	var half_length: float = lab.hull_shape.size.z * 0.5
+	lab.state.position_m = lab.start_position_m + axis * ROTATED_SPAWN_FORWARD_STATION_M
+	d.check_close(
+		lab.get_road_station_m(), ROTATED_SPAWN_FORWARD_STATION_M, 1e-4,
+		label + ".station_projects_positive_authored_axis"
+	)
+	lab.state.position_m = lab.start_position_m + axis * ROTATED_SPAWN_REVERSE_STATION_M
+	d.check_close(
+		lab.get_road_station_m(), ROTATED_SPAWN_REVERSE_STATION_M, 1e-4,
+		label + ".station_projects_negative_authored_axis"
+	)
+	# The old axis-locked arithmetic reads raw road y. At this yaw that differs
+	# from the projected station, so these checks fail against the old code.
+	var raw_road_y_station: float = lab.state.position_m.y - lab.start_position_m.y
+	d.check(
+		absf(raw_road_y_station - ROTATED_SPAWN_REVERSE_STATION_M) > 1e-3,
+		label + ".raw_road_y_differs_from_projected_station"
+	)
+
+	var end_station := 500.0 - DriveLabScript.COURSE_END_MARGIN_M - half_length
+	lab.state.position_m = lab.start_position_m + axis * (end_station + ROTATED_SPAWN_LIMIT_EPSILON_M)
+	d.check(lab.is_course_limit_reached(), label + ".end_limit_true_on_projected_station")
+	lab.state.position_m = lab.start_position_m + axis * (end_station - ROTATED_SPAWN_LIMIT_EPSILON_M)
+	d.check(not lab.is_course_limit_reached(), label + ".end_limit_false_just_before")
+
+	var reverse_station := -DriveLabScript.COURSE_START_MARGIN_M + half_length
+	lab.state.position_m = lab.start_position_m + axis * (reverse_station - ROTATED_SPAWN_LIMIT_EPSILON_M)
+	d.check(lab.is_course_limit_reached(), label + ".reverse_limit_true_on_projected_station")
+	lab.state.position_m = lab.start_position_m + axis * (reverse_station + ROTATED_SPAWN_LIMIT_EPSILON_M)
+	d.check(not lab.is_course_limit_reached(), label + ".reverse_limit_false_just_after")
+
+	lab.state.position_m = lab.start_position_m + axis * (end_station + ROTATED_SPAWN_LIMIT_EPSILON_M)
+	var steps_before := int(lab.steps_called)
+	var result = lab.step_once(d.idle_command())
+	d.check(result == null, label + ".end_limit_step_returns_null")
+	d.check(
+		lab.halted and lab.halt_reason == "course limit reached",
+		label + ".end_limit_halts_on_projected_station"
+	)
+	d.check(int(lab.steps_called) == steps_before, label + ".end_limit_consumes_no_adapter_call")
 
 
 ## Builds a DriveLab whose HandlingLab child is the real builder output, with
@@ -524,6 +586,19 @@ func _rotated_spawn_zero_control() -> void:
 		HandlingLabBuilderScript._forward(0.0), 1e-9,
 		"rotated.zero_yaw_conventions_agree"
 	)
+	# A zero-yaw spawn keeps the original road-y arithmetic exactly.
+	var half_length: float = lab.hull_shape.size.z * 0.5
+	lab.state.position_m = lab.start_position_m + Vector2(1.5, -7.25)
+	d.check_exact_float(
+		lab.get_road_station_m(),
+		lab.state.position_m.y - lab.start_position_m.y,
+		"rotated.zero_yaw_station_is_raw_road_y_difference"
+	)
+	var end_station := 500.0 - DriveLabScript.COURSE_END_MARGIN_M - half_length
+	lab.state.position_m = lab.start_position_m + Vector2(0.0, end_station + ROTATED_SPAWN_LIMIT_EPSILON_M)
+	d.check(lab.is_course_limit_reached(), "rotated.zero_yaw_end_limit_still_on_road_y")
+	lab.state.position_m = lab.start_position_m + Vector2(0.0, end_station - ROTATED_SPAWN_LIMIT_EPSILON_M)
+	d.check(not lab.is_course_limit_reached(), "rotated.zero_yaw_end_limit_open_just_before")
 	await _teardown_lab(lab)
 
 
@@ -546,7 +621,7 @@ func _case_movement_from_rest() -> void:
 		await _teardown_lab(lab)
 		return
 	d.check(lab.state.is_finite(), "move.final_state_finite")
-	var station: float = lab.state.position_m.y - lab.start_position_m.y
+	var station: float = lab.get_road_station_m()
 	d.check(station > 4.0, "move.forward_distance")
 	d.check(absf(lab.state.position_m.x - lab.start_position_m.x) < 1e-6, "move.no_lateral_drift")
 	d.check(lab.state.speed_m_s() > 5.0, "move.final_speed")
@@ -1469,6 +1544,7 @@ func _case_reconfigure_presentation_counters() -> void:
 func _case_audio_feedback_integration() -> void:
 	await _audio_structure_and_startup_checks()
 	await _audio_acceleration_mapping_checks()
+	await _audio_straight_reverse_checks()
 	await _audio_adapter_refusal_checks()
 	await _audio_apply_refusal_checks()
 	await _audio_reconfigure_and_trace_checks()
@@ -1622,7 +1698,8 @@ func _audio_acceleration_mapping_checks() -> void:
 		var expected_pitch := feedback_oracle_pitch(lab.state.speed_m_s(), 1.0)
 		var expected_engine_db := feedback_oracle_engine_db(lab.state.speed_m_s(), 1.0)
 		var expected_tire_db := feedback_oracle_tire_db(
-			lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded
+			lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded,
+			lab.state.reverse_engaged
 		)
 		if absf(pitch - expected_pitch) > 1e-6:
 			oracle_mismatches += 1
@@ -1655,7 +1732,10 @@ func _audio_acceleration_mapping_checks() -> void:
 	)
 	d.check_close(
 		last_tire_db,
-		feedback_oracle_tire_db(lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded),
+		feedback_oracle_tire_db(
+			lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded,
+			lab.state.reverse_engaged
+		),
 		1e-6, "audio.final_tire_level_oracle"
 	)
 	d.check(player.get_engine_stream() == engine_stream, "audio.engine_stream_reference_stable")
@@ -1671,6 +1751,79 @@ func _audio_acceleration_mapping_checks() -> void:
 	measurements["audio_final_pitch"] = last_pitch
 	measurements["audio_final_engine_db"] = last_engine_db
 	measurements["audio_oracle_mismatches"] = oracle_mismatches
+	await _teardown_lab(lab)
+
+
+## Straight-line reverse regression for the direction-relative tire-slip fix.
+## A car reversing straight has a raw nose-to-travel angle near +/-180 deg;
+## the committed component must fold that into the travel frame so tire scrub
+## stays silent instead of saturating. The old `abs(slip)` formula predicted an
+## audible level here, which this case records as a broken-behavior control.
+func _audio_straight_reverse_checks() -> void:
+	var commands: Array = []
+	for _index in range(AUDIO_REVERSE_TICKS):
+		commands.append(d.brake_command(1.0))
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	if not _audio_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	var player = lab.get_feedback_player()
+	if player == null:
+		d.check(false, "audio.reverse.fixture_ready")
+		await _teardown_lab(lab)
+		return
+	lab.start()
+	var last_tire_db := 0.0
+	for _index in range(AUDIO_REVERSE_TICKS):
+		await get_tree().physics_frame
+		if lab.failed:
+			break
+		var telemetry: Dictionary = lab.get_audio_telemetry()
+		last_tire_db = float(telemetry["last_tire_volume_db"])
+	d.check(not lab.failed, "audio.reverse.run_not_failed: " + str(lab.failure_reason))
+	d.check(lab.state != null, "audio.reverse.final_state_present")
+	if lab.state == null:
+		await _teardown_lab(lab)
+		return
+	d.check(lab.state.reverse_engaged, "audio.reverse.reverse_latch_engaged")
+	var forward_speed: float = lab.state.forward_speed_m_s()
+	d.check(forward_speed < 0.0, "audio.reverse.travelling_backwards")
+	var raw_slip: float = lab.state.slip_deg()
+	var relative_slip := feedback_oracle_travel_relative_slip_deg(
+		raw_slip, lab.state.reverse_engaged
+	)
+	var expected_tire_db := feedback_oracle_tire_db(
+		raw_slip, lab.state.speed_m_s(), lab.state.grounded, lab.state.reverse_engaged
+	)
+	# Broken-behavior control: the pre-fix abs(slip) map would have produced an
+	# audible tire level in this straight reversal.
+	var old_formula_db := feedback_oracle_tire_db(
+		raw_slip, lab.state.speed_m_s(), lab.state.grounded, false
+	)
+	d.check(
+		old_formula_db > FEEDBACK_SILENCE_DB + 1.0,
+		"audio.reverse.old_formula_predicts_audible_tires (db=%f)" % old_formula_db
+	)
+	d.check(
+		last_tire_db <= FEEDBACK_SILENCE_DB + 1e-3,
+		"audio.reverse.straight_reverse_tires_silent (db=%f)" % last_tire_db
+	)
+	d.check_close(
+		last_tire_db, expected_tire_db, 1e-6,
+		"audio.reverse.matches_direction_relative_oracle"
+	)
+	d.check(
+		int(lab.get_audio_telemetry()["audio_updates"]) == int(lab.ticks_committed),
+		"audio.reverse.one_update_per_committed_tick"
+	)
+	measurements["audio_reverse_forward_speed_m_s"] = forward_speed
+	measurements["audio_reverse_raw_slip_deg"] = raw_slip
+	measurements["audio_reverse_travel_relative_slip_deg"] = relative_slip
+	measurements["audio_reverse_measured_tire_db"] = last_tire_db
+	measurements["audio_reverse_old_formula_tire_db"] = old_formula_db
 	await _teardown_lab(lab)
 
 
@@ -1878,6 +2031,17 @@ func _audio_reconfigure_and_trace_checks() -> void:
 ## Independent playback-target oracle mirroring the committed component's
 ## documented provisional coefficients. Validation compares measured values
 ## against these formulas rather than trusting the component under test.
+
+
+## Fold a signed nose-to-travel slip into the direction of travel. Straight
+## forward leaves the angle untouched; straight reverse (+/-180 deg) becomes
+## zero, while genuine lateral slip keeps its magnitude in the travel frame.
+func feedback_oracle_travel_relative_slip_deg(slip_deg: float, reverse_engaged: bool) -> float:
+	if not reverse_engaged:
+		return slip_deg
+	return rad_to_deg(wrapf(deg_to_rad(slip_deg) + PI, -PI, PI))
+
+
 func feedback_oracle_pitch(speed_m_s: float, throttle: float) -> float:
 	var speed_norm := clampf(speed_m_s / FEEDBACK_SPEED_FULL_M_S, 0.0, 1.0)
 	var fundamental := (
@@ -1908,13 +2072,16 @@ func feedback_oracle_engine_db(speed_m_s: float, throttle: float) -> float:
 	)
 
 
-func feedback_oracle_tire_db(slip_deg: float, speed_m_s: float, grounded: bool) -> float:
+func feedback_oracle_tire_db(
+	slip_deg: float, speed_m_s: float, grounded: bool, reverse_engaged: bool = false
+) -> float:
 	if not grounded:
 		return FEEDBACK_SILENCE_DB
 	var threshold_norm := clampf(
 		FEEDBACK_TIRE_SLIP_THRESHOLD_DEG / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0
 	)
-	var slip_norm := clampf(absf(slip_deg) / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0)
+	var travel_slip := feedback_oracle_travel_relative_slip_deg(slip_deg, reverse_engaged)
+	var slip_norm := clampf(absf(travel_slip) / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0)
 	var speed_factor := clampf(
 		(speed_m_s - FEEDBACK_TIRE_MIN_SPEED_M_S)
 		/ (FEEDBACK_TIRE_REFERENCE_SPEED_M_S - FEEDBACK_TIRE_MIN_SPEED_M_S),
