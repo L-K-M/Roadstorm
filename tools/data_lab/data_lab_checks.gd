@@ -101,7 +101,12 @@ func valid_car(handling = null) -> CarDefinition:
 	car.ground_clearance_m = 0.12
 	car.jump_envelope_m = 0.6
 	car.mass_kg = 1250.0
-	car.contact_proxy_shape = CarDefinition.ContactProxyShape.ROUNDED_BOX
+	# Non-default authored contact fields: a round trip that silently drops them
+	# would reload the defaults (ROUNDED_BOX / null) and still compare equal if
+	# the fixture used the defaults.
+	car.contact_proxy_shape = CarDefinition.ContactProxyShape.CONVEX_HULL
+	car.contact_roof = "Authored rounded-edge convex roof"
+	car.contact_underside = "Authored flat underside pan"
 	car.handling = handling if handling != null else valid_handling()
 	car.completeness = CarDefinition.Completeness.DRAFT
 	car.completeness_note = (

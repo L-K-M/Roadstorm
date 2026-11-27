@@ -27,6 +27,10 @@ const CarScript = preload("res://src/data/car_definition.gd")
 const CASE_IDS := [
 	"valid_in_memory_definition",
 	"tres_round_trip",
+	"enum_domain_controls",
+	"handling_diagnostic_attribution",
+	"deferred_fields_declaration",
+	"scratch_reservation_control",
 	"malformed_identity_controls",
 	"negative_and_nonfinite_physical_controls",
 	"dimensional_bounds",
@@ -35,13 +39,20 @@ const CASE_IDS := [
 	"curve_accessor_safety",
 ]
 
-const ROUND_TRIP_HANDLING_PATH := "res://data_lab_handling_roundtrip.tres"
-const ROUND_TRIP_CAR_PATH := "res://data_lab_car_roundtrip.tres"
+## Fixed basenames that earlier lab revisions wrote at `res://`. The validator
+## only reads them; `run_validation.sh` populates distinct sentinels in its own
+## fresh private stage before this case observes and re-checks their bytes.
+const LEGACY_ROUNDTRIP_HANDLING_PATH := "res://data_lab_handling_roundtrip.tres"
+const LEGACY_ROUNDTRIP_CAR_PATH := "res://data_lab_car_roundtrip.tres"
+## Every validator run reserves its own scratch directory under `res://` so a
+## direct execution cannot clobber files another process owns.
+const SCRATCH_DIR_PREFIX := "res://data_lab_scratch_"
 
 var _checks := 0
 var _failures: Array[String] = []
 var _measured: Dictionary = {}
 var _finished := false
+var _scratch_dirs: Array[String] = []
 
 
 func _initialize() -> void:
@@ -103,6 +114,14 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_valid_in_memory_definition(driver)
 		"tres_round_trip":
 			_case_tres_round_trip(driver)
+		"enum_domain_controls":
+			_case_enum_domain_controls(driver)
+		"handling_diagnostic_attribution":
+			_case_handling_diagnostic_attribution(driver)
+		"deferred_fields_declaration":
+			_case_deferred_fields_declaration(driver)
+		"scratch_reservation_control":
+			_case_scratch_reservation_control(driver)
 		"malformed_identity_controls":
 			_case_malformed_identity_controls(driver)
 		"negative_and_nonfinite_physical_controls":
@@ -228,29 +247,46 @@ func _case_valid_in_memory_definition(driver: DataLabDriver) -> void:
 func _case_tres_round_trip(driver: DataLabDriver) -> void:
 	var handling = driver.valid_handling()
 	var car = driver.valid_car(handling)
+	var scratch := _reserve_scratch_dir()
+	driver.check(scratch != "", "unique scratch directory reserved for the round trip")
+	if scratch == "":
+		driver.measure("roundtrip_handling_ok", false)
+		driver.measure("roundtrip_car_ok", false)
+		return
+	var handling_path := scratch.path_join("handling_roundtrip.tres")
+	var car_path := scratch.path_join("car_roundtrip.tres")
 	driver.check_eq(
-		driver.save_resource(handling, ROUND_TRIP_HANDLING_PATH),
+		driver.save_resource(handling, handling_path),
 		OK,
-		"handling .tres saves"
+		"handling .tres saves into reserved scratch"
 	)
 	driver.check_eq(
-		driver.save_resource(car, ROUND_TRIP_CAR_PATH),
+		driver.save_resource(car, car_path),
 		OK,
-		"car .tres saves"
+		"car .tres saves into reserved scratch"
 	)
 
-	var loaded_handling = driver.load_resource(ROUND_TRIP_HANDLING_PATH)
+	var loaded_handling = driver.load_resource(handling_path)
 	driver.check(loaded_handling is HandlingDefinition, "loaded handling is a HandlingDefinition")
 	if loaded_handling is HandlingDefinition:
 		_assert_same_handling(driver, handling, loaded_handling)
 
-	var loaded_car = driver.load_resource(ROUND_TRIP_CAR_PATH)
+	var loaded_car = driver.load_resource(car_path)
 	driver.check(loaded_car is CarDefinition, "loaded car is a CarDefinition")
 	if loaded_car is CarDefinition:
 		_assert_same_car(driver, car, loaded_car)
+		if loaded_car.handling is HandlingDefinition:
+			# The car `.tres` references the separately saved handling `.tres`
+			# as an external resource; compare the reloaded contents in full, not
+			# only their validity: a different valid ID, revision or curve must
+			# fail this round trip.
+			_assert_same_handling(driver, handling, loaded_car.handling)
+			_assert_referenced_handling_controls(driver, handling, loaded_car)
+		else:
+			driver.check(false, "referenced handling is a HandlingDefinition")
 		driver.check(
 			loaded_car.handling != null and loaded_car.handling.is_valid(),
-			"embedded handling survives the round trip and validates"
+			"referenced handling survives the round trip and validates"
 		)
 		driver.check_eq(
 			loaded_car.validate().size(),
@@ -259,15 +295,59 @@ func _case_tres_round_trip(driver: DataLabDriver) -> void:
 		)
 
 	var rebound := driver.valid_car()
-	rebound.handling = loaded_handling
+	if loaded_handling is HandlingDefinition:
+		rebound.handling = loaded_handling
 	driver.check(
 		rebound.is_valid(),
 		"rebinding a separately loaded handling resource keeps the car valid"
 	)
 
-	_cleanup_roundtrip_files()
+	_cleanup_scratch_dirs()
+	driver.check(not DirAccess.dir_exists_absolute(scratch), "round trip scratch reservation is removed")
 	driver.measure("roundtrip_handling_ok", loaded_handling is HandlingDefinition)
 	driver.measure("roundtrip_car_ok", loaded_car is CarDefinition)
+
+
+## Deliberate-alteration controls: a changed but still-valid referenced
+## handling ID or curve must be detected by `_assert_same_handling`. The old
+## check only asked `is_valid()`, so both alterations passed it; these controls
+## would fail against that old behavior. Restores each field after proving
+## detection. The handling is an external resource reference here, not an
+## embedded subresource.
+func _assert_referenced_handling_controls(
+	driver: DataLabDriver,
+	original: HandlingDefinition,
+	loaded_car: CarDefinition
+) -> void:
+	var id_before := loaded_car.handling.definition_id
+	loaded_car.handling.definition_id = "example.data_lab.altered"
+	_assert_detects_alteration(
+		driver, original, loaded_car.handling, "altered referenced handling ID"
+	)
+	loaded_car.handling.definition_id = id_before
+
+	var acceleration_before := loaded_car.handling.acceleration_curve_accelerations_m_s2[1]
+	loaded_car.handling.acceleration_curve_accelerations_m_s2[1] = 123.0
+	_assert_detects_alteration(
+		driver, original, loaded_car.handling, "altered referenced handling curve"
+	)
+	loaded_car.handling.acceleration_curve_accelerations_m_s2[1] = acceleration_before
+
+
+func _assert_detects_alteration(
+	driver: DataLabDriver,
+	original: HandlingDefinition,
+	altered: HandlingDefinition,
+	label: String
+) -> void:
+	var checks_before := driver.checks
+	var failures_before := driver.failures.size()
+	_assert_same_handling(driver, original, altered)
+	var detected := driver.failures.size() > failures_before
+	# The expected mismatch diagnostics are consumed by the control itself.
+	driver.failures.resize(failures_before)
+	driver.checks = checks_before
+	driver.check(detected, "%s is detected by the referenced handling comparison" % label)
 
 
 func _assert_same_handling(driver, expected: HandlingDefinition, actual: HandlingDefinition) -> void:
@@ -383,7 +463,9 @@ func _assert_same_car(driver, expected: CarDefinition, actual: CarDefinition) ->
 			expected.deferred_fields[index],
 			"round trip deferred field %d" % index
 		)
-	driver.check(actual.handling is HandlingDefinition, "round trip embedded handling type")
+	driver.check(
+		actual.handling is HandlingDefinition, "round trip referenced handling type"
+	)
 
 
 func _check_optional_number(driver, actual: Variant, expected: Variant, label: String) -> void:
@@ -429,6 +511,41 @@ func _case_malformed_identity_controls(driver: DataLabDriver) -> void:
 		"revision: malformed '01.0.0'", zero_revision.validate(), "leading-zero revision"
 	)
 
+	# Whole-string matching: `$` may stop before a final line feed, so the
+	# validator must reject IDs/revisions carrying one rather than embed it in
+	# identity_key(). These are grammar checks, not loosened stable-ID rules.
+	driver.check(
+		not IdentityScript.is_valid_definition_id("car.comet\n"),
+		"stable ID grammar rejects a trailing newline"
+	)
+	driver.check(
+		not IdentityScript.is_valid_definition_id("car.comet "),
+		"stable ID grammar rejects a trailing space"
+	)
+	driver.check(
+		not IdentityScript.is_valid_definition_id("car.comet suffix"),
+		"stable ID grammar rejects a trailing suffix"
+	)
+	driver.check(
+		not IdentityScript.is_valid_revision("1.0.0\n"),
+		"revision grammar rejects a trailing newline"
+	)
+	driver.check(
+		not IdentityScript.is_valid_revision("v1.0.0"),
+		"revision grammar rejects a non-numeric prefix"
+	)
+
+	var newline_id := driver.valid_car()
+	newline_id.definition_id = "car.comet\n"
+	driver.expect_diagnostic(
+		"definition_id: malformed", newline_id.validate(), "ID with a trailing newline"
+	)
+	var newline_revision := driver.valid_car()
+	newline_revision.revision = "1.0.0\n"
+	driver.expect_diagnostic(
+		"revision: malformed", newline_revision.validate(), "revision with a trailing newline"
+	)
+
 	var no_display := driver.valid_car()
 	no_display.display_name = ""
 	driver.expect_diagnostic(
@@ -440,7 +557,7 @@ func _case_malformed_identity_controls(driver: DataLabDriver) -> void:
 	var bad_handling_id := driver.valid_car()
 	bad_handling_id.handling.definition_id = "Bad Handling"
 	driver.expect_diagnostic(
-		"definition_id: malformed 'Bad Handling'",
+		"handling.definition_id: malformed 'Bad Handling'",
 		bad_handling_id.validate(),
 		"referenced handling with a malformed ID"
 	)
@@ -449,7 +566,7 @@ func _case_malformed_identity_controls(driver: DataLabDriver) -> void:
 	var bad_handling_version := driver.valid_car()
 	bad_handling_version.handling.schema_version = "9.9.9"
 	driver.expect_diagnostic(
-		"schema_version: unsupported '9.9.9'",
+		"handling.schema_version: unsupported '9.9.9'",
 		bad_handling_version.validate(),
 		"referenced handling with an unsupported schema version"
 	)
@@ -458,7 +575,7 @@ func _case_malformed_identity_controls(driver: DataLabDriver) -> void:
 	var bad_handling_revision := driver.valid_car()
 	bad_handling_revision.handling.revision = "1.0"
 	driver.expect_diagnostic(
-		"revision: malformed '1.0'",
+		"handling.revision: malformed '1.0'",
 		bad_handling_revision.validate(),
 		"referenced handling with a malformed revision"
 	)
@@ -748,7 +865,7 @@ func _case_completeness_semantics(driver: DataLabDriver) -> void:
 	var empty_entry := driver.valid_car()
 	empty_entry.deferred_fields = PackedStringArray([""])
 	driver.expect_diagnostic(
-		"deferred_fields[0]: empty entry",
+		"deferred_fields: blank or whitespace-only entry at index 0",
 		empty_entry.validate(),
 		"blank deferred-field entry"
 	)
@@ -772,12 +889,398 @@ func _case_completeness_semantics(driver: DataLabDriver) -> void:
 	driver.check(not false_complete.is_complete(), "false COMPLETE never reports completion")
 
 
-func _cleanup_roundtrip_files() -> void:
-	var directory := DirAccess.open("res://")
-	if directory == null:
+func _case_enum_domain_controls(driver: DataLabDriver) -> void:
+	var bad_status := driver.valid_car()
+	bad_status.status = 99
+	driver.expect_diagnostic(
+		"status: out-of-range value 99", bad_status.validate(), "out-of-range status"
+	)
+	driver.check(not bad_status.is_valid(), "out-of-range status is invalid")
+	driver.check_eq(bad_status.status_name(), "INVALID", "invalid status_name stays safe")
+
+	var negative_status := driver.valid_car()
+	negative_status.status = -1
+	driver.expect_diagnostic(
+		"status: out-of-range value -1", negative_status.validate(), "negative status"
+	)
+	driver.check_eq(negative_status.status_name(), "INVALID", "negative status_name stays safe")
+
+	var past_last_status := driver.valid_car()
+	past_last_status.status = IdentityScript.Status.size()
+	driver.expect_diagnostic(
+		"status: out-of-range value 5", past_last_status.validate(), "status past the last member"
+	)
+
+	# The base identity validator owns status for every subclass.
+	var bad_handling_status := driver.valid_handling()
+	bad_handling_status.status = 99
+	driver.expect_diagnostic(
+		"status: out-of-range value 99",
+		bad_handling_status.validate(),
+		"handling with out-of-range status"
+	)
+	driver.check(not bad_handling_status.is_valid(), "handling with out-of-range status is invalid")
+
+	var bad_shape := driver.valid_car()
+	bad_shape.contact_proxy_shape = 99
+	driver.expect_diagnostic(
+		"contact_proxy_shape: out-of-range value 99",
+		bad_shape.validate(),
+		"out-of-range contact proxy shape"
+	)
+	driver.check(not bad_shape.is_valid(), "out-of-range contact proxy shape is invalid")
+
+	var negative_shape := driver.valid_car()
+	negative_shape.contact_proxy_shape = -1
+	driver.expect_diagnostic(
+		"contact_proxy_shape: out-of-range value -1",
+		negative_shape.validate(),
+		"negative contact proxy shape"
+	)
+
+	var bad_completeness := driver.valid_car()
+	bad_completeness.completeness = 99
+	driver.expect_diagnostic(
+		"completeness: out-of-range value 99",
+		bad_completeness.validate(),
+		"out-of-range completeness"
+	)
+	driver.check(not bad_completeness.is_valid(), "out-of-range completeness is invalid")
+	driver.check(
+		not bad_completeness.is_complete(), "out-of-range completeness never claims completion"
+	)
+
+	var negative_completeness := driver.valid_car()
+	negative_completeness.completeness = -1
+	driver.expect_diagnostic(
+		"completeness: out-of-range value -1",
+		negative_completeness.validate(),
+		"negative completeness"
+	)
+
+	# Malformed serialized input: a hand-authored `.tres` carrying
+	# out-of-range integer enum values must load and be rejected.
+	var scratch := _reserve_scratch_dir()
+	driver.check(scratch != "", "unique scratch directory reserved for malformed .tres input")
+	if scratch != "":
+		var bad_path := scratch.path_join("bad_enum.tres")
+		driver.check(_write_text_file(bad_path, _bad_enum_tres()), "malformed .tres fixture written")
+		var loaded = ResourceLoader.load(bad_path, "", ResourceLoader.CACHE_MODE_IGNORE)
+		driver.check(loaded is CarDefinition, "malformed .tres loads as a CarDefinition")
+		if loaded is CarDefinition:
+			driver.check_eq(
+				loaded.status, 99, "serialized status preserves the authored out-of-range value"
+			)
+			driver.check_eq(
+				loaded.contact_proxy_shape,
+				99,
+				"serialized shape preserves the authored out-of-range value"
+			)
+			driver.check_eq(
+				loaded.completeness,
+				99,
+				"serialized completeness preserves the authored out-of-range value"
+			)
+			driver.expect_diagnostic(
+				"status: out-of-range value 99", loaded.validate(), "serialized out-of-range status"
+			)
+			driver.expect_diagnostic(
+				"contact_proxy_shape: out-of-range value 99",
+				loaded.validate(),
+				"serialized out-of-range contact shape"
+			)
+			driver.expect_diagnostic(
+				"completeness: out-of-range value 99",
+				loaded.validate(),
+				"serialized out-of-range completeness"
+			)
+			driver.check(not loaded.is_valid(), "serialized out-of-range enums are invalid")
+			driver.check_eq(loaded.status_name(), "INVALID", "serialized invalid status_name stays safe")
+		_cleanup_scratch_dirs()
+
+
+func _bad_enum_tres() -> String:
+	var lines := PackedStringArray([
+		"[gd_resource type=\"Resource\" script_class=\"CarDefinition\" load_steps=2 format=3]",
+		"",
+		"[ext_resource type=\"Script\" path=\"res://src/data/car_definition.gd\" id=\"1\"]",
+		"",
+		"[resource]",
+		"script = ExtResource(\"1\")",
+		"schema_version = \"1.0.0\"",
+		"definition_id = \"example.data_lab.bad_enum\"",
+		"revision = \"0.1.0\"",
+		"display_name = \"Data Lab Bad Enum\"",
+		"status = 99",
+		"length_m = 4.2",
+		"width_m = 1.9",
+		"height_m = 1.3",
+		"mass_kg = 1250.0",
+		"contact_proxy_shape = 99",
+		"completeness = 99",
+	])
+	return "\n".join(lines) + "\n"
+
+
+func _case_handling_diagnostic_attribution(driver: DataLabDriver) -> void:
+	# The car and its referenced handling can carry the same bad ID; the two
+	# diagnostics must remain distinguishable by field path.
+	var shared_bad_id := driver.valid_car()
+	shared_bad_id.definition_id = "Bad Shared"
+	shared_bad_id.handling.definition_id = "Bad Shared"
+	var shared_diagnostics := shared_bad_id.validate()
+	driver.expect_diagnostic(
+		"definition_id: malformed 'Bad Shared'",
+		shared_diagnostics,
+		"car's own shared bad ID"
+	)
+	driver.expect_diagnostic(
+		"handling.definition_id: malformed 'Bad Shared'",
+		shared_diagnostics,
+		"referenced handling's shared bad ID"
+	)
+	var own_identity := 0
+	var nested_identity := 0
+	for entry in shared_diagnostics:
+		if entry.begins_with("handling.definition_id:"):
+			nested_identity += 1
+		elif entry.begins_with("definition_id:"):
+			own_identity += 1
+	driver.check_eq(own_identity, 1, "exactly one car-level identity diagnostic")
+	driver.check_eq(nested_identity, 1, "exactly one handling-level identity diagnostic")
+
+	var bad_status := driver.valid_car()
+	bad_status.handling.status = 99
+	driver.expect_diagnostic(
+		"handling.status: out-of-range value 99",
+		bad_status.validate(),
+		"referenced handling status attribution"
+	)
+
+	var no_display := driver.valid_car()
+	no_display.handling.display_name = ""
+	driver.expect_diagnostic(
+		"handling.display_name: empty",
+		no_display.validate(),
+		"referenced handling display-name attribution"
+	)
+
+	var bad_schema := driver.valid_car()
+	bad_schema.handling.schema_version = "9.9.9"
+	driver.expect_diagnostic(
+		"handling.schema_version: unsupported '9.9.9'",
+		bad_schema.validate(),
+		"referenced handling schema-version attribution"
+	)
+
+	var bad_revision := driver.valid_car()
+	bad_revision.handling.revision = "1.0"
+	driver.expect_diagnostic(
+		"handling.revision: malformed '1.0'",
+		bad_revision.validate(),
+		"referenced handling revision attribution"
+	)
+
+	# Physical handling diagnostics already carry the prefix; they pass through
+	# exactly once rather than being doubled.
+	var negative_braking := driver.valid_car()
+	negative_braking.handling.braking_acceleration_m_s2 = -1.0
+	var physical := negative_braking.validate()
+	driver.expect_diagnostic(
+		"handling.braking_acceleration_m_s2: negative",
+		physical,
+		"referenced handling physical diagnostic"
+	)
+	var physical_count := 0
+	for entry in physical:
+		if "handling.braking_acceleration_m_s2: negative" in entry:
+			physical_count += 1
+	driver.check_eq(physical_count, 1, "physical handling diagnostic is reported exactly once")
+
+
+func _case_deferred_fields_declaration(driver: DataLabDriver) -> void:
+	var arbitrary := driver.valid_car()
+	arbitrary.deferred_fields = PackedStringArray(["todo"])
+	driver.expect_diagnostic(
+		"deferred_fields: missing 13 required DEFERRED_FIELDS_V1 path(s)",
+		arbitrary.validate(),
+		"arbitrary deferred list"
+	)
+	driver.check(not arbitrary.is_valid(), "arbitrary deferred list is invalid")
+
+	var missing_one: PackedStringArray = []
+	for index in range(CarScript.DEFERRED_FIELDS_V1.size() - 1):
+		missing_one.append(CarScript.DEFERRED_FIELDS_V1[index])
+	var missing := driver.valid_car()
+	missing.deferred_fields = missing_one
+	driver.expect_diagnostic(
+		"deferred_fields: missing 1 required DEFERRED_FIELDS_V1 path(s): handling.surfaces",
+		missing.validate(),
+		"one-field-missing deferred list"
+	)
+
+	var duplicate := driver.valid_car()
+	var duplicate_fields: PackedStringArray = duplicate.deferred_fields.duplicate()
+	duplicate_fields.append(duplicate_fields[0])
+	duplicate.deferred_fields = duplicate_fields
+	driver.expect_diagnostic(
+		"deferred_fields: duplicate entry 'presentation.mesh_id'",
+		duplicate.validate(),
+		"duplicate deferred entry"
+	)
+
+	# Full required declaration plus two malformed extras: both blank forms
+	# must be refused while the nonblank future extension still validates.
+	var blank := driver.valid_car()
+	var blank_fields: PackedStringArray = blank.deferred_fields.duplicate()
+	blank_fields.append("")
+	blank_fields.append("   \t")
+	blank.deferred_fields = blank_fields
+	driver.expect_diagnostic(
+		"deferred_fields: blank or whitespace-only entry at index 13",
+		blank.validate(),
+		"empty deferred entry"
+	)
+	driver.expect_diagnostic(
+		"deferred_fields: blank or whitespace-only entry at index 14",
+		blank.validate(),
+		"whitespace-only deferred entry"
+	)
+	driver.check(not blank.is_valid(), "blank deferred entries are refused")
+
+	var full := driver.valid_car()
+	driver.check(full.is_valid(), "full v1 deferred declaration validates")
+	driver.check_eq(
+		full.deferred_fields.size(),
+		CarScript.DEFERRED_FIELDS_V1.size(),
+		"full declaration keeps every v1 path"
+	)
+
+	var extended := driver.valid_car()
+	var extended_fields: PackedStringArray = extended.deferred_fields.duplicate()
+	extended_fields.append("future.slice.field")
+	extended.deferred_fields = extended_fields
+	driver.check(
+		extended.is_valid(), "full declaration plus a later-slice gap validates"
+	)
+
+
+func _case_scratch_reservation_control(driver: DataLabDriver) -> void:
+	# This validator is read-only at the legacy fixed basenames. The shell
+	# runner populates distinct sentinels in its own fresh private stage before
+	# this case runs; a direct execution without externally prepopulated
+	# sentinels must fail here rather than silently claim preservation coverage.
+	var handling_present := FileAccess.file_exists(LEGACY_ROUNDTRIP_HANDLING_PATH)
+	var car_present := FileAccess.file_exists(LEGACY_ROUNDTRIP_CAR_PATH)
+	driver.check(handling_present, "preexisting handling sentinel is present at the fixed path")
+	driver.check(car_present, "preexisting car sentinel is present at the fixed path")
+	if not handling_present or not car_present:
 		return
-	directory.remove(ROUND_TRIP_HANDLING_PATH.get_file())
-	directory.remove(ROUND_TRIP_CAR_PATH.get_file())
+	var expected_handling := _read_bytes(LEGACY_ROUNDTRIP_HANDLING_PATH)
+	var expected_car := _read_bytes(LEGACY_ROUNDTRIP_CAR_PATH)
+
+	var first := _reserve_scratch_dir()
+	driver.check(first != "", "first unique scratch reservation succeeds")
+	var second := _reserve_scratch_dir()
+	driver.check(
+		second != "" and second != first,
+		"each validator run reserves a distinct scratch directory"
+	)
+	# Put a file inside the first reservation: cleanup must remove the
+	# reservation including its contents, never the fixed basenames.
+	if first != "":
+		var owned_file := first.path_join("owned.txt")
+		var writer := FileAccess.open(owned_file, FileAccess.WRITE)
+		if writer != null:
+			writer.store_string("reserved scratch content")
+			writer.close()
+		driver.check(
+			FileAccess.file_exists(owned_file),
+			"reservation owns its scratch content"
+		)
+
+	_cleanup_scratch_dirs()
+	for path in [first, second]:
+		if path != "":
+			driver.check(
+				not DirAccess.dir_exists_absolute(path),
+				"cleanup removes only reserved scratch %s" % path.get_file()
+			)
+
+	var actual_handling := _read_bytes(LEGACY_ROUNDTRIP_HANDLING_PATH)
+	var actual_car := _read_bytes(LEGACY_ROUNDTRIP_CAR_PATH)
+	driver.check(
+		actual_handling == expected_handling,
+		"fixed handling roundtrip path stays byte-identical (actual %d bytes, expected %d)"
+		% [actual_handling.size(), expected_handling.size()]
+	)
+	driver.check(
+		actual_car == expected_car,
+		"fixed car roundtrip path stays byte-identical (actual %d bytes, expected %d)"
+		% [actual_car.size(), expected_car.size()]
+	)
+
+
+## Atomically reserve a fresh scratch directory under res://. The mkdir either
+## creates exactly this run's directory or fails, so ownership never depends
+## on a preexisting path.
+func _reserve_scratch_dir() -> String:
+	var stamp := int(Time.get_unix_time_from_system())
+	var ticks := Time.get_ticks_usec()
+	var pid := OS.get_process_id()
+	for attempt in range(10000):
+		var candidate := "%s%d_%d_%d_%d" % [SCRATCH_DIR_PREFIX, stamp, ticks, pid, attempt]
+		var err := DirAccess.make_dir_absolute(candidate)
+		if err == OK:
+			_scratch_dirs.append(candidate)
+			return candidate
+		if err != ERR_ALREADY_EXISTS:
+			printerr("data lab: scratch reservation failed with error %d" % err)
+			return ""
+	printerr("data lab: could not reserve a unique scratch directory")
+	return ""
+
+
+## Remove exactly the directories this run reserved, and nothing else.
+func _cleanup_scratch_dirs() -> void:
+	for path in _scratch_dirs:
+		_remove_directory_tree(path)
+	_scratch_dirs.clear()
+
+
+func _remove_directory_tree(path: String) -> void:
+	var access := DirAccess.open(path)
+	if access == null:
+		DirAccess.remove_absolute(path)
+		return
+	access.list_dir_begin()
+	var name := access.get_next()
+	while name != "":
+		if name != "." and name != "..":
+			var child := path.path_join(name)
+			if access.current_is_dir():
+				_remove_directory_tree(child)
+			else:
+				DirAccess.remove_absolute(child)
+		name = access.get_next()
+	access.list_dir_end()
+	access = null
+	DirAccess.remove_absolute(path)
+
+
+func _read_bytes(path: String) -> PackedByteArray:
+	if not FileAccess.file_exists(path):
+		return PackedByteArray()
+	return FileAccess.get_file_as_bytes(path)
+
+
+func _write_text_file(path: String, text: String) -> bool:
+	var file := FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		return false
+	file.store_string(text)
+	file.close()
+	return true
 
 
 func _case_curve_accessor_safety(driver) -> void:

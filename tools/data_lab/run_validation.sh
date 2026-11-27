@@ -302,6 +302,28 @@ if grep -nE "$error_re" "$IMPORT_LOG"; then
 	exit 1
 fi
 
+# Populate distinct sentinel files at the legacy fixed basenames inside this
+# runner's own freshly reserved private stage, before the validator observes
+# them. The stage is new (mktemp or an atomic mkdir), so an unexpected file
+# means staging copied one; noclobber redirection closes any check-to-write
+# race. The validator itself never opens these paths for write or removes them.
+for _sentinel_name in data_lab_handling_roundtrip.tres data_lab_car_roundtrip.tres; do
+	if [ -e "$PRIVATE_CANON/$_sentinel_name" ] || [ -L "$PRIVATE_CANON/$_sentinel_name" ]; then
+		echo "FAIL: fresh stage unexpectedly contains $_sentinel_name" >&2
+		exit 2
+	fi
+done
+if (
+	set -C
+	printf 'ROADSTORM-DATA-LAB-SENTINEL handling 3c1f\n' >"$PRIVATE_CANON/data_lab_handling_roundtrip.tres" &&
+	printf 'ROADSTORM-DATA-LAB-SENTINEL car 9a72\n' >"$PRIVATE_CANON/data_lab_car_roundtrip.tres"
+); then
+	:
+else
+	echo "FAIL: cannot exclusively create round-trip sentinels in the private stage" >&2
+	exit 2
+fi
+
 echo "[data-lab] running validator (case: $CASE_ID)"
 : >"$MAIN_LOG"
 run_bounded "$TIMEOUT" "$MAIN_LOG" env \

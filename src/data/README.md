@@ -28,11 +28,17 @@ closure claim beyond the typed resource contracts below.
 - `definition_id` follows `schemas/common.schema.json#/$defs/stable_id`:
   `^[a-z][a-z0-9_]*(?:\.[a-z0-9_-]+)*$`. IDs are semantic and must not be
   renamed when a display name changes.
-- `revision` is `MAJOR.MINOR.PATCH` with no leading zeros, matching the source
-  schemas. Ordering/comparison belongs to the recipe/review layer.
+- `revision` is `MAJOR.MINOR.PATCH` with no leading zeros. This typed-resource
+  requirement is deliberately stricter than `schemas/handling_config.schema.json`,
+  whose source `revision` is any nonempty string; a future baker must reject a
+  non-triplet revision with an explicit diagnostic instead of rewriting it.
+  Ordering/comparison belongs to the recipe/review layer.
 - `display_name` must be non-empty.
-- `status` uses the schema vocabulary: `PROVISIONAL`, `MEASURED`, `FROZEN`,
-  `SUPERSEDED`, `EXAMPLE`.
+- `status` uses the typed uppercase vocabulary: `PROVISIONAL`, `MEASURED`,
+  `FROZEN`, `SUPERSEDED`, `EXAMPLE`. The source schema spells the same five
+  lifecycle states in lowercase (`provisional|measured|frozen|superseded|
+  example`); the mapping is one-to-one after validation, and an out-of-domain
+  integer-backed value is rejected.
 - `identity_key()` renders `schema_version/definition_id@revision` for logs.
   It is not a content hash. Recipe-level `content_hash`/`provenance` remain at
   the authored source-recipe layer and are deliberately not invented here.
@@ -128,7 +134,7 @@ the axle midpoint. Limits are the initial envelopes from
 | `mass_kg` | finite `> 0`; intact mass unaffected by cosmetic damage |
 | `contact_proxy_shape` | `ROUNDED_BOX` or `CONVEX_HULL`, derived from declared dimensions |
 | `contact_roof`, `contact_underside` | string description or `null` (undetermined); wrong types are diagnosed |
-| `handling` | typed `HandlingDefinition`; missing/null is invalid, present handling diagnostics are included verbatim |
+| `handling` | typed `HandlingDefinition`; missing/null is invalid, its full diagnostics are included with identity paths prefixed `handling.` and physical paths passed through once |
 
 Optional dimension fields use `null` rather than a fake zero so a draft can be
 honest about undetermined values. Contact geometry is always the simplified
@@ -139,12 +145,19 @@ hull derived from these dimensions; rendering detail cannot change it.
 `completeness` is distinct from lifecycle `status`:
 
 - `DRAFT`: early structural placeholder; requires a non-blank
-  `completeness_note` and a non-empty `deferred_fields` list.
+  `completeness_note` and a complete `deferred_fields` declaration.
 - `INCOMPLETE`: some authored fields, declared gaps; same note/list rules.
 - `COMPLETE`: reserved for a later full-car definition. This partial slice
   cannot represent `DEFERRED_FIELDS_V1`, so it always refuses `COMPLETE`, even
   when `deferred_fields` is cleared. A `COMPLETE` record therefore never
   validates; a later full-car definition owns closing that claim.
+
+While `DEFERRED_FIELDS_V1` exists, a `DRAFT` or `INCOMPLETE` declaration must
+name every listed v1 path exactly once; blank and duplicate entries are
+diagnosed. Entries for fields introduced by later slices may be added, but the
+known v1 set cannot be silently omitted, so `["todo"]` does not validate.
+Out-of-domain integer-backed `completeness` values are rejected instead of
+falling through the named cases.
 
 `is_complete()` returns true only when `completeness == COMPLETE` **and**
 `validate()` is empty, so an invalid record can never report completion.
@@ -162,14 +175,48 @@ hull derived from these dimensions; rendering detail cannot change it.
 
 A referenced handling is validated with its full `validate()`, not only the
 physical subset, so malformed handling IDs/revisions/schema versions/blank
-display names make the car invalid as well.
+display names/status/out-of-domain values make the car invalid as well.
+Referenced-handling identity diagnostics are prefixed with `handling.`; its
+physical diagnostics already start with `handling.` and pass through once, so a
+shared defect in both records remains attributable to each record.
 
 Every `validate()` returns `Array[String]` diagnostics with dotted field paths;
 `is_valid()` is exactly `validate().is_empty()`. Diagnostics cover malformed
-IDs/revisions/schema versions, missing handling references, nonfinite,
-negative and inconsistent physical values, out-of-envelope dimensions and
+IDs/revisions/schema versions, out-of-domain enum values, missing handling
+references, nonfinite, negative and inconsistent physical values,
+out-of-envelope dimensions, incomplete deferred-field declarations and
 contradictory completeness claims. Validation never clamps, substitutes
 defaults, drops entries or partially repairs authored content.
+
+`HandlingDefinition.validate()` is physical-range and consistency validation of
+the motor-ready core subset. It is **not** proof that a coefficient is measured,
+that provenance/unknowns are resolved, or that the content is production
+complete. Source recipes may legitimately carry `null`/unknown coefficients;
+see the runtime/source mapping below.
+
+## Runtime/source mapping (no importer yet)
+
+`schemas/handling_config.schema.json` is the editable source-recipe contract;
+its nullable coefficients and `unknowns` list preserve values that have not been
+measured. `HandlingDefinition` is a runtime-ready core subset and requires an
+explicit number for every core field used by `ArcadeMotor.MotorTuning`. A future
+baker must refuse to emit a motor-ready `HandlingDefinition` when a required
+source coefficient is `null` or listed as unknown, report the missing paths and
+preserve the source `null`/`unknowns`; it must never silently substitute the
+resource's inert zero. A draft `CarDefinition` can exist for structural editing,
+but its validation alone does not authorize a motor, a measured status or
+product-complete content.
+
+For this first runtime mapping the nested source `handling` has no independent
+identity: derive `HandlingDefinition.definition_id` as `<car_id>.handling` and
+copy the car recipe's `schema_version`, `revision` and lifecycle `status`. The
+car's typed `handling` reference points to that derived identity, so changing a
+car's inline handling requires a car revision change. A future reusable handling
+recipe needs its own versioned contract and must not invent an identity from a
+display name. No importer is implemented in this slice.
+
+The overall authoring unit for angles is degrees; `max_yaw_rate_rad_s` is an
+explicit field-level rad/s exception required by the motor.
 
 ## Explicitly deferred work
 

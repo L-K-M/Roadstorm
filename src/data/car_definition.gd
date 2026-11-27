@@ -82,14 +82,22 @@ const DEFERRED_FIELDS_V1 := [
 
 func validate_car() -> Array[String]:
 	var diagnostics := validate_identity()
+	# The exported enum is integer-backed, so a direct assignment or malformed
+	# `.tres` can hold an out-of-domain value that is not one of the named cases.
+	if not ContactProxyShape.values().has(contact_proxy_shape):
+		diagnostics.append(
+			"contact_proxy_shape: out-of-range value %s; expected one of %s"
+			% [str(contact_proxy_shape), DefinitionIdentity._enum_value_names(ContactProxyShape)]
+		)
 	diagnostics.append_array(_validate_dimensions())
 	if handling == null:
 		diagnostics.append("handling: missing typed handling reference")
 	else:
 		# Full handling validation, not only its physical subset: identity,
-		# schema version, revision and display name defects in a referenced
-		# handling make the car invalid too.
-		diagnostics.append_array(handling.validate())
+		# schema version, revision, display name and status defects in a
+		# referenced handling make the car invalid too, and stay attributed to
+		# the handling instead of duplicating the car's own identity paths.
+		diagnostics.append_array(_referenced_handling_diagnostics(handling))
 	diagnostics.append_array(_validate_completeness())
 	return diagnostics
 
@@ -157,7 +165,12 @@ func _validate_dimensions() -> Array[String]:
 
 func _validate_completeness() -> Array[String]:
 	var diagnostics: Array[String] = []
-	if completeness == Completeness.DRAFT or completeness == Completeness.INCOMPLETE:
+	if not Completeness.values().has(completeness):
+		diagnostics.append(
+			"completeness: out-of-range value %s; expected one of %s"
+			% [str(completeness), DefinitionIdentity._enum_value_names(Completeness)]
+		)
+	elif completeness == Completeness.DRAFT or completeness == Completeness.INCOMPLETE:
 		if completeness_note.strip_edges().is_empty():
 			diagnostics.append(
 				"completeness_note: required when completeness is draft or incomplete"
@@ -166,7 +179,9 @@ func _validate_completeness() -> Array[String]:
 			diagnostics.append(
 				"deferred_fields: required when completeness is draft or incomplete"
 			)
-	elif completeness == Completeness.COMPLETE:
+		else:
+			diagnostics.append_array(_validate_deferred_declaration())
+	else:
 		diagnostics.append(
 			"completeness: COMPLETE cannot be claimed by this M0.2 partial slice; "
 			+ "DEFERRED_FIELDS_V1 are not yet representable"
@@ -175,9 +190,50 @@ func _validate_completeness() -> Array[String]:
 			diagnostics.append(
 				"deferred_fields: empty required when completeness is complete"
 			)
+	return diagnostics
+
+
+## Prefix the referenced handling's identity diagnostics with `handling.`.
+## Its physical diagnostics already start with `handling.` and pass through
+## unchanged, so a bad handling field can never be mistaken for the car's own
+## field when both records carry the same defect.
+func _referenced_handling_diagnostics(handling: HandlingDefinition) -> Array[String]:
+	var diagnostics: Array[String] = []
+	for entry in handling.validate():
+		if entry.begins_with("handling."):
+			diagnostics.append(entry)
+		else:
+			diagnostics.append("handling.%s" % entry)
+	return diagnostics
+
+
+## A draft or incomplete declaration must account for every known v1 deferred
+## path exactly once. Blank or whitespace-only entries are malformed rather
+## than ignorable. Entries for fields introduced by later slices may be added,
+## but the declared v1 set cannot be silently omitted or repeated.
+func _validate_deferred_declaration() -> Array[String]:
+	var diagnostics: Array[String] = []
+	var declared := {}
 	for index in range(deferred_fields.size()):
-		if String(deferred_fields[index]).strip_edges().is_empty():
-			diagnostics.append("deferred_fields[%d]: empty entry" % index)
+		var path := String(deferred_fields[index]).strip_edges()
+		if path.is_empty():
+			diagnostics.append(
+				"deferred_fields: blank or whitespace-only entry at index %d" % index
+			)
+			continue
+		if declared.has(path):
+			diagnostics.append("deferred_fields: duplicate entry '%s'" % path)
+		else:
+			declared[path] = true
+	var missing: Array[String] = []
+	for path in DEFERRED_FIELDS_V1:
+		if not declared.has(path):
+			missing.append(path)
+	if not missing.is_empty():
+		diagnostics.append(
+			"deferred_fields: missing %d required DEFERRED_FIELDS_V1 path(s): %s"
+			% [missing.size(), ", ".join(PackedStringArray(missing))]
+		)
 	return diagnostics
 
 

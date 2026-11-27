@@ -18,11 +18,15 @@ enum Status { PROVISIONAL, MEASURED, FROZEN, SUPERSEDED, EXAMPLE }
 const SUPPORTED_SCHEMA_VERSION := "1.0.0"
 
 ## Same grammar as common.schema.json `stable_id`: one lowercase leading
-## segment followed by dot-separated segments.
+## segment followed by dot-separated segments. Validation applies it as a
+## whole-string match; the pattern itself stays aligned with the JSON schema,
+## whose regex-engine `$` handling of a final line feed varies by validator.
 const DEFINITION_ID_PATTERN := "^[a-z][a-z0-9_]*(?:\\.[a-z0-9_-]+)*$"
 
 ## Major.minor.patch with no leading zeros; semantic ordering is the recipe
-## layer's concern, not this slice's.
+## layer's concern, not this slice's. This typed-resource requirement is stricter
+## than schemas/handling_config.schema.json, whose source `revision` is any
+## nonempty string; the runtime vocabulary is the numeric triplet above.
 const REVISION_PATTERN := "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
 
 ## Documented units and local frame from docs/TECHNICAL_DESIGN.md
@@ -64,6 +68,11 @@ func validate_identity() -> Array[String]:
 			"revision: malformed '%s' (expected MAJOR.MINOR.PATCH without leading zeros)"
 			% revision
 		)
+	if not Status.values().has(status):
+		diagnostics.append(
+			"status: out-of-range value %s; expected one of %s"
+			% [str(status), _enum_value_names(Status)]
+		)
 	if display_name.is_empty():
 		diagnostics.append("display_name: empty")
 	return diagnostics
@@ -82,8 +91,16 @@ func identity_key() -> String:
 	return "%s/%s@%s" % [schema_version, definition_id, revision]
 
 
+## Lifecycle name for logs. An integer-backed enum can hold an out-of-domain
+## value through direct assignment or a malformed `.tres`; this stays total and
+## reports INVALID rather than indexing outside `Status.keys()`. The typed
+## uppercase names intentionally differ from the lowercase JSON vocabulary
+## (`provisional|measured|frozen|superseded|example`); see schemas.
 func status_name() -> String:
-	return Status.keys()[status]
+	var names := Status.keys()
+	if status < 0 or status >= names.size():
+		return "INVALID"
+	return names[status]
 
 
 func documented_units() -> Dictionary:
@@ -111,7 +128,20 @@ static func is_valid_revision(value: String) -> bool:
 	return _matches(REVISION_PATTERN, value)
 
 
+## Require a match that spans the entire value. A bare `search()` would accept
+## a prefix when `$` stops before a final line feed (`"car.comet\n"`), letting
+## malformed identities enter `identity_key()` verbatim.
 static func _matches(pattern: String, value: String) -> bool:
 	if value.is_empty():
 		return false
-	return RegEx.create_from_string(pattern).search(value) != null
+	for match in RegEx.create_from_string(pattern).search_all(value):
+		if match.get_start() == 0 and match.get_end() == value.length():
+			return true
+	return false
+
+
+static func _enum_value_names(values: Dictionary) -> String:
+	var names: PackedStringArray = []
+	for key in values.keys():
+		names.append(String(key))
+	return ", ".join(names)
