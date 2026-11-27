@@ -154,15 +154,17 @@ repeat the signature verification.
 The four pinned artifacts fall into two classes, and the distinction matters:
 
 * **Source archives** — `Python-3.15.2.tgz` and `Python-3.15.2.tar.xz` are the
-  upstream source of record. Matching them authenticates the source bytes. A
-  Linux x86-64 target has no publisher binary; it would be built from the
-  source tarball, and the resulting binary digest cannot be compared with any
-  publisher digest.
+  upstream source of record. A digest match establishes agreement with the
+  published digest; the separately recorded Sigstore verification of their
+  bundles is what authenticates the publisher. A Linux x86-64 target has no
+  publisher binary; it would be built from the source tarball, and the
+  resulting binary digest cannot be compared with any publisher digest.
 * **Target installers** — `python-3.15.2-macos11.pkg` (macOS universal2) and
   `python-3.15.2-amd64.exe` (Windows x86-64) are separate built binaries.
-  Digest-matching and Sigstore-verifying them authenticates those installer
-  bytes only. They do not make another build from the same source the same
-  bytes, and they say nothing about the Homebrew interpreter on this host.
+  Sigstore-verifying them authenticates those installer bytes only; a digest
+  match alone establishes agreement with the published digest. They do not
+  make another build from the same source the same bytes, and they say nothing
+  about the Homebrew interpreter on this host.
 
 ## The proposed pin and why
 
@@ -207,7 +209,7 @@ These are different claims and the pin keeps them apart:
 | --- | --- |
 | Official python.org artifact bytes match the published digest | Established for all four pinned artifacts on 2026-11-27 |
 | Those artifact bytes verify against `hugo@python.org` / GitHub OIDC via Sigstore | Established for all four pinned artifacts on 2026-11-27 |
-| A `--archive` file given to `verify.sh` matches the published digest | Checked per run; digest comparison only, not signature verification |
+| A `--archive` file given to `verify.sh` matches the published digest recorded in `pin/python.txt` | Checked per run against that recorded value; digest comparison only, not a live release-page fetch or signature verification |
 | The installed interpreter is authenticated by any of the above | **No.** Installed interpreters are local builds; `pin/python.txt` records `installed_interpreter_publisher_authenticated=no` |
 
 * **Authenticated publisher artifacts** — the four official python.org files
@@ -217,13 +219,35 @@ These are different claims and the pin keeps them apart:
   2026-11-27; layer (a) ties the bytes to a published value, layer (b) ties
   the publication to the release manager.
 * **Installed interpreter** — any local build (Homebrew 3.15.2 on this host).
-  `verify.sh` checks its version string and its local digest. That detects
-  version drift and local file change. It says nothing about python.org bytes
-  and is never reported as verification.
+  `verify.sh` checks its version string and, for the build at the path recorded
+  in `pin/checksums.txt`, compares its local digest; that detects version drift
+  and local file change for that recorded build. Any other interpreter that
+  merely reports the pinned version is left `NOT RECORDED` for its own path and
+  is not failed against another host's digest. Interpreter probes use `-I`, so
+  a module in the working directory cannot spoof the result. None of this says
+  anything about python.org bytes and none of it is reported as verification.
 
 `verify.sh` prints this distinction on every run under "verification scope",
 and its summary line separates "publisher artifact evidence" from "installed
 binary".
+
+`verify.sh --record <file>` writes observed digests only to a destination that
+does not exist yet. An existing regular file, directory, FIFO/socket/device,
+symlink (including a dangling one), hard link, or exact protected input/pin
+path is refused with exit 2, so recording cannot clobber an archive it just
+checked, the pin metadata, or a local interpreter. Recording reuses only the
+observations made by the checks themselves, so `--no-interpreter` also keeps
+recording from running an interpreter; a failed run may still write a record,
+clearly headed as diagnostic observations rather than a passing result. Record
+entries use the same `local_interpreter_<major><minor>_{sha256,path}` keys as
+`pin/checksums.txt` and store the resolved interpreter path. Unreadable pin or
+digest files fail closed; deliberately empty fields stay `NOT RECORDED`.
+Validation plus exclusive creation narrows the window against a concurrent
+writer but are not a formal race-free guarantee; the precise contract and
+limitation are in `tools/python_pin/README.md`. An `--archive` file whose digest
+mismatches the pinned recorded value gets an explicit note that the pin's
+digest/Sigstore evidence does **not** apply to it; no publisher-authentication
+or Sigstore success is claimed for a mismatching input.
 
 ## Open items (left open, not claimed)
 
@@ -291,7 +315,7 @@ and the rerunnable `final-checks.sh` are in this job's
 | `tools/python_pin/verify.sh --no-interpreter --archive <some-other-file.exe>` | **FAIL** (exit 1): not a pinned artifact. |
 | `tools/python_pin/verify.sh --no-interpreter --archive <missing>/nope.pkg` | **FAIL** (exit 1): archive not found. |
 | Temp copy of `tools/python_pin` with `source_tgzz_sha256` set to a small fresh regular fixture's digest, then zeroed | PASS (exit 0) with the correct expected value; **FAIL** (exit 1) after zeroing it. Proves the comparison uses the recorded expected digest. |
-| `tools/python_pin/verify.sh --no-interpreter --archive <real .tgz> --record <temp>/observed.txt` | PASS (exit 0); wrote only the requested file, with a header marking the digests LOCAL observations and not publisher authentication. Nothing under `tools/python_pin/` was written. |
+| `tools/python_pin/verify.sh --no-interpreter --archive <real .tgz> --record <temp>/observed.txt` | PASS (exit 0); wrote only the requested fresh file, with a header marking the digests LOCAL observations and not publisher authentication. Nothing under `tools/python_pin/` was written. Re-running with the same destination now exits 2 and leaves it unchanged. |
 | Evidence consistency script (`check_evidence.py`) over the pin, the retained bundles and the downloaded artifacts | **OK** (exit 0): all four artifact bytes match the pin's published digests, and all four bundle sha256 values match the pin and the recorded certificate details; identity/issuer fields agree. |
 | Pin structural sanity script | **OK** (exit 0): four artifacts carry file/url/role/sha256/bundle digest; status fields present. |
 | `PATH=<temp without shasum> tools/python_pin/verify.sh --no-interpreter` | exit 2 with "no sha256 utility found"; a check that cannot run is never a pass. |
@@ -311,7 +335,7 @@ tools/python_pin/verify.sh --python <path>  # a specific interpreter
 tools/python_pin/verify.sh --archive <file> # an official artifact vs the
                                             # publisher's published digest
 tools/python_pin/verify.sh --no-interpreter # skip the interpreter check
-tools/python_pin/verify.sh --record out/observed-checksums.txt
+tools/python_pin/verify.sh --record observed-checksums.txt  # destination must not already exist
 ```
 
 Exit codes: `0` passed, `1` a check failed, `2` the command could not run.

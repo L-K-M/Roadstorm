@@ -34,11 +34,34 @@
 #   tools/python_pin/verify.sh --archive <file>...   verify official artifact(s)
 #                                                    against the published SHA-256
 #   tools/python_pin/verify.sh --no-interpreter      skip the interpreter check
-#   tools/python_pin/verify.sh --record <file>       write observed digests to <file>
+#   tools/python_pin/verify.sh --record <file>       create <file> exclusively and write
+#                                                    observed digests there; an existing
+#                                                    target, a link, or a protected input
+#                                                    or pin path is refused
 #   tools/python_pin/verify.sh --quiet               failures and summary only
 #
+# Quoted paths are supported verbatim, including spaces and glob characters:
+#   tools/python_pin/verify.sh --archive "my dir/Python-3.15.2.tgz"
+#
+# Interpreter probes run with -I, so modules in the caller's working directory
+# or PYTHONPATH cannot affect the reported version/build.
+#
+# --no-interpreter skips interpreter execution everywhere, including recording.
+# Recording reuses only observations already made; it never re-probes an
+# interpreter. A --record destination must not exist (any file type, including
+# a symlink or hard link, is refused), so recording cannot overwrite it. That
+# check and the exclusive creation narrow the race with a concurrent writer,
+# but are not an absolute race-free guarantee; see the README. Record entries
+# use the pin/checksums.txt key scheme (local_interpreter_<major><minor>_*) and
+# store the resolved interpreter path. The local-digest drift comparison is
+# scoped to the path recorded there: any other interpreter reporting the pinned
+# version is NOT RECORDED for that path, never failed against another host's
+# digest. --archive compares with the published digest RECORDED in
+# pin/python.txt, and a mismatch produces no publisher/Sigstore success claim.
+#
 # Exit codes: 0 = passed, 1 = a check failed, 2 = the command could not run
-# (missing pin or digest file, no sha256 utility on PATH, or a bad option).
+# (missing pin or digest file, no sha256 utility on PATH, a bad or empty option,
+# or an unsafe --record target).
 # Original project code under the Unlicense.
 
 set -u
@@ -56,7 +79,12 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 NO_INTERPRETER=0
 QUIET=0
 RECORD_FILE=""
-ARCHIVE_FILES=""
+ARCHIVE_FILES=""        # newline-separated; preserves spaces and glob characters
+ARCHIVE_COUNT=0
+OBSERVED_INTERPRETERS="" # newline-separated triples: version, sha256, real path
+OBSERVED_ARCHIVES=""     # newline-separated pairs: file name, observed sha256
+NL='
+'
 
 # ---------------------------------------------------------------------------
 # Output helpers (no colour by default; NO_COLOR is respected)
@@ -82,31 +110,59 @@ usage() {
 	exit "$OK"
 }
 
+# Append one path to a newline-separated list without splitting it.
+append_path() {
+	if [ -z "$1" ]; then
+		printf '%s' "$2"
+	else
+		printf '%s%s%s' "$1" "$NL" "$2"
+	fi
+}
+
+reject_newline() {
+	case "$2" in
+		*"$NL"*) die "$1 must not contain a newline: $2" ;;
+	esac
+}
+
 # ---------------------------------------------------------------------------
 # Pin loading
 # ---------------------------------------------------------------------------
+# The pin and digest files are required. An unreadable file must fail closed,
+# never silently yield an empty value that looks like "not recorded".
 pin_get() {
 	_key="$1"
 	[ -f "$PIN_FILE" ] || return 1
-	sed -n "s/^${_key}=//p" "$PIN_FILE" | tail -n 1
+	_val="$(sed -n "s/^${_key}=//p" "$PIN_FILE")" || return 1
+	printf '%s\n' "$_val" | tail -n 1
 }
 
 digest_get() {
 	_key="$1"
 	[ -f "$DIGEST_FILE" ] || return 1
-	sed -n "s/^${_key}=//p" "$DIGEST_FILE" | tail -n 1
+	_val="$(sed -n "s/^${_key}=//p" "$DIGEST_FILE")" || return 1
+	printf '%s\n' "$_val" | tail -n 1
 }
 
+# Print the lowercase hex sha256 of a regular file, or fail. A failing or
+# missing sha256 utility is returned as failure, not as an empty "success":
+# every caller treats failure as a failed check and nothing is invented.
 sha256_of() {
 	_file="$1"
 	[ -f "$_file" ] || return 1
 	if command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "$_file" | awk '{print $1}'
+		_out="$(shasum -a 256 "$_file" 2>/dev/null)" || return 1
 	elif command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "$_file" | awk '{print $1}'
+		_out="$(sha256sum "$_file" 2>/dev/null)" || return 1
 	else
 		return 1
 	fi
+	_hash="${_out%% *}"
+	[ "${#_hash}" -eq 64 ] || return 1
+	case "$_hash" in
+		*[!0-9a-fA-F]*) return 1 ;;
+	esac
+	printf '%s\n' "$_hash"
 }
 
 # Every digest check depends on a sha256 utility. Without one the verifier
@@ -121,6 +177,10 @@ require_sha256_tool() {
 load_pin() {
 	[ -f "$PIN_FILE" ] || die "missing pin file: $PIN_FILE"
 	[ -f "$DIGEST_FILE" ] || die "missing digest file: $DIGEST_FILE"
+	# An existing but unreadable pin/digest file is not "not recorded": fail
+	# closed instead of letting later lookups silently yield empty values.
+	sed -n '1p' "$PIN_FILE" >/dev/null 2>&1 || die "cannot read pin file: $PIN_FILE"
+	sed -n '1p' "$DIGEST_FILE" >/dev/null 2>&1 || die "cannot read digest file: $DIGEST_FILE"
 
 	PIN_VERSION="$(pin_get version)"
 	PIN_MAJOR="$(pin_get major)"
@@ -149,18 +209,22 @@ load_pin() {
 # ---------------------------------------------------------------------------
 # Interpreter discovery
 # ---------------------------------------------------------------------------
-# Candidate interpreters, most specific first. Deliberately cross-platform:
-# PATH lookups first, then the well-known install locations on macOS, Windows
-# (Git Bash / MSYS paths) and Linux.
-python_candidates() {
+# Call <callback> once per candidate interpreter, most specific first.
+# The callback is invoked in this shell (so its side effects persist) and the
+# path is passed as a single argument, so spaces and glob characters survive.
+# Deliberately cross-platform: PATH lookups first, then the well-known install
+# locations on macOS, Windows (Git Bash / MSYS paths) and Linux.
+for_each_python_candidate() {
+	_cb="$1"
 	if [ -n "$PYTHON_BIN" ]; then
-		printf '%s\n' "$PYTHON_BIN"
+		"$_cb" "$PYTHON_BIN"
 		return 0
 	fi
-	for name in "python$PIN_VERSION" "python$PIN_MAJOR.$PIN_MINOR" python3 python; do
-		command -v "$name" 2>/dev/null
+	for _name in "python$PIN_VERSION" "python$PIN_MAJOR.$PIN_MINOR" python3 python; do
+		_p="$(command -v "$_name" 2>/dev/null)" || continue
+		[ -n "$_p" ] && "$_cb" "$_p"
 	done
-	for path in \
+	for _path in \
 		/usr/bin/python3 \
 		/usr/local/bin/python3 \
 		/opt/homebrew/bin/python3 \
@@ -169,19 +233,42 @@ python_candidates() {
 		"$HOME/.local/share/uv/python/cpython-${PIN_MAJOR}.${PIN_MINOR}"*/bin/python"${PIN_MAJOR}.${PIN_MINOR}" \
 		"$HOME/.pyenv/versions/$PIN_VERSION"/bin/python
 	do
-		[ -e "$path" ] && printf '%s\n' "$path"
+		[ -e "$_path" ] && "$_cb" "$_path"
 	done
 	return 0
 }
 
+consider_candidate() {
+	_py="$1"
+	[ -x "$_py" ] || return 0
+	_FOUND_ANY=1
+	check_interpreter "$_py"
+}
+
+obs_append() {
+	_v="$1"; _s="$2"; _r="$3"
+	[ -n "$OBSERVED_INTERPRETERS" ] && OBSERVED_INTERPRETERS="$OBSERVED_INTERPRETERS$NL"
+	OBSERVED_INTERPRETERS="$OBSERVED_INTERPRETERS$_v$NL$_s$NL$_r"
+}
+
+obs_append_archive() {
+	_n="$1"; _h="$2"
+	[ -n "$OBSERVED_ARCHIVES" ] && OBSERVED_ARCHIVES="$OBSERVED_ARCHIVES$NL"
+	OBSERVED_ARCHIVES="$OBSERVED_ARCHIVES$_n$NL$_h"
+}
+
 # read_version <interpreter> -> prints "X.Y.Z" or nothing.
+# -I isolates the probe: the current directory and PYTHONPATH are not put on
+# sys.path, so a platform.py or sys.py planted in the caller's working
+# directory cannot execute or spoof the reported version. Every targeted
+# CPython (including 3.9.6) supports -I.
 read_version() {
-	"$1" -c 'import platform; print(platform.python_version())' 2>/dev/null
+	"$1" -I -c 'import platform; print(platform.python_version())' 2>/dev/null
 }
 
 # read_build <interpreter> -> prints the sys.version line.
 read_build() {
-	"$1" -c 'import sys; print(sys.version)' 2>/dev/null
+	"$1" -I -c 'import sys; print(sys.version)' 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -189,6 +276,8 @@ read_build() {
 # ---------------------------------------------------------------------------
 SEEN=""
 FOUND_PINNED=0
+OBSERVED_SHA=""
+_FOUND_ANY=0
 
 check_interpreter() {
 	_py="$1"
@@ -216,12 +305,19 @@ check_interpreter() {
 	info "  version:    $_ver"
 	info "  build:      $_build"
 
+	OBSERVED_SHA=""
 	if [ "$_ver" = "$PIN_VERSION" ]; then
 		FOUND_PINNED=1
 		ok "interpreter version matches the pin ($PIN_VERSION)"
 		check_interpreter_digest "$_real" "$_ver"
 	else
 		info "  version does not match the pin ($PIN_VERSION); recorded as present, not compared"
+		# Still observe its digest for --record, but never compare it against
+		# the pinned version's recorded local digest.
+		OBSERVED_SHA="$(sha256_of "$_real" 2>/dev/null)" || OBSERVED_SHA=""
+	fi
+	if [ -n "$OBSERVED_SHA" ]; then
+		obs_append "$_ver" "$OBSERVED_SHA" "$_real"
 	fi
 }
 
@@ -231,10 +327,24 @@ check_interpreter_digest() {
 		bad "cannot compute the sha256 of $_real"
 		return 1
 	fi
-	_expected="$(digest_get "local_interpreter_${PIN_MAJOR}${PIN_MINOR}_sha256")"
+	OBSERVED_SHA="$_observed"
+	_obs_key="local_interpreter_${PIN_MAJOR}${PIN_MINOR}"
+	_expected="$(digest_get "${_obs_key}_sha256")"
 	if [ -z "$_expected" ]; then
 		warn "no recorded local digest for a $PIN_VERSION interpreter in $DIGEST_FILE (NOT RECORDED; nothing is invented)"
 		info "observed sha256: $_observed"
+		return 0
+	fi
+	_expected_path="$(digest_get "${_obs_key}_path")"
+	if [ -n "$_expected_path" ] && [ "$_real" != "$_expected_path" ]; then
+		# The recorded digest is an observation of ONE local build at ONE path.
+		# Another 3.15.2 build (another host, brew revision, uv build, official
+		# install) must not be judged against it; treat it as unverified here.
+		info "interpreter is a different local build from the recorded one"
+		info "  (recorded path: $_expected_path); version match is not authentication,"
+		info "  so its digest is NOT compared and remains NOT RECORDED for this path."
+		info "observed sha256: $_observed"
+		info "  provenance: LOCAL observation only; not publisher-authenticated"
 		return 0
 	fi
 	if [ "$_observed" = "$_expected" ]; then
@@ -277,22 +387,32 @@ check_archive() {
 	info "archive: $_path"
 	info "  official source: ${_url:-unknown}"
 	info "  artifact role:  ${_role:-unknown (not recorded)}"
+	_matched=0
 	if [ "$_observed" = "$_expected" ]; then
-		ok "$_name sha256 matches the digest python.org PUBLISHED for $PIN_VERSION"
+		_matched=1
+		ok "$_name sha256 matches the pinned recorded digest (python.org's published SHA-256 as recorded in pin/python.txt)"
 	else
-		bad "$_name sha256 mismatch: observed $_observed, published $_expected"
+		bad "$_name sha256 mismatch: observed $_observed, pinned recorded digest $_expected"
 	fi
+	obs_append_archive "$_name" "$_observed"
 	info "  observed sha256: $_observed"
-	info "  published sha256: $_expected"
-	if [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
-		info "  recorded evidence: downloaded bytes matched the published digest on"
-		info "        $PIN_PUB_DIGEST_DATE, and this artifact's .sigstore bundle verified on"
-		info "        $PIN_PUB_SIGSTORE_DATE against ${PIN_SIGSTORE_EMAIL:-hugo@python.org} via"
-		info "        ${PIN_SIGSTORE_ISSUER:-https://github.com/login/oauth}. This check did not"
-		info "        perform Sigstore; see ${PIN_VERIFICATION_RECORD:-docs/PYTHON_TOOLCHAIN_EVIDENCE.md}."
+	info "  pinned recorded sha256: $_expected"
+	if [ "$_matched" -ne 1 ]; then
+		info "  note: this file does not match the pinned digest, so the pin's recorded"
+		info "        digest/Sigstore evidence does NOT apply to it. Nothing about its publisher"
+		info "        authenticity is established by this failed comparison."
+	elif [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_DIGEST_RESULT" ] &&
+	   [ -n "$PIN_PUB_SIGSTORE_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_RESULT" ]; then
+		info "  recorded evidence for bytes matching this digest: $PIN_PUB_DIGEST_RESULT on"
+		info "        $PIN_PUB_DIGEST_DATE, and $PIN_PUB_SIGSTORE_RESULT on $PIN_PUB_SIGSTORE_DATE against"
+		info "        ${PIN_SIGSTORE_EMAIL:-hugo@python.org} via ${PIN_SIGSTORE_ISSUER:-https://github.com/login/oauth}."
+		info "        This check did not perform Sigstore; see ${PIN_VERIFICATION_RECORD:-docs/PYTHON_TOOLCHAIN_EVIDENCE.md}."
 	else
-		info "  note: a published-digest match is not Sigstore authentication; run the"
-		info "        .sigstore procedure from ${PIN_SIGSTORE_DOC:-the python.org Sigstore guide} to authenticate the publisher."
+		info "  note: the pin's publisher-evidence fields are incomplete (digest date/result:"
+		info "        $PIN_PUB_DIGEST_DATE/$PIN_PUB_DIGEST_RESULT; Sigstore date/result:"
+		info "        $PIN_PUB_SIGSTORE_DATE/$PIN_PUB_SIGSTORE_RESULT). No publisher evidence is claimed."
+		info "  A digest match is not Sigstore authentication; run the .sigstore procedure"
+		info "        from ${PIN_SIGSTORE_DOC:-the python.org Sigstore guide} to authenticate the publisher."
 	fi
 }
 
@@ -300,26 +420,31 @@ check_archive() {
 print_distinction() {
 	info ""
 	info "verification scope (publisher artifact bytes vs installed binary):"
-	if [ -n "$PIN_PUB_DIGEST_DATE" ]; then
+	if [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_DIGEST_RESULT" ]; then
 		info "  * publisher digest match: $PIN_PUB_DIGEST_RESULT on $PIN_PUB_DIGEST_DATE"
 		info "    (official artifact bytes downloaded over HTTPS vs the release-page SHA-256)."
+	elif [ -n "$PIN_PUB_DIGEST_DATE" ] || [ -n "$PIN_PUB_DIGEST_RESULT" ]; then
+		info "  * publisher digest match: INCOMPLETE (date=$PIN_PUB_DIGEST_DATE result=$PIN_PUB_DIGEST_RESULT); not claimed."
 	else
 		info "  * publisher digest match: NOT RECORDED."
 	fi
-	if [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
-		info "  * publisher Sigstore signature: $PIN_PUB_SIGSTORE_RESULT on $PIN_PUB_SIGSTORE_DATE"
+	if [ -n "$PIN_PUB_SIGSTORE_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_RESULT" ]; then
+		info "  * publisher Sigstore signature: recorded result: $PIN_PUB_SIGSTORE_RESULT on $PIN_PUB_SIGSTORE_DATE"
 		info "    (signer ${PIN_SIGSTORE_EMAIL:-hugo@python.org}, issuer ${PIN_SIGSTORE_ISSUER:-https://github.com/login/oauth};"
-		info "    $PIN_SIGSTORE_VERIFIER). Wrong-identity/wrong-issuer/tampered controls failed."
+		info "    $PIN_SIGSTORE_VERIFIER)."
 		info "    Record: ${PIN_VERIFICATION_RECORD:-docs/PYTHON_TOOLCHAIN_EVIDENCE.md} sections 4-5."
+	elif [ -n "$PIN_PUB_SIGSTORE_DATE" ] || [ -n "$PIN_PUB_SIGSTORE_RESULT" ]; then
+		info "  * publisher Sigstore signature: INCOMPLETE (date=$PIN_PUB_SIGSTORE_DATE result=$PIN_PUB_SIGSTORE_RESULT); not claimed."
 	else
 		info "  * publisher Sigstore signature: NOT RECORDED."
 	fi
 	info "  * Source vs target: the .tgz/.tar.xz artifacts are source-of-record"
 	info "    archives; the macOS pkg and Windows amd64 exe are separate target"
-	info "    installers. Matching an installer authenticates those installer bytes"
-	info "    only; it does not authenticate any interpreter built from the source."
-	if [ -n "$ARCHIVE_FILES" ]; then
-		info "  * This run also compared the given --archive file(s) with the published digest."
+	info "    installers. A digest match establishes agreement with the pinned digest"
+	info "    for those installer bytes; it is not Sigstore authentication and does not"
+	info "    authenticate any interpreter built from the source."
+	if [ "$ARCHIVE_COUNT" -gt 0 ]; then
+		info "  * This run compared $ARCHIVE_COUNT given --archive file(s) with the published digest."
 	else
 		info "  * No official artifact was checked in this run. Pass --archive <file>"
 		info "    to compare a downloaded official artifact with the published digest."
@@ -336,38 +461,93 @@ print_distinction() {
 	fi
 }
 
+# Refuse --record destinations that exist or alias/overlap protected inputs.
+# The policy is deliberately conservative: recording may only create a path
+# that does not exist yet. Existence covers regular files, directories, FIFO/
+# socket/device nodes, and symlinks (including dangling ones); because the
+# script never follows an existing --record path, hard-link aliases of an
+# archive, interpreter, pin or digest file are refused too.
+validate_record_target() {
+	[ -n "$RECORD_FILE" ] || return 0
+	reject_newline "--record path" "$RECORD_FILE"
+	if [ -e "$RECORD_FILE" ] || [ -L "$RECORD_FILE" ]; then
+		die "--record target already exists: $RECORD_FILE (refusing to overwrite an existing file, link, socket or directory; choose a fresh path)"
+	fi
+
+	_protected="$PIN_FILE$NL$DIGEST_FILE"
+	[ -n "$PYTHON_BIN" ] && _protected="$_protected$NL$PYTHON_BIN"
+	_oldifs="$IFS"
+	IFS="$NL"
+	set -f
+	for _p in $_protected $ARCHIVE_FILES; do
+		[ -n "$_p" ] || continue
+		if [ "$_p" = "$RECORD_FILE" ]; then
+			IFS="$_oldifs"
+			set +f
+			die "--record target overlaps a protected input or pin path: $RECORD_FILE"
+		fi
+	done
+	IFS="$_oldifs"
+	set +f
+	return 0
+}
+
 record_digests() {
 	[ -n "$RECORD_FILE" ] || return 0
 	_dir="$(dirname "$RECORD_FILE")"
 	mkdir -p "$_dir" || die "cannot create $_dir"
+
+	# Check again immediately before opening: a concurrent writer may have
+	# created the target since validation. Exclusive creation (noclobber) must
+	# fail rather than truncate; see the README's residual-race limitation.
+	if [ -e "$RECORD_FILE" ] || [ -L "$RECORD_FILE" ]; then
+		die "--record target appeared before creation: $RECORD_FILE (refusing to overwrite)"
+	fi
+
+	set -C
 	{
 		printf '# Observed digests recorded by tools/python_pin/verify.sh --record\n'
 		printf '# Recorded %s on %s (%s %s)\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(hostname)" "$(uname -s)" "$(uname -m)"
 		printf '# LOCAL observations only. An installed interpreter is a local build;\n'
 		printf '# these digests are NOT publisher authentication (see pin/python.txt).\n'
 		printf 'pinned_version=%s\n' "$PIN_VERSION"
-		_recorded=""
-		for _py in $(python_candidates); do
-			[ -x "$_py" ] || continue
-			_ver="$(read_version "$_py")"
+		if [ "$RC" -ne 0 ]; then
+			printf '# NOTE: verification FAILED in this run; the lines below are diagnostic\n'
+			printf '#       observations, not a passing result.\n'
+		fi
+		if [ "$NO_INTERPRETER" -eq 1 ]; then
+			printf '# interpreter checks were skipped (--no-interpreter); no interpreter digests recorded.\n'
+		elif [ -z "$OBSERVED_INTERPRETERS" ]; then
+			printf '# no interpreter observations were available (none inspected or none readable).\n'
+		fi
+		# Only observations already collected during checks are written.
+		# Interpreter entries are triples (version, sha256, real path);
+		# archive entries are pairs (file name, observed sha256). Recording
+		# never re-probes an interpreter and never re-reads an archive, so
+		# --no-interpreter is honored here too and what is recorded is
+		# exactly what was checked.
+		printf '%s\n' "$OBSERVED_INTERPRETERS" | while IFS= read -r _ver &&
+			IFS= read -r _sha &&
+			IFS= read -r _real; do
 			[ -n "$_ver" ] || continue
-			_real="$(cd "$(dirname "$_py")" && pwd)/$(basename "$_py")"
-			if command -v realpath >/dev/null 2>&1; then
-				_real="$(realpath "$_py" 2>/dev/null || printf '%s' "$_py")"
-			fi
-			case "$_recorded" in
-				*"|$_real|"*) continue ;;
-			esac
-			_recorded="$_recorded|$_real|"
-			_key="$(printf '%s' "$_ver" | tr '.' '_')"
-			printf 'interpreter_%s_sha256=%s\n' "$_key" "$(sha256_of "$_real" 2>/dev/null)"
-			printf 'interpreter_%s_path=%s\n' "$_key" "$_real"
+			# Emit the same key scheme as pin/checksums.txt
+			# (local_interpreter_<major><minor>_{sha256,path}), so a record
+			# can refresh that file directly. The path is the resolved real
+			# binary, not a launcher, whenever realpath is available.
+			_maj="${_ver%%.*}"
+			_rest="${_ver#*.}"
+			_min="${_rest%%.*}"
+			_key="local_interpreter_${_maj}${_min}"
+			printf '%s_sha256=%s\n' "$_key" "$_sha"
+			printf '%s_path=%s\n' "$_key" "$_real"
 		done
-		for _f in $ARCHIVE_FILES; do
-			[ -f "$_f" ] || continue
-			printf 'archive_%s_sha256=%s\n' "${_f##*/}" "$(sha256_of "$_f" 2>/dev/null)"
+		printf '%s\n' "$OBSERVED_ARCHIVES" | while IFS= read -r _name &&
+			IFS= read -r _sha; do
+			[ -n "$_name" ] || continue
+			printf 'archive_%s_sha256=%s\n' "$_name" "$_sha"
 		done
-	} >"$RECORD_FILE" || die "cannot write $RECORD_FILE"
+	} >"$RECORD_FILE" || die "cannot create $RECORD_FILE (refusing to overwrite an existing target)"
+	set +C
 	info "observed digests written to $RECORD_FILE"
 }
 
@@ -376,14 +556,42 @@ record_digests() {
 # ---------------------------------------------------------------------------
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--python) [ $# -ge 2 ] || die "--python needs a path"; PYTHON_BIN="$2"; shift 2 ;;
-		--python=*) PYTHON_BIN="${1#--python=}"; shift ;;
-		--archive) [ $# -ge 2 ] || die "--archive needs a file path"; ARCHIVE_FILES="$ARCHIVE_FILES $2"; shift 2 ;;
-		--archive=*) ARCHIVE_FILES="$ARCHIVE_FILES ${1#--archive=}"; shift ;;
+		--python)
+			[ $# -ge 2 ] || die "--python needs a path"
+			[ -n "$2" ] || die "--python requires a non-empty path"
+			reject_newline "--python path" "$2"
+			PYTHON_BIN="$2"; shift 2 ;;
+		--python=*)
+			PYTHON_BIN="${1#--python=}"
+			[ -n "$PYTHON_BIN" ] || die "--python requires a non-empty path"
+			reject_newline "--python path" "$PYTHON_BIN"
+			shift ;;
+		--archive)
+			[ $# -ge 2 ] || die "--archive needs a file path"
+			[ -n "$2" ] || die "--archive requires a non-empty file path"
+			reject_newline "--archive path" "$2"
+			ARCHIVE_FILES="$(append_path "$ARCHIVE_FILES" "$2")"
+			ARCHIVE_COUNT=$((ARCHIVE_COUNT + 1))
+			shift 2 ;;
+		--archive=*)
+			_a="${1#--archive=}"
+			[ -n "$_a" ] || die "--archive requires a non-empty file path"
+			reject_newline "--archive path" "$_a"
+			ARCHIVE_FILES="$(append_path "$ARCHIVE_FILES" "$_a")"
+			ARCHIVE_COUNT=$((ARCHIVE_COUNT + 1))
+			shift ;;
 		--no-interpreter) NO_INTERPRETER=1; shift ;;
 		--quiet) QUIET=1; shift ;;
-		--record) [ $# -ge 2 ] || die "--record needs a file path"; RECORD_FILE="$2"; shift 2 ;;
-		--record=*) RECORD_FILE="${1#--record=}"; shift ;;
+		--record)
+			[ $# -ge 2 ] || die "--record needs a file path"
+			[ -n "$2" ] || die "--record requires a non-empty file path"
+			reject_newline "--record path" "$2"
+			RECORD_FILE="$2"; shift 2 ;;
+		--record=*)
+			RECORD_FILE="${1#--record=}"
+			[ -n "$RECORD_FILE" ] || die "--record requires a non-empty file path"
+			reject_newline "--record path" "$RECORD_FILE"
+			shift ;;
 		-h | --help | help) usage ;;
 		*) die "unknown option: $1 (see --help)" ;;
 	esac
@@ -392,6 +600,7 @@ done
 RC=0
 load_pin
 require_sha256_tool
+validate_record_target
 
 printf '%sRoadstorm asset-generation Python pin verification (pin %s)%s\n' "$C_BOLD" "$PIN_VERSION" "$C_RESET"
 info "host: $(hostname) / $(uname -s) $(uname -r) $(uname -m)"
@@ -401,32 +610,40 @@ info ""
 if [ "$NO_INTERPRETER" -eq 1 ]; then
 	warn "interpreter checks skipped on request (--no-interpreter)"
 else
-	_found_any=0
-	for _py in $(python_candidates); do
-		[ -x "$_py" ] || continue
-		_found_any=1
-		check_interpreter "$_py"
-	done
-	if [ "$_found_any" -eq 0 ]; then
+	_FOUND_ANY=0
+	for_each_python_candidate consider_candidate
+	if [ "$_FOUND_ANY" -eq 0 ]; then
 		bad "no Python interpreter found (set PYTHON_BIN=/path/to/python or pass --python)"
 	elif [ "$FOUND_PINNED" -eq 0 ]; then
 		bad "no local interpreter reports the pinned version $PIN_VERSION (install it, point --python at it, or pass --no-interpreter to skip this check explicitly)"
 	fi
 fi
 
-for _f in $ARCHIVE_FILES; do
-	check_archive "$_f"
-done
+if [ "$ARCHIVE_COUNT" -gt 0 ]; then
+	_oldifs="$IFS"
+	IFS="$NL"
+	set -f
+	for _f in $ARCHIVE_FILES; do
+		[ -n "$_f" ] || continue
+		check_archive "$_f"
+	done
+	set +f
+	IFS="$_oldifs"
+fi
 
 print_distinction
 record_digests
 
 PUB_EVIDENCE="not recorded"
-if [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
+if [ -n "$PIN_PUB_DIGEST_DATE" ] && [ -n "$PIN_PUB_DIGEST_RESULT" ] &&
+   [ -n "$PIN_PUB_SIGSTORE_DATE" ] && [ -n "$PIN_PUB_SIGSTORE_RESULT" ]; then
 	PUB_EVIDENCE="digest+Sigstore recorded $PIN_PUB_DIGEST_DATE"
-elif [ -n "$PIN_PUB_DIGEST_DATE" ] || [ -n "$PIN_PUB_SIGSTORE_DATE" ]; then
+elif [ -n "$PIN_PUB_DIGEST_DATE" ] || [ -n "$PIN_PUB_DIGEST_RESULT" ] ||
+     [ -n "$PIN_PUB_SIGSTORE_DATE" ] || [ -n "$PIN_PUB_SIGSTORE_RESULT" ]; then
 	PUB_EVIDENCE="partially recorded"
 fi
+ARCHIVE_SUMMARY="none"
+[ "$ARCHIVE_COUNT" -gt 0 ] && ARCHIVE_SUMMARY="performed ($ARCHIVE_COUNT)"
 INSTALLED_SCOPE="local build, not publisher-authenticated"
 [ "${PIN_INSTALLED_AUTH:-}" = "yes" ] && INSTALLED_SCOPE="publisher-authenticated"
 
@@ -434,7 +651,7 @@ info ""
 if [ "$RC" -eq 0 ]; then
 	printf '%s[ok]%s   python pin verification: PASS (local interpreter observations; official-artifact checks: %s; publisher artifact evidence: %s; installed binary: %s)\n' \
 		"$C_GREEN" "$C_RESET" \
-		"$([ -n "$ARCHIVE_FILES" ] && printf 'performed' || printf 'none')" \
+		"$ARCHIVE_SUMMARY" \
 		"$PUB_EVIDENCE" \
 		"$INSTALLED_SCOPE"
 else
