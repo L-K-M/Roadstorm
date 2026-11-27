@@ -26,9 +26,14 @@ extends RefCounted
 ##     travel beyond the tight epsilon is refused unless a genuine contact stop
 ##     ended the sweep (reported through `remainder_m`);
 ##   * a wall-like contact removes the inward normal component of the committed
-##     velocity and applies the configured bounded tangential retention. Any
-##     further contact response (deflection shaping, restitution tuning,
-##     depenetration, multi-car response) is M1.4 work.
+##     velocity and applies the configured bounded tangential retention. The
+##     response uses an authoritative wall-like normal chosen independently of
+##     the generic last-contact telemetry: when several wall contacts occur in
+##     one tick, the normal most opposed to the proposed world velocity wins,
+##     and the earliest contact breaks an exact tie. A later floor or ceiling
+##     contact therefore cannot silently replace the wall response. Any further
+##     contact response (deflection shaping, restitution tuning, depenetration,
+##     multi-car response) is M1.4 work.
 ##   * the translation sweep uses the tick-start basis; before the tick is
 ##     committed, a bounded nonmutating world check probes the installed hull
 ##     at the proposed yaw, using the body's actual collision mask and
@@ -269,6 +274,12 @@ class Result extends RefCounted:
 	var contact := false
 	## True when a collision normal was classified as wall-like.
 	var wall_contact := false
+	## Authoritative wall-like normal used for the wall response: the normal
+	## most opposed to the proposed world velocity, earliest on an exact tie.
+	## Zero when no wall-like contact occurred. Deliberately independent of
+	## `contact_normal`, which reports the generic last contact and can be
+	## overwritten by a later floor or ceiling contact within the same tick.
+	var wall_contact_normal := Vector3.ZERO
 	var contact_normal := Vector3.ZERO
 	var contact_point := Vector3.ZERO
 	var substeps := 0
@@ -355,6 +366,7 @@ static func step(
 	var stopped_short := false
 	var hit_normal := Vector3.ZERO
 	var hit_point := Vector3.ZERO
+	var wall_normals: Array = []
 	var substeps := 0
 
 	while remaining.length() > MIN_SEGMENT_LENGTH_M and substeps < config.max_substeps:
@@ -383,6 +395,10 @@ static func step(
 			if absf(hit_normal.normalized().dot(SUPPORT_UP)) \
 					<= config.wall_normal_max_up_alignment:
 				wall_hit = true
+				# Keep every wall-like candidate; the authoritative normal is
+				# chosen after the sweep so generic last-contact telemetry cannot
+				# overwrite it.
+				wall_normals.append(hit_normal)
 
 		var committed_end := simulated.origin + actual
 		worst_prediction_error = maxf(
@@ -485,8 +501,14 @@ static func step(
 	committed.heading_rad = applied_heading
 
 	var velocity_world := road_vector_to_world(proposal.state.velocity_m_s)
+	var authoritative_wall_normal := Vector3.ZERO
 	if wall_hit:
-		velocity_world = _apply_wall_response(velocity_world, hit_normal, config)
+		authoritative_wall_normal = _select_wall_response_normal(
+			wall_normals, velocity_world
+		)
+		velocity_world = _apply_wall_response(
+			velocity_world, authoritative_wall_normal, config
+		)
 	committed.velocity_m_s = world_vector_to_road(velocity_world)
 
 	var committed_transform := Transform3D(
@@ -508,6 +530,7 @@ static func step(
 	result.heading_constrained = heading_constrained
 	result.contact = hit
 	result.wall_contact = wall_hit
+	result.wall_contact_normal = authoritative_wall_normal
 	result.contact_normal = hit_normal
 	result.contact_point = hit_point
 	result.substeps = substeps
@@ -608,6 +631,27 @@ static func _test_move_travel(
 		return motion
 	return collision.get_travel()
 
+
+## Deterministic choice among the wall-like contact normals collected in one
+## tick. The normal most opposed to `velocity_world` (smallest dot product) is
+## authoritative, because it is the wall that most directly opposes the
+## commanded motion; the earliest contact wins an exact tie. Normals are
+## compared normalized, while the stored candidate is returned unchanged.
+static func _select_wall_response_normal(
+	normals: Array,
+	velocity_world: Vector3
+) -> Vector3:
+	var best := Vector3.ZERO
+	var best_opposition := 0.0
+	var has_best := false
+	for normal in normals:
+		var candidate: Vector3 = normal
+		var opposition := candidate.normalized().dot(velocity_world)
+		if not has_best or opposition < best_opposition:
+			best = candidate
+			best_opposition = opposition
+			has_best = true
+	return best
 
 ## Bounded wall response: remove the inward normal component (with the
 ## configured capped restitution) and retain at most the configured fraction of

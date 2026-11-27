@@ -52,6 +52,7 @@ const CASE_IDS := [
 	"collision_mask_consistency",
 	"wall_approach_no_tunnel",
 	"oblique_wall_response",
+	"wall_contact_normal_authority",
 	"rotated_hull_wall_orientation",
 	"envelope_refusal",
 	"work_cap_and_truncation",
@@ -146,6 +147,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_wall_approach()
 		"oblique_wall_response":
 			await _case_oblique_wall()
+		"wall_contact_normal_authority":
+			await _case_wall_contact_normal_authority()
 		"rotated_hull_wall_orientation":
 			await _case_rotated_hull_wall_orientation()
 		"envelope_refusal":
@@ -884,6 +887,144 @@ func _case_oblique_wall() -> void:
 	measurements["post_contact_normal_speed_mps"] = inward_speed
 	measurements["first_contact_tick"] = first_contact + 1
 
+	await _destroy_world(world)
+
+
+func _case_wall_contact_normal_authority() -> void:
+	# Regression for interim review N2: `wall_hit` latched true while the
+	# generic `hit_normal` was overwritten on every collision, so a later
+	# floor-like contact could make the final wall response use the floor normal
+	# and leave the inward wall velocity. The adapter now retains an
+	# authoritative wall-like normal independently of last-contact telemetry.
+	#
+	# A pinned-Jolt staging search did not reliably emit a wall-like contact
+	# followed by a floor-like contact inside one tick (see README), so the
+	# sequence is driven through the public selection seam. The same case run
+	# against pre-fix source reports failures, which is the old-source proof.
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+
+	# --- Wall-like contact followed by a floor-like generic contact. ---------
+	var wall_normal := Vector3(0.0, 0.0, 1.0)
+	var floor_normal := Vector3(0.0, 1.0, 0.0)
+	var approach_velocity := Vector3(0.0, 0.0, -20.0)
+	var adapter := AdapterScript.new()
+	var has_selector := adapter.has_method("_select_wall_response_normal")
+	d.check(has_selector, "seam: adapter exposes the wall-normal selection helper")
+	var authoritative := floor_normal
+	if has_selector:
+		var chosen: Vector3 = adapter.call(
+			"_select_wall_response_normal",
+			[wall_normal, floor_normal],
+			approach_velocity
+		)
+		authoritative = chosen
+	d.check(
+		authoritative == wall_normal,
+		"seam: a later floor-like contact does not replace the wall normal"
+	)
+
+	var corrected := AdapterScript._apply_wall_response(
+		approach_velocity, authoritative, config
+	)
+	d.check(
+		corrected.dot(wall_normal) >= -1e-6,
+		"seam: no inward velocity on the authoritative wall normal"
+	)
+	d.check(
+		corrected.dot(floor_normal) >= -1e-6,
+		"seam: response adds no floor-normal velocity"
+	)
+
+	# Negative control: the old last-contact rule applies the floor normal and
+	# leaves the inward wall component untouched. This shows the scenario
+	# discriminates pre-fix from fixed source.
+	var old_rule_result := AdapterScript._apply_wall_response(
+		approach_velocity, floor_normal, config
+	)
+	d.check(
+		old_rule_result.dot(wall_normal) < -1.0,
+		"control: old last-contact rule keeps inward wall velocity"
+	)
+	d.check(
+		old_rule_result.dot(wall_normal) < corrected.dot(wall_normal),
+		"control: old rule is strictly less corrected"
+	)
+	measurements["wall_seam_authoritative"] = authoritative
+	measurements["wall_seam_old_rule_inward_speed"] = old_rule_result.dot(wall_normal)
+	measurements["wall_seam_corrected_inward_speed"] = corrected.dot(wall_normal)
+
+	# --- Multiple wall contacts: documented deterministic choice. ----------
+	if has_selector:
+		var head_on := Vector3(0.0, 0.0, 1.0)
+		var oblique := Vector3(0.5, 0.0, 0.8660254)
+		var head_on_choice: Vector3 = adapter.call(
+			"_select_wall_response_normal",
+			[oblique, head_on],
+			Vector3(0.0, 0.0, -20.0)
+		)
+		d.check(
+			head_on_choice.is_equal_approx(head_on),
+			"multi-wall: most-opposed normal chosen"
+		)
+		var oblique_choice: Vector3 = adapter.call(
+			"_select_wall_response_normal",
+			[head_on, oblique],
+			Vector3(-20.0, 0.0, 0.0)
+		)
+		d.check(
+			oblique_choice.is_equal_approx(oblique),
+			"multi-wall: choice follows the proposed velocity"
+		)
+		var tie_choice: Vector3 = adapter.call(
+			"_select_wall_response_normal",
+			[Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0)],
+			Vector3(-10.0, 0.0, -10.0)
+		)
+		d.check(
+			tie_choice.is_equal_approx(Vector3(1.0, 0.0, 0.0)),
+			"multi-wall: exact tie keeps the earliest contact"
+		)
+	else:
+		d.check(false, "old source lacks the wall-normal selection helper")
+
+	# --- Real pinned Jolt wall contact wires the authoritative normal. -----
+	var wall_spec := {
+		"point": Vector3(0.0, 2.0, STRAIGHT_WALL_Z),
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(Vector2.ZERO, Vector2(0.0, 30.0), 0.0)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var commands: Array = []
+	for _index in range(60):
+		commands.append(d.make_idle_command())
+	var records := await _drive(world, state, commands, tuning, config)
+	var first_contact := _first_contact_index(records)
+	d.check(first_contact > 0, "jolt: wall contact occurred")
+	if first_contact >= 0:
+		var impact = records[first_contact]["result"]
+		d.check(impact.wall_contact, "jolt: impact classified as wall contact")
+		if has_selector:
+			d.check(
+				impact.wall_contact_normal.z > 0.9,
+				"jolt: authoritative wall normal points back toward the car (+Z)"
+			)
+		var committed_world := AdapterScript.road_vector_to_world(
+			impact.committed_state.velocity_m_s
+		)
+		var response_normal: Vector3 = (
+			impact.wall_contact_normal if has_selector else impact.contact_normal
+		)
+		d.check(
+			committed_world.dot(response_normal) >= -1e-6,
+			"jolt: committed velocity retains no inward component on the response normal"
+		)
+		if has_selector:
+			measurements["jolt_wall_contact_normal"] = impact.wall_contact_normal
+		measurements["jolt_post_contact_normal_speed"] = committed_world.dot(response_normal)
 	await _destroy_world(world)
 
 

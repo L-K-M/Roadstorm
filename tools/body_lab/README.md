@@ -23,6 +23,9 @@ This proves one 60 Hz integration tick at a time:
 - a wall on a layer excluded from the car mask is crossed with the full
   physical motion committed and the primary prediction matching it, while the
   identical wall on an included layer still stops the car and the prediction;
+- the wall response uses an authoritative wall-like normal that survives a
+  later floor-like contact in the same tick, and a real pinned-Jolt wall
+  contact reports and uses that normal;
 - repeated fixed-60 Hz callbacks reproduce bit-identical traces.
 
 It does not implement ground adhesion, jumps, drift, reset, surfaces,
@@ -89,6 +92,25 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
 - Wall response: remove the inward normal component (restitution 0) and retain
   the configured tangential fraction (1.0). Deflection shaping, restitution
   tuning, depenetration and multi-car response remain M1.4 work.
+- Authoritative wall normal: `wall_hit` latches once any substep reports a
+  wall-like normal, but the generic last-contact `contact_normal` keeps being
+  overwritten. The response therefore does not read that telemetry. Every
+  wall-like normal is retained, and after the sweep the normal most opposed to
+  the proposed world velocity (smallest dot product) is authoritative; the
+  earliest contact wins an exact tie. The choice is exposed as
+  `Result.wall_contact_normal`. This closes interim review N2: a later floor
+  or ceiling contact can no longer replace the wall normal and leave inward
+  wall velocity.
+- Wall-then-floor regression limit: `wall_contact_normal_authority` drives the
+  documented wall-then-floor telemetry through the deterministic selection seam
+  because the pinned Jolt staging could not reliably produce that order inside
+  one tick. A configuration search over grounded/penetrating supports, wall
+  yaw/width/offset, approach angles and initial wall penetration found only
+  single-collision ticks or wall-after-wall sequences; floor contacts occurred
+  only when no wall was involved. The case therefore proves the selection and
+  response rule and reproduces the pre-fix failure on old source, not the
+  engine's own contact ordering. The real-Jolt portion checks the wiring for a
+  normal wall impact.
 - Installed orientation: after the translation sweep, the adapter probes the
   final hull pose with a nonmutating `intersect_shape` query using the body's
   collision mask and excluding its RID. The probe is a real box hull reduced
