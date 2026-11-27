@@ -298,20 +298,37 @@ expect_contains "verify-engine says not to extract on mismatch" 1 "DO NOT extrac
 
 # ---------------------------------------------------------------------------
 # 4b. Exclusive report publication: the preset-specific report rename must be
-#     create-only. ln(2) is the publication primitive, so a destination that is
-#     already a regular file or a dangling symlink is preserved exactly and the
+#     create-only at the EXACT destination. link(2) (through Python os.link) is
+#     the publication primitive, so a regular file, dangling symlink,
+#     directory or symlink-to-directory occupant is preserved exactly and the
 #     caller keeps its prior report pointer instead of losing it.
 # ---------------------------------------------------------------------------
 PUB_DIR="$WORK_DIR/report-publish"
 rm -rf "$PUB_DIR"; mkdir -p "$PUB_DIR"
 printf 'attempt body\n' >"$PUB_DIR/source.txt"
+_inode() { ls -i "$1" 2>/dev/null | awk '{print $1}'; }
+
+# Positive control first: without it the negative cases below would also pass
+# when the helper is missing or always fails (the vacuity the reviews found).
+_pub_pos=no
+_ok=no
+rm -f "$PUB_DIR/final-new.txt"
+if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-new.txt" &&
+	[ -f "$PUB_DIR/final-new.txt" ] &&
+	[ "$(_inode "$PUB_DIR/source.txt")" = "$(_inode "$PUB_DIR/final-new.txt")" ]; then
+	_pub_pos=yes
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: publishing at a free exact destination shares one inode -> $_ok"
 
 # A pre-existing regular file at the final name survives byte-exact.
 printf 'foreign bytes\n' >"$PUB_DIR/final-regular.txt"
 _ok=no
-if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-regular.txt"; then
-	:
-elif [ "$(cat "$PUB_DIR/final-regular.txt")" = "foreign bytes" ] &&
+if [ "$_pub_pos" = "yes" ] &&
+	! ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-regular.txt" &&
+	[ "$(cat "$PUB_DIR/final-regular.txt")" = "foreign bytes" ] &&
 	[ "$(cat "$PUB_DIR/source.txt")" = "attempt body" ]; then
 	_ok=yes
 	CASES_OK=$((CASES_OK + 1))
@@ -322,9 +339,9 @@ log "case $CASES_RUN: publishing onto an existing regular report preserves it ->
 # A dangling symlink at the final name survives link-exact.
 ln -s "$PUB_DIR/absent-target" "$PUB_DIR/final-dangling.txt"
 _ok=no
-if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-dangling.txt"; then
-	:
-elif [ -L "$PUB_DIR/final-dangling.txt" ] && [ ! -e "$PUB_DIR/final-dangling.txt" ] &&
+if [ "$_pub_pos" = "yes" ] &&
+	! ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-dangling.txt" &&
+	[ -L "$PUB_DIR/final-dangling.txt" ] && [ ! -e "$PUB_DIR/final-dangling.txt" ] &&
 	[ "$(readlink "$PUB_DIR/final-dangling.txt")" = "$PUB_DIR/absent-target" ]; then
 	_ok=yes
 	CASES_OK=$((CASES_OK + 1))
@@ -332,11 +349,39 @@ fi
 CASES_RUN=$((CASES_RUN + 1))
 log "case $CASES_RUN: publishing onto a dangling symlink preserves it -> $_ok"
 
+# A directory occupant must be refused WITHOUT descending into it: two-operand
+# ln would create source-basename INSIDE the directory and exit 0.
+rm -rf "$PUB_DIR/final-dir.txt"; mkdir -p "$PUB_DIR/final-dir.txt"
+_ok=no
+if [ "$_pub_pos" = "yes" ] &&
+	! ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-dir.txt" &&
+	[ -d "$PUB_DIR/final-dir.txt" ] &&
+	[ -z "$(ls -A "$PUB_DIR/final-dir.txt" 2>/dev/null)" ] &&
+	[ "$(cat "$PUB_DIR/source.txt")" = "attempt body" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: publishing onto a directory refuses it without linking inside -> $_ok"
+
+# A symlink to a directory must also be refused, without writing through it.
+rm -rf "$PUB_DIR/target-dir"; mkdir -p "$PUB_DIR/target-dir"
+ln -s target-dir "$PUB_DIR/final-symdir.txt"
+_ok=no
+if [ "$_pub_pos" = "yes" ] &&
+	! ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-symdir.txt" &&
+	[ -L "$PUB_DIR/final-symdir.txt" ] && [ -d "$PUB_DIR/final-symdir.txt" ] &&
+	[ -z "$(ls -A "$PUB_DIR/target-dir" 2>/dev/null)" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+fi
+CASES_RUN=$((CASES_RUN + 1))
+log "case $CASES_RUN: publishing onto a symlink to a directory refuses it without writing through -> $_ok"
+
 # Success leaves one inode behind both names, so either handoff pointer sees
 # later verdict lines.
-rm -f "$PUB_DIR/final-new.txt"
 _ok=no
-if ci_publish_report_exclusive "$PUB_DIR/source.txt" "$PUB_DIR/final-new.txt"; then
+if [ "$_pub_pos" = "yes" ]; then
 	printf 'verdict=PASS\n' >>"$PUB_DIR/final-new.txt"
 	if grep -q '^verdict=PASS$' "$PUB_DIR/source.txt"; then
 		_ok=yes
@@ -2863,6 +2908,40 @@ EOF
 	fi
 	log "case $CASES_RUN: a dangling symlink at the report path is refused and preserved -> $_ok"
 
+# A directory at the reserved report name must be refused without creating a
+# child body inside it (two-operand ln would do exactly that).
+rm -rf "$RC_OUT"; mkdir -p "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt"
+( export PATH="$SHIM_FIXED:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$RC_OUT" pin ) >"$RC_LOG2" 2>&1
+_rc2=$?
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$_rc2" -ne 0 ] &&
+	[ -d "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt" ] &&
+	[ -z "$(ls -A "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt" 2>/dev/null)" ] &&
+	[ -z "$(find "$RC_OUT/reports" -name '.ci-report-body.*' -print 2>/dev/null)" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a directory at the reserved report path is refused without linking inside -> $_ok"
+
+# A symlink to a directory at the reserved name is likewise refused, with the
+# target left untouched.
+rm -rf "$RC_OUT" "$CONC/res-link-target"; mkdir -p "$RC_OUT/reports" "$CONC/res-link-target"
+ln -s "$CONC/res-link-target" "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt"
+( export PATH="$SHIM_FIXED:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$RC_OUT" pin ) >"$RC_LOG2" 2>&1
+_rc2=$?
+CASES_RUN=$((CASES_RUN + 1))
+if [ "$_rc2" -ne 0 ] && [ -L "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt" ] &&
+	[ "$(readlink "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt")" = "$CONC/res-link-target" ] &&
+	[ -z "$(ls -A "$CONC/res-link-target" 2>/dev/null)" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a symlink to a directory at the reserved report path is refused -> $_ok"
+
 	DIV_OUT="$CONC/report-divergence"
 	rm -rf "$DIV_OUT" "$CONC/divcwd"; mkdir -p "$DIV_OUT/reports" "$CONC/divcwd"
 	_GENERIC="$DIV_OUT/reports/export-20260101T000000Z-C01152.txt"
@@ -2874,20 +2953,23 @@ EOF
 _real="$_e2e_bin"
 case " \$* " in
 	*" --version "*) printf '4.7.2.stable.official.ed1daf0bf\n'; exit 0 ;;
-	*" --export-"*) exit 0 ;;
+	*" --export-"*) touch "$CONC/div-writer-called"; exit 0 ;;
 esac
 "\$_real" "\$@"
 exit "\$?"
 EOF
 	chmod +x "$DIV_GODOT"
+	rm -f "$CONC/div-writer-called"
 	( export PATH="$SHIM_FIXED:$PATH" TMPDIR="$CONC/tmp-div"; ci_rel_at_home "$CONC/divcwd" "$CONC/home-ia" "$SPROJ" \
 		--godot "$DIV_GODOT" --out "$DIV_OUT" export --export "Linux x86-64" --out "$CONC/divcwd/package" ) >"$CONC/div.log" 2>&1
 	_div_rc=$?
 	CASES_RUN=$((CASES_RUN + 1))
 	if [ "$_div_rc" -ne 0 ] && [ -L "$_RENAMED" ] && [ ! -e "$_RENAMED" ] &&
 		[ -s "$_GENERIC" ] && grep -q 'attempt-id: 20260101T000000Z-C01152' "$_GENERIC" &&
-		grep -q '^export result=fail .*reason=no-output' "$_GENERIC" &&
-		grep -q "^\[ci\] report: $_GENERIC$" "$CONC/div.log"; then
+		grep -q '^export result=fail .*reason=report-publication-failed' "$_GENERIC" &&
+		grep -q "^\[ci\] report: $_GENERIC$" "$CONC/div.log" &&
+		[ ! -e "$CONC/div-writer-called" ] && [ ! -e "$CONC/divcwd/package" ] &&
+		[ ! -e "$CONC/divcwd/package.ci-lock" ]; then
 		_ok=yes
 		CASES_OK=$((CASES_OK + 1))
 	else
@@ -2896,28 +2978,31 @@ EOF
 	log "case $CASES_RUN: a failed preset rename keeps one visible report path for parent and worker -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  div_rc=$_div_rc islink=$([ -L "$_RENAMED" ] && echo y || echo n) generic=$_GENERIC" >&2; grep -n "report:" "$CONC/div.log" | sed 's/^/  | /' >&2; }
 
-	# Force the destination to appear at publication time. Shimming ln lets the
-	# suite claim the final per-attempt report name just before ci.sh publishes
-	# it: a create-only publication must fail closed and leave the sentinel
-	# bytes, while the old check-then-mv sequence would call mv and replace them.
-	RACE_LN="$CONC/shim-ln-race"
-	rm -rf "$RACE_LN"; mkdir -p "$RACE_LN"
-	_real_ln="$(command -v ln)"
-	cat >"$RACE_LN/ln" <<EOF
+	# Force the destination to appear at publication time. Shimming python3 lets
+	# the suite claim the final per-attempt report name just before os.link runs:
+	# an exact-destination create-only link must fail closed and leave the
+	# sentinel bytes, while a check-then-mv sequence would replace them.
+	RACE_PY="$CONC/shim-python-race"
+	rm -rf "$RACE_PY"; mkdir -p "$RACE_PY"
+	_real_python3="$(command -v python3)"
+	cat >"$RACE_PY/python3" <<EOF
 #!/bin/sh
-case "\$2" in
-	*/export-linux-x86-64-20260101T000000Z-C01152.txt)
-		printf 'sentinel-race\n' >"\$2" 2>/dev/null
-		;;
-esac
-exec "$_real_ln" "\$@"
+for _a in "\$@"; do
+	case "\$_a" in
+		*/export-linux-x86-64-20260101T000000Z-C01152.txt)
+			printf 'sentinel-race\n' >"\$_a" 2>/dev/null
+			;;
+	esac
+done
+exec "$_real_python3" "\$@"
 EOF
-	chmod +x "$RACE_LN/ln"
+	chmod +x "$RACE_PY/python3"
 	RACE_OUT="$CONC/report-race"
 	rm -rf "$RACE_OUT" "$CONC/racecwd"; mkdir -p "$RACE_OUT/reports" "$CONC/racecwd"
 	RACE_GENERIC="$RACE_OUT/reports/export-20260101T000000Z-C01152.txt"
 	RACE_RENAMED="$RACE_OUT/reports/export-linux-x86-64-20260101T000000Z-C01152.txt"
-	( export PATH="$SHIM_FIXED:$RACE_LN:$PATH" TMPDIR="$CONC/tmp-race"; ci_rel_at_home "$CONC/racecwd" "$CONC/home-ia" "$SPROJ" \
+	rm -f "$CONC/div-writer-called"
+	( export PATH="$SHIM_FIXED:$RACE_PY:$PATH" TMPDIR="$CONC/tmp-race"; ci_rel_at_home "$CONC/racecwd" "$CONC/home-ia" "$SPROJ" \
 		--godot "$DIV_GODOT" --out "$RACE_OUT" export --export "Linux x86-64" --out "$CONC/racecwd/package" ) >"$CONC/race.log" 2>&1
 	_race_rc=$?
 	CASES_RUN=$((CASES_RUN + 1))
@@ -2925,8 +3010,10 @@ EOF
 		[ "$(cat "$RACE_RENAMED" 2>/dev/null)" = "sentinel-race" ] &&
 		[ -s "$RACE_GENERIC" ] &&
 		grep -q 'attempt-id: 20260101T000000Z-C01152' "$RACE_GENERIC" &&
-		grep -q '^export result=fail .*reason=no-output' "$RACE_GENERIC" &&
-		grep -q "^\[ci\] report: $RACE_GENERIC$" "$CONC/race.log"; then
+		grep -q '^export result=fail .*reason=report-publication-failed' "$RACE_GENERIC" &&
+		grep -q "^\[ci\] report: $RACE_GENERIC$" "$CONC/race.log" &&
+		[ ! -e "$CONC/div-writer-called" ] && [ ! -e "$CONC/racecwd/package" ] &&
+		[ ! -e "$CONC/racecwd/package.ci-lock" ]; then
 		_ok=yes
 		CASES_OK=$((CASES_OK + 1))
 	else
@@ -2934,6 +3021,241 @@ EOF
 	fi
 	log "case $CASES_RUN: a report path claimed at publication time is not replaced -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  race_rc=$_race_rc renamed=$(cat "$RACE_RENAMED" 2>/dev/null)" >&2; sed 's/^/  | /' "$CONC/race.log" >&2; }
+
+	# -----------------------------------------------------------------------
+	# Report publication at the real call sites, plus the pre-engine
+	# .ci-lock guard. PUB_SEAM records EVERY Godot invocation, including
+	# --version, then delegates to the real pinned editor.
+	# -----------------------------------------------------------------------
+	PUB_SEAM="$CONC/godot-pub-seam"
+	cat >"$PUB_SEAM" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CONC/pub-seam.log"
+case " \$* " in
+	*" --export-"*) touch "$CONC/pub-writer-called"; exit 0 ;;
+esac
+exec "$_e2e_bin" "\$@"
+EOF
+	chmod +x "$PUB_SEAM"
+	PUB_SEAM_LOG="$CONC/pub-seam.log"
+	PUB_WRITER="$CONC/pub-writer-called"
+
+	# Outer call site, directory occupant: publication must fail before the
+	# engine writes anything, leaving the directory empty and the generic
+	# report carrying a truthful attempt-bound failure.
+	PUB_OUT="$CONC/pub-outer-dir"
+	rm -rf "$PUB_OUT" "$CONC/pubcwd-od" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$PUB_OUT/reports/export-linux-x86-64-pubdir1.txt" "$CONC/pubcwd-od"
+	( export TMPDIR="$CONC/tmp-pub-od" ROADSTORM_CI_ATTEMPT_ID=pubdir1
+		ci_rel_at_home "$CONC/pubcwd-od" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$PUB_OUT" export --export "Linux x86-64" --out "$CONC/pubcwd-od/pkg" ) >"$CONC/pub-outer-dir.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] &&
+		[ -d "$PUB_OUT/reports/export-linux-x86-64-pubdir1.txt" ] &&
+		[ -z "$(ls -A "$PUB_OUT/reports/export-linux-x86-64-pubdir1.txt" 2>/dev/null)" ] &&
+		[ -s "$PUB_OUT/reports/export-pubdir1.txt" ] &&
+		grep -q '^export result=fail .*reason=report-publication-failed' "$PUB_OUT/reports/export-pubdir1.txt" &&
+		grep -q "^\[ci\] report: $PUB_OUT/reports/export-pubdir1.txt$" "$CONC/pub-outer-dir.log" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pubcwd-od/pkg" ] &&
+		[ ! -e "$CONC/pubcwd-od/pkg.ci-lock" ] &&
+		[ "$(wc -l <"$PUB_SEAM_LOG" 2>/dev/null | tr -d ' ')" = "1" ] &&
+		grep -q -- '--version' "$PUB_SEAM_LOG"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an outer directory report occupant aborts publication before the engine writes -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-outer-dir.log" >&2; }
+
+	# Outer call site, symlink-to-directory occupant.
+	PUB_OUT="$CONC/pub-outer-sym"
+	rm -rf "$PUB_OUT" "$CONC/pubcwd-os" "$CONC/pub-sym-target" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$PUB_OUT/reports" "$CONC/pubcwd-os" "$CONC/pub-sym-target"
+	ln -s "$CONC/pub-sym-target" "$PUB_OUT/reports/export-linux-x86-64-pubsym1.txt"
+	( export TMPDIR="$CONC/tmp-pub-os" ROADSTORM_CI_ATTEMPT_ID=pubsym1
+		ci_rel_at_home "$CONC/pubcwd-os" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$PUB_OUT" export --export "Linux x86-64" --out "$CONC/pubcwd-os/pkg" ) >"$CONC/pub-outer-sym.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] &&
+		[ -L "$PUB_OUT/reports/export-linux-x86-64-pubsym1.txt" ] &&
+		[ -z "$(ls -A "$CONC/pub-sym-target" 2>/dev/null)" ] &&
+		[ -s "$PUB_OUT/reports/export-pubsym1.txt" ] &&
+		grep -q '^export result=fail .*reason=report-publication-failed' "$PUB_OUT/reports/export-pubsym1.txt" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pubcwd-os/pkg" ] &&
+		[ "$(wc -l <"$PUB_SEAM_LOG" 2>/dev/null | tr -d ' ')" = "1" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an outer symlink-to-directory report occupant aborts publication -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-outer-sym.log" >&2; }
+
+	# Direct __export-inner call site, directory occupant: refuse before any
+	# lock file, scratch copy or package appears.
+	PUB_INNER="$CONC/pub-inner-dir"
+	rm -rf "$PUB_INNER" "$CONC/pubicwd" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$PUB_INNER/reports/export-linux-x86-64-innerdir1.txt" "$CONC/pubicwd"
+	( export TMPDIR="$CONC/tmp-pub-id" ROADSTORM_CI_ATTEMPT_ID=innerdir1
+		ci_rel_at_home "$CONC/pubicwd" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$PUB_INNER" __export-inner "Linux x86-64" release "$CONC/pubicwd/pkg" ) >"$CONC/pub-inner-dir.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] &&
+		[ -d "$PUB_INNER/reports/export-linux-x86-64-innerdir1.txt" ] &&
+		[ -z "$(ls -A "$PUB_INNER/reports/export-linux-x86-64-innerdir1.txt" 2>/dev/null)" ] &&
+		[ -s "$PUB_INNER/reports/__export-inner-innerdir1.txt" ] &&
+		grep -q '^export result=fail .*reason=report-publication-failed' "$PUB_INNER/reports/__export-inner-innerdir1.txt" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pubicwd/pkg" ] &&
+		[ ! -e "$CONC/pubicwd/pkg.ci-lock" ] && [ ! -d "$PUB_INNER/attempts" ] &&
+		[ "$(wc -l <"$PUB_SEAM_LOG" 2>/dev/null | tr -d ' ')" = "1" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a direct inner directory report occupant aborts before locks, copies or engine -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-inner-dir.log" >&2; }
+
+	# Direct __export-inner call site, symlink-to-directory occupant.
+	PUB_INNER="$CONC/pub-inner-sym"
+	rm -rf "$PUB_INNER" "$CONC/pubisycwd" "$CONC/pub-isy-target" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$PUB_INNER/reports" "$CONC/pubisycwd" "$CONC/pub-isy-target"
+	ln -s "$CONC/pub-isy-target" "$PUB_INNER/reports/export-linux-x86-64-innersym1.txt"
+	( export TMPDIR="$CONC/tmp-pub-isy" ROADSTORM_CI_ATTEMPT_ID=innersym1
+		ci_rel_at_home "$CONC/pubisycwd" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$PUB_INNER" __export-inner "Linux x86-64" release "$CONC/pubisycwd/pkg" ) >"$CONC/pub-inner-sym.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] &&
+		[ -L "$PUB_INNER/reports/export-linux-x86-64-innersym1.txt" ] &&
+		[ -z "$(ls -A "$CONC/pub-isy-target" 2>/dev/null)" ] &&
+		[ -s "$PUB_INNER/reports/__export-inner-innersym1.txt" ] &&
+		grep -q '^export result=fail .*reason=report-publication-failed' "$PUB_INNER/reports/__export-inner-innersym1.txt" &&
+		[ ! -e "$PUB_WRITER" ] && [ ! -e "$CONC/pubisycwd/pkg" ] &&
+		[ ! -d "$PUB_INNER/attempts" ] &&
+		[ "$(wc -l <"$PUB_SEAM_LOG" 2>/dev/null | tr -d ' ')" = "1" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a direct inner symlink-to-directory report occupant aborts publication -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-inner-sym.log" >&2; }
+
+	# Positive control at the real outer call site: a successful publication
+	# leaves one inode behind both report names, so the worker's PASS verdict is
+	# visible through the generic name too.
+	PUB_POS="$CONC/pub-positive"
+	rm -rf "$PUB_POS" "$CONC/pubposcwd" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/pubposcwd"
+	( export ROADSTORM_CI_ATTEMPT_ID=pubpos1
+		ci_at_home "$REALHOME" "$SPROJ" --godot "$_e2e_bin" --out "$PUB_POS" \
+			export --export "Linux x86-64" --out "$CONC/pubposcwd/pkg" ) >"$CONC/pub-positive.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -eq 0 ] &&
+		[ -s "$PUB_POS/reports/export-pubpos1.txt" ] &&
+		[ -s "$PUB_POS/reports/export-linux-x86-64-pubpos1.txt" ] &&
+		[ "$(_inode "$PUB_POS/reports/export-pubpos1.txt")" = "$(_inode "$PUB_POS/reports/export-linux-x86-64-pubpos1.txt")" ] &&
+		grep -q '^export result=pass' "$PUB_POS/reports/export-linux-x86-64-pubpos1.txt" &&
+		grep -q '^export result=pass' "$PUB_POS/reports/export-pubpos1.txt" &&
+		[ -s "$CONC/pubposcwd/pkg" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a successful outer publication shares one inode across both report names -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-positive.log" >&2; }
+
+	# The reserved .ci-lock namespace must be refused before ANY Godot
+	# invocation, including the --version probe. The seam proves the count is
+	# zero for both call shapes, lower- and uppercase.
+	NS_SEAM_OUT="$CONC/ns-seam-outer"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nscwd-sl" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nscwd-sl"
+	( export TMPDIR="$CONC/tmp-ns-sl"
+		ci_rel_at_home "$CONC/nscwd-sl" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" export --export "Linux x86-64" --out "$CONC/nscwd-sl/namespace.exe.ci-lock" ) >"$CONC/ns-seam-outer.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns-seam-outer.log" &&
+		grep -rq 'reason=lock-namespace' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$CONC/nscwd-sl/namespace.exe.ci-lock" ] &&
+		[ ! -e "$CONC/nscwd-sl/namespace.exe.ci-lock.ci-lock" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a lowercase outer .ci-lock destination invokes no Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-outer.log" >&2; }
+
+	NS_SEAM_OUT="$CONC/ns-seam-outer-upper"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nscwd-su" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nscwd-su"
+	( export TMPDIR="$CONC/tmp-ns-su"
+		ci_rel_at_home "$CONC/nscwd-su" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" export --export "Linux x86-64" --out "$CONC/nscwd-su/namespace.EXE.CI-LOCK" ) >"$CONC/ns-seam-outer-upper.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns-seam-outer-upper.log" &&
+		grep -rq 'reason=lock-namespace' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$CONC/nscwd-su/namespace.EXE.CI-LOCK" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an uppercase outer .CI-LOCK destination invokes no Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-outer-upper.log" >&2; }
+
+	NS_SEAM_OUT="$CONC/ns-seam-inner"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nsicwd-sl" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nsicwd-sl"
+	( export TMPDIR="$CONC/tmp-ns-il"
+		ci_rel_at_home "$CONC/nsicwd-sl" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" __export-inner "Linux x86-64" release "$CONC/nsicwd-sl/namespace.exe.ci-lock" ) >"$CONC/ns-seam-inner.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns-seam-inner.log" &&
+		grep -rq 'reason=lock-namespace' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$CONC/nsicwd-sl/namespace.exe.ci-lock" ] &&
+		[ ! -e "$CONC/nsicwd-sl/namespace.exe.ci-lock.ci-lock" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a lowercase inner .ci-lock destination invokes no Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-inner.log" >&2; }
+
+	NS_SEAM_OUT="$CONC/ns-seam-inner-upper"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nsicwd-su" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nsicwd-su"
+	( export TMPDIR="$CONC/tmp-ns-iu"
+		ci_rel_at_home "$CONC/nsicwd-su" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" __export-inner "Linux x86-64" release "$CONC/nsicwd-su/namespace-direct.EXE.CI-LOCK" ) >"$CONC/ns-seam-inner-upper.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns-seam-inner-upper.log" &&
+		grep -rq 'reason=lock-namespace' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$CONC/nsicwd-su/namespace-direct.EXE.CI-LOCK" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an uppercase inner .CI-LOCK destination invokes no Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-inner-upper.log" >&2; }
 
 	# A pre-existing symlink at the lock path is refused and never followed.
 	LOCK_SYM_CWD="$CONC/lock-symlink"

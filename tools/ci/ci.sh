@@ -255,6 +255,120 @@ CI_COMMAND="${1:-}"
 shift 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# Early export-namespace guard
+#
+# ci_find_godot below runs "$GODOT_BIN" --version before the command is
+# dispatched, so a destination inside the reserved .ci-lock namespace must be
+# rejected BEFORE this point. The later canonical guards in ci_export_build
+# and ci_export_build_inner stay in place as the authority for everything that
+# runs under the destination locks; this pass only stops an invalid request
+# from ever touching the engine, a lock file, the scratch copy or the output.
+# ---------------------------------------------------------------------------
+
+# ci_export_path_in_lock_namespace <path> : true when <path>, case-insensitively,
+# ends in the reserved .ci-lock suffix.
+ci_export_path_in_lock_namespace() {
+	case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+	*.ci-lock) return 0 ;;
+	esac
+	return 1
+}
+
+# ci_export_sidecar_for_out <main-output> : print the sidecar .pck path derived
+# from the output BASENAME, so a dot in a directory component cannot move it.
+ci_export_sidecar_for_out() {
+	_cso_out="$1"
+	case "$_cso_out" in
+	*/*) _cso_dir="${_cso_out%/*}"; _cso_base="${_cso_out##*/}" ;;
+	*) _cso_dir="."; _cso_base="$_cso_out" ;;
+	esac
+	case "$_cso_base" in
+	*.*) _cso_base="${_cso_base%.*}" ;;
+	esac
+	printf '%s/%s.pck\n' "$_cso_dir" "$_cso_base"
+}
+
+# _ci_early_export_request <command> [args...] : print three lines
+# (<out>, <preset>, <mode>) for a package-building request, or nothing when the
+# invocation cannot be recognised as one. Anything unusual returns nothing and
+# is left to the real parsers, which fail in their own way.
+_ci_early_export_request() {
+	_eer_cmd="$1"
+	shift
+	case "$_eer_cmd" in
+	export)
+		_eer_mode="release"
+		while [ $# -gt 0 ]; do
+			case "$1" in
+			--mode) [ $# -ge 2 ] || return 0; _eer_mode="$2"; shift 2 ;;
+			--mode=*) _eer_mode="${1#--mode=}"; shift ;;
+			--export | export) shift; break ;;
+			--check | check | --list-presets | list-presets) return 0 ;;
+			*) return 0 ;;
+			esac
+		done
+		_eer_preset=""
+		_eer_out=""
+		while [ $# -gt 0 ]; do
+			case "$1" in
+			--preset) [ $# -ge 2 ] || break; _eer_preset="$2"; shift 2 ;;
+			--preset=*) _eer_preset="${1#--preset=}"; shift ;;
+			--out) [ $# -ge 2 ] || break; _eer_out="$2"; shift 2 ;;
+			--out=*) _eer_out="${1#--out=}"; shift ;;
+			--) shift; break ;;
+			-*) break ;;
+			*) [ -z "$_eer_preset" ] && _eer_preset="$1"; shift ;;
+			esac
+		done
+		[ -n "$_eer_out" ] || return 0
+		printf '%s\n%s\n%s\n' "$_eer_out" "$_eer_preset" "$_eer_mode"
+		;;
+	__export-inner)
+		[ $# -ge 3 ] || return 0
+		[ -n "$3" ] || return 0
+		printf '%s\n%s\n%s\n' "$3" "$1" "$2"
+		;;
+	esac
+	return 0
+}
+
+# ci_early_namespace_guard <command> [args...] : reject a build destination in
+# the .ci-lock namespace before any Godot invocation. Returns CI_OK when the
+# request is clear (or is not a build), CI_FAIL with a structured report line
+# when it is refused. On refusal it creates only logs/reports evidence: no
+# lock file, scratch copy or package output is touched.
+ci_early_namespace_guard() {
+	_eng_req="$(_ci_early_export_request "$@" 2>/dev/null)" || return "$CI_OK"
+	[ -n "$_eng_req" ] || return "$CI_OK"
+	_eng_out_raw="$(printf '%s\n' "$_eng_req" | sed -n '1p')"
+	_eng_preset="$(printf '%s\n' "$_eng_req" | sed -n '2p')"
+	_eng_mode="$(printf '%s\n' "$_eng_req" | sed -n '3p')"
+	case "$_eng_out_raw" in
+	/*) : ;;
+	*) _eng_out_raw="${PWD:-$(pwd)}/$_eng_out_raw" ;;
+	esac
+	_eng_out="$(ci_abs_path "$_eng_out_raw" 2>/dev/null)" || return "$CI_OK"
+	_eng_pck="$(ci_export_sidecar_for_out "$_eng_out")"
+	if ci_export_path_in_lock_namespace "$_eng_out"; then
+		ci_init_logs
+		ci_init_report
+		ci_fail "export: destination is inside the reserved .ci-lock lock namespace: $_eng_out (choose another output name)"
+		ci_report "export result=fail preset=$_eng_preset mode=$_eng_mode reason=lock-namespace output=$_eng_out"
+		ci_info "report: $CI_REPORT" >&2
+		return "$CI_FAIL"
+	fi
+	if ci_export_path_in_lock_namespace "$_eng_pck"; then
+		ci_init_logs
+		ci_init_report
+		ci_fail "export: sidecar destination is inside the reserved .ci-lock lock namespace: $_eng_pck (choose another output name)"
+		ci_report "export result=fail preset=$_eng_preset mode=$_eng_mode reason=lock-namespace output=$_eng_out"
+		ci_info "report: $CI_REPORT" >&2
+		return "$CI_FAIL"
+	fi
+	return "$CI_OK"
+}
+
+# ---------------------------------------------------------------------------
 # Resolve the project, the output directory and the engine
 # ---------------------------------------------------------------------------
 [ -d "$CI_PROJECT" ] || ci_die "project directory does not exist: $CI_PROJECT"
@@ -280,6 +394,10 @@ CI_OUT_RES=""
 [ -n "$CI_OUT_REL_PATH" ] && CI_OUT_RES="res://$CI_OUT_REL_PATH"
 
 CI_RUN_NAME="$CI_COMMAND"
+
+# Refuse a reserved .ci-lock destination before the engine version probe. This
+# must run before ci_find_godot, which invokes the engine.
+ci_early_namespace_guard "$CI_COMMAND" "$@" || exit "$?"
 
 # Engine discovery is lazy. `verify-engine` and `pin` only read pinned data and
 # hash local files, so they must work on a host with no Godot installed at all --
@@ -1836,47 +1954,43 @@ ci_export_build() {
 	# ci_init_report ran before dispatch and therefore used the generic command
 	# name. Give the already-written report the same preset-specific name as the
 	# logs so two presets can never share an evidence file. Publication is
-	# create-only: ln refuses a pre-existing regular file or dangling symlink
-	# instead of replacing prior evidence, and the successful link leaves one
-	# inode behind both names so the parent/worker handoff stays coherent.
+	# create-only at the exact destination (ci_link_create_only): a regular
+	# file, dangling symlink, directory or symlink-to-directory occupant is
+	# refused instead of written through or into, and the successful link leaves
+	# one inode behind both names so the parent/worker handoff stays coherent.
+	# A failure here aborts before the engine writes anything: continuing would
+	# let an export exit 0 while its verdict landed nowhere.
 	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
 		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
-			CI_REPORT="$_new_report"
+		if ! ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
+			ci_note "refusing to continue without a writable per-attempt verdict; the attempt keeps its report at $CI_REPORT"
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=report-publication-failed output=$_out report=$_new_report"
+			return "$CI_FAIL"
 		fi
+		CI_REPORT="$_new_report"
 	fi
 
 	# Sidecar path, derived from the output BASENAME so a dot in a directory
 	# component cannot move it. Computed before the engine runs.
-	case "$_out" in
-		*/*) _pck_dir="${_out%/*}"; _pck_base="${_out##*/}" ;;
-		*) _pck_dir="."; _pck_base="$_out" ;;
-	esac
-	case "$_pck_base" in
-		*.*) _pck_base="${_pck_base%.*}" ;;
-	esac
-	_pck="$_pck_dir/$_pck_base.pck"
+	_pck="$(ci_export_sidecar_for_out "$_out")"
 
 	# Reject destinations inside the reserved ".ci-lock" namespace. Lock files
 	# are "<destination>.ci-lock"; an output ending in .ci-lock would itself be
 	# another invocation's lock file, letting two cooperating exports enter the
-	# engine and one overwrite the other's empty lock with package bytes.
-	_out_lower="$(printf '%s' "$_out" | tr '[:upper:]' '[:lower:]')"
-	_pck_lower="$(printf '%s' "$_pck" | tr '[:upper:]' '[:lower:]')"
-	case "$_out_lower" in
-		*.ci-lock)
-			ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out (choose another output name)"
-			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
-			return "$CI_FAIL"
-		;;
-	esac
-	case "$_pck_lower" in
-		*.ci-lock)
-			ci_fail "export --export: sidecar destination is inside the reserved .ci-lock lock namespace: $_pck (choose another output name)"
-			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
-			return "$CI_FAIL"
-		;;
-	esac
+	# engine and one overwrite the other's empty lock with package bytes. The
+	# early guard already refused this before the engine version probe; keep the
+	# canonical checks on each path separately under the real parsed values.
+	if ci_export_path_in_lock_namespace "$_out"; then
+		ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out (choose another output name)"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+		return "$CI_FAIL"
+	fi
+	if ci_export_path_in_lock_namespace "$_pck"; then
+		ci_fail "export --export: sidecar destination is inside the reserved .ci-lock lock namespace: $_pck (choose another output name)"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+		return "$CI_FAIL"
+	fi
 
 	# Validate the lock namespace and lock paths here for a fast, structured
 	# failure. The worker re-checks under its own process and acquires the fds.
@@ -1993,44 +2107,37 @@ ci_export_build_inner() {
 	_slug="$(ci_preset_slug "$_preset")"
 	[ -n "$_slug" ] || _slug="preset"
 	CI_RUN_NAME="export-$_slug"
-	# Same create-only publication as the outer path: a direct __export-inner
-	# call must not replace an existing report path either.
+	# Same exact-destination create-only publication as the outer path: a
+	# direct __export-inner call must not replace an existing report path
+	# either, and must abort before any lock or engine write if it cannot.
 	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
 		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
-			CI_REPORT="$_new_report"
+		if ! ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
+			ci_note "refusing to continue without a writable per-attempt verdict; the attempt keeps its report at $CI_REPORT"
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=report-publication-failed output=$_out report=$_new_report"
+			return "$CI_FAIL"
 		fi
+		CI_REPORT="$_new_report"
 	fi
-	case "$_out" in
-		*/*) _pck_dir="${_out%/*}"; _pck_base="${_out##*/}" ;;
-		*) _pck_dir="."; _pck_base="$_out" ;;
-	esac
-	case "$_pck_base" in
-		*.*) _pck_base="${_pck_base%.*}" ;;
-	esac
-	_pck="$_pck_dir/$_pck_base.pck"
+	_pck="$(ci_export_sidecar_for_out "$_out")"
 
-	# Reserved lock namespace must be rejected even for a direct worker call.
-	# Check each path separately, exactly like the outer path: concatenating the
+	# Reserved lock namespace must be rejected even for a direct worker call,
+	# and the early guard has already done so before any engine invocation. Check
+	# each path separately, exactly like the outer path: concatenating the
 	# lowercased names lets an output ending in .ci-lock hide behind a sidecar
 	# suffix that does not (e.g. out=name.ci-lock, pck=name.pck), so the
 	# combined string no longer ends in .ci-lock and the guard would bypass.
-	_out_lower="$(printf '%s' "$_out" | tr '[:upper:]' '[:lower:]')"
-	_pck_lower="$(printf '%s' "$_pck" | tr '[:upper:]' '[:lower:]')"
-	case "$_out_lower" in
-		*.ci-lock)
-			ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out (choose another output name)"
-			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
-			return "$CI_FAIL"
-		;;
-	esac
-	case "$_pck_lower" in
-		*.ci-lock)
-			ci_fail "export --export: sidecar destination is inside the reserved .ci-lock lock namespace: $_pck (choose another output name)"
-			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
-			return "$CI_FAIL"
-		;;
-	esac
+	if ci_export_path_in_lock_namespace "$_out"; then
+		ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out (choose another output name)"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+		return "$CI_FAIL"
+	fi
+	if ci_export_path_in_lock_namespace "$_pck"; then
+		ci_fail "export --export: sidecar destination is inside the reserved .ci-lock lock namespace: $_pck (choose another output name)"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+		return "$CI_FAIL"
+	fi
 
 	# Acquire both destination locks IN THIS PROCESS before the stale-output
 	# check. fd-form flock/lockf associate the advisory lock with the open file
@@ -2293,7 +2400,10 @@ EOF
 	# (Sol recheck 8c6c928).
 	ci_ok "export: $_pass_msg"
 	ci_ok "export: package inventory passed ($_inv_plat; report $_inv_report)"
-	ci_report "export result=pass preset=$_preset mode=$_mode $_pass_fields pack_inventory=pass platform=$_inv_plat report=$_inv_report"
+	if ! ci_report "export result=pass preset=$_preset mode=$_mode $_pass_fields pack_inventory=pass platform=$_inv_plat report=$_inv_report"; then
+		ci_fail "export: the passing verdict could not be appended to $CI_REPORT; refusing to report an unrecorded pass"
+		return "$CI_FAIL"
+	fi
 
 	ci_note "This is a locally built package, not a verified release: launching it on the target OS (PLAN.md M9.2) and signing/notarization (M9.3) are separate steps."
 	return "$CI_OK"

@@ -1056,10 +1056,12 @@ ci_init_report() {
 	mkdir -p "$CI_OUT/reports" 2>/dev/null
 	_stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%s)"
 	# Reserve the FINAL evidence path exclusively and atomically: build the
-	# header in a uniquely created temporary file, then hard-link it into place.
-	# ln fails if the final name already exists, including a dangling symlink,
-	# so a forced same-second token collision can never overwrite prior evidence
-	# or replace a user path. There is deliberately no non-atomic mv fallback.
+	# header in a uniquely created temporary file, then hard-link it into place
+	# at the exact destination. The link is create-only: it fails if any
+	# occupant (regular file, dangling symlink, directory or symlink to one)
+	# already exists, so a forced same-second token collision can never
+	# overwrite prior evidence or write a child into a directory. There is
+	# deliberately no non-atomic mv fallback.
 	CI_REPORT=""
 	_try=0
 	while [ "$_try" -le 100 ]; do
@@ -1081,7 +1083,7 @@ ci_init_report() {
 			printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
 			printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
 		} >"$_body" 2>/dev/null
-		if ln "$_body" "$_new_report" 2>/dev/null; then
+		if ci_link_create_only "$_body" "$_new_report"; then
 			rm -f "$_body" 2>/dev/null
 			CI_REPORT="$_new_report"
 			break
@@ -1090,13 +1092,15 @@ ci_init_report() {
 		_try=$((_try + 1))
 	done
 	if [ -z "$CI_REPORT" ] || [ -z "$CI_ATTEMPT_ID" ]; then
-		ci_die "could not exclusively reserve a per-attempt report in $CI_OUT/reports (mktemp/ln unavailable or all 100 candidate names occupied)"
+		ci_die "could not exclusively reserve a per-attempt report in $CI_OUT/reports (hard-link publication unavailable or all 100 candidate names occupied)"
 	fi
 }
 
 
 ci_report() {
 	[ -n "$CI_REPORT" ] || return 0
+	# Return the append status: a caller emitting a PASS verdict must not be
+	# able to exit 0 while the verdict silently failed to reach the report.
 	printf '%s\n' "$*" >>"$CI_REPORT" 2>/dev/null
 }
 
@@ -1109,21 +1113,54 @@ ci_new_evidence_file() {
 	mktemp "$_nef_dir/ci-evidence.XXXXXX" 2>/dev/null
 }
 
+# ci_link_create_only <source> <destination> : create a hard link at exactly
+# <destination>, atomically, without writing through or into an occupant.
+#
+# Two-operand ln(1) is NOT exact-destination: given an existing directory, or a
+# symlink to one, it descends and creates a CHILD link named after the source
+# basename, exiting 0 (measured on macOS and GNU/Linux). A stat precheck is
+# racy: the occupant can appear between the check and the link. link(2) is the
+# atomic primitive; Python's os.link binds it portably on the supported macOS
+# and Linux hosts and fails with EEXIST for a regular file, dangling symlink,
+# directory or symlink-to-directory occupant. When Python 3 is unavailable,
+# GNU coreutils/busybox `ln -T` provides the same exact-destination link(2)
+# semantics on Linux. Returns 0 only when the link exists at <destination>;
+# every failure leaves the destination byte/link-exact.
+ci_link_create_only() {
+	_lco_src="$1"
+	_lco_dst="$2"
+	[ -n "$_lco_src" ] && [ -n "$_lco_dst" ] || return 1
+	[ -f "$_lco_src" ] || return 1
+	if command -v python3 >/dev/null 2>&1; then
+		python3 -c 'import os, sys
+try:
+    os.link(sys.argv[1], sys.argv[2])
+except OSError:
+    sys.exit(1)' "$_lco_src" "$_lco_dst" 2>/dev/null
+		return "$?"
+	fi
+	if [ "$(uname -s 2>/dev/null)" = "Linux" ]; then
+		ln -T -- "$_lco_src" "$_lco_dst" 2>/dev/null && return 0
+	fi
+	return 1
+}
+
 # ci_publish_report_exclusive <source> <final-name> : publish an existing report
 # at its final per-attempt name WITHOUT replacing anything already there.
-# ln(2) is create-only: it fails, leaving the destination byte/link-exact, when
-# a regular file, directory or dangling symlink occupies the name. The source is
-# deliberately kept after a successful link, so both pathnames resolve to one
-# inode: a parent/worker handoff through either name keeps reading the same
-# report. Returns 0 when publication succeeded (or source == final-name),
-# nonzero when it did not.
+# ci_link_create_only addresses the exact destination atomically, so a regular
+# file, dangling symlink, directory or symlink-to-directory occupant is
+# refused and left byte/link-exact; nothing is linked into a target directory.
+# The source is deliberately kept after a successful link, so both pathnames
+# resolve to one inode: a parent/worker handoff through either name keeps
+# reading the same report. Returns 0 when publication succeeded (or
+# source == final-name), nonzero when it did not.
 ci_publish_report_exclusive() {
 	_pre_src="$1"
 	_pre_dst="$2"
 	[ -n "$_pre_src" ] && [ -n "$_pre_dst" ] || return 1
 	[ -f "$_pre_src" ] || return 1
 	[ "$_pre_src" = "$_pre_dst" ] && return 0
-	ln "$_pre_src" "$_pre_dst" 2>/dev/null
+	ci_link_create_only "$_pre_src" "$_pre_dst"
 }
 
 # ---------------------------------------------------------------------------
