@@ -56,6 +56,12 @@ extends RefCounted
 ##   * physics areas are ignored, so area-tagged surfaces are invisible here;
 ##     bodies that pass the collision mask (including other cars) read as
 ##     support;
+##   * every ray hit records stable collider identity (`collider_id`, `rid`,
+##     `shape`), and the selected support exposes the same triple. The sensor
+##     keeps IDs and the shape index only, never a strong reference to the
+##     collider object. Identity lets a caller separate a road from a
+##     same-mask car roof; this probe does not judge route, clearance or
+##     relative-motion eligibility.
 ##   * only rectangular box hulls with the centred convention above are
 ##     supported; the body scale must be one;
 ##   * rays use front-face, outside-origin Jolt queries; geometry seen edge-on
@@ -224,6 +230,13 @@ class Result extends RefCounted:
 	## World-vertical drop from the transform origin to the support point,
 	## metres (positive below the origin).
 	var support_height_m := 0.0
+	## Stable identity of the selected legal support hit. The defaults mean
+	## "no selected support": no legal hit, or an atomic refusal. These are
+	## sensor telemetry only; they carry no route, clearance or eligibility
+	## verdict.
+	var support_collider_id := -1
+	var support_rid := RID()
+	var support_shape_index := -1
 	## Validated detail for each of the five probes, in fixed order.
 	var probes: Array[Dictionary] = []
 	## Actual `intersect_ray` calls issued. Five on success, zero on refusal.
@@ -302,6 +315,9 @@ static func probe(
 			"end": end,
 			"direction": down,
 			"hit": false,
+			"collider_id": -1,
+			"rid": RID(),
+			"shape_index": -1,
 			"valid": false,
 			"position": Vector3.ZERO,
 			"normal": Vector3.ZERO,
@@ -326,6 +342,12 @@ static func probe(
 			continue
 
 		detail["hit"] = true
+		# Stable identity is read from the query result and kept as IDs only.
+		# The collider Object itself is deliberately not retained, so a result
+		# cannot keep a dying collider alive.
+		detail["collider_id"] = int(hit["collider_id"])
+		detail["rid"] = hit["rid"]
+		detail["shape_index"] = int(hit["shape"])
 		var position: Vector3 = hit["position"]
 		var normal: Vector3 = hit["normal"]
 		if not _vector3_is_finite(position) or not _vector3_is_finite(normal):
@@ -403,6 +425,9 @@ static func probe(
 	result.support_point = probes[chosen_index]["position"]
 	result.support_distance_m = valid_distances[best]
 	result.support_height_m = world_transform.origin.y - result.support_point.y
+	result.support_collider_id = int(probes[chosen_index]["collider_id"])
+	result.support_rid = probes[chosen_index]["rid"]
+	result.support_shape_index = int(probes[chosen_index]["shape_index"])
 
 	# Bounded average of the unit normals: at most `PROBE_COUNT` contributions
 	# and renormalized, so the result is always a unit vector or zero. An

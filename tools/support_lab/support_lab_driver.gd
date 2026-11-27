@@ -8,8 +8,9 @@ extends Node
 ## Scope: bounded downward support sensing only. It proves the five-query
 ## contract, legal-normal and distance gating, seam/footprint grounding,
 ## ceiling/overpass and steep-surface rejection, mask and area behaviour,
-## atomic refusal with zero queries, and deterministic repeatability. It does
-## not implement adhesion, attraction, landing recovery or M1.4 acceptance.
+## atomic refusal with zero queries, deterministic repeatability, and stable
+## hit/support identity telemetry. It does not implement adhesion, attraction,
+## landing recovery, route eligibility or M1.4 acceptance.
 
 const ProbeScript = preload("res://src/simulation/ground_support_probe.gd")
 const ChecksScript = preload("res://tools/support_lab/support_lab_checks.gd")
@@ -50,6 +51,7 @@ const CASE_IDS := [
 	"invalid_input_unchanged",
 	"deterministic_repeat",
 	"exactly_five_queries",
+	"support_identity",
 ]
 
 var d := ChecksScript.new()
@@ -160,6 +162,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_deterministic_repeat()
 		"exactly_five_queries":
 			await _case_exactly_five_queries()
+		"support_identity":
+			await _case_support_identity()
 	# Guard against a case id that reaches the dispatcher without a match arm:
 	# such a case would otherwise report a vacuous zero-check pass.
 	d.check(d.checks > 0, "%s: case emitted at least one assertion" % case_id)
@@ -199,6 +203,30 @@ func _cluster_size_of(result: ProbeScript.Result) -> int:
 func _cluster_indices_of(result: ProbeScript.Result) -> Array:
 	var value = result.get("grounding_cluster_indices")
 	return value if typeof(value) == TYPE_ARRAY else []
+
+## Identity readers tolerant of an older Result/detail shape. The
+## historical-source control replaces the probe script with a source that has
+## no identity fields, so these return the documented absent defaults instead
+## of raising a missing-property error. An old source therefore fails only
+## assertions that expect a real identity, never the behavioural checks.
+func _detail_int(detail: Dictionary, key: String) -> int:
+	var value = detail.get(key)
+	return int(value) if typeof(value) == TYPE_INT else -1
+
+
+func _detail_rid(detail: Dictionary, key: String) -> RID:
+	var value = detail.get(key)
+	return value if typeof(value) == TYPE_RID else RID()
+
+
+func _result_identity_int(result: ProbeScript.Result, field: String) -> int:
+	var value = result.get(field)
+	return int(value) if typeof(value) == TYPE_INT else -1
+
+
+func _result_identity_rid(result: ProbeScript.Result, field: String) -> RID:
+	var value = result.get(field)
+	return value if typeof(value) == TYPE_RID else RID()
 
 
 func _run_intentional_failure() -> Dictionary:
@@ -1368,3 +1396,283 @@ func _case_exactly_five_queries() -> void:
 	d.check(refused.queries_used == 0, "queries: refusal issues zero queries")
 	d.check(refused.probes.is_empty(), "queries: refusal exposes no probe records")
 	await _destroy(world)
+
+
+## Identity telemetry case: a candidate body held above the road can only
+## reach a same-mask second car roof. The rays must report the second car's
+## stable identity rather than the road's, and replacing that roof with an
+## eligible road slab at the same height must change the selected identity.
+## The case also pins the absent identity defaults for no-hit, refusal and
+## self-exclusion probes. It claims no route eligibility.
+func _case_support_identity() -> void:
+	var candidate_position := Vector3(0.0, 2.55, 0.0)
+	var roof_top_y := 2.0
+	var roof_center_y := roof_top_y - 0.5 * d.HULL_SIZE.y
+	var config := d.make_config()
+	var transform := d.flat_transform(candidate_position)
+	d.check(
+		candidate_position.y > config.ray_length_m,
+		"identity roof: road is outside the configured ray reach"
+	)
+
+	var world := await _build(
+		_floor_slabs(),
+		[],
+		[
+			_car_spec("Probe", candidate_position),
+			_car_spec("RoofCar", Vector3(0.0, roof_center_y, 0.0)),
+		]
+	)
+	var roof_car := world.body("RoofCar")
+	var road = world.root.get_node_or_null("Floor")
+	d.check(road != null, "identity roof: road stage present")
+
+	var result := _probe(world, "Probe", config, transform)
+	_check_common_ok_result(result, config, ProbeScript.PROBE_COUNT, "identity-roof")
+	d.check(result.grounded, "identity roof: grounded on the same-mask car roof")
+	d.check(result.center_supported, "identity roof: central probe supports")
+	d.check(
+		result.support_count == ProbeScript.PROBE_COUNT,
+		"identity roof: all five rays read the roof (got %d)" % result.support_count
+	)
+	d.check_close(
+		result.support_distance_m, candidate_position.y - roof_top_y, 1e-5,
+		"identity roof: support distance to the roof"
+	)
+	d.check_vector_close(
+		result.support_point, Vector3(0.0, roof_top_y, 0.0), 1e-5,
+		"identity roof: support point on the roof"
+	)
+	for index in range(result.probes.size()):
+		var detail: Dictionary = result.probes[index]
+		d.check(detail["hit"], "identity roof %d: ray hit" % index)
+		d.check(detail["valid"], "identity roof %d: legal support" % index)
+		d.check(
+			_detail_int(detail, "collider_id") == roof_car.get_instance_id(),
+			"identity roof %d: collider id is the second car (got %d, want %d)"
+			% [index, _detail_int(detail, "collider_id"), roof_car.get_instance_id()]
+		)
+		d.check(
+			_detail_rid(detail, "rid") == roof_car.get_rid(),
+			"identity roof %d: rid is the second car" % index
+		)
+		d.check(
+			_detail_int(detail, "shape_index") == 0,
+			"identity roof %d: shape index is zero (got %d)"
+			% [index, _detail_int(detail, "shape_index")]
+		)
+		if road != null:
+			d.check(
+				_detail_rid(detail, "rid") != road.get_rid(),
+				"identity roof %d: ray does not report the road" % index
+			)
+	d.check(result.support_probe_index == 0, "identity roof: closest support is central")
+	d.check(
+		_result_identity_int(result, "support_collider_id") == roof_car.get_instance_id(),
+		"identity roof: selected collider id is the second car"
+	)
+	d.check(
+		_result_identity_rid(result, "support_rid") == roof_car.get_rid(),
+		"identity roof: selected rid is the second car"
+	)
+	d.check(
+		_result_identity_int(result, "support_shape_index") == 0,
+		"identity roof: selected shape index is zero"
+	)
+	if road != null:
+		d.check(
+			_result_identity_rid(result, "support_rid") != road.get_rid(),
+			"identity roof: selected identity is not the road"
+		)
+	var roof_collider_id := roof_car.get_instance_id()
+	var roof_rid := roof_car.get_rid()
+	await _destroy(world)
+
+	# Replace the car roof with an eligible road slab at the same height. The
+	# behavioural outputs stay the same; the selected identity must move.
+	var high_road_world := await _build(
+		[_slab("HighRoad", FLOOR_SIZE, Vector3(0.0, roof_top_y - 0.5, 0.0))],
+		[],
+		[_car_spec("Probe", candidate_position)]
+	)
+	var road_collider: CollisionObject3D = (
+		high_road_world.root.get_node_or_null("HighRoad") as CollisionObject3D
+	)
+	if road_collider == null:
+		d.check(false, "identity road: road slab stage present")
+	else:
+		var road_result := _probe(high_road_world, "Probe", config, transform)
+		_check_common_ok_result(road_result, config, ProbeScript.PROBE_COUNT, "identity-road")
+		d.check(road_result.grounded, "identity road: grounded on the road slab")
+		d.check(
+			road_result.support_count == ProbeScript.PROBE_COUNT,
+			"identity road: all five rays read the road slab (got %d)"
+			% road_result.support_count
+		)
+		d.check_close(
+			road_result.support_distance_m, candidate_position.y - roof_top_y, 1e-5,
+			"identity road: unchanged support distance"
+		)
+		for index in range(road_result.probes.size()):
+			var detail: Dictionary = road_result.probes[index]
+			d.check(
+				_detail_int(detail, "collider_id") == road_collider.get_instance_id(),
+				"identity road %d: collider id is the road slab (got %d, want %d)"
+				% [index, _detail_int(detail, "collider_id"), road_collider.get_instance_id()]
+			)
+			d.check(
+				_detail_rid(detail, "rid") == road_collider.get_rid(),
+				"identity road %d: rid is the road slab" % index
+			)
+		d.check(
+			_result_identity_int(road_result, "support_collider_id") == road_collider.get_instance_id(),
+			"identity road: selected collider id changed to the road slab"
+		)
+		d.check(
+			_result_identity_rid(road_result, "support_rid") == road_collider.get_rid(),
+			"identity road: selected rid changed to the road slab"
+		)
+		d.check(
+			_result_identity_rid(road_result, "support_rid") != roof_rid,
+			"identity road: selected identity differs from the car roof"
+		)
+		d.check(
+			_result_identity_int(road_result, "support_collider_id") != roof_collider_id,
+			"identity road: selected collider id differs from the car roof"
+		)
+		measurements["roof_collider_id"] = roof_collider_id
+		measurements["road_collider_id"] = road_collider.get_instance_id()
+	await _destroy(high_road_world)
+
+	# No-hit defaults: absent geometry leaves per-probe and selected identity
+	# at the documented absent values.
+	var empty_world := await _build(
+		[], [], [_car_spec("Probe", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))]
+	)
+	var empty_transform := d.flat_transform(Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))
+	var empty_result := _probe(empty_world, "Probe", config, empty_transform)
+	_check_common_ok_result(empty_result, config, ProbeScript.PROBE_COUNT, "identity-absent")
+	d.check(not empty_result.has_support, "identity absent: no selected support")
+	d.check(
+		_result_identity_int(empty_result, "support_collider_id") == -1,
+		"identity absent: selected collider id default"
+	)
+	d.check(
+		_result_identity_rid(empty_result, "support_rid") == RID(),
+		"identity absent: selected rid default"
+	)
+	d.check(
+		_result_identity_int(empty_result, "support_shape_index") == -1,
+		"identity absent: selected shape index default"
+	)
+	for index in range(empty_result.probes.size()):
+		var detail: Dictionary = empty_result.probes[index]
+		d.check(not detail["hit"], "identity absent %d: no hit" % index)
+		d.check(
+			_detail_int(detail, "collider_id") == -1,
+			"identity absent %d: detail collider id default" % index
+		)
+		d.check(
+			_detail_rid(detail, "rid") == RID(),
+			"identity absent %d: detail rid default" % index
+		)
+		d.check(
+			_detail_int(detail, "shape_index") == -1,
+			"identity absent %d: detail shape index default" % index
+		)
+	await _destroy(empty_world)
+
+	# Refusal defaults: an invalid config issues zero queries and exposes no
+	# identity.
+	var bad_config := d.make_config()
+	bad_config.ray_length_m = 0.0
+	var refuse_world := await _build(
+		_floor_slabs(), [], [_car_spec("Probe", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))]
+	)
+	var refused := _probe(refuse_world, "Probe", bad_config, empty_transform)
+	d.check(
+		refused.status == ProbeScript.Status.REJECTED_INVALID_INPUT,
+		"identity refusal: refused"
+	)
+	d.check(refused.queries_used == 0, "identity refusal: zero queries")
+	d.check(refused.probes.is_empty(), "identity refusal: no probe details")
+	d.check(
+		_result_identity_int(refused, "support_collider_id") == -1,
+		"identity refusal: selected collider id default"
+	)
+	d.check(
+		_result_identity_rid(refused, "support_rid") == RID(),
+		"identity refusal: selected rid default"
+	)
+	d.check(
+		_result_identity_int(refused, "support_shape_index") == -1,
+		"identity refusal: selected shape index default"
+	)
+	await _destroy(refuse_world)
+
+	# Positive control: a separate car roof in the same relative ray path is
+	# reported, so the exclusion test below is meaningful.
+	var target_position := Vector3(5.0, d.BODY_SUPPORT_Y, 0.0)
+	var target_transform := d.flat_transform(Vector3(5.0, d.BODY_SUPPORT_Y + 1.0, 0.0))
+	var target_world := await _build(
+		_floor_slabs(),
+		[],
+		[
+			_car_spec("Probe", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0)),
+			_car_spec("Target", target_position),
+		]
+	)
+	var target := target_world.body("Target")
+	var target_result := _probe(target_world, "Probe", config, target_transform)
+	_check_common_ok_result(target_result, config, ProbeScript.PROBE_COUNT, "identity-target")
+	d.check(target_result.grounded, "identity target: separate roof grounds")
+	d.check(
+		_result_identity_int(target_result, "support_collider_id") == target.get_instance_id(),
+		"identity target: selected collider id is the separate car"
+	)
+	d.check(
+		_result_identity_rid(target_result, "support_rid") == target.get_rid(),
+		"identity target: selected rid is the separate car"
+	)
+	await _destroy(target_world)
+
+	# Self-exclusion: the candidate's own roof occupies the same ray path as
+	# the positive control, but its RID is excluded and the road is out of
+	# reach, so no hit is reported and identity stays at its defaults.
+	var self_world := await _build(
+		_floor_slabs(), [], [_car_spec("Probe", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))]
+	)
+	var self_transform := d.flat_transform(Vector3(0.0, d.BODY_SUPPORT_Y + 1.0, 0.0))
+	var self_result := _probe(self_world, "Probe", config, self_transform)
+	_check_common_ok_result(self_result, config, ProbeScript.PROBE_COUNT, "identity-self")
+	d.check(not self_result.grounded, "identity self: excluded own roof does not ground")
+	d.check(self_result.support_count == 0, "identity self: zero legal supports")
+	d.check(not self_result.has_support, "identity self: no selected support")
+	d.check(
+		_result_identity_int(self_result, "support_collider_id") == -1,
+		"identity self: selected collider id default"
+	)
+	d.check(
+		_result_identity_rid(self_result, "support_rid") == RID(),
+		"identity self: selected rid default"
+	)
+	d.check(
+		_result_identity_int(self_result, "support_shape_index") == -1,
+		"identity self: selected shape index default"
+	)
+	for index in range(self_result.probes.size()):
+		var detail: Dictionary = self_result.probes[index]
+		d.check(not detail["hit"], "identity self %d: no self hit" % index)
+		d.check(
+			_detail_int(detail, "collider_id") == -1,
+			"identity self %d: detail collider id default" % index
+		)
+		d.check(
+			_detail_rid(detail, "rid") == RID(),
+			"identity self %d: detail rid default" % index
+		)
+		d.check(
+			_detail_int(detail, "shape_index") == -1,
+			"identity self %d: detail shape index default" % index
+		)
+	await _destroy(self_world)

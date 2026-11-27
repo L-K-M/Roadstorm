@@ -29,6 +29,8 @@
 #   --mutant NAME       run only this mutant's negative control
 #   --skip-mutants      skip phase 3
 #   --legacy-probe FILE run only the historical-source negative control
+#   --legacy-case ID    case the legacy control must fail
+#                      (default: coherent_cluster_three_plus_one)
 #   --keep-scratch      retain the temporary stage and logs
 #
 # Exit codes: 0 = every required phase passed; 1 = a phase failed;
@@ -49,6 +51,7 @@ OUTER_LIMIT_S=${ROADSTORM_OUTER_TIMEOUT:-300}
 CASE_ID=""
 MUTANT_ONLY=""
 LEGACY_PROBE=""
+LEGACY_CASE="coherent_cluster_three_plus_one"
 SKIP_MUTANTS=0
 KEEP_SCRATCH=0
 
@@ -57,12 +60,14 @@ usage() {
 Usage: run_validation.sh [--project DIR] [--godot BIN]
                          [--timeout SECONDS] [--outer-timeout SECONDS]
                          [--case ID] [--mutant NAME] [--skip-mutants]
-                         [--legacy-probe FILE] [--keep-scratch]
+                         [--legacy-probe FILE] [--legacy-case ID] [--keep-scratch]
 
 Stages a private copy, imports, then runs the support_lab suite, the
 deliberate-failure proof and broken-behaviour mutants under pinned Godot.
 With --legacy-probe, runs only the historical-source negative control:
-the supplied older probe must fail the coherent-cluster case.
+the supplied older probe must fail the selected case (default: the
+coherent-cluster case). When that case is support_identity, every reported
+failure must be an identity assertion.
 EOF
 }
 
@@ -137,6 +142,15 @@ while [ $# -gt 0 ]; do
 		LEGACY_PROBE=${1#*=}
 		shift
 		;;
+	--legacy-case)
+		[ $# -ge 2 ] || die_usage "--legacy-case needs a value"
+		LEGACY_CASE=$2
+		shift 2
+		;;
+	--legacy-case=*)
+		LEGACY_CASE=${1#*=}
+		shift
+		;;
 	--skip-mutants)
 		SKIP_MUTANTS=1
 		shift
@@ -184,6 +198,21 @@ fi
 if [ -n "$LEGACY_PROBE" ] && [ ! -f "$LEGACY_PROBE" ]; then
 	die_usage "--legacy-probe file not found: $LEGACY_PROBE"
 fi
+case "$LEGACY_CASE" in
+all | intentional_failure) ;;
+*)
+	case "$LEGACY_CASE" in
+	flat_floor | bank_and_ramp | frame_orientation_gate | \
+	center_gap_seam | near_edge_partial_support | ceiling_overpass_rejection | \
+	distant_support | uneven_support_spread | coherent_cluster_three_plus_one | \
+	too_steep_surface | \
+	absent_floor | mask_exclusion | invalid_input_unchanged | \
+	deterministic_repeat | exactly_five_queries | support_identity)
+		;;
+	*) die_usage "unknown legacy case '$LEGACY_CASE'" ;;
+	esac
+	;;
+esac
 if [ -n "$CASE_ID" ]; then
 	case "$CASE_ID" in
 	all | intentional_failure) ;;
@@ -194,7 +223,7 @@ if [ -n "$CASE_ID" ]; then
 		distant_support | uneven_support_spread | coherent_cluster_three_plus_one | \
 		too_steep_surface | \
 		absent_floor | mask_exclusion | invalid_input_unchanged | \
-		deterministic_repeat | exactly_five_queries)
+		deterministic_repeat | exactly_five_queries | support_identity)
 			;;
 		*)
 			die_usage "unknown case '$CASE_ID'"
@@ -321,6 +350,42 @@ case_pass_false() {
 	esac
 }
 
+## For the identity case's historical-source control, prove the old source
+## fails only assertions that mention identity: every reported failure must
+## carry the marker, so a behavioural regression cannot hide behind the
+## control.
+legacy_failures_are_identity_only() {
+	log=$1
+	python3 - "$log" <<'PY'
+import json, sys
+path = sys.argv[1]
+line = None
+with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    for raw in handle:
+        if raw.startswith("SLICE_RESULT "):
+            line = raw
+if line is None:
+    print("no SLICE_RESULT line in legacy log", file=sys.stderr)
+    sys.exit(1)
+try:
+    payload = json.loads(line[len("SLICE_RESULT "):])
+except Exception as exc:
+    print("cannot parse legacy SLICE_RESULT: %s" % exc, file=sys.stderr)
+    sys.exit(1)
+failures = payload.get("failures") or []
+if not failures:
+    print("legacy control reported no failures", file=sys.stderr)
+    sys.exit(1)
+non_identity = [item for item in failures if "identity" not in str(item)]
+if non_identity:
+    print("legacy control failed non-identity assertions:", file=sys.stderr)
+    for item in non_identity[:5]:
+        print("  %s" % item, file=sys.stderr)
+    sys.exit(1)
+print("%d identity-only failures" % len(failures))
+PY
+}
+
 mutant_target_case() {
 	case "$1" in
 	upright_gate) echo frame_orientation_gate ;;
@@ -426,9 +491,10 @@ if grep_errors "$import_log" | grep -q .; then
 fi
 echo "[support-lab] import complete"
 
-# Historical-source negative control: run the new coherent-cluster case
-# against an older probe source supplied by the caller. The control passes
-# only when that source fails the case, demonstrating the behaviour change.
+# Historical-source negative control: run the selected case against an older
+# probe source supplied by the caller. The control passes only when that
+# source fails the case, demonstrating the behaviour change. For the identity
+# case it additionally requires every failure to be an identity assertion.
 if [ -n "$LEGACY_PROBE" ]; then
 	cp "$LEGACY_PROBE" "$probe_stage" || {
 		echo "run_validation: failed to stage legacy probe source" >&2
@@ -436,7 +502,7 @@ if [ -n "$LEGACY_PROBE" ]; then
 	}
 	legacy_log="$mut_root/legacy_probe.log"
 	: >"$legacy_log"
-	run_engine "coherent_cluster_three_plus_one" "$legacy_log"
+	run_engine "$LEGACY_CASE" "$legacy_log"
 	legacy_status=$?
 	legacy_ok=1
 	if grep_errors "$legacy_log" | grep -q .; then
@@ -444,13 +510,17 @@ if [ -n "$LEGACY_PROBE" ]; then
 		grep_errors "$legacy_log" | sed 's/^/  /' >&2
 		legacy_ok=0
 	elif [ "$legacy_status" -eq 0 ]; then
-		echo "run_validation: LEGACY CONTROL FAILED: old probe passed coherent_cluster_three_plus_one" >&2
+		echo "run_validation: LEGACY CONTROL FAILED: old probe passed $LEGACY_CASE" >&2
 		legacy_ok=0
-	elif ! case_pass_false "coherent_cluster_three_plus_one" "$legacy_log"; then
-		echo "run_validation: LEGACY CONTROL FAILED: old probe did not fail coherent_cluster_three_plus_one" >&2
+	elif ! case_pass_false "$LEGACY_CASE" "$legacy_log"; then
+		echo "run_validation: LEGACY CONTROL FAILED: old probe did not fail $LEGACY_CASE" >&2
+		legacy_ok=0
+	elif [ "$LEGACY_CASE" = "support_identity" ] \
+		&& ! legacy_failures_are_identity_only "$legacy_log"; then
+		echo "run_validation: LEGACY CONTROL FAILED: $LEGACY_CASE failed non-identity assertions" >&2
 		legacy_ok=0
 	else
-		echo "[support-lab] legacy probe control failed coherent_cluster_three_plus_one as expected"
+		echo "[support-lab] legacy probe control failed $LEGACY_CASE as expected"
 	fi
 	if [ "$legacy_ok" -ne 1 ]; then
 		exit 1

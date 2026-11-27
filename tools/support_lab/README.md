@@ -26,6 +26,13 @@ This proves a sensing component, not an attraction or landing controller:
   and a spread tolerance rejects uneven footprint heights;
 - invalid config, hull, transform or nonfinite input fails atomically with
   zero queries and leaves every input untouched;
+- every ray hit records stable collider identity (`collider_id`, `rid`,
+  `shape`), and the selected support exposes the same triple. A candidate
+  held above the road reports a same-mask second car roof rather than the
+  out-of-reach road, replacing that roof with an eligible road slab changes
+  the selected identity, and no-hit, refusal and self-exclusion probes leave
+  the documented absent defaults. Identity is sensor data only: route,
+  clearance and relative-motion eligibility belong to the caller;
 - repeated fixed-60 Hz calls reproduce identical per-probe details.
 
 It does not implement ground adhesion, attraction, snap, swept movement,
@@ -39,6 +46,7 @@ landing recovery, surfaces or M1.4 acceptance.
 | `support_lab_driver.gd` | cases, assertions, JSON result lines |
 | `support_lab_checks.gd` | assertion collectors and explicit fixtures |
 | `support_lab_world.gd` | deterministic static geometry and carrier staging |
+| `legacy_ground_support_probe.gd.txt` | historical pre-identity probe source for the old-source control (inert text, copied over the probe only for `--legacy-probe`) |
 | `run_validation.sh` | private staging, bounded import/run, failure proof, mutants |
 
 The component under test is `src/simulation/ground_support_probe.gd`.
@@ -52,7 +60,8 @@ tools/support_lab/run_validation.sh \
 ```
 
 Options: `--project DIR`, `--case ID`, `--mutant NAME`, `--skip-mutants`,
-`--legacy-probe FILE`, `--keep-scratch`. The runner stages only
+`--legacy-probe FILE`, `--legacy-case ID`, `--keep-scratch`. The runner
+stages only
 `project.godot`, `src`, `scenes` and `tools/support_lab` into a temporary
 directory, imports there, and never touches the live `.godot/` cache. Every
 engine invocation is bounded by a wall-clock watchdog (`--timeout`, default
@@ -60,7 +69,10 @@ engine invocation is bounded by a wall-clock watchdog (`--timeout`, default
 wrapper enforces `--outer-timeout` (default 300 s), and the entry point quits
 by itself after 100 s even if an await stalls or a script load fails.
 `--legacy-probe FILE` runs only the historical-source negative control: the
-supplied older probe must fail `coherent_cluster_three_plus_one`.
+supplied older probe must fail the case named by `--legacy-case` (default
+`coherent_cluster_three_plus_one`). When that case is `support_identity`, the
+runner additionally requires every reported failure to be an identity
+assertion.
 
 Default phases:
 
@@ -138,6 +150,9 @@ its own.
   geometry may not register.
 - Any legal-normal surface below the probe origin counts as support; route or
   height context is required to distinguish a low ceiling from a road.
+- Hit identity (`collider_id`, `rid`, `shape`) says what was struck, not
+  whether it is legal ground. Same-mask car roofs stay reportable; the
+  caller must filter by identity, route, clearance and motion.
 - The upright gate bounds frame attitude only. It rejects sideways and
   inverted poses with zero queries; it does not prove an admitted upright
   cast reaches ground rather than another surface facing the ray.
