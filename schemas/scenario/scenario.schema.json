@@ -175,7 +175,7 @@
         "per_participant_state": {
           "type": "array",
           "items": { "$ref": "#/$defs/participant_initial_state" },
-          "description": "Per-participant initial state. BENCHMARKS compares the evaluated drivers 'from matched initial states and histories', so a multi-participant scenario cannot be pinned by the single-participant members alone; the validator requires an entry for the evaluated participant of a tactical family, requires the single-participant members to agree with that entry, and rejects two entries that declare the same pose, because simultaneous participants must be distinguishable. Entries also cover the fixed context participants of the one execution. Absent when not applicable (e.g. a single-participant capture)."
+          "description": "Per-participant initial state. BENCHMARKS compares the evaluated drivers 'from matched initial states and histories', so a multi-participant scenario cannot be pinned by the single-participant members alone; the validator requires an entry for the evaluated participant of a tactical family, requires the single-participant members to agree with that entry, and rejects two entries that name the same `ahead_slot` and declare the same relative pose, because such cars are provably co-located; without a shared named reference an identical tuple can be a legal convoy spaced through different predecessors. Entries also cover the fixed context participants of the one execution. Absent when not applicable (e.g. a single-participant capture)."
         },
         "initial_commands": { "$ref": "#/$defs/initial_commands" },
         "history": { "$ref": "#/$defs/scenario_history" }
@@ -412,6 +412,11 @@
           "pattern": "^[a-z][a-z0-9_]*$",
           "description": "Participant slot this entry fixes; must name a participant of this scenario (the validator checks it)."
         },
+        "ahead_slot": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "Slot of the car ahead that forward_gap_m is measured to. Optional because existing single-car-follow authoring does not need it, but required to make two relative poses comparable: without a shared named reference, identical (gap, lateral offset, speed, heading) tuples can be a legal convoy spaced through different predecessors. The pose-identity check only compares entries that name the same declared participant ahead."
+        },
         "forward_gap_m": {
           "type": ["number", "null"],
           "exclusiveMinimum": 0,
@@ -432,7 +437,7 @@
         },
         "note": { "type": "string", "minLength": 1 }
       },
-      "description": "One participant's authored initial state. The evaluated slot carries the matched initial state every arm starts from, so one authored state serves all compared runs; fixed context participants carry their own. No two participants of one execution may declare the same pose (the validator checks), because simultaneous cars must be distinguishable."
+      "description": "One participant's authored initial state. The evaluated slot carries the matched initial state every arm starts from, so one authored state serves all compared runs; fixed context participants carry their own. Two entries are only flagged as sharing a pose when they name the same ahead_slot and agree on every pose member: a relative gap is otherwise measured against each participant's own predecessor, so an identical tuple can describe a legal convoy. Entries without a shared named reference are not compared."
     },
     "initial_commands": {
       "type": "object",

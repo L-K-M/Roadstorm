@@ -739,25 +739,26 @@ class ValidatorMachineryTests(unittest.TestCase):
             lambda d: d["context"].__setitem__("road_width_m", 11.0),
         )
         self.assertEqual(failures, [])
-        # GAME_DESIGN documents 0-200 ms of 5 Hz planning phase latency on
-        # top of the traffic age, so a one-period-old source is legal and
-        # exact synchrony is not required.
+        # GAME_DESIGN documents 0-200 ms of 5 Hz planning phase latency, so a
+        # sub-period delay is legal; at or beyond a full period the sample is
+        # stale by the slice's own 12-tick staleness convention.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: (
+                d["records"][0].__setitem__("generated_tick", 511),
+                d["records"][0].__setitem__("sampled_tick", 515),
+            ),
+        )
+        self.assertEqual(failures, [])
+        # A full 12-tick-old source is stale: a current sample exists at the
+        # decision tick on the 5 Hz cadence.
         failures = self._run_check(
             vic.check_source_observation,
             base,
             lambda d: (
                 d["records"][0].__setitem__("generated_tick", 512),
                 d["records"][0].__setitem__("sampled_tick", 516),
-            ),
-        )
-        self.assertEqual(failures, [])
-        # One tick beyond the documented phase window is stale.
-        failures = self._run_check(
-            vic.check_source_observation,
-            base,
-            lambda d: (
-                d["records"][0].__setitem__("generated_tick", 513),
-                d["records"][0].__setitem__("sampled_tick", 517),
             ),
         )
         self.assertEqual([f.path for f in failures], ["records.0.generated_tick"])

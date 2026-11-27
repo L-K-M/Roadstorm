@@ -21,11 +21,13 @@ co-location gaps. D1 is fixed: every tactical comparison arm must declare the
 matched difficulty and all arms must share it, and `difficulty` is no longer
 part of arm identity, so two classic arms at different difficulties can no
 longer look like distinct producers or hide a duplicate baseline. D2 is
-documented rather than patched with invented physics: per-participant
-`forward_gap_m` values use different reference cars, so the validator's
-`participant_pose_distinctness` enforces authored-pose identity only; a
-physical near-collision rule is an open design issue in
-[`../../schemas/scenario/README.md`](../../schemas/scenario/README.md).
+resolved by requiring a shared named reference: two entries are rejected as
+one pose only when they name the same `ahead_slot` and agree on every relative
+pose member. Identical tuples without a shared reference remain legal (an
+evenly spaced convoy through different predecessors), and no unsupported
+physical collision detection is asserted;
+[`../../schemas/scenario/README.md`](../../schemas/scenario/README.md) records
+the remaining frame decision.
 
 Owned paths: `fixtures/scenario/**`. The contracts these files implement are
 in [`../../schemas/scenario/`](../../schemas/scenario/); the checker is
@@ -58,8 +60,9 @@ The 2026-11-27 second pass added ten more, each pinning one new rule:
 `bad_two_evaluated_participants` (two participants in the evaluated role, the
 co-located-cars shape Opus F2 rejected), `bad_arms_duplicate_id`,
 `bad_arms_cloning_unpinned`, `bad_evaluated_with_driver` (a second driver
-source for the evaluated slot), `bad_pose_collision` (two simultaneous
-participants at one pose), `bad_safety_interventions_missing` (the tactical
+source for the evaluated slot), `bad_pose_identity` (renamed from
+`bad_pose_collision`: two participants at one relative pose behind the same
+named car, not a general collision claim), `bad_safety_interventions_missing` (the tactical
 telemetry minimum without the tick-level channel) and
 `bad_track_hash_unpaired` (a null track hash without an unknowns entry).
 The 2026-11-27 correction pass added twelve more, each pinning one rule:
@@ -92,7 +95,8 @@ fixture's only defect is again the negative exclusion count.
   additionally retain the evidence BENCHMARKS and TECHNICAL_DESIGN promise:
   speed samples, the car/loadout/assist/track/handling hashes and four sector
   splits per clean lap, where each clean lap's splits must sum to its lap time
-  within one 60 Hz tick (a conservative, unresolved precision bound recorded in
+  within the GAME_DESIGN-derived millisecond-rounding envelope
+  (`(sector_count + 1) x 0.5 ms`, recorded in
   [`../../schemas/scenario/README.md`](../../schemas/scenario/README.md)).
 * **No invented undetermined numbers.** Unratified revisions (handling,
   calibration driver, line, course, producers, the cloning-only arm's
@@ -124,9 +128,9 @@ fixture's only defect is again the negative exclusion count.
   carrying results" and "measured record without results" rejections are
   demonstrated with a hash and a status change, not with invented lap times.
   The measured-record accounting rules (five clean laps, median/min/max,
-  medal arithmetic, sector splits summing to each clean lap time within one
-  60 Hz tick) are exercised only inside the unit tests, with round arithmetic
-  test data.
+  medal arithmetic, sector splits summing to each clean lap time within the
+  derived millisecond-rounding envelope) are exercised only inside the unit
+  tests, with round arithmetic test data.
 * **No claim that AI exists.** The tactical fixture's Classic, cloning-only
   and learned-policy arms are contract placeholders; the fixture status is
   `example` and the producer revisions are null with unknowns.

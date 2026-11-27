@@ -401,31 +401,33 @@ class MeasuredRecordAccountingTests(unittest.TestCase):
             msg=str(failures),
         )
 
-    def test_sector_split_sum_within_tolerance_passes(self) -> None:
-        # The capture format's precision is unratified. Independent rounding of
-        # four splits and the lap total to the nearest millisecond can differ by
-        # up to 2.5 ms; the conservative bound is one 60 Hz tick, so this legal
-        # measurement must pass.
+    def test_sector_split_sum_within_rounding_bound_passes(self) -> None:
+        # GAME_DESIGN stores interpolated crossings as integer microseconds and
+        # rounds Arcade Rush budgets to milliseconds; with the coarser
+        # documented millisecond granularity, four independent splits plus the
+        # lap total can disagree by up to (4 + 1) x 0.5 ms = 2.5 ms. A 2.4 ms
+        # discrepancy stays legal.
         document = build_measured_record()
         lap = document["reference_records"][0]["results"]["laps"][0]
-        lap["sector_splits_s"] = [10.000625] * 4
+        lap["sector_splits_s"] = [10.0006] * 4
         self.assertEqual(run_record_checks(document, self.contracts), [])
 
-    def test_sector_split_sum_beyond_one_tick_is_rejected(self) -> None:
-        # A disagreement larger than the conservative one-tick bound cannot be
-        # explained by timing resolution and is rejected.
-        document = build_measured_record()
-        lap = document["reference_records"][0]["results"]["laps"][0]
-        lap["sector_splits_s"] = [10.017, 10.0, 10.0, 10.0]
-        failures = run_record_checks(document, self.contracts)
-        self.assertTrue(
-            any(
-                f.check == "clean_lap_accounting"
-                and f.path == "reference_records.0.results.laps.0"
-                for f in failures
-            ),
-            msg=str(failures),
-        )
+    def test_sector_split_sum_beyond_rounding_bound_is_rejected(self) -> None:
+        # A systematic error above the derived rounding envelope - including a
+        # full one-tick sector mistake - is rejected.
+        for first_sector in (10.0026, 10.0167):
+            document = build_measured_record()
+            lap = document["reference_records"][0]["results"]["laps"][0]
+            lap["sector_splits_s"] = [first_sector, 10.0, 10.0, 10.0]
+            failures = run_record_checks(document, self.contracts)
+            self.assertTrue(
+                any(
+                    f.check == "clean_lap_accounting"
+                    and f.path == "reference_records.0.results.laps.0"
+                    for f in failures
+                ),
+                msg=f"first_sector={first_sector}: {failures}",
+            )
 
     def test_unclean_lap_needs_an_invalid_reason(self) -> None:
         document = build_measured_record()
@@ -1058,7 +1060,7 @@ class ComparisonArmsTests(unittest.TestCase):
 
 
 class ParticipantPoseDistinctnessTests(unittest.TestCase):
-    """No two simultaneous participants of one execution may share a pose."""
+    """Two entries sharing one named car ahead may not declare one relative pose."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1074,12 +1076,7 @@ class ParticipantPoseDistinctnessTests(unittest.TestCase):
     def test_shipped_fixture_has_distinguishable_participants(self) -> None:
         self.assertEqual(self._check(), [])
 
-    def test_near_identical_poses_are_accepted_by_design(self) -> None:
-        # Each participant's forward_gap_m is its gap to its own predecessor,
-        # so the entries share no position frame and the contract defines no
-        # separation tolerance. Only byte-identical authored tuples are a
-        # machine-checkable defect until that design decision is made.
-        document = json.loads(json.dumps(self.document))
+    def _add_traffic(self, document, **pose):
         document["scenario"]["participants"].append(
             {
                 "slot": "traffic_1",
@@ -1090,38 +1087,26 @@ class ParticipantPoseDistinctnessTests(unittest.TestCase):
                 "driver": {"kind": "scripted"},
             }
         )
-        document["scenario"]["initial_state"]["per_participant_state"].append(
-            {
-                "slot": "traffic_1",
-                "forward_gap_m": 10,
-                "lateral_offset_m": 0,
-                "speed_m_s": 31,
-                "heading_offset_deg": 0,
-            }
-        )
+        entry = {
+            "slot": "traffic_1",
+            "forward_gap_m": 10,
+            "lateral_offset_m": 0,
+            "speed_m_s": 30,
+            "heading_offset_deg": 0,
+        }
+        entry.update(pose)
+        document["scenario"]["initial_state"]["per_participant_state"].append(entry)
+        return document
+
+    def test_identical_relative_poses_without_shared_reference_are_a_legal_convoy(self) -> None:
+        # Each participant's forward_gap_m is measured against its own
+        # predecessor, so identical tuples can be an evenly spaced convoy;
+        # without a shared named ahead_slot they are not comparable.
+        document = self._add_traffic(json.loads(json.dumps(self.document)))
         self.assertEqual(self._check(document), [])
 
-    def test_two_participants_at_one_pose_are_rejected(self) -> None:
-        document = json.loads(json.dumps(self.document))
-        document["scenario"]["participants"].append(
-            {
-                "slot": "traffic_1",
-                "role": "traffic",
-                "car_id": "car.balanced_starter",
-                "loadout": "stock",
-                "assists": "standard",
-                "driver": {"kind": "scripted"},
-            }
-        )
-        document["scenario"]["initial_state"]["per_participant_state"].append(
-            {
-                "slot": "traffic_1",
-                "forward_gap_m": 10,
-                "lateral_offset_m": 0,
-                "speed_m_s": 30,
-                "heading_offset_deg": 0,
-            }
-        )
+    def test_identical_relative_poses_behind_the_same_car_are_rejected(self) -> None:
+        document = self._add_traffic(json.loads(json.dumps(self.document)), ahead_slot="lead")
         failures = self._check(document)
         self.assertTrue(
             any(
@@ -1131,6 +1116,12 @@ class ParticipantPoseDistinctnessTests(unittest.TestCase):
             ),
             msg=str(failures),
         )
+
+    def test_different_named_predecessors_are_not_compared(self) -> None:
+        document = self._add_traffic(
+            json.loads(json.dumps(self.document)), ahead_slot="evaluated"
+        )
+        self.assertEqual(self._check(document), [])
 
     def test_entries_without_an_authored_pose_are_not_compared(self) -> None:
         document = json.loads(json.dumps(self.document))

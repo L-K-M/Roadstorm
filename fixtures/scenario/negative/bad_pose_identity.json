@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0.0",
-  "fixture_id": "fixture.scenario.tactical_window_slower_lead",
+  "fixture_id": "fixture.scenario.negative_pose_identity",
   "fixture_family": "slower_lead_straight_pass",
-  "title": "NEGATIVE fixture: two simultaneous participants declare the same initial pose",
-  "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the traffic car and the evaluated slot declare the same forward gap, lateral offset, speed and heading offset, so two simultaneous cars share one pose. Derived from a shipped positive fixture; everything except the named defect is valid.",
+  "title": "NEGATIVE fixture: two participants share one relative pose behind the same car",
+  "description": "Deliberately invalid variant used by fixtures/scenario/validate_scenario_contract.py to keep this rejection rejected. Defect: the evaluated slot and traffic_1 both declare forward_gap_m 10, lateral_offset_m 0, speed_m_s 30 and heading_offset_deg 0 while naming the same ahead_slot \"lead\", so they occupy the same relative pose behind one car. Identical tuples without a shared named reference would be legal (a convoy spaced through different predecessors) and are not rejected. Derived from fixture.scenario.tactical_window_slower_lead; everything else is identical to the base.",
   "revision": "1.2.0",
   "status": "example",
   "units": {
@@ -132,14 +132,16 @@
           "lateral_offset_m": 0,
           "speed_m_s": 30,
           "heading_offset_deg": 0,
-          "note": "The matched initial state every compared arm starts from; the lead and the evaluated slot are distinguishable by forward gap, speed and heading, so no two simultaneous participants share a pose."
+          "note": "The matched initial state every compared arm starts from; the lead and the evaluated slot are distinguishable by forward gap, speed and heading, so no two simultaneous participants share a pose.",
+          "ahead_slot": "lead"
         },
         {
           "slot": "traffic_1",
           "forward_gap_m": 10,
           "lateral_offset_m": 0,
           "speed_m_s": 30,
-          "heading_offset_deg": 0
+          "heading_offset_deg": 0,
+          "ahead_slot": "lead"
         }
       ],
       "initial_commands": {
@@ -601,13 +603,13 @@
       "until": "M1.7"
     }
   ],
-  "content_hash": "sha256:0e3e818c0e496acce951d4cfd649c0011fc65d74ca4161b4137ffda9c68f4e46",
+  "content_hash": "sha256:8b6718bb54bd5b62f74af7a3d4fd5737fffa6e8d8f53d3ae0cea32a95b9479a2",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/OPPONENT_AI.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job b8c76b03-bb34-4c2f-8721-d4b5d673ab9d)",
     "model": "stepfun-ai-step-plan/step-5-preview",
     "provider": "stepfun",
     "date_utc": "2026-11-27",
-    "note": "Negative fixture authored for the 2026-11-27 M0.9 schema remediation (matched-comparison arms, participant-pose distinctness, track/handling hashes, tick-level safety telemetry); expects rejection, not execution."
+    "note": "Negative fixture authored for the 2026-11-27 M0.9 schema remediation (matched-comparison arms, participant-pose identity, track/handling hashes, tick-level safety telemetry); expects rejection, not execution. Renamed from bad_pose_collision and given an explicit shared ahead_slot at the 2026-11-27 Opus follow-up, because a relative-pose collision is only provable against one named reference car."
   }
 }

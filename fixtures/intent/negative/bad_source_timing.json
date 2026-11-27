@@ -3,7 +3,7 @@
   "fixture_id": "fixture.intent.negative_source_timing",
   "fixture_family": "post_reset",
   "title": "NEGATIVE fixture: intent generated long after its source observation was sampled",
-  "description": "Deliberately invalid variant used by fixtures/intent/validate_intent_contract.py to keep this rejection rejected. Defect: generated_tick 920 lags the resolved source observation obs.t000800.ai_classic_4's sampled_tick 800 by 120 ticks (2 s), far beyond the 12-tick (0-200 ms) 5 Hz planning phase latency GAME_DESIGN documents on top of the traffic observation age. Exact synchrony is not required, but a source older than the immediately preceding tactical sample cannot feed this decision. Derived from fixture.intent.post_reset_defaults; everything else is identical to the base.",
+  "description": "Deliberately invalid variant used by fixtures/intent/validate_intent_contract.py to keep this rejection rejected. Defect: generated_tick 920 lags the resolved source observation obs.t000800.ai_classic_4's sampled_tick 800 by 120 ticks (2 s), far beyond the sub-period 5 Hz planning phase latency (delay must stay below the 12-tick sampling period) that GAME_DESIGN documents on top of the traffic observation age; a full-period-old source is stale under the slice's own staleness convention. Exact synchrony is not required. Derived from fixture.intent.post_reset_defaults; everything else is identical to the base.",
   "revision": "1.0.0",
   "status": "provisional",
   "units": {
@@ -258,7 +258,7 @@
       "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:f629202202cf09a6eea100eac0c4e00b3b935812443a2c1f24c958d6f425cc75",
+  "content_hash": "sha256:568f6fae3c27b8df265ca894a5275b8cf08fce19e9aac57d30f083554584cac5",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
     "author": "pi coding agent (job 8cfeb70f-e5b3-4cac-8b4c-83a933d0970b)",

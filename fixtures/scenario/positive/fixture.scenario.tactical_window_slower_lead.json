@@ -121,7 +121,8 @@
           "lateral_offset_m": 0,
           "speed_m_s": 30,
           "heading_offset_deg": 0,
-          "note": "The matched initial state every compared arm starts from; the lead and the evaluated slot are distinguishable by forward gap, speed and heading, so no two simultaneous participants share a pose."
+          "note": "The matched initial state every compared arm starts from; the lead and the evaluated slot are distinguishable by forward gap, speed and heading, so no two simultaneous participants share a pose.",
+          "ahead_slot": "lead"
         }
       ],
       "initial_commands": {
@@ -583,7 +584,7 @@
       "until": "M1.7"
     }
   ],
-  "content_hash": "sha256:8dee41e2afc4a1d8e54e7be380c4bf33e68434e3cb6b1193ee128006ff069b48",
+  "content_hash": "sha256:fd8002cffc1eb06d2d626d1c1daa320e3a1f881db5287868018dfbbe4a52378b",
   "provenance": {
     "source_contract": "docs/BENCHMARKS.md; docs/OPPONENT_AI.md; docs/GAME_DESIGN.md",
     "author": "pi coding agent (job 847d8664-1028-4233-a67c-39f1465b4964)",

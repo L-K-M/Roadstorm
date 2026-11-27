@@ -1694,13 +1694,15 @@ def check_source_observation(
     observation record, the intent must agree with it on participant,
     difficulty, style, delayed traffic age, reset generation, history
     validity and route frame, and its ``generated_tick`` may neither precede
-    the observation's ``sampled_tick`` nor lag it by more than one 5 Hz
-    sampling period: GAME_DESIGN documents an additional 0-200 ms of 5 Hz
-    planning phase latency, so an older source must still come from the
-    current or immediately preceding tactical sample. Exact observation-to-
+    the observation's ``sampled_tick`` nor lag it by a full 5 Hz sampling
+    period: GAME_DESIGN documents 0-200 ms of 5 Hz planning phase latency, and
+    the slice treats an age at or beyond the 12-tick staleness threshold as a
+    missed update with half-open windows, so the source must come from the
+    current tactical sample (delay below one period). Exact observation-to-
     decision synchrony is not specified, so equality is deliberately not
-    required; ``traffic_age_ticks`` remains the source snapshot's age and the
-    phase delay is the extra latency on top of it. The local section road width is
+    required; ``traffic_age_ticks`` remains the source snapshot's age and any
+    sub-period delay is extra reaction latency that BENCHMARKS reports as
+    end-to-intent latency. The local section road width is
     deliberately not compared - observation features 14/19/24 describe the
     road 20/50/100 m ahead, which can differ from the scenario section's
     local width on a legitimately varying-width road; the local width stays
@@ -1857,17 +1859,18 @@ def check_source_observation(
                         check="source_observation",
                     )
                 )
-            elif delay > constants.sampling_period_ticks:
+            elif delay >= constants.sampling_period_ticks:
                 failures.append(
                     Failure(
                         "semantic",
                         _record_path(index, "generated_tick"),
                         f"generated_tick {generated} lags the source observation's "
-                        f"sampled_tick {sampled} by {delay} ticks, beyond the "
-                        f"{constants.sampling_period_s} s ("
-                        f"{constants.sampling_period_ticks}-tick) 5 Hz planning "
-                        "phase latency GAME_DESIGN documents; the source must be "
-                        "the current or immediately preceding tactical sample",
+                        f"sampled_tick {sampled} by {delay} ticks, a full 5 Hz "
+                        f"sampling period ({constants.sampling_period_ticks} "
+                        f"ticks = {constants.sampling_period_s} s) or more; the "
+                        "observation's staleness threshold treats an age at or "
+                        "beyond one period as a missed update, so the source must "
+                        "be the current tactical sample (delay below one period)",
                         check="source_observation",
                     )
                 )

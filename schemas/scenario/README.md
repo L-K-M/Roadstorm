@@ -139,9 +139,9 @@ The central honesty rule, enforced by the validator:
   files reject measured status) must retain five clean laps with median/min/max
   over exactly those laps, an invalid reason for every rejected lap, complete
   dependencies and the retained evidence; each clean lap's four sector splits
-  must sum to that lap's recorded time within one 60 Hz tick. That is a
-  deliberately conservative, unresolved precision bound, not a ratified
-  format - see Recorded decisions.
+  must sum to that lap's recorded time within `(sector_count + 1) x 0.5 ms`
+  (2.5 ms). The bound is derived from GAME_DESIGN's documented timing
+  rounding, not chosen arbitrarily - see Recorded decisions.
 * **Family agreement.** `fixture_family` equals the enclosed scenario's
   `scenario_family`.
 * **Reference linkage.** A scenario's `reference` member must resolve to an
@@ -189,12 +189,13 @@ The central honesty rule, enforced by the validator:
   (they key `per_participant_state` and `evaluated_slot`), embedded reference
   `record_id`s are unique (linkage resolves by ID), and each null has exactly
   one `unknowns` explanation.
-* **Participant pose distinctness.** No two participants of one execution may
-  declare an identical authored initial pose (forward gap, lateral offset,
-  speed and heading offset all equal); entries that author no pose member are
-  not compared. This is an authored-pose identity lint, not a physical
-  collision test: the forward gaps use per-participant frames (see Recorded
-  decisions).
+* **Participant pose identity.** Two `per_participant_state` entries are
+  rejected as one pose only when they name the same `ahead_slot` and agree on
+  every relative pose member (forward gap, lateral offset, speed and heading
+  offset): identical relative poses behind one named car are provably
+  co-located. Entries that author no pose member, or that do not share a named
+  reference, are not compared - without one, an identical tuple can be a legal
+  convoy spaced through different predecessors (see Recorded decisions).
 * **Driver revision pinning.** A `cloning_only_policy` driver - on a
   participant or on a comparison arm - must carry `driver.producer_revision`,
   because no dependencies member pins that producer and OPPONENT_AI evaluates
@@ -316,26 +317,32 @@ is recorded here so the schema claim stays honest about its scope.
 
 ## Recorded decisions
 
-* **Pose comparison is authored-pose identity only.** Each
-  `per_participant_state.forward_gap_m` is that participant's gap to its own
-  car ahead, so two entries do not share an absolute position frame;
-  `lateral_offset_m` is centerline-relative but still cannot establish
-  longitudinal separation. The contract also fixes no position tolerance or
-  car-footprint geometry. The validator therefore rejects only byte-identical
-  authored pose tuples. A near-collision rule needs a design decision on the
-  reference frame and minimum separation; until then it is an open issue, not
-  an enforced guarantee.
+* **Pose identity requires a shared named reference.** Each
+  `per_participant_state.forward_gap_m` is that participant's gap to the car
+  ahead, so two entries do not share an absolute position frame unless they
+  name the same `ahead_slot`. With a shared reference, identical relative pose
+  members prove the cars occupy one place; without it, an identical tuple can
+  describe a legal convoy whose members follow different predecessors.
+  `lateral_offset_m` is centerline-relative but cannot establish longitudinal
+  separation on its own, and the contract fixes no tolerance or car-footprint
+  geometry, so near-equal tuples are never treated as collisions. An absolute
+  route-distance frame or minimum-separation rule remains an open design
+  issue; the negative is `bad_pose_identity`, not a collision claim.
 * **Sector-split sum tolerance.** BENCHMARKS 'Reference driver and records'
   requires retaining individual lap times and sector splits but does not state
-  the capture format's precision, and TECHNICAL_DESIGN adds no precision. No
-  decimal precision contract is invented. As a deliberately conservative
-  unresolved constraint the validator accepts a discrepancy of at most one
-  60 Hz simulation tick (1/60 s), the coarsest timing unit the fixed-tick
-  contract names; independent millisecond rounding of four splits and the lap
-  total can differ by up to 2.5 ms, well inside this bound. Grossly impossible
-  totals (four 100 s sectors against a 40 s lap) remain rejected. Exact
-  agreement precision stays open until M1 capture tooling defines it; no
-  measured record is authored at M0.9, so this affects only the unit-test
+  the reference-capture format's precision. GAME_DESIGN does state two timing
+  precisions: validation crossings are interpolated within the tick trajectory
+  and stored as integer microseconds, and Arcade Rush budgets built from these
+  sector times are rounded to milliseconds. Sector boundaries are timing
+  gates, which GAME_DESIGN calls separate from the validation sequence, so
+  applying either statement to them is an inference. Until M1 states the
+  capture format, the validator uses the coarser documented granularity
+  (milliseconds) as a conservative rounding envelope: each of the four
+  retained splits and the lap total can independently round by at most 0.5 ms,
+  giving `(4 + 1) x 0.5 ms = 2.5 ms`; grossly impossible totals (four 100 s
+  sectors against a 40 s lap) are rejected. If M1 confirms microsecond
+  storage for timing gates, the same derivation tightens to about 2.5 us.
+  No measured record is authored at M0.9, so this affects only the unit-test
   accounting rule until then.
 
 * **Hashes versus revisions.** `docs/TECHNICAL_DESIGN.md` 'Content contracts'

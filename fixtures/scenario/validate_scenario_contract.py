@@ -191,17 +191,19 @@ CONTENT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 TOLERANCE = 1e-9
 
-# Maximum allowed difference between the sum of a clean lap's retained sector
-# splits and its recorded lap time, in seconds. BENCHMARKS.md and
-# TECHNICAL_DESIGN.md require retaining both but do not state the capture
-# format's precision, so no decimal precision contract is invented. As a
-# deliberately conservative bound we allow one 60 Hz simulation tick
-# (1/60 s), the coarsest timing unit the fixed-tick contract names; any
-# capture that rounds to milliseconds or finer can disagree by well under
-# this. Exact agreement precision stays unresolved until M1 capture tooling
-# exists; grossly impossible totals (for example four 100 s sectors against a
-# 40 s lap) are still rejected.
-SECTOR_SPLIT_SUM_TOLERANCE_S = 1.0 / 60.0
+# Rounding half-unit used to derive the sector-split accounting bound, in
+# seconds. GAME_DESIGN ('Progress requires legal swept forward crossings')
+# stores interpolated crossing times as integer microseconds, and Arcade Rush
+# budgets are rounded to milliseconds. Reference sector boundaries are timing
+# gates, whose storage precision the design does not state separately, so the
+# validator uses the coarser documented millisecond granularity: each of the
+# sector_count splits and the lap total can independently round by at most
+# 0.5 ms, giving (sector_count + 1) x 0.5 ms = 2.5 ms for four sectors. The
+# microsecond statement suggests the real target may be far tighter (about
+# 2.5 us); exact precision stays an M1 capture-format decision. Grossly
+# impossible totals (four 100 s sectors against a 40 s lap) are still
+# rejected.
+SECTOR_SPLIT_ROUNDING_HALF_UNIT_S = 0.5e-3
 
 # Sentinel for "this dotted path does not exist" (distinct from JSON null).
 MISSING = object()
@@ -989,14 +991,17 @@ def check_clean_lap_accounting(
             ):
                 total = float(lap["time_s"])
                 split_total = sum(float(value) for value in splits)
-                if abs(split_total - total) > SECTOR_SPLIT_SUM_TOLERANCE_S:
+                tolerance = (
+                    constants.sector_count + 1
+                ) * SECTOR_SPLIT_ROUNDING_HALF_UNIT_S
+                if abs(split_total - total) > tolerance:
                     failures.append(
                         Failure(
                             "semantic",
                             f"{prefix}.results.laps.{position}",
                             f"retained sector splits sum to {split_total} s but the "
                             f"clean lap time is {total} s; they must agree within "
-                            f"{SECTOR_SPLIT_SUM_TOLERANCE_S} s",
+                            f"{tolerance} s",
                             check="clean_lap_accounting",
                         )
                     )
@@ -1241,6 +1246,17 @@ def check_initial_state_agreement(
                 )
                 continue
             seen.add(slot)
+            ahead = entry.get("ahead_slot")
+            if ahead is not None and ahead not in slots:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        f"scenario.initial_state.per_participant_state.{position}.ahead_slot",
+                        f"ahead_slot {ahead!r} is not a participant of this scenario "
+                        f"(participants: {sorted(slots)})",
+                        check="initial_state_agreement",
+                    )
+                )
         missing = [slot for slot in matched if slot not in seen]
         if missing and tactical:
             failures.append(
@@ -1685,26 +1701,23 @@ def check_tactical_context_required(
 def check_participant_pose_distinctness(
     document: Mapping[str, Any], constants: ContractConstants | None = None
 ) -> list[Failure]:
-    """No two simultaneous participants may declare an identical authored pose.
+    """Two entries naming the same car ahead may not declare the same relative pose.
 
-    Participants of a scenario are the cars present in one execution, so two
-    entries that author exactly the same pose members (forward gap, lateral
-    offset, speed, heading offset) cannot be told apart. This is an
-    authored-pose identity lint, not a physical collision test: each
-    participant's ``forward_gap_m`` is its gap to its own car ahead, so the
-    entries do not share a position frame, and the contract defines no
-    tolerance or car-footprint geometry for turning near-equal tuples into a
-    separation check. That reference-frame decision is recorded as an open
-    design issue in schemas/scenario/README.md; until it is made, a
-    near-identical but not byte-identical pair is accepted by design.
-    Entries that author no pose member at all are not compared - an
-    unauthored pose is simply not configuration.
+    A participant's ``forward_gap_m`` is measured to the car ahead, so two
+    entries only describe the same physical place when they name the same
+    ``ahead_slot`` and agree on every relative pose member (forward gap,
+    lateral offset, speed, heading offset). Without a shared named reference,
+    identical tuples can be a legal convoy whose members follow different
+    predecessors, so they are not comparable; and near-equal tuples are never
+    treated as a collision because the contract fixes no absolute position
+    frame, tolerance or car-footprint geometry. The open reference-frame
+    question is recorded in schemas/scenario/README.md.
     """
     failures: list[Failure] = []
     scenario = document["scenario"]
     initial = scenario.get("initial_state", {})
     entries = initial.get("per_participant_state") or []
-    authored: list[tuple[str, int, tuple[Any, ...]]] = []
+    authored: list[tuple[str, int, str | None, tuple[Any, ...]]] = []
     for position, entry in enumerate(entries):
         slot = entry.get("slot")
         if slot is None:
@@ -1712,21 +1725,24 @@ def check_participant_pose_distinctness(
         signature = tuple(entry.get(member) for member in POSE_MEMBERS)
         if all(value is None for value in signature):
             continue
-        authored.append((slot, position, signature))
+        ahead = entry.get("ahead_slot")
+        authored.append((slot, position, ahead if isinstance(ahead, str) else None, signature))
     for first in range(len(authored)):
-        slot_a, position_a, signature_a = authored[first]
+        slot_a, _position_a, ahead_a, signature_a = authored[first]
         for second in range(first + 1, len(authored)):
-            slot_b, position_b, signature_b = authored[second]
+            slot_b, position_b, ahead_b, signature_b = authored[second]
             if signature_a != signature_b:
+                continue
+            if ahead_a is None or ahead_a != ahead_b:
                 continue
             failures.append(
                 Failure(
                     "semantic",
                     f"scenario.initial_state.per_participant_state.{position_b}.slot",
-                    f"participants {slot_a!r} and {slot_b!r} declare identical "
-                    "authored initial pose members (forward gap, lateral offset, "
-                    "speed and heading offset all equal); simultaneous "
-                    "participants must not share one authored pose",
+                    f"participants {slot_a!r} and {slot_b!r} both sit at the same "
+                    f"relative pose behind {ahead_a!r} (forward gap, lateral "
+                    "offset, speed and heading offset all equal), so they are "
+                    "co-located rather than distinguishable cars",
                     check="participant_pose_distinctness",
                 )
             )

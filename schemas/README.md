@@ -3,7 +3,8 @@
 This file records the historical M0.9 schema integration pass of 2026-11-27.
 Its decisions and counts below describe that earlier candidate; later review
 findings and repairs supersede parts of it. The contracts remain provisional,
-and agreement with a JSON Schema checker does not prove semantic correctness. It adds no contract of its own: the contracts of record are the schema
+and agreement with a JSON Schema checker does not prove semantic correctness.
+It adds no contract of its own: the contracts of record are the schema
 documents in this directory and the slice READMEs beside them.
 
 ## The slices
@@ -141,12 +142,33 @@ directly, and they write nothing outside a temporary directory.
 
 ## Later checks
 
-An independent copied-tree run on 2026-11-27 after the schema review repairs
-(`work/agents/schema-recheck-20261127-032226`) passed handling 59 tests;
-observation 37 tests and 44 fixture cases; intent 30 tests and 53 fixture
-cases; and scenario 83 tests and 44 fixture cases. This was an uncommitted
-snapshot, not a ratified schema or gameplay measurement. Named rechecks are
-required on the corresponding committed candidate. Open issues include the
-physical start-position reference frame, execution of refused commitments,
-observation timing, and capture precision. See slice READMEs and
-`docs/STATUS.md` for their dispositions.
+Exact-candidate sweep of `cc5dac91ed89b934defdd6d1240e729791885ccb`
+("Refine schema timing and matched comparisons", committed 2026-11-27
+03:22:52 +01:00), exported read-only with `git archive cc5dac9` into the
+ignored job directory `work/agents/cd8a5eda-4a90-46df-bbf6-948f70062608/cc5dac9-snap/`:
+
+| Check | Result |
+| --- | --- |
+| `schemas/handling/run_tests.sh` | 59 tests OK; 8 fixtures + schema document, 0 errors, 0 warnings |
+| `fixtures/observation/run_tests.sh` | 37 tests OK; all 44 fixture cases behave as declared |
+| `fixtures/intent/run_tests.sh` | 30 tests OK; all 53 fixture cases behave as declared |
+| `fixtures/scenario/run_tests.sh` | 83 tests OK; all 44 fixture cases behave as declared |
+| Ajv 8.20.0 draft 2020-12 sweep | 11 schema documents valid; 23/23 positive fixtures valid; of 126 observation/intent/scenario negatives, 3 fail strict parsing, 32 fail the wrapper schema and 91 are schema-valid files rejected by the project semantic checks |
+| Content-hash sweep | 149 shipped fixture files; every `content_hash` recomputes except the three declared broken-hash negatives (`fixtures/observation/negative/bad_content_hash.json`, `fixtures/intent/negative/bad_content_hash.json`, `fixtures/scenario/negative/bad_hash.json`) |
+
+Logs live beside the snapshot as `cc5dac9-suite-*.log`, `cc5dac9-ajv.log`
+and `cc5dac9-hash.log`. The independent Sol pass review of the same SHA
+(`review/implementation/m0-schema-sol-recheck-cc5dac9.md`) reports the same
+suite totals and the same Ajv breakdown.
+
+The follow-up changes made after this sweep - pose identity requiring a
+shared named `ahead_slot`, the exclusive sub-period source-timing bound, and
+the GAME_DESIGN-derived millisecond-rounding sector bound - are not covered by
+these numbers; a fresh sweep is required on their successor. They supersede
+two bounds the Sol pass review had accepted on this candidate: the inclusive
+12-tick source-age envelope (a full period now counts as stale under the
+slice's own staleness convention) and the one-tick sector envelope (replaced
+by the derived `(sector_count + 1) x 0.5 ms` rounding bound). Open issues
+include the absolute pose frame, execution of refused commitments, source
+observation alignment, and reference-capture precision. See the slice
+READMEs and `docs/STATUS.md` for their dispositions.

@@ -43,11 +43,12 @@ section's local road width with the observation's 20 m lookahead feature:
 local width stays under the decode/geometry rules, and the new
 `fixture.intent.varying_width_road` positive fixture exercises a road whose
 local width differs from its lookahead widths. A resolvable source may not
-precede the intent's `generated_tick` and may lag it by at most one 5 Hz
-sampling period (12 ticks): GAME_DESIGN documents an additional 0-200 ms of
-5 Hz planning phase latency, so a source older than the immediately
-preceding tactical sample is stale. Exact observation-to-decision synchrony
-is not specified, so equality is deliberately not required. Two distinct
+precede the intent's `generated_tick` and may lag it by less than one 5 Hz
+sampling period (0-11 ticks): GAME_DESIGN documents 0-200 ms of 5 Hz planning
+phase latency, and the slice's own staleness convention treats an age at or
+beyond 12 ticks as a missed update, so a full-period-old source is stale.
+Exact observation-to-decision synchrony is not specified, so equality is
+deliberately not required. Two distinct
 proposals in one fixture may no longer share an `intent_id` (new
 `intent_identity` check;
 the checked scope is one self-contained scenario run, and a deployed capture
@@ -90,7 +91,7 @@ contracts", row `AIObservation/TacticalIntent`), and
 | Pace | `pace_norm` in [0,1] = `(a+1)/2` mapped into the difficulty's desired speed-profile interval before safety counting. When a record fixes the interval it is ordered (`min <= max`), the decoded `target_speed_m_s` is `min + pace_norm x (max - min)`, and a pace correction's `proposed` is that same pre-safety decode with nonnegative `proposed`/`applied`; the corrected target equals the applied value. |
 | Commitment | `commitment_raw` in [-1,1]; below -1/3 `follow`, -1/3 through +1/3 `wait`, above +1/3 `commit_pass`; minimum commitment 0.4 s (24 ticks at 60 Hz), interrupted by hazards. `label` is the proposed threshold decode; `executed_label` and `commit_started_tick` record the executed state, so a commitment held inside its minimum is visible even when the proposal has moved on. |
 | Drift | `drift_raw` in [-1,1]; above +0.25 `drift`, below -0.25 `grip`, `retain` between; `executed_preference` resolves `retain` to the preference actually run (`drift`/`grip`, or `none` when masked post-reset history leaves nothing to retain). The follower still enforces legal entry conditions. |
-| Age | 5 Hz decisions = 12-tick period at 60 Hz; `intent_age_ticks = sampled_tick - generated_tick`; 12-tick staleness threshold; `traffic_age_ticks` 18/12/7 by difficulty, inherited from the delayed traffic snapshot of the source observation. A resolvable source observation may precede the intent's `generated_tick` by at most one 12-tick sampling period (the documented 0-200 ms planning phase); exact synchrony is not required. |
+| Age | 5 Hz decisions = 12-tick period at 60 Hz; `intent_age_ticks = sampled_tick - generated_tick`; 12-tick staleness threshold; `traffic_age_ticks` 18/12/7 by difficulty, inherited from the delayed traffic snapshot of the source observation. A resolvable source observation must not follow the intent's `generated_tick` and may lag it by less than one 12-tick sampling period (0-11 ticks; a full period is stale under the slice's staleness convention); exact synchrony is not required. |
 | Interpolation | Required, window 0.2 s (the sampling period), to prevent jitter and lane weaving. |
 | Safety | `max_deferral_ticks` 0 — a held intent never suspends hazard checks; corrections recorded per field with the four constraint categories (road, passing_room, contact_rule, physical_capability), proposed/applied values and the BENCHMARKS materiality flag. Tick-level exposure lives in `safety.interventions.ticks` (ascending, distinct 60 Hz ticks inside the intent's hold window `[generated_tick, generated_tick + 12)` at which per-tick safety overrode the intent), and wholesale replacement lives in `safety.emergency` (`substituted`, `kind` in emergency_stop/reset/classic_fallback, `tick`, `persistent`, `reason`). One intent corrected on several ticks counts once by intent identity (BENCHMARKS.md); the tick list is the exposure reported beside that count. |
 | Reset | `reset_generation` counter, `history_valid` mask (0 after a reset, mirroring the observation's zero/masked defaults), `post_reset_defaults_applied` and the reverted field list. |
@@ -206,11 +207,11 @@ check:
 - a resolvable link must agree with the observation on participant,
   difficulty, style, delayed traffic age, reset generation, history validity
   and route frame, and its `sampled_tick` may neither follow the intent's
-  `generated_tick` nor precede it by more than one 5 Hz sampling period
-  (12 ticks): GAME_DESIGN adds 0-200 ms of 5 Hz planning phase latency to the
-  traffic observation age, so an older source must still come from the
-  current or immediately preceding tactical sample. Exact synchrony is not
-  required. The local section road width is deliberately not compared:
+  `generated_tick` nor precede it by a full 5 Hz sampling period (12 ticks):
+  GAME_DESIGN adds 0-200 ms of 5 Hz planning phase latency to the traffic
+  observation age, while the slice's staleness threshold treats an age at or
+  beyond one period as a missed update. The source must therefore be the
+  current tactical sample; exact synchrony is not required. The local section road width is deliberately not compared:
   observation features 14/19/24 describe the road 20/50/100 m ahead, which may
   legitimately differ from the section's local width; local width is
   exercised by the decode/geometry checks and
@@ -315,24 +316,34 @@ Exit codes: 0 = all fixtures valid / all negatives rejected as declared;
    executed `commit_pass` satisfies the minimum at `elapsed >= 24` ticks, so
    a commitment may lapse exactly at 0.4 s, and only a strict early lapse
    without interruption is rejected.
-6. Resolved at the 2026-11-27 recheck follow-up: a resolvable
+6. Resolved at the 2026-11-27 Opus follow-up: a resolvable
    `source_observation_id` may not be sampled after the intent's
-   `generated_tick`, and may not precede it by more than one 5 Hz sampling
-   period (`sampling_period_ticks`, 12). GAME_DESIGN ('AI families') states
-   "5 Hz planning adds another 0-200 ms of phase latency" on top of the
-   18/12/7-tick traffic ages, and REVIEW_RESPONSE F7/4 accept exactly that
-   additive phase latency. Exact observation-to-decision synchrony is not
-   specified, so equality is deliberately not enforced; the recorded
-   `traffic_age_ticks` remains the source snapshot's age and the phase delay
-   is the additional reaction latency. A future design may narrow or widen
-   the 12-tick bound only through a recorded contract change.
+   `generated_tick`, and must not lag it by a full 5 Hz sampling period
+   (`delay < sampling_period_ticks`, i.e. 0-11 ticks). GAME_DESIGN ('AI
+   families') states "5 Hz planning adds another 0-200 ms of phase latency"
+   on top of the 18/12/7-tick traffic ages, and REVIEW_RESPONSE F7/4 accept
+   that additive sub-period phase latency; the slice's own staleness rule
+   says an intent age at or beyond 12 ticks is a missed update, and its
+   windows are half-open. At a 12-tick source delay a current sample exists
+   at the decision tick, so the earlier inclusive bound double-counted the
+   phase allowance. Exact synchrony is still not required; the recorded
+   `traffic_age_ticks` remains the source snapshot's age and any sub-period
+   delay is additional reaction latency that BENCHMARKS reports as observed
+   end-to-intent latency (GAME_DESIGN:123).
 7. Whether `commitment.interrupted: true` needs evidence that a commitment
    was held at or before that record. Today a record with no executing or
    preceding `commit_pass` may still claim an interruption with a reason; only
    the self-contradictory combination of `interrupted: true` with an
    unchanged continuing commitment is rejected. The broader evidence rule
    needs the intervention-category preregistration.
-8. Whether a proposed `commit_pass` that does not execute must carry a
+8. Which road width action 0's corridor uses. OPPONENT_AI.md fixes the
+   formula `(road_width - car_width)/2 - 0.5 m` but not whether `road_width`
+   is the scenario section's local width or a lookahead width. The validator
+   computes the corridor from the fixture context's local `road_width_m` and
+   deliberately no longer compares it with observation features 14/19/24;
+   M4.2 must ratify the source quantity and its frame/timestamp before
+   demonstrations collect against it.
+9. Whether a proposed `commit_pass` that does not execute must carry a
    recorded safety event. `executed_label` is otherwise unconstrained outside
    a held commitment: a starting proposal could decode `commit_pass` while
    `executed_label` stays `wait` with no interruption, correction or
@@ -340,14 +351,20 @@ Exit codes: 0 = all fixtures valid / all negatives rejected as declared;
    anti-jitter `hold_window_s` is unratified, so the validator does not invent
    an equality rule here; deciding how a refused commit is recorded (and
    whether the hold window may delay execution) is left to the M4.2 design.
-9. Whether `drift.label retain` must repeat the immediately preceding
+10. Whether `drift.label retain` must repeat the immediately preceding
    record's `executed_preference`. The current check resolves the value
    (`none` only when masked; otherwise drift/grip) but does not compare
    across records, so a retain band may switch preference between intents.
-10. Whether `reset.defaults_applied` must be non-empty when
+11. Whether `reset.defaults_applied` must be non-empty when
    `post_reset_defaults_applied` is true. The observation record contract
    states the non-empty rule; the intent schema does not, so the validator
    does not enforce it.
+12. A captured 5 Hz window that begins while a commitment is already held is
+   not representable: `check_commitment_hold` treats the first record as a
+   new commitment and requires `commit_started_tick == generated_tick`.
+   Authored fixtures start their sequences deliberately; capture tooling must
+   include the pre-window history or record the start tick another way. This
+   is an authoring limitation, not a runtime constraint.
 
 ## Cross-slice notes for the integrator (2026-11-27)
 
