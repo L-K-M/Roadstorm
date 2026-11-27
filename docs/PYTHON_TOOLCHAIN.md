@@ -10,7 +10,7 @@ verification job `4dca64d7-9068-48dc-8c3a-c563400d7d85`, whose record is
 other checkout file, installed tool, secret or account configuration, and no
 interpreter was installed or altered.
 
-**Bottom line:** the proposed pin is **CPython 3.15.2, exact**, from the
+**Bottom line:** the recorded pin is **CPython 3.15.2, exact**, from the
 official python.org release
 (<https://www.python.org/downloads/release/python-3152/>). On 2026-11-27 all
 four pinned official artifacts were downloaded over HTTPS; their bytes matched
@@ -166,7 +166,7 @@ The four pinned artifacts fall into two classes, and the distinction matters:
   make another build from the same source the same bytes, and they say nothing
   about the Homebrew interpreter on this host.
 
-## The proposed pin and why
+## The recorded pin and why
 
 **Pin: CPython 3.15.2, exact patch, from python.org.** Stored in
 `tools/python_pin/pin/python.txt` with the published digests above;
@@ -415,7 +415,7 @@ track a moving "latest stable" download.
   summarized here, not edited by this integration).
 * [docs/evidence/python-3.15.2-source-verification.md](evidence/python-3.15.2-source-verification.md)
   — the earlier source-tarball check that preceded the all-artifact evidence.
-* `docs/SETUP.md` is owned elsewhere and still describes the pre-evidence
-  status (`upstream_verified=no`, no Sigstore); its owner should refresh those
-  lines against this record. This file no longer carries a broad
-  `upstream_verified` field.
+* `docs/SETUP.md` is owned elsewhere; it now records the same post-evidence
+  status (four python.org 3.15.2 artifacts digest-matched and Sigstore-verified
+  on 2026-11-27; the installed Homebrew build not publisher-authenticated).
+  This file no longer carries a broad `upstream_verified` field.

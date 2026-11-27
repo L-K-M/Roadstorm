@@ -46,7 +46,7 @@ measurement by the reconciliation.
 | `export_presets.cfg` absent; no package could be built (§2, §10.7) | `export_presets.cfg` tracked since `7b27c2f`, refined `245ee1d`/`8c6c928`: three placeholder desktop presets (macOS universal ad-hoc mode 1, Windows x86-64, Linux x86-64), unnotarized, exclude filter verified |
 | Windowed boot-scene run only | Known launch: mode-1 macOS export + headless launch on `d4501e3` (job `e2ecffdc…`) exited 0 and reached the placeholder menu; ad-hoc, Gatekeeper-rejected. Earlier `7b27c2f` windowed mode-3 smoke remains history. Not windowed/current-mode/Intel/Windows/Linux |
 | Templates present; no Windows/Linux host (§9) | Hosted Ubuntu runs built all three presets: runs 45924755902 (`245ee1d`), 45928824558 (`8c6c928`), and 45934306464 (`675ec1c`, four jobs green). Packages uploaded, never launched on Windows/Linux; named reviews keep the CI/export gate open |
-| Local SHA-256 only; `expected_sha256` empty (§2, §10.6) | Editor binary and selected templates match publisher SHA-512/SHA-256 archives (`docs/evidence/godot-4.7.2-archive-verification.md`; pin files `upstream_verified=yes`). Four python.org 3.15.2 artifacts digest- and Sigstore-verified; installed Homebrew build not authenticated by those signatures |
+| Local SHA-256 only; `expected_sha256` empty (§2, §10.6) | Editor binary and selected templates match publisher SHA-512/SHA-256 archives (`docs/evidence/godot-4.7.2-archive-verification.md`; the two engine pin files carry `upstream_verified=yes` with scope notes). Four python.org 3.15.2 artifacts digest- and Sigstore-verified; installed Homebrew build not authenticated by those signatures |
 | `gl_compatibility` provisional until M3 (§3) | Unchanged at the observed tip; still provisional; M3's representative tests remain authoritative. No new renderer measurement |
 | No controller, no audio input, capture-mediated visual review (§5–§7) | Unchanged; hardware/perceptual gates remain open |
 
@@ -273,7 +273,7 @@ explicitly"):
    download by this task; the toolchain job's record (`docs/evidence/godot-4.7.2-archive-verification.md`)
    reports the same editor digest, so the two agree. M0.1's own pin file still leaves
    `expected_sha256` empty. (Updated, §13.4: the editor binary and selected templates are now
-   publisher-checksummed, and both pin files carry `upstream_verified=yes` for their stated scope;
+   publisher-checksummed, and the two engine pin files carry `upstream_verified=yes` for their stated scope;
    the empty local-install field is superseded.)
 7. **`export_presets.cfg` was missing at this baseline**, so no native package could be produced then
    (M0.4/M0.5). (Updated, §13.2: the file now exists with three placeholder presets;
