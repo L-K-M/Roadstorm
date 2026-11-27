@@ -130,12 +130,24 @@ shell.
 8. **The local digest baseline is scoped to an exact canonical path, not to
    a host.** Only an interpreter whose canonicalized path equals
    `local_interpreter_315_path` in `pin/checksums.txt` is compared with the
-   recorded digest. Canonicalization uses `realpath`, or a built-in resolver
-   (`canonical_path`) that follows relative, absolute and chained symlinks
-   when only `readlink` exists. Broken links, loops, and a missing utility
-   when a link actually has to be resolved are failures: if a recorded
-   baseline applies, the run fails closed rather than reporting “different
-   path” for an unresolved input.
+   recorded digest. Identity and resolution are decided **before** the
+   version probe, so a changed executable at the recorded path fails on a
+   changed version or a changed digest even if another candidate reports the
+   pinned version; genuinely different paths remain warnings. Canonicalization
+   uses `realpath`, or a built-in resolver (`canonical_path`) that follows
+   relative, absolute and chained symlinks when only `readlink` exists.
+   Every intermediate component must be an existing directory (missing or
+   non-directory prefixes are rejected like `realpath`). If the canonical
+   string differs from the recorded path, sameness is established positively
+   with `stat` device:inode — so a case-variant or hard-linked build on a
+   case-insensitive volume is still compared — and if `stat` is unavailable
+   and equivalence cannot be determined, the run fails closed rather than
+   reporting “different path”. A missing utility when a link has to be
+   resolved likewise fails closed when a baseline applies. A discovered
+   broken/looping link is simply not executable and is skipped; an explicit
+   `--python` to one fails the run. A host with neither `realpath` nor
+   `readlink` therefore fails while any symlinked interpreter is discovered
+   (regular-file paths still resolve lexically).
    A build at the recorded path on **any** machine is compared and fails
    closed on mismatch; an interpreter at a genuinely different path is
    reported as a version match but left `NOT RECORDED`. No host identity is
@@ -149,6 +161,8 @@ shell.
     `local digest: compared`, `not compared (...)` or `skipped
     (--no-interpreter)`, and a skipped comparison also emits a visible
     `[warn]`, so `--quiet` cannot hide that no local digest was checked.
+    A fail-closed reason replaces an earlier `compared`; the first such
+    reason is kept.
 
 ## Regression tests
 
@@ -166,9 +180,14 @@ relative/chained/directory symlink resolution without `realpath`, loop/broken
 and missing-`readlink` fail-closed handling, checksums-convention record keys, mismatch getting no Sigstore success claim,
 rejected empty options, unreadable pin/digest metadata failing closed, a
 Python-2-style candidate being skipped without failing the run, an
-unprobeable build at the recorded path still failing closed, odd-name
-hashing on stdin (leading dash and backslash), and a failing sha256 command
-failing closed. All test
+unprobeable build at the recorded path still failing closed, a recorded-path
+build reporting a different version failing closed despite another pinned
+candidate, an unresolved chain to the recorded build failing closed, a
+case-variant baseline still comparing without `realpath`, missing/non-directory
+intermediate rejection, undeterminable path equivalence failing closed, a
+fail-closed reason winning over an earlier comparison, a
+healthy-baseline/other-path positive control, odd-name hashing on stdin
+(leading dash and backslash), and a failing sha256 command failing closed. All test
 fixtures are regular files
 created in a private temporary directory; symlink/hard-link fixtures live only
 there and are removed with it.

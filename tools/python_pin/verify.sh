@@ -266,13 +266,24 @@ obs_append_archive() {
 	OBSERVED_ARCHIVES="$OBSERVED_ARCHIVES$_n$NL$_h"
 }
 
-# Set the drift-gate state unless an earlier decisive outcome already applies.
-# "decisive" means: a comparison happened, or the run failed closed because
-# the recorded build / its digest could not be checked.
+# Set the drift-gate state for normal/skip outcomes: never erase a completed
+# comparison or an earlier fail-closed reason.
 set_digest_state() {
 	case "$LOCAL_DIGEST_STATE" in
-		compared | "recorded build unprobeable" | \
-		"not compared (unresolved path)" | "not compared (digest unavailable)") ;;
+		compared | "recorded build unprobeable" | "recorded build changed version" | \
+		"not compared (unresolved path)" | "not compared (digest unavailable)" | \
+		"not compared (equivalence undetermined)") ;;
+		*) LOCAL_DIGEST_STATE="$1" ;;
+	esac
+}
+
+# Record a fail-closed reason: it replaces a mere "compared", but the first
+# fail-closed reason is kept so the summary still names the root cause.
+set_digest_failure() {
+	case "$LOCAL_DIGEST_STATE" in
+		"recorded build unprobeable" | "recorded build changed version" | \
+		"not compared (unresolved path)" | "not compared (digest unavailable)" | \
+		"not compared (equivalence undetermined)") ;;
 		*) LOCAL_DIGEST_STATE="$1" ;;
 	esac
 }
@@ -331,12 +342,32 @@ canonical_path() {
 				_cp_work="$_cp_new"
 			fi
 		else
+			# Every component except the last must be an existing directory:
+			# reject /x/missing/../python3 and /x/file/../python3 just as
+			# realpath does.
+			if [ -n "$_cp_work" ] && [ ! -d "$_cp_p" ]; then
+				return 1
+			fi
 			_cp_cur="$_cp_p"
 		fi
 	done
 	[ -n "$_cp_cur" ] || _cp_cur="/"
 	[ -e "$_cp_cur" ] || return 1
 	printf '%s\n' "$_cp_cur"
+}
+
+# Device:inode identity of an existing file, or failure. Only `stat` is used
+# (GNU `-c` and BSD `-f` forms); without it sameness is reported as
+# indeterminate rather than guessed, so a case-variant or hard-linked path can
+# never silently masquerade as — or hide — the recorded baseline.
+file_identity() {
+	_f="$1"
+	[ -e "$_f" ] || return 1
+	if command -v stat >/dev/null 2>&1; then
+		_id="$(stat -c '%d:%i' "$_f" 2>/dev/null)" && [ -n "$_id" ] && { printf '%s\n' "$_id"; return 0; }
+		_id="$(stat -f '%d:%i' "$_f" 2>/dev/null)" && [ -n "$_id" ] && { printf '%s\n' "$_id"; return 0; }
+	fi
+	return 1
 }
 
 # read_version <interpreter> -> prints "X.Y.Z" or nothing.
@@ -383,16 +414,48 @@ check_interpreter() {
 	esac
 	SEEN="$SEEN|$_real|"
 
+	# Identity and resolution are decided BEFORE the version probe: a
+	# recorded baseline belongs to its canonical path, whatever bytes (and
+	# therefore whatever version) now sit there.
+	_obs_key="local_interpreter_${PIN_MAJOR}${PIN_MINOR}"
+	_expected="$(digest_get "${_obs_key}_sha256")"
+	_rec_path="$(digest_get "${_obs_key}_path")"
+	if [ -n "$_expected" ] && [ "$RESOLVED_OK" -eq 0 ]; then
+		set_digest_failure "not compared (unresolved path)"
+		bad "cannot canonically resolve interpreter path $_py while a recorded local baseline applies; failing closed (make realpath/readlink available)"
+		return 1
+	fi
+	_baseline_here=0
+	if [ -n "$_expected" ] && [ -n "$_rec_path" ]; then
+		if [ "$_real" = "$_rec_path" ]; then
+			_baseline_here=1
+		else
+			# Exact string match failed. On a case-insensitive volume or via a
+			# hard link these can still be the same file; establish identity
+			# positively, and fail closed if it cannot be established.
+			_id_real="$(file_identity "$_real")"; _id_rc=$?
+			_id_rec="$(file_identity "$_rec_path")"; _id_rc2=$?
+			if [ "$_id_rc" -eq 0 ] && [ "$_id_rc2" -eq 0 ]; then
+				if [ "$_id_real" = "$_id_rec" ]; then
+					_baseline_here=1
+					info "  same file as the recorded path (case/hard-link variant of $_rec_path)"
+				fi
+			else
+				set_digest_failure "not compared (equivalence undetermined)"
+				bad "recorded local baseline exists but whether $_real is the recorded file ($_rec_path) cannot be determined; failing closed"
+				return 1
+			fi
+		fi
+	fi
+
 	_ver="$(read_version "$_py")"
 	if [ -z "$_ver" ]; then
-		# An unprobeable candidate (for example a bare `python` that is
-		# Python 2 and rejects -I) need not fail a run that finds another
-		# pinned interpreter — unless this IS the recorded baseline build,
-		# whose whole purpose is the local-change check.
-		_obs_key="local_interpreter_${PIN_MAJOR}${PIN_MINOR}"
-		_rec_path="$(digest_get "${_obs_key}_path")"
-		if [ -n "$_rec_path" ] && [ "$_real" = "$_rec_path" ]; then
-			set_digest_state "recorded build unprobeable"
+		# An unprobeable candidate at a genuinely different path (for example
+		# a bare `python` that is Python 2 and rejects -I) need not fail a run
+		# that finds another pinned interpreter — but the recorded baseline
+		# build itself must be checkable.
+		if [ "$_baseline_here" -eq 1 ]; then
+			set_digest_failure "recorded build unprobeable"
 			bad "cannot read a Python version from $_py; it is the recorded local build ($_rec_path), so the drift check cannot be skipped"
 			return 1
 		fi
@@ -406,10 +469,23 @@ check_interpreter() {
 	info "  build:      $_build"
 
 	OBSERVED_SHA=""
-	if [ "$_ver" = "$PIN_VERSION" ]; then
+	if [ "$_baseline_here" -eq 1 ]; then
+		if [ "$_ver" != "$PIN_VERSION" ]; then
+			# The file at the baseline path reports a different version, so the
+			# local build changed even if some other candidate satisfies the pin.
+			set_digest_failure "recorded build changed version"
+			bad "recorded local build $_real reports $_ver instead of $PIN_VERSION; the baseline has changed"
+			OBSERVED_SHA="$(sha256_of "$_real" 2>/dev/null)" || OBSERVED_SHA=""
+			[ -n "$OBSERVED_SHA" ] && obs_append "$_ver" "$OBSERVED_SHA" "$_real"
+			return 1
+		fi
 		FOUND_PINNED=1
 		ok "interpreter version matches the pin ($PIN_VERSION)"
-		check_interpreter_digest "$_real" "$_ver"
+		check_interpreter_digest "$_real" "$_ver" "$_baseline_here"
+	elif [ "$_ver" = "$PIN_VERSION" ]; then
+		FOUND_PINNED=1
+		ok "interpreter version matches the pin ($PIN_VERSION)"
+		check_interpreter_digest "$_real" "$_ver" "$_baseline_here"
 	else
 		info "  version does not match the pin ($PIN_VERSION); recorded as present, not compared"
 		# Still observe its digest for --record, but never compare it against
@@ -422,9 +498,9 @@ check_interpreter() {
 }
 
 check_interpreter_digest() {
-	_real="$1"; _ver="$2"
+	_real="$1"; _ver="$2"; _is_baseline="${3:-0}"
 	if ! _observed="$(sha256_of "$_real")"; then
-		set_digest_state "not compared (digest unavailable)"
+		set_digest_failure "not compared (digest unavailable)"
 		bad "cannot compute the sha256 of $_real"
 		return 1
 	fi
@@ -440,13 +516,13 @@ check_interpreter_digest() {
 	if [ "$RESOLVED_OK" -eq 0 ]; then
 		# Indeterminate resolution must never become a "different path" skip
 		# while a recorded baseline exists: fail closed instead.
-		set_digest_state "not compared (unresolved path)"
+		set_digest_failure "not compared (unresolved path)"
 		bad "cannot canonically resolve interpreter path $_real; a recorded local baseline applies, so the digest comparison is not skipped silently and the run fails closed"
 		info "  make realpath/readlink available, or point --python at the recorded canonical path"
 		return 1
 	fi
 	_expected_path="$(digest_get "${_obs_key}_path")"
-	if [ -n "$_expected_path" ] && [ "$_real" != "$_expected_path" ]; then
+	if [ "$_is_baseline" -ne 1 ] && [ -n "$_expected_path" ] && [ "$_real" != "$_expected_path" ]; then
 		# The baseline is one observed build at one canonical path, not a
 		# per-host value. A different path means no recorded observation
 		# applies; say so even under --quiet.
@@ -726,10 +802,10 @@ else
 	_FOUND_ANY=0
 	for_each_python_candidate consider_candidate
 	if [ "$_FOUND_ANY" -eq 0 ]; then
-		LOCAL_DIGEST_STATE="no local interpreter found"
+		set_digest_state "no local interpreter found"
 		bad "no Python interpreter found (set PYTHON_BIN=/path/to/python or pass --python)"
 	elif [ "$FOUND_PINNED" -eq 0 ]; then
-		LOCAL_DIGEST_STATE="no pinned-version interpreter"
+		set_digest_state "no pinned-version interpreter"
 		bad "no local interpreter reports the pinned version $PIN_VERSION (install it, point --python at it, or pass --no-interpreter to skip this check explicitly)"
 	fi
 fi

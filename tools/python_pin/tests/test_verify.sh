@@ -24,7 +24,7 @@ mkdir -p "$WORK" || exit 2
 # Use the physical prefix: on macOS TMPDIR (/var/folders/...) contains a
 # /var symlink, which would make every absolute fixture path depend on
 # readlink even for tests that are not about symlink resolution.
-WORK="$(cd "$WORK" && pwd -P)"
+WORK="$(cd "$WORK" && pwd -P)" || exit 2
 trap 'rm -rf "$WORK"' EXIT
 trap 'exit 130' INT TERM HUP
 
@@ -76,7 +76,7 @@ assert_not_contains() { # description haystack needle
 make_restricted_path() {
 	_dir="$1"; shift
 	mkdir -p "$_dir" || return 1
-	for _t in sed awk date hostname uname mkdir dirname shasum tail tr sh readlink realpath; do
+	for _t in sed awk date hostname uname mkdir dirname shasum tail tr sh readlink realpath stat ls; do
 		case " $* " in *" $_t "*) continue ;; esac
 		_src="$(command -v "$_t" 2>/dev/null)" || continue
 		ln -s "$_src" "$_dir/$_t"
@@ -491,6 +491,115 @@ assert_contains "failure names the recorded build" "$out" \
 assert_contains "summary gives the specific drift-gate state" "$out" \
 	"local digest: recorded build unprobeable"
 
+# --- changed version at the recorded path fails closed (Sol fb86fc3) ------
+fx="$(new_fixture recorded-changed-version)"
+make_restricted_path "$fx/pathbin"
+printf '#!/bin/sh\nprintf "3.16.0\\n"\n' > "$fx/pathbin/python3.15"
+chmod +x "$fx/pathbin/python3.15"
+make_counting_fake "$fx/pathbin/python3" "$fx/marker"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$fx/pathbin/python3.15")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$fx/pathbin/python3.15")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "recorded-path build reporting 3.16.0 fails despite another pinned candidate" 1 "$rc"
+assert_contains "changed baseline version is named" "$out" \
+	"reports 3.16.0 instead of 3.15.2"
+assert_contains "summary uses the terminal state" "$out" \
+	"local digest: recorded build changed version"
+assert_contains "other candidate was still considered" "$out" "different local build"
+
+# --- unresolved chain to an unprobeable recorded build fails closed ---------
+fx="$(new_fixture unresolved-chain-baseline)"
+make_restricted_path "$fx/pathbin" realpath readlink
+_target="$fx/recorded build"
+printf '#!/bin/sh\nexit 1\n' > "$_target"
+chmod +x "$_target"
+ln -s "$_target" "$fx/chain1"
+ln -s "$fx/chain1" "$fx/pathbin/python3.15"
+make_counting_fake "$fx/pathbin/python3" "$fx/marker"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "unresolved chain to the recorded build fails with another pinned candidate" 1 "$rc"
+assert_contains "failure says resolution could not be established" "$out" \
+	"while a recorded local baseline applies"
+assert_contains "summary marks the unresolved path" "$out" \
+	"local digest: not compared (unresolved path)"
+
+# --- healthy recorded baseline plus a legitimate other-path candidate -------
+fx="$(new_fixture healthy-baseline-other-candidate)"
+make_restricted_path "$fx/pathbin"
+make_counting_fake "$fx/pathbin/python3.15" "$fx/marker-a"
+make_counting_fake "$fx/pathbin/python3" "$fx/marker-b"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$fx/pathbin/python3.15")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$fx/pathbin/python3.15")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "healthy baseline with another pinned path exits 0" 0 "$rc"
+assert_contains "baseline comparison happened" "$out" "local digest: compared"
+assert_contains "other path is reported, not failed" "$out" "different local build"
+
+# --- case-insensitive volume: same file, different case, no realpath --------
+fx="$(new_fixture case-variant-baseline)"
+_target="$fx/MixedCaseBuild"
+_variant="$fx/mixedcasebuild"
+make_counting_fake "$_target" "$fx/marker"
+make_restricted_path "$fx/pathbin" realpath
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+if [ ! -e "$_variant" ] && [ ! -L "$_variant" ]; then
+	assert_eq "case-variant test skipped on a case-sensitive filesystem" yes yes
+else
+	out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh \
+		--python "$_variant" 2>&1)"
+	rc=$?
+	assert_eq "case-variant baseline still compares without realpath" 0 "$rc"
+	assert_contains "identity sameness is reported" "$out" \
+		"same file as the recorded path"
+	assert_contains "summary reports the comparison" "$out" "local digest: compared"
+fi
+
+# --- equivalence cannot be determined: fail closed -------------------------
+fx="$(new_fixture equivalence-undetermined)"
+_rec="$fx/recorded build"
+_other="$fx/pathbin/python3.15"
+make_counting_fake "$_rec" "$fx/marker-rec"
+make_restricted_path "$fx/pathbin" stat
+make_counting_fake "$_other" "$fx/marker-other"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_rec")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_rec")" >> "$fx/pin/checksums.txt"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "undeterminable path equivalence with a baseline fails closed" 1 "$rc"
+assert_contains "failure says equivalence could not be determined" "$out" \
+	"cannot be determined"
+assert_contains "summary uses the specific state" "$out" \
+	"local digest: not compared (equivalence undetermined)"
+
+# --- a fail-closed reason wins over an earlier successful comparison -------
+fx="$(new_fixture failure-after-compared)"
+make_restricted_path "$fx/pathbin" realpath readlink
+_target="$fx/recorded build"
+_other="$fx/other python"
+make_counting_fake "$_target" "$fx/marker-a"
+make_counting_fake "$_other" "$fx/marker-b"
+ln -s "$_other" "$fx/pathbin/python3"
+printf 'local_interpreter_315_path=%s\n' "$(real_path "$_target")" >> "$fx/pin/checksums.txt"
+printf 'local_interpreter_315_sha256=%s\n' \
+	"$(sha256_file "$_target")" >> "$fx/pin/checksums.txt"
+cp "$_target" "$fx/pathbin/python3.15"
+out="$(cd "$fx" && PATH="$fx/pathbin" NO_COLOR=1 sh ./verify.sh --quiet 2>&1)"
+rc=$?
+assert_eq "later unresolved candidate still fails after an earlier comparison" 1 "$rc"
+assert_contains "summary names the fail-closed cause, not compared" "$out" \
+	"local digest: not compared (unresolved path)"
+
 # --- hashing feeds content on stdin, tolerating odd path names (Unix) -------
 case "$(uname -s)" in
 	MINGW* | MSYS* | CYGWIN*)
@@ -656,6 +765,11 @@ for _bad in loop-a self broken missing-path; do
 	( cd "$fx" && . ./harness.sh && canonical_path "$fx/tree/$_bad" >/dev/null 2>&1 )
 	assert_eq "harness rejects $_bad" 1 "$?"
 done
+printf 'plain\n' > "$fx/tree/plainfile"
+( cd "$fx" && . ./harness.sh && canonical_path "$fx/tree/plainfile/../f" >/dev/null 2>&1 )
+assert_eq "harness rejects .. through a regular file" 1 "$?"
+( cd "$fx" && . ./harness.sh && canonical_path "$fx/missing/../tree/target file" >/dev/null 2>&1 )
+assert_eq "harness rejects a missing intermediate directory" 1 "$?"
 make_restricted_path "$fx/bin" realpath readlink
 _rc_link="$(cd "$fx" && PATH="$fx/bin"; export PATH; . ./harness.sh; canonical_path "$fx/tree/three" >/dev/null 2>&1; echo $?)"
 assert_eq "harness needs readlink for a symlink" 1 "$_rc_link"
