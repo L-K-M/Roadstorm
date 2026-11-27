@@ -37,8 +37,13 @@ extends RefCounted
 ##     occur in one tick, the road-plane-projected normal most opposed to the
 ##     proposed world velocity wins, with the earliest contact breaking an exact
 ##     tie. A later floor or ceiling contact therefore cannot silently replace
-##     the wall response. Any further contact response (deflection shaping,
-##     restitution tuning, depenetration, multi-car response) is M1.4 work.
+##     the wall response. The exact candidate whose normal wins also supplies
+##     `wall_contact_point` through `has_wall_contact_point`, taken from that
+##     candidate's own `KinematicCollision3D.get_position(index)` rather than
+##     the generic first-contact telemetry. A degenerate projection or
+##     nonfinite point publishes no witness. Any further contact response
+##     (deflection shaping, restitution tuning, depenetration, multi-car
+##     response) is M1.4 work.
 ##   * the translation sweep uses the tick-start basis; before the tick is
 ##     committed, a bounded nonmutating world check probes the installed hull
 ##     at the proposed yaw for every nonzero yaw delta, using the body's
@@ -302,6 +307,18 @@ class Result extends RefCounted:
 	## first contact of the last colliding substep and can be a floor or
 	## ceiling contact even when a later contact in the same result is a wall.
 	var wall_contact_normal := Vector3.ZERO
+	## Authoritative world-space contact point of the exact wall-like contact
+	## whose normal won the response selection, metres. Zero unless
+	## `has_wall_contact_point` is true. Populated only on a committed
+	## wall-contact result whose winning candidate has a usable road-plane
+	## projection and a finite point.
+	var wall_contact_point := Vector3.ZERO
+	## Explicit witness flag for `wall_contact_point`: true only on a committed
+	## tick where the winning wall candidate supplied a valid point. False on
+	## every refusal and on any tick without a qualifying wall witness, so a
+	## caller can never mistake a zero default or a diagnostic point for an
+	## authoritative contact.
+	var has_wall_contact_point := false
 	var contact_normal := Vector3.ZERO
 	var contact_point := Vector3.ZERO
 	var substeps := 0
@@ -389,6 +406,9 @@ static func step(
 	var hit_normal := Vector3.ZERO
 	var hit_point := Vector3.ZERO
 	var wall_normals: Array = []
+	## Reported `get_position(index)` of each collected wall candidate, parallel
+	## to `wall_normals` across every collision index and substep.
+	var wall_points: Array = []
 	var substeps := 0
 
 	while remaining.length() > MIN_SEGMENT_LENGTH_M and substeps < config.max_substeps:
@@ -421,6 +441,7 @@ static func step(
 			if not collected["wall_normals"].is_empty():
 				wall_hit = true
 				wall_normals.append_array(collected["wall_normals"])
+				wall_points.append_array(collected["wall_points"])
 
 		var committed_end := simulated.origin + actual
 		worst_prediction_error = maxf(
@@ -541,13 +562,25 @@ static func step(
 
 	var velocity_world := road_vector_to_world(committed_velocity_road)
 	var authoritative_wall_normal := Vector3.ZERO
+	var authoritative_wall_point := Vector3.ZERO
+	var has_authoritative_wall_point := false
 	if wall_hit:
+		# The witness helper selects through the same index rule as the
+		# response normal, so the published point is exactly the winning
+		# candidate's own reported position; it is never inferred from the
+		# generic first contact or chosen as an independent nearest point.
+		var selected_wall_contact := _select_wall_contact(
+			wall_normals, wall_points, velocity_world
+		)
 		authoritative_wall_normal = _select_wall_response_normal(
 			wall_normals, velocity_world
 		)
 		velocity_world = _apply_wall_response(
 			velocity_world, authoritative_wall_normal, config
 		)
+		if selected_wall_contact["valid"]:
+			authoritative_wall_point = selected_wall_contact["point"]
+			has_authoritative_wall_point = true
 	committed.velocity_m_s = world_vector_to_road(velocity_world)
 
 	var committed_transform := Transform3D(
@@ -570,6 +603,8 @@ static func step(
 	result.contact = hit
 	result.wall_contact = wall_hit
 	result.wall_contact_normal = authoritative_wall_normal
+	result.wall_contact_point = authoritative_wall_point
+	result.has_wall_contact_point = has_authoritative_wall_point
 	result.contact_normal = hit_normal
 	result.contact_point = hit_point
 	result.substeps = substeps
@@ -704,7 +739,9 @@ static func _test_move_travel(
 ## Generic telemetry stays the first reported contact of this result. Every
 ## reported normal is inspected, so a wall-like contact listed after a
 ## floor-like contact is still returned for the authoritative selection
-## instead of being hidden by collection order.
+## instead of being hidden by collection order. Each retained wall candidate
+## carries its own `get_position(index)` in `wall_points`, parallel to
+## `wall_normals`; generic point telemetry never substitutes for it.
 @warning_ignore("unsafe_method_access")
 static func _collect_collision_contacts(
 	collision,
@@ -714,6 +751,7 @@ static func _collect_collision_contacts(
 		"generic_normal": Vector3.ZERO,
 		"generic_point": Vector3.ZERO,
 		"wall_normals": [] as Array,
+		"wall_points": [] as Array,
 	}
 	if collision == null:
 		return contacts
@@ -724,29 +762,73 @@ static func _collect_collision_contacts(
 		if absf(normal.normalized().dot(SUPPORT_UP)) \
 				<= config.wall_normal_max_up_alignment:
 			contacts["wall_normals"].append(normal)
+			contacts["wall_points"].append(collision.get_position(index))
 	return contacts
+
+## Index of the deterministic winner among the wall-like contact normals
+## collected in one tick. The road-plane-projected normal most opposed to
+## `velocity_world` (smallest dot product) wins, because it is the wall that
+## most directly opposes the commanded planar motion; the earliest contact
+## wins an exact tie. Returns -1 for an empty candidate list.
+static func _select_wall_response_index(
+	normals: Array,
+	velocity_world: Vector3
+) -> int:
+	var best_index := -1
+	var best_opposition := 0.0
+	for index in range(normals.size()):
+		var candidate: Vector3 = normals[index]
+		var opposition := _road_plane_unit_normal(candidate).dot(velocity_world)
+		if best_index < 0 or opposition < best_opposition:
+			best_index = index
+			best_opposition = opposition
+	return best_index
 
 ## Deterministic choice among the wall-like contact normals collected in one
 ## tick. The road-plane-projected normal most opposed to `velocity_world`
-## (smallest dot product) is authoritative, because it is the wall that most
-## directly opposes the commanded planar motion; the earliest contact wins an
-## exact tie. Candidates are compared by their normalized road-plane
-## projections, while the stored candidate is returned unchanged.
+## (smallest dot product) is authoritative; the earliest contact wins an exact
+## tie. Candidates are compared by their normalized road-plane projections,
+## while the stored candidate is returned unchanged.
 static func _select_wall_response_normal(
 	normals: Array,
 	velocity_world: Vector3
 ) -> Vector3:
-	var best := Vector3.ZERO
-	var best_opposition := 0.0
-	var has_best := false
-	for normal in normals:
-		var candidate: Vector3 = normal
-		var opposition := _road_plane_unit_normal(candidate).dot(velocity_world)
-		if not has_best or opposition < best_opposition:
-			best = candidate
-			best_opposition = opposition
-			has_best = true
-	return best
+	var index := _select_wall_response_index(normals, velocity_world)
+	if index < 0:
+		return Vector3.ZERO
+	return normals[index]
+
+## Authoritative wall contact witness bound to the winning normal selection.
+## Returns `{normal, point, valid}` for the candidate at the same index
+## `_select_wall_response_index` chooses; `point` is that candidate's own
+## reported `get_position(index)`, never the generic first-contact point and
+## never an independently chosen nearest point. `valid` requires at least one
+## candidate, a nonzero road-plane projection and a finite point, so a
+## degenerate normal or nonfinite telemetry cannot claim a wrong authoritative
+## wall witness.
+static func _select_wall_contact(
+	normals: Array,
+	points: Array,
+	velocity_world: Vector3
+) -> Dictionary:
+	var chosen := {
+		"normal": Vector3.ZERO,
+		"point": Vector3.ZERO,
+		"valid": false,
+	}
+	var index := _select_wall_response_index(normals, velocity_world)
+	if index < 0 or index >= points.size():
+		return chosen
+	var normal: Vector3 = normals[index]
+	if _road_plane_unit_normal(normal) == Vector3.ZERO:
+		return chosen
+	var point: Vector3 = points[index]
+	if not _finite_vector(point):
+		return chosen
+	chosen["normal"] = normal
+	chosen["point"] = point
+	chosen["valid"] = true
+	return chosen
 
 ## Normalized road-plane (horizontal) projection of a contact normal. Returns
 ## zero when the projection is too short to define a direction, so callers can
@@ -792,6 +874,9 @@ static func _reject(result: Result, reason: String) -> Result:
 
 static func _finite(value: float) -> bool:
 	return not is_nan(value) and not is_inf(value)
+
+static func _finite_vector(value: Vector3) -> bool:
+	return _finite(value.x) and _finite(value.y) and _finite(value.z)
 
 
 static func _finite_vector3_positive(value: Vector3) -> bool:

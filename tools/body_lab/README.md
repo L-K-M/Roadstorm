@@ -39,6 +39,13 @@ This proves one 60 Hz integration tick at a time:
 - the wall response uses an authoritative wall-like normal that survives a
   later floor-like contact in the same tick, and a real pinned-Jolt wall
   contact reports and uses that normal;
+- the exact wall contact whose normal wins the response selection also
+  publishes an authoritative world-space `wall_contact_point` with an
+  explicit `has_wall_contact_point` flag, taken from that candidate's own
+  collision index rather than the generic first contact;
+- a real pinned-Jolt single-wall hit publishes a finite witness point on the
+  wall plane, while committed no-wall and refused ticks publish zero and
+  false;
 - repeated fixed-60 Hz callbacks reproduce bit-identical traces.
 
 It does not implement ground adhesion, jumps, drift, reset, surfaces,
@@ -125,6 +132,33 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
   zero inward road-plane speed. On the pre-fix `4ff7bec` source the same case
   reports -1.600 m/s projected and -1.466 m/s full-normal residual inward
   speed, reproducing the reviewer finding; the fixed source measures zero.
+- Authoritative wall point: `_collect_collision_contacts()` retains each
+  wall candidate's own reported position in `wall_points`, parallel to
+  `wall_normals` across every collision index and substep.
+  `_select_wall_contact()` chooses the candidate at the same index rule as the
+  response normal (most-opposed road-plane projection, earliest on an exact
+  tie) and returns `{normal, point, valid}`. A nonzero road-plane projection
+  and a finite point are required for `valid`; a degenerate normal or
+  nonfinite telemetry publishes zero and false. `Result.wall_contact_point`
+  and `Result.has_wall_contact_point` are populated only on a committed
+  wall-contact result; every refusal leaves both at their zero/false defaults,
+  and a committed no-wall tick does the same. `wall_contact_point_selection`
+  covers floor-first/wall-second with different points, a most-opposed winner
+  that is not the first candidate, an exact-tie earliest point, candidates
+  aggregated across substeps, and degenerate/nonfinite/empty guards.
+  `wall_contact_point_telemetry` drives a real pinned-Jolt single wall,
+  verifies the flag, finiteness and wall-plane location, replays the exact
+  tick to recover the real `KinematicCollision3D`, and requires the published
+  point to equal the winning candidate's `get_position(index)`.
+- Wall-point discrimination limit: pinned Jolt did not emit a literal
+  floor-first/wall-second batch or a reliable multi-normal collision whose
+  winning point differs from the generic first point (see the multi-contact
+  note below), so `wall_contact_point_selection` drives ordering through the
+  deterministic `SeamCollision` fixture and adds a narrow source-contract
+  guard asserting the Result field comes from the selected witness candidate
+  and is never assigned from `hit_point`. The negative-control mutant that
+  replaces the authoritative point with the generic `hit_point` fails that
+  guard while the older normal-only checks still pass.
 - Multi-contact collection regression limit: a literal floor-first/
   wall-second physical batch was not reproduced. Pinned Jolt's
   `move_and_collide()` returned only motion-blocking contacts for horizontal

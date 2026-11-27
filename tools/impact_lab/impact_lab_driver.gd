@@ -8,21 +8,32 @@ extends Node
 ##
 ## Scope: pure event-record validation, publication, bounding and isolation.
 ## It does not integrate the motor/body adapter, select physical contact
-## points, drive cosmetic damage or prove gameplay.
+## points, drive cosmetic damage or prove gameplay. In particular it cannot
+## prove that a published `severity_m_s` was physically derived from the
+## contact response: it only proves that the record carries whatever value
+## the integrator supplied, and that a contact-only value is distinguishable
+## from a motor-acceleration value by construction.
 
 const ChecksScript := preload("res://tools/impact_lab/impact_lab_checks.gd")
 
 const CASE_IDS: Array[String] = [
 	"valid_front_and_rear",
 	"valid_car_car",
+	"two_perspective_car_car",
 	"duplicate_event_id_coalesced",
+	"conflicting_duplicate_refused",
+	"duplicate_retention_window",
 	"invalid_and_nonfinite_atomic_refusal",
+	"digest_covers_every_field",
+	"required_field_omission",
 	"bounded_capacity",
 	"contact_only_severity_distinction",
 	"copy_isolation",
 	"floor_first_wall_point_contract",
 	"no_authority_mutation_surface",
 	"normalization_rule",
+	"large_finite_vector_domain",
+	"ledger_settings_immutable",
 	"uncommitted_source_refusal",
 ]
 
@@ -33,6 +44,81 @@ const FLOOR_FIRST_POINT := Vector3(0.0, 0.0, -1.0)
 const FLOOR_NORMAL := Vector3(0.0, 1.0, 0.0)
 const WALL_POINT := Vector3(0.90, 0.50, -2.0)
 const WALL_NORMAL := Vector3(-1.0, 0.0, 0.0)
+
+## Every published field including the event ID, used to prove that both the
+## payload comparison and the content digest cover the whole record rather
+## than a sampled subset.
+const PAYLOAD_PROBES: Array[Dictionary] = [
+	{"field": "event_id", "value": "evt-probe-other"},
+] + CONFLICT_PROBES
+
+## Every builder field with the fixture value the omission and zero-legality
+## controls assign. Used to construct a record with exactly one field left at
+## its default, so an omission test exercises the real default rather than a
+## value the test itself supplied.
+const FIELD_VALUES: Array[Dictionary] = [
+	{"field": "event_id", "value": ImpactLabChecks.FRONT_EVENT_ID},
+	{"field": "tick_index", "value": ImpactLabChecks.WALL_TICK},
+	{"field": "primary_car_id", "value": ImpactLabChecks.PRIMARY_CAR_ID},
+	{"field": "other_car_id", "value": ""},
+	{"field": "contact_id", "value": ""},
+	{"field": "contact_point_world_m", "value": ImpactLabChecks.FRONT_WORLD_POINT},
+	{"field": "contact_point_local_m", "value": ImpactLabChecks.FRONT_LOCAL_POINT},
+	{"field": "contact_normal_world_m", "value": ImpactLabChecks.FRONT_NORMAL},
+	{"field": "severity_m_s", "value": ImpactLabChecks.FRONT_SEVERITY},
+	{"field": "post_contact_velocity_world_m_s", "value": ImpactLabChecks.FRONT_POST_VELOCITY},
+	{"field": "imparted_motion_m", "value": ImpactLabChecks.FRONT_IMPARTED_MOTION},
+	{"field": "region", "value": ImpactEvent.ContactRegion.FRONT},
+	{"field": "normal_mode", "value": ImpactEvent.NormalMode.PRESERVE},
+	{"field": "source_committed", "value": true},
+]
+
+## Required builder fields and the exact refusal reason each unset field must
+## produce. A legal explicit value for these fields is indistinguishable from
+## the default, so each omission needs its own case.
+const OMISSION_REASONS: Array[Dictionary] = [
+	{"field": "event_id", "reason": "empty event id"},
+	{"field": "tick_index", "reason": "negative tick index"},
+	{"field": "primary_car_id", "reason": "empty primary car id"},
+	{"field": "contact_point_world_m", "reason": "nonfinite world contact point"},
+	{"field": "contact_point_local_m", "reason": "nonfinite local contact point"},
+	{"field": "contact_normal_world_m", "reason": "zero contact normal"},
+	{"field": "severity_m_s", "reason": "nonfinite severity"},
+	{"field": "post_contact_velocity_world_m_s", "reason": "nonfinite post-contact velocity"},
+	{"field": "imparted_motion_m", "reason": "nonfinite imparted motion"},
+	{"field": "region", "reason": "invalid contact region"},
+	{"field": "source_committed", "reason": "uncommitted source"},
+]
+
+## Required physical fields for which an explicit zero is a legal, valid
+## publication. The builder must accept the zero and refuse only the omission.
+const ZERO_LEGAL_FIELDS: Array[Dictionary] = [
+	{"field": "severity_m_s", "value": 0.0},
+	{"field": "contact_point_world_m", "value": Vector3.ZERO},
+	{"field": "contact_point_local_m", "value": Vector3.ZERO},
+	{"field": "post_contact_velocity_world_m_s", "value": Vector3.ZERO},
+	{"field": "imparted_motion_m", "value": Vector3.ZERO},
+	{"field": "region", "value": ImpactEvent.ContactRegion.FRONT},
+	{"field": "tick_index", "value": 0},
+]
+
+## Every authoritative field except the event ID, with a differing value used
+## to prove that a conflicting payload under a retained ID is refused for each
+## of them. The ID itself cannot be probed here: changing it is a different
+## record, not a conflict.
+const CONFLICT_PROBES: Array[Dictionary] = [
+	{"field": "tick_index", "value": ImpactLabChecks.WALL_TICK + 5},
+	{"field": "primary_car_id", "value": "car-probe"},
+	{"field": "other_car_id", "value": "car-probe-other"},
+	{"field": "contact_id", "value": "contact-probe"},
+	{"field": "contact_point_world_m", "value": Vector3(1.5, 2.5, 3.5)},
+	{"field": "contact_point_local_m", "value": Vector3(-1.5, 0.5, -3.5)},
+	{"field": "contact_normal_world_m", "value": Vector3(0.0, 1.0, 0.0)},
+	{"field": "severity_m_s", "value": 7.75},
+	{"field": "post_contact_velocity_world_m_s", "value": Vector3(4.0, 5.0, 6.0)},
+	{"field": "imparted_motion_m", "value": Vector3(0.25, 0.5, 0.75)},
+	{"field": "region", "value": ImpactEvent.ContactRegion.REAR},
+]
 
 var d := ImpactLabChecks.new()
 var measurements: Dictionary = {}
@@ -76,10 +162,20 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_valid_front_and_rear()
 		"valid_car_car":
 			_case_valid_car_car()
+		"two_perspective_car_car":
+			_case_two_perspective_car_car()
 		"duplicate_event_id_coalesced":
 			_case_duplicate_event_id()
+		"conflicting_duplicate_refused":
+			_case_conflicting_duplicate_refused()
+		"duplicate_retention_window":
+			_case_duplicate_retention_window()
 		"invalid_and_nonfinite_atomic_refusal":
 			_case_invalid_atomic_refusal()
+		"digest_covers_every_field":
+			_case_digest_covers_every_field()
+		"required_field_omission":
+			_case_required_field_omission()
 		"bounded_capacity":
 			_case_bounded_capacity()
 		"contact_only_severity_distinction":
@@ -92,6 +188,10 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_no_authority_surface()
 		"normalization_rule":
 			_case_normalization_rule()
+		"large_finite_vector_domain":
+			_case_large_finite_vector_domain()
+		"ledger_settings_immutable":
+			_case_ledger_settings_immutable()
 		"uncommitted_source_refusal":
 			_case_uncommitted_source()
 		_:
@@ -163,6 +263,8 @@ func _case_valid_car_car() -> void:
 	d.check_string(car_car.primary_car_id, ImpactLabChecks.PRIMARY_CAR_ID, "car_car.primary")
 	d.check_string(car_car.other_car_id, ImpactLabChecks.OTHER_CAR_ID, "car_car.other")
 	d.check(car_car.has_other_car(), "car_car.has_other_car")
+	d.check_string(car_car.contact_id, ImpactLabChecks.CAR_CAR_CONTACT_ID, "car_car.contact_id")
+	d.check(car_car.has_contact_link(), "car_car.has_contact_link")
 	d.check(car_car.region == ImpactEvent.ContactRegion.RIGHT, "car_car.region")
 	d.check_exact_float(car_car.severity_m_s, 3.00, "car_car.severity")
 	d.check_vector_close(
@@ -182,29 +284,229 @@ func _case_valid_car_car() -> void:
 		d.check_string(snapshot[0].other_car_id, ImpactLabChecks.OTHER_CAR_ID, "car_car.snapshot_other")
 
 
+func _case_two_perspective_car_car() -> void:
+	# One physical car-car contact produces two complementary records, one per
+	# primary car. Each carries its own event_id; the shared contact_id links
+	# them. Both must publish; neither may coalesce or refuse the other.
+	var alpha := d.make_car_car_builder().build()
+	var beta := d.make_car_car_other_builder().build()
+	d.check(alpha != null, "two_perspective.alpha_built")
+	d.check(beta != null, "two_perspective.beta_built")
+	if alpha == null or beta == null:
+		return
+
+	d.check(alpha.event_id != beta.event_id, "two_perspective.distinct_event_ids")
+	d.check(alpha.contact_id == beta.contact_id, "two_perspective.shared_contact_id")
+	d.check(
+		alpha.primary_car_id == beta.other_car_id
+		and beta.primary_car_id == alpha.other_car_id,
+		"two_perspective.primary_and_other_swap"
+	)
+	d.check(
+		alpha.contact_point_world_m == beta.contact_point_world_m,
+		"two_perspective.shared_world_contact_point"
+	)
+	d.check(
+		alpha.contact_point_local_m != beta.contact_point_local_m,
+		"two_perspective.local_points_are_per_car"
+	)
+	d.check(not alpha.same_payload(beta), "two_perspective.payloads_differ")
+	d.check(alpha.is_opposite_perspective(beta), "two_perspective.alpha_sees_opposite")
+	d.check(beta.is_opposite_perspective(alpha), "two_perspective.beta_sees_opposite")
+
+	var ledger := d.make_ledger()
+	var alpha_outcome := ledger.publish(alpha)
+	var beta_outcome := ledger.publish(beta)
+	d.check(alpha_outcome.is_published(), "two_perspective.alpha_published")
+	d.check(beta_outcome.is_published(), "two_perspective.beta_published")
+	d.check(ledger.event_count() == 2, "two_perspective.both_retained")
+	d.check(ledger.tick_count() == 1, "two_perspective.single_tick_bucket")
+	d.check(ledger.coalesced_count == 0, "two_perspective.nothing_coalesced")
+	d.check(ledger.conflict_count == 0, "two_perspective.nothing_conflicted")
+
+	var retained_alpha := ledger.find_by_id(ImpactLabChecks.CAR_CAR_EVENT_ID)
+	var retained_beta := ledger.find_by_id(ImpactLabChecks.CAR_CAR_OTHER_EVENT_ID)
+	d.check(retained_alpha != null, "two_perspective.alpha_retained")
+	d.check(retained_beta != null, "two_perspective.beta_retained")
+	if retained_alpha != null and retained_beta != null:
+		d.check_string(
+			retained_alpha.primary_car_id, ImpactLabChecks.PRIMARY_CAR_ID,
+			"two_perspective.retained_alpha_primary"
+		)
+		d.check_string(
+			retained_beta.primary_car_id, ImpactLabChecks.OTHER_CAR_ID,
+			"two_perspective.retained_beta_primary"
+		)
+
+	# The historical failure mode: reusing one contact-wide ID for both sides
+	# must now be an explicit conflict, not a silent coalesce.
+	var colliding := d.make_car_car_other_builder().build()
+	if colliding != null:
+		colliding.event_id = ImpactLabChecks.CAR_CAR_EVENT_ID
+	var collision_outcome := ledger.publish(colliding)
+	d.check(collision_outcome.is_refused(), "two_perspective.reused_id_refused")
+	d.check(ledger.conflict_count == 1, "two_perspective.reused_id_counted")
+	d.check(ledger.event_count() == 2, "two_perspective.reused_id_adds_nothing")
+
+
 func _case_duplicate_event_id() -> void:
+	# An identical retry, same ID and the same payload in every field, is a
+	# safe producer retry and coalesces against the retained record.
 	var first := d.make_front_builder().build()
-	var second := d.make_front_builder().build()
-	if second != null:
-		second.event_id = ImpactLabChecks.FRONT_EVENT_ID
-		second.severity_m_s = 9.50
+	var retry := d.make_front_builder().build()
+	d.check(first != null and retry != null, "duplicate.fixtures_built")
+	if first == null or retry == null:
+		return
+	d.check(first.same_payload(retry), "duplicate.retry_is_identical")
 
 	var ledger := d.make_ledger()
 	var first_outcome := ledger.publish(first)
 	d.check(first_outcome.is_published(), "duplicate.first_published")
-	var second_outcome := ledger.publish(second)
+	var second_outcome := ledger.publish(retry)
 	d.check(second_outcome.is_coalesced(), "duplicate.second_coalesced_not_added")
 	d.check(ledger.coalesced_count == 1, "duplicate.coalesced_count")
+	d.check(ledger.conflict_count == 0, "duplicate.no_conflict_for_identical_retry")
 	d.check(ledger.event_count() == 1, "duplicate.event_count_stays_one")
 	var retained := ledger.find_by_id(ImpactLabChecks.FRONT_EVENT_ID)
 	d.check(retained != null, "duplicate.retained_lookup")
 	if retained != null:
 		d.check_exact_float(retained.severity_m_s, ImpactLabChecks.FRONT_SEVERITY, "duplicate.first_wins")
 
-	var third_outcome := ledger.publish(second)
+	var third_outcome := ledger.publish(d.make_front_builder().build())
 	d.check(third_outcome.is_coalesced(), "duplicate.repeat_still_coalesced")
 	d.check(ledger.coalesced_count == 2, "duplicate.coalesced_count_stable")
 	d.check(ledger.event_count() == 1, "duplicate.repeat_adds_nothing")
+
+
+func _case_conflicting_duplicate_refused() -> void:
+	# A conflicting payload under a retained ID must refuse and be counted. It
+	# is never silently discarded and never overwrites the retained record.
+	var ledger := d.make_ledger()
+	var first := d.make_front_builder().build()
+	d.check(first != null, "conflict.base_built")
+	if first == null:
+		return
+	d.check(ledger.publish(first).is_published(), "conflict.base_published")
+	var base_digest := ledger.content_digest()
+	var expected_conflicts := 0
+
+	for probe in CONFLICT_PROBES:
+		var field: String = probe["field"]
+		var value: Variant = probe["value"]
+		var conflicting := d.make_front_builder().build()
+		if conflicting == null:
+			d.check(false, "conflict.%s.built" % field)
+			continue
+		conflicting.set(field, value)
+		var outcome := ledger.publish(conflicting)
+		expected_conflicts += 1
+		d.check(outcome.is_refused(), "conflict.%s.refused" % field)
+		d.check(
+			outcome.reason.begins_with("conflicting payload for event id"),
+			"conflict.%s.reason_names_conflict" % field
+		)
+		d.check(
+			ledger.conflict_count == expected_conflicts,
+			"conflict.%s.conflict_count" % field
+		)
+		d.check(
+			ledger.refused_count == expected_conflicts,
+			"conflict.%s.refused_count" % field
+		)
+		d.check(ledger.event_count() == 1, "conflict.%s.no_second_record" % field)
+		d.check(
+			ledger.content_digest() == base_digest,
+			"conflict.%s.retained_unchanged" % field
+		)
+
+	# Cross-tick conflict: the same ID published at a later tick is a
+	# different record, not a retry.
+	var later := d.make_front_builder().build()
+	if later != null:
+		later.tick_index = ImpactLabChecks.WALL_TICK + 1
+	var later_outcome := ledger.publish(later)
+	expected_conflicts += 1
+	d.check(later_outcome.is_refused(), "conflict.cross_tick_refused")
+	d.check(
+		later_outcome.reason.begins_with("conflicting payload for event id"),
+		"conflict.cross_tick_reason_names_conflict"
+	)
+	d.check(
+		ledger.conflict_count == expected_conflicts,
+		"conflict.cross_tick_conflict_count"
+	)
+	d.check(ledger.event_count() == 1, "conflict.cross_tick_no_second_record")
+
+	# A record that is not even valid is refused as invalid, not as a
+	# conflict, so the two refusal classes stay distinguishable.
+	var invalid := d.make_front_builder().build()
+	if invalid != null:
+		invalid.committed = false
+	var invalid_outcome := ledger.publish(invalid)
+	d.check(invalid_outcome.is_refused(), "conflict.invalid_variant_refused")
+	d.check(
+		not invalid_outcome.reason.begins_with("conflicting payload"),
+		"conflict.invalid_variant_not_reported_as_conflict"
+	)
+	d.check(
+		ledger.conflict_count == expected_conflicts,
+		"conflict.invalid_variant_does_not_raise_conflict_count"
+	)
+
+	d.check(
+		ledger.state_digest().contains("conflicts=%d" % expected_conflicts),
+		"conflict.state_digest_reports_conflicts"
+	)
+	measurements["conflicting_payloads_refused"] = expected_conflicts
+
+
+func _case_duplicate_retention_window() -> void:
+	# Duplicate detection is bounded by the retained window, not all-time.
+	# An identical retry still coalesces at capacity; an ID that has been
+	# pruned or reset publishes again as a fresh record.
+	var ledger := d.make_ledger(2, 2)
+	var first := d.make_lab_event("ret-1a", 1)
+	var second := d.make_lab_event("ret-1b", 1)
+	d.check(first != null and second != null, "retention.fixtures_built")
+	if first == null or second == null:
+		return
+	d.check(ledger.publish(first).is_published(), "retention.first_published")
+	d.check(ledger.publish(second).is_published(), "retention.second_published")
+
+	# Identical retry at capacity coalesces rather than being refused.
+	var retry := d.make_lab_event("ret-1a", 1)
+	var retry_outcome := ledger.publish(retry)
+	d.check(retry_outcome.is_coalesced(), "retention.identical_retry_coalesces_at_capacity")
+	d.check(ledger.coalesced_count == 1, "retention.retry_counted_once")
+	d.check(ledger.event_count() == 2, "retention.capacity_unchanged_by_retry")
+
+	# Push tick 1 out of the retained window.
+	d.check(ledger.publish(d.make_lab_event("ret-2a", 2)).is_published(), "retention.tick_two_first")
+	d.check(ledger.publish(d.make_lab_event("ret-2b", 2)).is_published(), "retention.tick_two_second")
+	d.check(ledger.publish(d.make_lab_event("ret-3a", 3)).is_published(), "retention.tick_three_published")
+	d.check(ledger.tick_count() == 2, "retention.window_bounded")
+	d.check(not ledger.has_event_id("ret-1a"), "retention.pruned_id_forgotten")
+	d.check(ledger.has_event_id("ret-2a"), "retention.retained_id_remembered")
+
+	# The forgotten ID now publishes as a fresh record instead of coalescing.
+	var replayed := d.make_lab_event("ret-1a", 3)
+	var replay_outcome := ledger.publish(replayed)
+	d.check(replay_outcome.is_published(), "retention.pruned_id_publishes_fresh")
+	d.check(
+		ledger.coalesced_count == 1,
+		"retention.replay_after_prune_is_not_coalesced"
+	)
+	d.check(ledger.event_count() == 4, "retention.replay_adds_a_record")
+
+	# Reset forgets every retained ID as well.
+	ledger.reset()
+	d.check(not ledger.has_event_id("ret-2a"), "retention.reset_forgets_ids")
+	var after_reset := d.make_lab_event("ret-2a", 3)
+	var reset_outcome := ledger.publish(after_reset)
+	d.check(reset_outcome.is_published(), "retention.reset_id_publishes_fresh")
+	d.check(ledger.conflict_count == 0, "retention.reset_clears_conflict_count")
+	d.check(ledger.coalesced_count == 0, "retention.reset_clears_coalesced_count")
+	measurements["retained_ticks"] = ledger.tick_count()
 
 
 func _case_invalid_atomic_refusal() -> void:
@@ -298,10 +600,176 @@ func _case_invalid_atomic_refusal() -> void:
 	var uncommitted := d.make_front_builder().build()
 	if uncommitted != null:
 		uncommitted.committed = false
-		var uncommitted_outcome := ledger.publish(uncommitted)
-		d.check(uncommitted_outcome.is_refused(), "hand_uncommitted_event.refused")
+	var uncommitted_outcome := ledger.publish(uncommitted)
+	d.check(uncommitted_outcome.is_refused(), "hand_uncommitted_event.refused")
 	d.check(ledger.content_digest() == base_content, "direct_refusals.content_unchanged")
 	d.check(ledger.published_count == 0, "direct_refusals.nothing_published")
+
+
+func _case_digest_covers_every_field() -> void:
+	# The content digest and the payload comparison must cover the whole
+	# record, so an atomic-refusal control detects mutation of any published
+	# field rather than a sampled subset.
+	var base := d.make_front_builder().build()
+	d.check(base != null, "digest.base_built")
+	if base == null:
+		return
+
+	var reference := d.make_ledger()
+	d.check(reference.publish(base).is_published(), "digest.base_published")
+	var reference_digest := reference.content_digest()
+	d.check(not reference_digest.is_empty(), "digest.nonempty_for_retained_event")
+
+	var twin := d.make_ledger()
+	d.check(twin.publish(base.copy()).is_published(), "digest.twin_published")
+	d.check(
+		twin.content_digest() == reference_digest,
+		"digest.stable_for_identical_content"
+	)
+
+	for probe in PAYLOAD_PROBES:
+		var field: String = probe["field"]
+		var value: Variant = probe["value"]
+		var variant := base.copy()
+		variant.set(field, value)
+		d.check(
+			not base.same_payload(variant),
+			"digest.payload_comparison_detects_%s" % field
+		)
+		var variant_ledger := d.make_ledger()
+		d.check(
+			variant_ledger.publish(variant).is_published(),
+			"digest.variant_%s_published" % field
+		)
+		d.check(
+			variant_ledger.content_digest() != reference_digest,
+			"digest.detects_%s" % field
+		)
+
+	# The committed flag cannot differ inside a publishable record, so cover
+	# it directly on the payload comparison instead.
+	var uncommitted_copy := base.copy()
+	uncommitted_copy.committed = false
+	d.check(
+		not base.same_payload(uncommitted_copy),
+		"digest.payload_comparison_detects_committed"
+	)
+
+
+func _case_required_field_omission() -> void:
+	# A completely default builder must report every required field as unset
+	# and must refuse to build, so a forgotten field can never publish a
+	# plausible-looking event.
+	var pristine := ImpactEvent.Builder.new()
+	var pristine_missing := pristine.missing_fields()
+	for omission in OMISSION_REASONS:
+		var required_field: String = omission["field"]
+		d.check(
+			pristine_missing.has(required_field),
+			"omission.%s.default_is_unset" % required_field
+		)
+	d.check(pristine.build() == null, "omission.pristine_builder_refuses")
+	d.check(
+		not pristine.rejection_reason.is_empty(),
+		"omission.pristine_refusal_has_reason"
+	)
+
+	# Each required field must refuse when it alone is left at its default,
+	# even though a legal explicit value for the same field is valid. The
+	# probed field is never assigned, so the test observes the shipped default
+	# rather than a sentinel the test wrote itself.
+	for omission in OMISSION_REASONS:
+		var field: String = omission["field"]
+		var expected_reason: String = omission["reason"]
+		var builder := ImpactEvent.Builder.new()
+		for entry in FIELD_VALUES:
+			if String(entry["field"]) != field:
+				_set_builder_field(builder, String(entry["field"]), entry["value"])
+		d.check(
+			builder.missing_fields().has(field),
+			"omission.%s.reported_missing" % field
+		)
+		var event := builder.build()
+		d.check(event == null, "omission.%s.refused" % field)
+		d.check_string(
+			builder.rejection_reason, expected_reason,
+			"omission.%s.reason" % field
+		)
+
+	# The same field with an explicit legal zero must publish.
+	for legal in ZERO_LEGAL_FIELDS:
+		var legal_field: String = legal["field"]
+		var legal_value: Variant = legal["value"]
+		var zero_builder := ImpactEvent.Builder.new()
+		for entry in FIELD_VALUES:
+			var zero_field := String(entry["field"])
+			_set_builder_field(
+				zero_builder,
+				zero_field,
+				legal_value if zero_field == legal_field else entry["value"]
+			)
+		d.check(
+			not zero_builder.missing_fields().has(legal_field),
+			"omission.%s.zero_is_not_missing" % legal_field
+		)
+		var zero_event := zero_builder.build()
+		d.check(zero_event != null, "omission.%s.zero_accepted" % legal_field)
+		if zero_event != null:
+			var ledger := d.make_ledger()
+			d.check(
+				ledger.publish(zero_event).is_published(),
+				"omission.%s.zero_publishes" % legal_field
+			)
+
+	# A zero normal is not legal, so it must still refuse.
+	var zero_normal_builder := d.make_front_builder()
+	zero_normal_builder.contact_normal_world_m = Vector3.ZERO
+	d.check(
+		zero_normal_builder.build() == null,
+		"omission.zero_normal_still_refused"
+	)
+
+	measurements["omission_fields"] = OMISSION_REASONS.size()
+	measurements["zero_legal_fields"] = ZERO_LEGAL_FIELDS.size()
+
+
+## Assigns one builder field from the shared fixture table. Every field the
+## omission control can probe must appear here, so a field left out of the
+## table fails loudly instead of silently passing.
+func _set_builder_field(
+	builder: ImpactEvent.Builder, field: String, value: Variant
+) -> void:
+	match field:
+		"event_id":
+			builder.event_id = String(value)
+		"tick_index":
+			builder.tick_index = int(value)
+		"primary_car_id":
+			builder.primary_car_id = String(value)
+		"other_car_id":
+			builder.other_car_id = String(value)
+		"contact_id":
+			builder.contact_id = String(value)
+		"contact_point_world_m":
+			builder.contact_point_world_m = value
+		"contact_point_local_m":
+			builder.contact_point_local_m = value
+		"contact_normal_world_m":
+			builder.contact_normal_world_m = value
+		"severity_m_s":
+			builder.severity_m_s = float(value)
+		"post_contact_velocity_world_m_s":
+			builder.post_contact_velocity_world_m_s = value
+		"imparted_motion_m":
+			builder.imparted_motion_m = value
+		"region":
+			builder.region = value
+		"normal_mode":
+			builder.normal_mode = value
+		"source_committed":
+			builder.source_committed = bool(value)
+		_:
+			d.check(false, "unknown builder field %s" % field)
 
 
 func _case_bounded_capacity() -> void:
@@ -370,6 +838,11 @@ func _case_contact_only_severity() -> void:
 		measurements["contact_delta_m_s"] = contact_delta
 		measurements["motor_delta_m_s"] = naive_motor_delta
 		measurements["published_severity_m_s"] = event.severity_m_s
+		# Scope note: this proves the record carries the value the integrator
+		# supplied, and that a contact-only value is distinguishable from a
+		# motor-acceleration value. It does not and cannot prove that the
+		# integrator derived the value from the committed contact response.
+		measurements["derivation_verified"] = false
 
 
 func _case_copy_isolation() -> void:
@@ -459,10 +932,35 @@ func _case_floor_first_contract() -> void:
 		adapter_source.contains("generic_point"),
 		"floor_first.adapter_labels_generic_first_contact"
 	)
+	# The wall-point job adds an authoritative wall contact point, so the old
+	# tripwire that forbade the token outright is retired: the seam is
+	# accepted. What stays refused is any claim that an impact publisher
+	# already exists, because the adapter is a contact-response component,
+	# not an event producer, and the seam still has no consumer here.
 	d.check(
-		not adapter_source.contains("wall_contact_point"),
-		"floor_first.adapter_exposes_no_authoritative_wall_point"
+		adapter_source.contains("wall_contact_normal"),
+		"floor_first.adapter_exposes_authoritative_wall_normal"
 	)
+	var has_wall_point: bool = adapter_source.contains("wall_contact_point")
+	measurements["adapter_wall_contact_point_present"] = has_wall_point
+	if has_wall_point:
+		# A zero default must never be mistaken for an authoritative contact,
+		# so the point has to carry an explicit witness flag.
+		d.check(
+			adapter_source.contains("has_wall_contact_point"),
+			"floor_first.wall_point_carries_explicit_witness_flag"
+		)
+	else:
+		d.check(
+			adapter_source.contains("floor or ceiling"),
+			"floor_first.adapter_documents_missing_wall_point_hazard"
+		)
+	for publisher_token in ["ImpactEvent", "impact_event", "ImpactLab", "event_id"]:
+		d.check(
+			not adapter_source.contains(publisher_token),
+			"floor_first.adapter_is_not_an_impact_publisher_%s"
+				% publisher_token.to_lower()
+		)
 	d.check(
 		adapter_source.contains("floor or ceiling"),
 		"floor_first.adapter_documents_floor_hazard"
@@ -494,6 +992,10 @@ func _case_no_authority_surface() -> void:
 		"_process(",
 		"_physics_process(",
 		"acceleration",
+		"add_child(",
+		"get_tree()",
+		"move_and_slide",
+		"ResourceLoader",
 	]
 	for token in forbidden:
 		d.check(
@@ -504,6 +1006,19 @@ func _case_no_authority_surface() -> void:
 	d.check(
 		code.contains("INTEGRATOR_SUPPLIED_FIELDS"),
 		"surface.authority_contract_machine_readable"
+	)
+	d.check(
+		code.contains("COORDINATOR_ASSIGNED_FIELDS"),
+		"surface.coordinator_assigned_fields_machine_readable"
+	)
+	# Commitment is documented as a caller assertion, not as proof.
+	d.check(
+		source.contains("caller assertion"),
+		"surface.commitment_documented_as_caller_assertion"
+	)
+	d.check(
+		code.contains("source_committed"),
+		"surface.commitment_flag_is_a_plain_boolean"
 	)
 
 
@@ -533,6 +1048,134 @@ func _case_normalization_rule() -> void:
 	var zero := builder.build()
 	d.check(zero == null, "normalize.zero_normal_refused")
 	d.check_string(builder.rejection_reason, "zero contact normal", "normalize.zero_reason")
+
+	# An out-of-domain normal mode must refuse rather than fall through to a
+	# default branch.
+	builder.contact_normal_world_m = ImpactLabChecks.FRONT_NORMAL
+	builder.normal_mode = 99
+	var bad_mode := builder.build()
+	d.check(bad_mode == null, "normalize.unknown_mode_refused")
+	d.check_string(builder.rejection_reason, "invalid normal mode", "normalize.unknown_mode_reason")
+
+
+func _case_large_finite_vector_domain() -> void:
+	# Finite admitted vectors must never produce INF or NaN in an exported
+	# derived magnitude or in normalization, even where squaring a component
+	# overflows the engine's 32-bit float vector range.
+	var huge := Vector3(1e20, 0.0, 0.0)
+	var huge_norm := ImpactEvent.stable_norm(huge)
+	d.check(is_finite(huge_norm), "domain.scaled_norm_is_finite")
+	# `Vector3` stores 32-bit floats, so 1e20 is already rounded on entry. The
+	# scaled norm must return that stored component exactly, with no overflow.
+	d.check_exact_float(huge_norm, huge.x, "domain.scaled_norm_matches_component")
+	d.check_relative_close(huge_norm, 1e20, 1e-6, "domain.scaled_norm_value")
+	d.check(
+		not is_finite(huge.length()),
+		"domain.plain_length_would_overflow"
+	)
+	var mixed := Vector3(1e20, 1e20, 0.0)
+	var mixed_norm := ImpactEvent.stable_norm(mixed)
+	d.check(is_finite(mixed_norm), "domain.mixed_scaled_norm_is_finite")
+	d.check_relative_close(
+		mixed_norm, sqrt(2.0) * 1e20, 1e-6, "domain.mixed_scaled_norm_value"
+	)
+
+	var probe := ImpactEvent.new()
+	probe.imparted_motion_m = huge
+	var magnitude := probe.imparted_motion_magnitude_m()
+	d.check(is_finite(magnitude), "domain.exported_magnitude_is_finite")
+	d.check_exact_float(magnitude, huge.x, "domain.exported_magnitude_matches_component")
+	d.check_relative_close(magnitude, 1e20, 1e-6, "domain.exported_magnitude_value")
+
+	var builder := d.make_front_builder()
+	builder.severity_m_s = 0.0
+	builder.imparted_motion_m = huge
+	builder.post_contact_velocity_world_m_s = Vector3(1e19, 0.0, -1e19)
+	builder.contact_point_world_m = Vector3(1e18, 1e18, 1e18)
+	builder.contact_point_local_m = Vector3(-1e18, 0.0, 1e18)
+	var event := builder.build()
+	d.check(event != null, "domain.large_finite_event_builds")
+	if event != null:
+		var exported: Variant = event.to_dict()["imparted_motion_magnitude_m"]
+		d.check(is_finite(float(exported)), "domain.exported_dict_magnitude_is_finite")
+		var ledger := d.make_ledger()
+		d.check(ledger.publish(event).is_published(), "domain.large_finite_event_publishes")
+
+	# NORMALIZE must accept a very large finite normal instead of overflowing
+	# into a zero vector.
+	var normalize_builder := d.make_front_builder()
+	normalize_builder.contact_normal_world_m = huge
+	normalize_builder.normal_mode = ImpactEvent.NormalMode.NORMALIZE
+	var normalized_huge := normalize_builder.build()
+	d.check(normalized_huge != null, "domain.huge_normal_normalizes")
+	if normalized_huge != null:
+		d.check_vector_close(
+			normalized_huge.contact_normal_world_m, Vector3(1.0, 0.0, 0.0), 1e-6,
+			"domain.huge_normal_direction_preserved"
+		)
+
+	# PRESERVE must report a genuinely nonunit normal, not a spurious zero.
+	var preserve_builder := d.make_front_builder()
+	preserve_builder.contact_normal_world_m = huge
+	preserve_builder.normal_mode = ImpactEvent.NormalMode.PRESERVE
+	var preserved_huge := preserve_builder.build()
+	d.check(preserved_huge == null, "domain.huge_normal_preserve_refused")
+	d.check_string(
+		preserve_builder.rejection_reason, "nonunit contact normal",
+		"domain.huge_normal_preserve_reason_is_nonunit"
+	)
+	measurements["scaled_norm_of_1e20"] = huge_norm
+
+
+func _case_ledger_settings_immutable() -> void:
+	# The capacity settings must not be mutable public properties after
+	# construction, and their effective values must be revalidated so a
+	# post-init change cannot report a publication that is pruned at once.
+	var ledger := d.make_ledger(4, 3)
+	d.check(ledger.per_tick_capacity() == 4, "settings.constructed_capacity")
+	d.check(ledger.max_retained_ticks() == 3, "settings.constructed_retained_ticks")
+	var property_names := _property_names(ledger)
+	d.check(
+		not property_names.has("per_tick_capacity"),
+		"settings.capacity_has_no_public_property"
+	)
+	d.check(
+		not property_names.has("max_retained_ticks"),
+		"settings.retained_ticks_has_no_public_property"
+	)
+	d.check(ledger.per_tick_capacity() == 4, "settings.capacity_unchanged")
+	d.check(ledger.max_retained_ticks() == 3, "settings.retained_ticks_unchanged")
+
+	var event := d.make_lab_event("settings-1", 1)
+	d.check(event != null, "settings.event_built")
+	if event != null:
+		d.check(ledger.publish(event).is_published(), "settings.published")
+		d.check(
+			ledger.event_count() == 1,
+			"settings.publication_is_not_pruned_immediately"
+		)
+		d.check(ledger.tick_count() == 1, "settings.tick_retained")
+
+	# Degenerate constructor arguments clamp instead of disabling the ledger.
+	var degenerate := d.make_ledger(-5, -7)
+	d.check(degenerate.per_tick_capacity() == 0, "settings.negative_capacity_clamped")
+	d.check(degenerate.max_retained_ticks() == 1, "settings.zero_retained_ticks_clamped")
+	var degenerate_outcome := degenerate.publish(d.make_lab_event("settings-2", 1))
+	d.check(
+		degenerate_outcome.is_refused(),
+		"settings.zero_capacity_refuses_rather_than_publishing"
+	)
+	measurements["retained_tick_lower_bound"] = degenerate.max_retained_ticks()
+
+
+## Names of the settable properties a ledger currently exposes. Used to prove
+## the capacity settings are not part of that surface after construction.
+func _property_names(ledger: ImpactEvent.Ledger) -> Array[String]:
+	var names: Array[String] = []
+	for property in ledger.get_property_list():
+		if int(property["usage"]) & PROPERTY_USAGE_SCRIPT_VARIABLE:
+			names.append(String(property["name"]))
+	return names
 
 
 func _case_uncommitted_source() -> void:

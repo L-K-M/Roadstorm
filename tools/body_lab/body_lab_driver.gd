@@ -77,6 +77,8 @@ const CASE_IDS := [
 	"tilted_wall_response",
 	"multi_contact_collection",
 	"wall_contact_normal_authority",
+	"wall_contact_point_selection",
+	"wall_contact_point_telemetry",
 	"rotated_hull_wall_orientation",
 	"gentle_yaw_wall_probe",
 	"yaw_constrained_velocity_policy",
@@ -201,6 +203,10 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_multi_contact_collection()
 		"wall_contact_normal_authority":
 			await _case_wall_contact_normal_authority()
+		"wall_contact_point_selection":
+			await _case_wall_contact_point_selection()
+		"wall_contact_point_telemetry":
+			await _case_wall_contact_point_telemetry()
 		"rotated_hull_wall_orientation":
 			await _case_rotated_hull_wall_orientation()
 		"gentle_yaw_wall_probe":
@@ -1298,6 +1304,367 @@ func _case_wall_contact_normal_authority() -> void:
 		if has_selector:
 			measurements["jolt_wall_contact_normal"] = impact.wall_contact_normal
 		measurements["jolt_post_contact_normal_speed"] = committed_world.dot(response_normal)
+	await _destroy_world(world)
+
+
+## Replay the exact accepted substep motions of one committed tick from its
+## recorded start transform, returning the real pinned-Jolt collision of the
+## first colliding substep. Used to bind the published wall point back to the
+## collision object's own `get_position(index)` values.
+func _replay_collision(
+	world: BodyLabWorld,
+	pre_pose: Transform3D,
+	proposed_motion: Vector3,
+	config
+) -> KinematicCollision3D:
+	world.body.global_transform = pre_pose
+	var remaining := proposed_motion
+	for _index in range(config.max_substeps):
+		if remaining.length() <= AdapterScript.MIN_SEGMENT_LENGTH_M:
+			break
+		var segment_length := minf(remaining.length(), config.substep_max_length_m)
+		var motion := remaining.normalized() * segment_length
+		var collision := world.body.move_and_collide(
+			motion, false, config.commit_safe_margin_m, false, 8
+		)
+		if collision != null:
+			return collision
+		remaining -= motion
+	return null
+
+
+func _case_wall_contact_point_selection() -> void:
+	# Focused regressions for the authoritative wall-contact point witness.
+	# Contact ordering is driven through the deterministic collision-like
+	# fixture already supported by `_collect_collision_contacts`; pinned Jolt
+	# staging does not reliably emit a floor-first/wall-second batch (README).
+	var config := d.make_config()
+	var adapter := AdapterScript.new()
+	var has_witness: bool = adapter.has_method("_select_wall_contact")
+	d.check(has_witness, "witness: adapter exposes the wall contact selection helper")
+	if not has_witness:
+		return
+
+	# Source contract guard for the exact named regression: the Result field
+	# must be populated from the selected witness candidate, never from the
+	# generic first-contact telemetry. Pinned-Jolt staging cannot reliably emit
+	# a winning candidate whose point differs from the generic point, so this
+	# guard complements the fixture behavior checks below.
+	var adapter_source := ""
+	if FileAccess.file_exists("res://src/simulation/motor_body_adapter.gd"):
+		var source_file := FileAccess.open(
+			"res://src/simulation/motor_body_adapter.gd", FileAccess.READ
+		)
+		adapter_source = source_file.get_as_text()
+		source_file.close()
+	d.check(not adapter_source.is_empty(), "witness source: adapter source readable")
+	d.check(
+		adapter_source.contains("selected_wall_contact[\"point\"]"),
+		"witness source: Result publishes the selected witness point"
+	)
+	d.check(
+		adapter_source.contains("wall_points.append_array(collected[\"wall_points\"])"),
+		"witness source: collected wall points are retained per candidate"
+	)
+	d.check(
+		not adapter_source.contains("result.wall_contact_point = hit_point"),
+		"witness source: Result does not publish the generic hit point"
+	)
+
+	var floor_normal := Vector3(0.0, 1.0, 0.0)
+	var wall_normal := Vector3(0.0, 0.0, 1.0)
+	var head_on_normal := Vector3(0.0, 0.0, 1.0)
+	var oblique_normal := Vector3(0.5, 0.0, 0.8660254)
+	var approach_velocity := Vector3(0.0, 0.0, -20.0)
+
+	# --- Floor-first/wall-second with different points. -----------------
+	var floor_point := Vector3(0.0, 0.0, -1.0)
+	var wall_point := Vector3(0.9, 0.5, -2.0)
+	var floor_first := SeamCollision.new(
+		[floor_normal, wall_normal], [floor_point, wall_point]
+	)
+	var collected_floor: Dictionary = adapter.call(
+		"_collect_collision_contacts", floor_first, config
+	)
+	d.check(
+		collected_floor["generic_point"] == floor_point,
+		"witness floor-first: generic point stays the first contact"
+	)
+	d.check(
+		collected_floor["wall_normals"].size() == 1,
+		"witness floor-first: wall candidate retained"
+	)
+	d.check(
+		collected_floor["wall_points"].size() == 1,
+		"witness floor-first: wall point retained"
+	)
+	d.check(
+		collected_floor["wall_points"][0] == wall_point,
+		"witness floor-first: wall point is the second contact position"
+	)
+	var chosen_floor: Dictionary = adapter.call(
+		"_select_wall_contact",
+		collected_floor["wall_normals"],
+		collected_floor["wall_points"],
+		approach_velocity
+	)
+	d.check(chosen_floor["valid"], "witness floor-first: valid witness")
+	d.check(chosen_floor["normal"] == wall_normal, "witness floor-first: winning normal")
+	d.check(
+		chosen_floor["point"] == wall_point,
+		"witness floor-first: point bound to the wall contact"
+	)
+	d.check(
+		chosen_floor["point"] != collected_floor["generic_point"],
+		"witness floor-first: point is not the generic first contact"
+	)
+
+	# --- Two wall normals; the most-opposed winner is not first. --------
+	var oblique_point := Vector3(-3.0, 0.5, 2.0)
+	var head_on_point := Vector3(0.0, 0.5, -2.0)
+	var two_walls := SeamCollision.new(
+		[oblique_normal, head_on_normal], [oblique_point, head_on_point]
+	)
+	var collected_two: Dictionary = adapter.call(
+		"_collect_collision_contacts", two_walls, config
+	)
+	d.check(collected_two["wall_points"][0] == oblique_point, "witness two-wall: first point recorded")
+	d.check(collected_two["wall_points"][1] == head_on_point, "witness two-wall: second point recorded")
+	var chosen_two: Dictionary = adapter.call(
+		"_select_wall_contact",
+		collected_two["wall_normals"],
+		collected_two["wall_points"],
+		approach_velocity
+	)
+	d.check(
+		chosen_two["normal"].is_equal_approx(head_on_normal),
+		"witness two-wall: most-opposed winner is not first"
+	)
+	d.check(
+		chosen_two["point"] == head_on_point,
+		"witness two-wall: point follows the winning candidate"
+	)
+	d.check(
+		chosen_two["point"] != collected_two["generic_point"],
+		"witness two-wall: point is not the generic first contact"
+	)
+
+	# --- Exact tie keeps the earliest candidate and its point. ----------
+	var tie_point_a := Vector3(1.0, 0.5, 0.0)
+	var tie_point_b := Vector3(0.0, 0.5, 1.0)
+	var tie := SeamCollision.new(
+		[Vector3(1.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.0)],
+		[tie_point_a, tie_point_b]
+	)
+	var collected_tie: Dictionary = adapter.call(
+		"_collect_collision_contacts", tie, config
+	)
+	var tie_velocity := Vector3(-10.0, 0.0, -10.0)
+	var chosen_tie: Dictionary = adapter.call(
+		"_select_wall_contact",
+		collected_tie["wall_normals"],
+		collected_tie["wall_points"],
+		tie_velocity
+	)
+	d.check(
+		chosen_tie["normal"].is_equal_approx(Vector3(1.0, 0.0, 0.0)),
+		"witness tie: earliest normal kept"
+	)
+	d.check(chosen_tie["point"] == tie_point_a, "witness tie: earliest candidate point kept")
+	d.check(
+		AdapterScript._select_wall_response_index(
+			collected_tie["wall_normals"], tie_velocity
+		) == 0,
+		"witness tie: shared index helper keeps the earliest candidate"
+	)
+
+	# --- Candidates aggregated across collision indices and substeps. ---
+	var first_substep := SeamCollision.new(
+		[floor_normal, oblique_normal], [floor_point, oblique_point]
+	)
+	var second_substep := SeamCollision.new([head_on_normal], [head_on_point])
+	var substep_normals: Array = []
+	var substep_points: Array = []
+	for collision in [first_substep, second_substep]:
+		var collected: Dictionary = adapter.call(
+			"_collect_collision_contacts", collision, config
+		)
+		substep_normals.append_array(collected["wall_normals"])
+		substep_points.append_array(collected["wall_points"])
+	var chosen_steps: Dictionary = adapter.call(
+		"_select_wall_contact", substep_normals, substep_points, approach_velocity
+	)
+	d.check(
+		chosen_steps["normal"].is_equal_approx(head_on_normal),
+		"witness substeps: winner comes from a later substep"
+	)
+	d.check(
+		chosen_steps["point"] == head_on_point,
+		"witness substeps: point bound across substeps"
+	)
+
+	# --- Degenerate normal, nonfinite point and empty candidates. -------
+	var vertical_point := Vector3(1.0, 2.0, 3.0)
+	var degenerate: Dictionary = adapter.call(
+		"_select_wall_contact",
+		[Vector3(0.0, 1.0, 0.0)], [vertical_point], approach_velocity
+	)
+	d.check(not degenerate["valid"], "witness degenerate: no valid witness")
+	d.check(degenerate["point"] == Vector3.ZERO, "witness degenerate: zero point")
+	d.check(
+		AdapterScript._select_wall_response_normal(
+			[Vector3(0.0, 1.0, 0.0)], approach_velocity
+		).is_equal_approx(Vector3(0.0, 1.0, 0.0)),
+		"witness degenerate: normal-only selection unchanged"
+	)
+	var nonfinite: Dictionary = adapter.call(
+		"_select_wall_contact",
+		[wall_normal], [Vector3(NAN, 0.0, 0.0)], approach_velocity
+	)
+	d.check(not nonfinite["valid"], "witness nonfinite: no valid witness")
+	d.check(nonfinite["point"] == Vector3.ZERO, "witness nonfinite: zero point")
+	var empty: Dictionary = adapter.call(
+		"_select_wall_contact", [], [], approach_velocity
+	)
+	d.check(not empty["valid"], "witness empty: no valid witness")
+	measurements["witness_fixture_valid"] = (
+		1 if chosen_floor["valid"] and chosen_two["valid"] and chosen_tie["valid"] else 0
+	)
+
+
+func _case_wall_contact_point_telemetry() -> void:
+	# Real pinned-Jolt Result telemetry and default/refusal atomicity.
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+
+	# --- Committed no-wall tick: no witness. -----------------------------
+	var open_world := await _build_world(config, {})
+	var open_state := d.make_state(Vector2.ZERO, Vector2(0.0, 20.0), 0.0)
+	await _place_body(open_world, open_state, d.BODY_SUPPORT_Y)
+	var open_result = AdapterScript.step(
+		open_world.body, open_world.hull_shape, open_state,
+		d.make_idle_command(), tuning, config
+	)
+	d.check(open_result.status == AdapterScript.Status.COMMITTED, "witness open: committed")
+	d.check(not open_result.contact, "witness open: no contact")
+	d.check(not open_result.wall_contact, "witness open: no wall contact")
+	d.check(
+		not open_result.has_wall_contact_point,
+		"witness open: no witness flag"
+	)
+	d.check(
+		open_result.wall_contact_point == Vector3.ZERO,
+		"witness open: zero wall point"
+	)
+	await _destroy_world(open_world)
+
+	# --- Refused tick: must not publish a wall point. -------------------
+	var refuse_world := await _build_world(config, {
+		"point": Vector3(0.0, 2.0, -4.0),
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	})
+	var fast_state := d.make_state(Vector2.ZERO, Vector2(0.0, 300.0), 0.0)
+	await _place_body(refuse_world, fast_state, d.BODY_SUPPORT_Y)
+	var refuse_pose := refuse_world.body.global_transform
+	var refused = AdapterScript.step(
+		refuse_world.body, refuse_world.hull_shape, fast_state,
+		d.make_idle_command(), tuning, config
+	)
+	d.check(
+		refused.status == AdapterScript.Status.REFUSED_MOTION_BOUND,
+		"witness refusal: over-envelope tick refused"
+	)
+	d.check(
+		not refused.has_wall_contact_point,
+		"witness refusal: no witness flag"
+	)
+	d.check(
+		refused.wall_contact_point == Vector3.ZERO,
+		"witness refusal: zero wall point"
+	)
+	d.check(
+		refuse_world.body.global_transform.is_equal_approx(refuse_pose),
+		"witness refusal: body transform unchanged"
+	)
+	await _destroy_world(refuse_world)
+
+	# --- Real pinned-Jolt single wall: valid witness on the wall plane. -
+	var wall_spec := {
+		"point": Vector3(0.0, 2.0, STRAIGHT_WALL_Z),
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(Vector2.ZERO, Vector2(0.0, 30.0), 0.0)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var commands: Array = []
+	for _index in range(60):
+		commands.append(d.make_idle_command())
+	var records := await _drive(world, state, commands, tuning, config)
+	var first_contact := _first_contact_index(records)
+	d.check(first_contact > 0, "witness jolt: wall contact occurred")
+	if first_contact < 0:
+		await _destroy_world(world)
+		return
+	var impact = records[first_contact]["result"]
+	d.check(impact.status == AdapterScript.Status.COMMITTED, "witness jolt: committed")
+	d.check(impact.wall_contact, "witness jolt: wall contact classified")
+	d.check(impact.has_wall_contact_point, "witness jolt: witness flag set")
+	d.check_vector_finite(impact.wall_contact_point, "witness jolt: finite wall point")
+	var plane_distance: float = (
+		(impact.wall_contact_point - world.wall_point).dot(world.wall_normal)
+	)
+	d.check(
+		absf(plane_distance) <= 0.05,
+		"witness jolt: wall point lies on the wall plane (%.6f m)" % plane_distance
+	)
+	d.check(not impact.heading_constrained, "witness jolt: yaw unconstrained for replay")
+	measurements["witness_jolt_plane_distance_m"] = plane_distance
+
+	# Replay the exact tick to recover the real collision object, then
+	# require the published point to equal the winning candidate's own
+	# reported position.
+	var replay_collision := _replay_collision(
+		world, impact.start_transform, impact.proposed_motion_m, config
+	)
+	d.check(replay_collision != null, "witness jolt: replay captured the real collision")
+	if replay_collision != null:
+		var adapter := AdapterScript.new()
+		var collected: Dictionary = adapter.call(
+			"_collect_collision_contacts", replay_collision, config
+		)
+		d.check(
+			collected["wall_points"].size() == collected["wall_normals"].size(),
+			"witness jolt: every wall candidate carries a point"
+		)
+		d.check(
+			collected["wall_points"].size() == replay_collision.get_collision_count(),
+			"witness jolt: all real contacts are wall-like"
+		)
+		for index in range(collected["wall_points"].size()):
+			d.check(
+				collected["wall_points"][index] == replay_collision.get_position(index),
+				"witness jolt: candidate point is get_position(%d)" % index
+			)
+		var velocity_world := AdapterScript.road_vector_to_world(
+			impact.proposed_state.velocity_m_s
+		)
+		var expected: Dictionary = AdapterScript._select_wall_contact(
+			collected["wall_normals"], collected["wall_points"], velocity_world
+		)
+		d.check(expected["valid"], "witness jolt: replay yields a valid winner")
+		d.check(
+			impact.wall_contact_normal.is_equal_approx(expected["normal"]),
+			"witness jolt: replay winner normal matches the response"
+		)
+		d.check(
+			impact.wall_contact_point.is_equal_approx(expected["point"]),
+			"witness jolt: published point equals the exact winning contact position"
+		)
+		measurements["witness_jolt_candidate_count"] = collected["wall_points"].size()
 	await _destroy_world(world)
 
 

@@ -16,10 +16,14 @@ const EVENT_SOURCE_PATH := "res://src/simulation/impact_event.gd"
 const FRONT_EVENT_ID := "evt-front-0001"
 const REAR_EVENT_ID := "evt-rear-0002"
 const CAR_CAR_EVENT_ID := "evt-car-car-0003"
+const CAR_CAR_OTHER_EVENT_ID := "evt-car-car-0004"
 const PRIMARY_CAR_ID := "car-alpha"
 const OTHER_CAR_ID := "car-beta"
 const WALL_TICK := 42
 const CAR_CAR_TICK := 7
+## Shared identity linking the two per-primary records of one car-car contact.
+## Distinct from either record's `event_id`, which is per perspective.
+const CAR_CAR_CONTACT_ID := "contact-car-car-0003"
 
 ## Expected front-wall fixture values, authored here rather than read back from
 ## the builder so a field mix-up cannot pass both sides.
@@ -29,6 +33,16 @@ const FRONT_NORMAL := Vector3(-1.0, 0.0, 0.0)
 const FRONT_SEVERITY := 4.25
 const FRONT_POST_VELOCITY := Vector3(12.5, 0.0, -3.0)
 const FRONT_IMPARTED_MOTION := Vector3(0.12, -0.01, 0.40)
+
+## Expected values for the opposite (car-beta) perspective of the same
+## car-car contact. The world point is shared; the local point, normal and
+## imparted motion are mirrored because they describe the other car.
+const CAR_CAR_WORLD_POINT := Vector3(0.90, 0.60, 0.20)
+const CAR_CAR_OTHER_LOCAL_POINT := Vector3(-0.90, 0.35, 0.20)
+const CAR_CAR_OTHER_NORMAL := Vector3(1.0, 0.0, 0.0)
+const CAR_CAR_OTHER_SEVERITY := 3.00
+const CAR_CAR_OTHER_POST_VELOCITY := Vector3(-9.0, 0.0, 4.0)
+const CAR_CAR_OTHER_IMPARTED_MOTION := Vector3(-0.20, 0.0, 0.10)
 
 ## Tolerances for pure float/vector equality. These are contract records, not
 ## physics measurements, so they are deliberately tight.
@@ -50,6 +64,22 @@ func check_close(actual: float, expected: float, tolerance: float, message: Stri
 	if is_nan(actual) or is_inf(actual) or absf(actual - expected) > tolerance:
 		failures.append(
 			"%s (actual=%s expected=%s tol=%s)" % [message, actual, expected, tolerance]
+		)
+
+
+func check_relative_close(
+	actual: float,
+	expected: float,
+	relative_tolerance: float,
+	message: String
+) -> void:
+	checks += 1
+	var scale := absf(expected)
+	if is_nan(actual) or is_inf(actual) or absf(actual - expected) > relative_tolerance * scale:
+		failures.append(
+			"%s (actual=%s expected=%s rel_tol=%s)" % [
+				message, actual, expected, relative_tolerance,
+			]
 		)
 
 
@@ -118,13 +148,34 @@ func make_car_car_builder() -> ImpactEvent.Builder:
 	builder.tick_index = CAR_CAR_TICK
 	builder.primary_car_id = PRIMARY_CAR_ID
 	builder.other_car_id = OTHER_CAR_ID
-	builder.contact_point_world_m = Vector3(0.90, 0.60, 0.20)
+	builder.contact_id = CAR_CAR_CONTACT_ID
+	builder.contact_point_world_m = CAR_CAR_WORLD_POINT
 	builder.contact_point_local_m = Vector3(0.90, 0.35, -0.20)
 	builder.contact_normal_world_m = Vector3(-1.0, 0.0, 0.0)
 	builder.severity_m_s = 3.00
 	builder.post_contact_velocity_world_m_s = Vector3(9.0, 0.0, 4.0)
 	builder.imparted_motion_m = Vector3(0.20, 0.0, 0.10)
 	builder.region = ImpactEvent.ContactRegion.RIGHT
+	return builder
+
+
+## The complementary record for the other car in the same physical contact.
+## Authored independently rather than mirrored in code, so a field mix-up
+## cannot pass both sides.
+func make_car_car_other_builder() -> ImpactEvent.Builder:
+	var builder := make_front_builder()
+	builder.event_id = CAR_CAR_OTHER_EVENT_ID
+	builder.tick_index = CAR_CAR_TICK
+	builder.primary_car_id = OTHER_CAR_ID
+	builder.other_car_id = PRIMARY_CAR_ID
+	builder.contact_id = CAR_CAR_CONTACT_ID
+	builder.contact_point_world_m = CAR_CAR_WORLD_POINT
+	builder.contact_point_local_m = CAR_CAR_OTHER_LOCAL_POINT
+	builder.contact_normal_world_m = CAR_CAR_OTHER_NORMAL
+	builder.severity_m_s = CAR_CAR_OTHER_SEVERITY
+	builder.post_contact_velocity_world_m_s = CAR_CAR_OTHER_POST_VELOCITY
+	builder.imparted_motion_m = CAR_CAR_OTHER_IMPARTED_MOTION
+	builder.region = ImpactEvent.ContactRegion.LEFT
 	return builder
 
 

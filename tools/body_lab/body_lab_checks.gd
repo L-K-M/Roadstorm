@@ -53,6 +53,16 @@ func check_vector_close(
 		)
 
 
+func check_vector_finite(value: Vector3, message: String) -> void:
+	checks += 1
+	if (
+		is_nan(value.x) or is_inf(value.x)
+		or is_nan(value.y) or is_inf(value.y)
+		or is_nan(value.z) or is_inf(value.z)
+	):
+		failures.append("%s (%s)" % [message, value])
+
+
 func check_state_mapping(
 	body: CharacterBody3D,
 	state: CarState,
