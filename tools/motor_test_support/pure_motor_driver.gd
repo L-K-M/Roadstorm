@@ -48,6 +48,15 @@ func make_curve(pairs: Array) -> Array:
 	return curve
 
 
+## Copy of the shared test tuning with explicit reverse trigger and hold
+## values, for boundary checks. Returns a fresh tuning each call.
+func reverse_tuning(trigger_speed_m_s: float, hold_time_s: float):
+	var tuning = handling_tuning()
+	tuning.reverse_trigger_speed_m_s = trigger_speed_m_s
+	tuning.reverse_hold_time_s = hold_time_s
+	return tuning
+
+
 ## Explicit tuning values used by the acceleration/coast/brake/steering cases.
 ## These are test inputs, not frozen project coefficients.
 func handling_tuning():

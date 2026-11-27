@@ -16,8 +16,9 @@ extends RefCounted
 ##     deferred: the kernel accepts exactly one curve and does not read the
 ##     handling resource);
 ##   * braking, aerodynamic/rolling drag and coasting;
-##   * the design's reverse transition (below 1 m/s after a 0.3 s brake hold,
-##     docs/GAME_DESIGN.md:11) using explicit tuning values;
+##   * the design's reverse transition (at/below 1 m/s after a 0.3 s brake hold,
+##     docs/GAME_DESIGN.md:11) using explicit tuning values, with throttle
+##     taking deterministic priority over brake;
 ##   * basic speed-scaled grip yaw and exponential lateral damping.
 ##
 ## Deferred seams are documented on `CarState`: drift, surface modifiers,
@@ -33,6 +34,14 @@ extends RefCounted
 const DT := 1.0 / 60.0
 ## Absolute tolerance for accepting a caller-supplied step size as 60 Hz.
 const DT_TOLERANCE_S := 1e-6
+
+## Design bounds from docs/GAME_DESIGN.md:11: braking becomes reverse only
+## at or below 1 m/s and only after at least a 0.3 s brake hold. Tuning may
+## narrow these bounds but never widen them.
+const REVERSE_TRIGGER_SPEED_MAX_M_S := 1.0
+const REVERSE_HOLD_TIME_MIN_S := 0.3
+## Tolerance used when comparing tunable values with the design bounds.
+const DESIGN_BOUND_TOLERANCE := 1e-9
 
 
 ## One point of a piecewise-linear speed/acceleration curve.
@@ -61,7 +70,9 @@ class SpeedAccelerationPoint extends RefCounted:
 ##   * `max_yaw_rate_rad_s`: absolute yaw-rate cap (`INF` disables the cap);
 ##   * `lateral_damping_grip_per_s`: exponential lateral-velocity decay rate;
 ##   * `reverse_trigger_speed_m_s`: brake becomes reverse at or below this speed;
+##     bounded to [0, 1] by docs/GAME_DESIGN.md:11;
 ##   * `reverse_hold_time_s`: required brake hold at/below the trigger speed;
+##     must be at least 0.3 s by docs/GAME_DESIGN.md:11;
 ##   * `reverse_acceleration_m_s2` and `reverse_top_speed_m_s`: explicit reverse
 ##     drive parameters (the game design does not fix a reverse top speed).
 class MotorTuning extends RefCounted:
@@ -94,6 +105,11 @@ class MotorTuning extends RefCounted:
 		var tuning := MotorTuning.new()
 		var typed_curve: Array[SpeedAccelerationPoint] = []
 		for point in p_curve:
+			# Refuse a mistyped curve here instead of letting a typed-array
+			# append emit an engine error before is_valid() can report it.
+			if not point is SpeedAccelerationPoint:
+				tuning.acceleration_curve = []
+				return tuning
 			typed_curve.append(point)
 		tuning.acceleration_curve = typed_curve
 		tuning.braking_acceleration_m_s2 = p_braking_acceleration_m_s2
@@ -135,9 +151,16 @@ class MotorTuning extends RefCounted:
 			return false
 		if not _non_negative_finite(lateral_damping_grip_per_s):
 			return false
-		if not _non_negative_finite(reverse_trigger_speed_m_s):
+		if not _finite(reverse_trigger_speed_m_s):
 			return false
-		if not _non_negative_finite(reverse_hold_time_s):
+		if (
+			reverse_trigger_speed_m_s < 0.0
+			or reverse_trigger_speed_m_s > REVERSE_TRIGGER_SPEED_MAX_M_S + DESIGN_BOUND_TOLERANCE
+		):
+			return false
+		if not _finite(reverse_hold_time_s):
+			return false
+		if reverse_hold_time_s < REVERSE_HOLD_TIME_MIN_S - DESIGN_BOUND_TOLERANCE:
 			return false
 		if not _non_negative_finite(reverse_acceleration_m_s2):
 			return false
@@ -193,7 +216,9 @@ class MotorProposal extends RefCounted:
 
 ## Evaluate one fixed 60 Hz motor step. Returns `null` for invalid input:
 ## nonfinite state/command/tuning/dt, a tuning curve that is empty, unsorted or
-## out of range, or a step size that is not the declared 60 Hz tick.
+## out of range, a step size that is not the declared 60 Hz tick, or a
+## proposed state/displacement/yaw delta that is not finite even though the
+## accepted inputs were.
 static func propose(
 	state_in: CarState,
 	command: DriverCommand,
@@ -217,11 +242,17 @@ static func propose(
 	var reverse_hold_s := state_in.reverse_hold_s
 
 	if state_in.grounded:
-		# Reverse transition: brake held at/below the trigger speed for the
-		# configured hold time engages reverse; throttle or releasing the brake
-		# leaves reverse. It can never engage while above the trigger speed.
+		# Reverse transition. Throttle has deterministic priority over brake:
+		# it both blocks engagement and leaves an already engaged reverse, so
+		# simultaneous legal input cannot cycle the flag. Engagement needs the
+		# brake alone at/below the design-bounded trigger speed for the
+		# configured hold.
 		if not reverse_engaged:
-			if command.brake > 0.0 and forward_speed <= tuning.reverse_trigger_speed_m_s:
+			if (
+				command.brake > 0.0
+				and command.throttle <= 0.0
+				and forward_speed <= tuning.reverse_trigger_speed_m_s
+			):
 				reverse_hold_s += dt
 				if reverse_hold_s >= tuning.reverse_hold_time_s:
 					reverse_engaged = true
@@ -232,29 +263,52 @@ static func propose(
 			reverse_engaged = false
 			reverse_hold_s = 0.0
 
-		# Longitudinal forces. Engine and reverse drive are applied first;
-		# brake (outside reverse) and drag are opposing deltas that cannot push
-		# the car through zero in one step.
-		var speed_abs := absf(forward_speed)
+		# Longitudinal forces, keyed to ground-speed magnitude (the documented
+		# curve argument). Engine and reverse drive are applied first; brake
+		# outside reverse and drag are opposing deltas that cannot push the car
+		# through zero in one step.
 		if command.throttle > 0.0:
-			forward_speed += command.throttle * tuning.evaluate_acceleration(speed_abs) * dt
+			forward_speed += (
+				command.throttle
+				* tuning.evaluate_acceleration(state_in.speed_m_s())
+				* dt
+			)
 		if command.brake > 0.0 and not reverse_engaged and forward_speed != 0.0:
 			forward_speed = _apply_opposing_delta(
 				forward_speed,
 				-signf(forward_speed) * command.brake * tuning.braking_acceleration_m_s2 * dt
 			)
 		if reverse_engaged and command.brake > 0.0:
-			forward_speed -= command.brake * tuning.reverse_acceleration_m_s2 * dt
-			if tuning.reverse_top_speed_m_s > 0.0:
-				forward_speed = maxf(forward_speed, -tuning.reverse_top_speed_m_s)
-		var drag := tuning.drag_rolling + tuning.drag_aerodynamic * speed_abs * speed_abs
-		if drag > 0.0 and forward_speed != 0.0:
-			forward_speed = _apply_opposing_delta(
-				forward_speed, -signf(forward_speed) * drag * dt
+			var at_or_beyond_reverse_top := (
+				tuning.reverse_top_speed_m_s > 0.0
+				and forward_speed <= -tuning.reverse_top_speed_m_s
 			)
+			if not at_or_beyond_reverse_top:
+				forward_speed -= command.brake * tuning.reverse_acceleration_m_s2 * dt
+				if tuning.reverse_top_speed_m_s > 0.0:
+					# The cap limits newly applied reverse drive only. It never
+					# teleports a committed faster-reversing state toward zero, so
+					# a speed already past the cap receives no new reverse drive.
+					forward_speed = maxf(forward_speed, -tuning.reverse_top_speed_m_s)
 
-	# Basic grip yaw: speed-scaled steer authority with an optional absolute cap.
-	# Airborne cars receive no yaw in this slice; momentum is preserved.
+		# Aerodynamic (k*|v|^2) and rolling drag oppose the full road-plane
+		# velocity, not only its longitudinal component. Scale the vector along
+		# its own direction, then decompose it back into the old nose frame.
+		var velocity_pre_drag := forward * forward_speed + right * lateral_speed
+		var speed_pre_drag := velocity_pre_drag.length()
+		if speed_pre_drag > 0.0:
+			var drag := (
+				tuning.drag_rolling
+				+ tuning.drag_aerodynamic * speed_pre_drag * speed_pre_drag
+			)
+			var reduced_speed := _apply_opposing_delta(speed_pre_drag, -drag * dt)
+			velocity_pre_drag *= reduced_speed / speed_pre_drag
+			forward_speed = velocity_pre_drag.dot(forward)
+			lateral_speed = velocity_pre_drag.dot(right)
+
+	# Basic grip yaw on post-force ground speed: speed-scaled steer authority
+	# with an optional absolute cap. Airborne cars receive no yaw in this slice;
+	# momentum is preserved.
 	var yaw_rate := 0.0
 	if state_in.grounded:
 		var ground_speed := Vector2(forward_speed, lateral_speed).length()
@@ -285,6 +339,16 @@ static func propose(
 	proposal.state = proposed
 	proposal.displacement_m = displacement
 	proposal.yaw_delta_rad = yaw_rate * dt
+	# Refuse any nonfinite proposal. Finite extreme inputs can still overflow
+	# intermediate math (huge speed squared in a Vector2 length, an uncapped
+	# yaw gain, an extreme curve coefficient); returning Inf/NaN would break
+	# the pure-kernel contract.
+	if (
+		not proposed.is_finite()
+		or not _vector2_finite(proposal.displacement_m)
+		or not _finite(proposal.yaw_delta_rad)
+	):
+		return null
 	return proposal
 
 
@@ -300,3 +364,7 @@ static func _apply_opposing_delta(value: float, opposing_delta: float) -> float:
 
 static func _finite(value: float) -> bool:
 	return not is_nan(value) and not is_inf(value)
+
+
+static func _vector2_finite(value: Vector2) -> bool:
+	return _finite(value.x) and _finite(value.y)

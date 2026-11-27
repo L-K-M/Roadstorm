@@ -1,13 +1,23 @@
 extends SceneTree
 ## Headless black-box runner for the M1.1 pure-motor slice.
 ##
-## Run with the pinned Godot 4.7.2 from an isolated scratch project copy, e.g.:
+## Run with the pinned Godot 4.7.2 from an isolated scratch project copy. A
+## headless import must run first so global script classes are registered:
+##   godot --headless --path <scratch> --import
 ##   godot --headless --path <scratch> --script res://tests/handling/pure_motor_entry.gd
+## or use tools/motor_test_support/run_pure_motor_entry.sh, which imports first,
+## requires a `SLICE_SUMMARY` line containing `"pass":true`, rejects engine
+## `ERROR`/`SCRIPT ERROR` lines, and enforces a wall-clock timeout.
+##
 ## Optional `--case=<id>` selects one case; the default runs every case.
+## On this engine the argument must follow the script path directly
+## (`... --script res://... --case=<id>`); arguments after a bare `--` are not
+## visible to `OS.get_cmdline_args()`.
 ## `--case=intentional_failure` always exits nonzero to demonstrate failure
 ## detection. Each case prints one machine-readable `SLICE_RESULT <json>` line;
-## the runner prints one `SLICE_SUMMARY <json>` line and exits 0 only when every
-## selected case passes.
+## the runner prints one `SLICE_SUMMARY <json>` line and calls `quit` on every
+## path. Exit status alone is not proof of success: the pinned engine can exit
+## 0 after a parse error, so the wrapper also gates the log and summary marker.
 ##
 ## These are pure-kernel checks only: no scene, body, physics query, clock or
 ## gameplay claim. They use explicit test tuning values and assert invariants,
@@ -17,18 +27,25 @@ extends SceneTree
 const DriverCommandScript = preload("res://src/simulation/driver_command.gd")
 const CarStateScript = preload("res://src/simulation/car_state.gd")
 const ArcadeMotorScript = preload("res://src/simulation/arcade_motor.gd")
-const PureMotorDriverScript = preload("res://tests/handling/pure_motor_driver.gd")
+const PureMotorDriverScript = preload("res://tools/motor_test_support/pure_motor_driver.gd")
 
 const CASE_IDS := [
 	"command_validation",
 	"invalid_refusal",
+	"car_state_helpers",
 	"acceleration_from_rest",
 	"coast_drag_decrease",
+	"lateral_drag",
 	"brake_and_reverse",
+	"reverse_input_priority",
+	"reverse_hold_timing",
+	"reverse_road_speed",
+	"reverse_top_speed",
 	"steering_symmetry",
 	"lateral_damping",
 	"input_immutability",
 	"deterministic_replay",
+	"nonfinite_refusal",
 ]
 
 var d := PureMotorDriverScript.new()
@@ -98,12 +115,24 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_command_validation()
 		"invalid_refusal":
 			_case_invalid_refusal()
+		"car_state_helpers":
+			_case_car_state_helpers()
 		"acceleration_from_rest":
 			_case_acceleration_from_rest()
 		"coast_drag_decrease":
 			_case_coast_drag_decrease()
+		"lateral_drag":
+			_case_lateral_drag()
 		"brake_and_reverse":
 			_case_brake_and_reverse()
+		"reverse_input_priority":
+			_case_reverse_input_priority()
+		"reverse_hold_timing":
+			_case_reverse_hold_timing()
+		"reverse_road_speed":
+			_case_reverse_road_speed()
+		"reverse_top_speed":
+			_case_reverse_top_speed()
 		"steering_symmetry":
 			_case_steering_symmetry()
 		"lateral_damping":
@@ -112,6 +141,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_input_immutability()
 		"deterministic_replay":
 			_case_deterministic_replay()
+		"nonfinite_refusal":
+			_case_nonfinite_refusal()
 	var result := {
 		"case": case_id,
 		"pass": d.failures.is_empty(),
@@ -176,12 +207,29 @@ func _case_command_validation() -> void:
 	unnormalized.throttle = -0.25
 	d.check(d.advance(state, unnormalized, tuning) == null, "directly assigned negative throttle refused")
 
-	var reset_only = DriverCommandScript.create(0.0, 0.0, 0.0, 0.0, true)
-	var moved = d.advance(d.make_state(Vector2(0.0, 0.0), Vector2(0.0, 10.0)), reset_only, tuning)
-	d.check(
-		moved != null and moved.state.position_m.length() > 0.0,
-		"reset_requested is carried, not executed by the pure motor"
+	# Zero drag and no throttle mean a correctly inert reset flag cannot move a
+	# stationary car; equality is observable, unlike the old position-length
+	# check that any coasting motion would satisfy.
+	var quiet = d.make_tuning(
+		[[0.0, 9.0], [20.0, 9.0]], 12.0, 0.0, 0.0, 0.0, INF, 0.0, 1.0, 0.3, 4.0, 8.0
 	)
+	var still = d.make_state(Vector2(3.0, 4.0), Vector2(0.0, 0.0))
+	var reset_only = DriverCommandScript.create(0.0, 0.0, 0.0, 0.0, true)
+	var reset_proposal = d.advance(still, reset_only, quiet)
+	d.check(reset_proposal != null, "reset-only command reaches the motor")
+	if reset_proposal != null:
+		d.check(
+			reset_proposal.state.position_m == still.position_m,
+			"reset_requested does not move the car"
+		)
+		d.check(
+			reset_proposal.state.velocity_m_s == still.velocity_m_s,
+			"reset_requested does not change velocity"
+		)
+		d.check(
+			reset_proposal.state.heading_rad == still.heading_rad,
+			"reset_requested does not rotate the car"
+		)
 	measurements["clamped_steer"] = clamped.steer if clamped != null else null
 
 
@@ -224,6 +272,13 @@ func _case_invalid_refusal() -> void:
 		[], 12.0, 0.0009, 0.25, 0.12, 1.6, 4.0, 1.0, 0.3, 4.0, 8.0
 	)
 	d.check(ArcadeMotorScript.propose(good_state, command, empty_curve) == null, "empty curve refused")
+	var mistyped_curve = ArcadeMotorScript.MotorTuning.make(
+		[Vector2(0.0, 9.0), Vector2(20.0, 6.0)]
+	)
+	d.check(
+		not mistyped_curve.is_valid(),
+		"mistyped curve elements refused without typed-array engine errors"
+	)
 
 	d.check(ArcadeMotorScript.propose(null, command, tuning) == null, "null state refused")
 	d.check(ArcadeMotorScript.propose(good_state, null, tuning) == null, "null command refused")
@@ -400,9 +455,14 @@ func _case_input_immutability() -> void:
 	var state = d.make_state(Vector2(1.5, 2.5), Vector2(3.0, 8.0), 0.3)
 	state.surface_id = &"gravel"
 	state.gear_index = 2
+	state.reverse_engaged = true
 	state.drift_active = true
 	state.drift_timer_s = 0.25
+	state.drift_slip_deg = 12.5
 	state.reverse_hold_s = 0.1
+	state.surge_cooldown_s = 0.75
+	state.drafting_active = true
+	state.contact_immunity_s = 0.5
 	state.valid_progress_m = 12.5
 	var command = DriverCommandScript.create(0.4, 0.7, 0.2, 0.1, true)
 	var snapshot := {
@@ -412,9 +472,14 @@ func _case_input_immutability() -> void:
 		"grounded": state.grounded,
 		"surface_id": state.surface_id,
 		"gear_index": state.gear_index,
+		"reverse_engaged": state.reverse_engaged,
 		"drift_active": state.drift_active,
 		"drift_timer_s": state.drift_timer_s,
+		"drift_slip_deg": state.drift_slip_deg,
 		"reverse_hold_s": state.reverse_hold_s,
+		"surge_cooldown_s": state.surge_cooldown_s,
+		"drafting_active": state.drafting_active,
+		"contact_immunity_s": state.contact_immunity_s,
 		"valid_progress_m": state.valid_progress_m,
 	}
 	var command_snapshot := {
@@ -434,9 +499,26 @@ func _case_input_immutability() -> void:
 		d.check(state.grounded == snapshot["grounded"], "input grounded unchanged")
 		d.check(state.surface_id == snapshot["surface_id"], "input surface unchanged")
 		d.check(state.gear_index == snapshot["gear_index"], "input gear seam unchanged")
+		d.check(
+			state.reverse_engaged == snapshot["reverse_engaged"],
+			"input reverse flag unchanged"
+		)
 		d.check(state.drift_active == snapshot["drift_active"], "input drift seam unchanged")
 		d.check(state.drift_timer_s == snapshot["drift_timer_s"], "input drift timer unchanged")
+		d.check(state.drift_slip_deg == snapshot["drift_slip_deg"], "input slip seam unchanged")
 		d.check(state.reverse_hold_s == snapshot["reverse_hold_s"], "input reverse hold unchanged")
+		d.check(
+			state.surge_cooldown_s == snapshot["surge_cooldown_s"],
+			"input surge seam unchanged"
+		)
+		d.check(
+			state.drafting_active == snapshot["drafting_active"],
+			"input drafting seam unchanged"
+		)
+		d.check(
+			state.contact_immunity_s == snapshot["contact_immunity_s"],
+			"input contact immunity seam unchanged"
+		)
 		d.check(state.valid_progress_m == snapshot["valid_progress_m"], "input progress seam unchanged")
 	d.check(command.steer == command_snapshot["steer"], "input steer unchanged")
 	d.check(command.throttle == command_snapshot["throttle"], "input throttle unchanged")
@@ -492,3 +574,370 @@ func _case_deterministic_replay() -> void:
 	measurements["ticks"] = first.size()
 	measurements["mismatches"] = mismatches
 	measurements["final_position_m"] = [first[-1].state.position_m.x, first[-1].state.position_m.y]
+
+
+func _case_car_state_helpers() -> void:
+	var headings := [0.0, 0.3, -0.7, 1.9, -2.5]
+	for heading in headings:
+		var state = d.make_state(Vector2.ZERO, Vector2.ZERO, heading)
+		var forward = state.forward_vector()
+		var right = state.right_vector()
+		# Vector2 stores 32-bit components, so compare against that precision.
+		d.check_close(forward.x, sin(heading), 1e-6, "forward x follows sin(heading)")
+		d.check_close(forward.y, cos(heading), 1e-6, "forward y follows cos(heading)")
+		d.check_close(right.x, cos(heading), 1e-6, "right x follows cos(heading)")
+		d.check_close(right.y, -sin(heading), 1e-6, "right y follows -sin(heading)")
+		d.check_close(forward.length(), 1.0, 1e-6, "forward unit length")
+		d.check_close(right.length(), 1.0, 1e-6, "right unit length")
+		d.check_close(forward.dot(right), 0.0, 1e-6, "forward and right are orthogonal")
+
+	var axis_state = d.make_state(Vector2.ZERO, Vector2(3.0, 4.0), 0.0)
+	d.check_close(axis_state.speed_m_s(), 5.0, 1e-12, "ground speed magnitude")
+	d.check_close(axis_state.forward_speed_m_s(), 4.0, 1e-12, "longitudinal component")
+	d.check_close(axis_state.lateral_speed_m_s(), 3.0, 1e-12, "lateral component")
+	d.check_close(
+		axis_state.slip_deg(),
+		rad_to_deg(atan2(3.0, 4.0)),
+		1e-9,
+		"slip angle of (3,4) at zero heading"
+	)
+	var zero_velocity = d.make_state(Vector2.ZERO, Vector2.ZERO, 0.4)
+	d.check_close(zero_velocity.slip_deg(), 0.0, 1e-12, "zero velocity has zero slip")
+	var reverse_travel = d.make_state(Vector2.ZERO, Vector2(0.0, -10.0), 0.0)
+	d.check(absf(reverse_travel.slip_deg()) > 179.9, "reversing travel reports about 180 degrees")
+	var right_travel = d.make_state(Vector2.ZERO, Vector2(10.0, 0.0), 0.0)
+	d.check_close(right_travel.slip_deg(), 90.0, 1e-9, "rightward travel is +90 degrees of slip")
+	var left_travel = d.make_state(Vector2.ZERO, Vector2(-10.0, 0.0), 0.0)
+	d.check_close(left_travel.slip_deg(), -90.0, 1e-9, "leftward travel is -90 degrees of slip")
+
+	var original = d.make_state(Vector2(1.5, 2.5), Vector2(3.0, 8.0), 0.3)
+	original.surface_id = &"gravel"
+	original.gear_index = 2
+	original.reverse_engaged = true
+	original.drift_active = true
+	original.drift_timer_s = 0.25
+	original.drift_slip_deg = 12.5
+	original.surge_cooldown_s = 0.75
+	original.drafting_active = true
+	original.contact_immunity_s = 0.5
+	original.valid_progress_m = 12.5
+	var duplicate = original.copy()
+	d.check(duplicate != original, "copy returns a new object")
+	d.check(duplicate.position_m == original.position_m, "copy position")
+	d.check(duplicate.velocity_m_s == original.velocity_m_s, "copy velocity")
+	d.check(duplicate.heading_rad == original.heading_rad, "copy heading")
+	d.check(duplicate.grounded == original.grounded, "copy grounded")
+	d.check(duplicate.surface_id == original.surface_id, "copy surface")
+	d.check(duplicate.reverse_engaged == original.reverse_engaged, "copy reverse flag")
+	d.check(duplicate.gear_index == original.gear_index, "copy gear seam")
+	d.check(duplicate.drift_slip_deg == original.drift_slip_deg, "copy slip seam")
+	d.check(duplicate.valid_progress_m == original.valid_progress_m, "copy progress seam")
+	duplicate.position_m = Vector2(9.0, 9.0)
+	duplicate.velocity_m_s = Vector2(1.0, 1.0)
+	duplicate.heading_rad = 1.0
+	duplicate.gear_index = 7
+	d.check(original.position_m == Vector2(1.5, 2.5), "mutating the copy leaves original position")
+	d.check(original.velocity_m_s == Vector2(3.0, 8.0), "mutating the copy leaves original velocity")
+	d.check(original.heading_rad == 0.3, "mutating the copy leaves original heading")
+	d.check(original.gear_index == 2, "mutating the copy leaves original seams")
+
+
+func _case_lateral_drag() -> void:
+	var curve_pairs := [[0.0, 9.0], [20.0, 0.0], [60.0, 0.0]]
+	var aero = d.make_tuning(curve_pairs, 12.0, 1.0, 0.0, 0.0, INF, 0.0, 1.0, 0.3, 4.0, 8.0)
+	var rolling = d.make_tuning(curve_pairs, 12.0, 0.0, 1.0, 0.0, INF, 0.0, 1.0, 0.3, 4.0, 8.0)
+	var no_drag = d.make_tuning(curve_pairs, 12.0, 0.0, 0.0, 0.0, INF, 0.0, 1.0, 0.3, 4.0, 8.0)
+	var idle = DriverCommandScript.create()
+
+	var lateral_initial = d.make_state(Vector2.ZERO, Vector2(10.0, 0.0))
+	var lateral_proposal = d.advance(lateral_initial, idle, aero)
+	d.check(lateral_proposal != null, "lateral drag produced a proposal")
+	var straight_proposal = d.advance(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 10.0)), idle, aero
+	)
+	d.check(straight_proposal != null, "straight drag produced a proposal")
+	if lateral_proposal != null and straight_proposal != null:
+		var expected := 10.0 - 1.0 * 10.0 * 10.0 * ArcadeMotorScript.DT
+		d.check_close(
+			lateral_proposal.state.speed_m_s(),
+			expected,
+			1e-6,
+			"aerodynamic drag decays pure lateral velocity"
+		)
+		d.check_close(
+			lateral_proposal.state.forward_speed_m_s(),
+			0.0,
+			1e-9,
+			"lateral drag does not create longitudinal motion"
+		)
+		d.check_close(
+			lateral_proposal.state.lateral_speed_m_s(),
+			expected,
+			1e-6,
+			"drag opposes lateral velocity without reversing it"
+		)
+		d.check_close(
+			straight_proposal.state.speed_m_s(),
+			lateral_proposal.state.speed_m_s(),
+			1e-9,
+			"equal-speed lateral and straight states decay equally"
+		)
+
+	var roll_proposal = d.advance(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 10.0)), idle, rolling
+	)
+	d.check(roll_proposal != null, "rolling drag produced a proposal")
+	if roll_proposal != null:
+		d.check_close(
+			roll_proposal.state.speed_m_s(),
+			10.0 - 1.0 * ArcadeMotorScript.DT,
+			1e-6,
+			"rolling drag decays pure longitudinal velocity"
+		)
+
+	# The curve takes ground-speed magnitude, not the longitudinal component:
+	# at 20 m/s ground speed this curve is zero, so lateral-only 20 m/s gains
+	# no engine force.
+	var throttle = DriverCommandScript.create(0.0, 1.0, 0.0, 0.0)
+	var ground_keyed = d.advance(
+		d.make_state(Vector2.ZERO, Vector2(20.0, 0.0)), throttle, no_drag
+	)
+	d.check(ground_keyed != null, "ground-speed curve probe produced a proposal")
+	if ground_keyed != null:
+		d.check_close(
+			ground_keyed.state.forward_speed_m_s(),
+			0.0,
+			1e-9,
+			"curve is keyed to ground speed, not the zero longitudinal component"
+		)
+		d.check_close(
+			ground_keyed.state.speed_m_s(),
+			20.0,
+			1e-9,
+			"zero ground-speed acceleration adds no speed"
+		)
+
+	var trace = d.trace_states(lateral_initial, idle, aero, 60)
+	d.check(trace.size() == 60, "lateral decay trace complete")
+	var previous := 10.0
+	for index in range(trace.size()):
+		var speed = trace[index].speed_m_s()
+		d.check_finite(speed, "finite lateral decay speed at tick %d" % (index + 1))
+		d.check(speed <= previous + 1e-9, "lateral speed never grows under drag")
+		d.check(speed >= 0.0, "drag never reverses the car")
+		previous = speed
+	d.check(previous < 1.0, "sustained drag decays lateral velocity substantially")
+	measurements["lateral_after_one_tick_mps"] = (
+		lateral_proposal.state.speed_m_s() if lateral_proposal != null else null
+	)
+	measurements["lateral_after_60_ticks_mps"] = previous
+
+
+func _case_reverse_input_priority() -> void:
+	var tuning = d.handling_tuning()
+	var paired = DriverCommandScript.create(0.0, 1.0, 1.0, 0.0)
+	var current = d.make_state()
+	var flag_changes := 0
+	var observed_engaged := false
+	for index in range(90):
+		var previous = current
+		var proposal = d.advance(current, paired, tuning)
+		if proposal == null:
+			d.check(false, "paired input produced null at tick %d" % (index + 1))
+			break
+		current = proposal.state
+		if current.reverse_engaged != previous.reverse_engaged:
+			flag_changes += 1
+		if current.reverse_engaged:
+			observed_engaged = true
+	d.check(not observed_engaged, "throttle+brake together never engages reverse")
+	d.check(flag_changes == 0, "reverse flag stays stable under paired input for 90 ticks")
+
+	var brake_only = DriverCommandScript.create(0.0, 0.0, 1.0, 0.0)
+	var brake_states = d.trace_states(d.make_state(), brake_only, tuning, 60)
+	var brake_engaged := false
+	for state in brake_states:
+		if state.reverse_engaged:
+			brake_engaged = true
+			break
+	d.check(brake_engaged, "control: brake alone engages reverse")
+
+	var engaged = d.make_state(Vector2.ZERO, Vector2(0.0, -3.0))
+	engaged.reverse_engaged = true
+	var released = d.advance(engaged, paired, tuning)
+	d.check(
+		released != null and not released.state.reverse_engaged,
+		"throttle releases an engaged reverse"
+	)
+	measurements["paired_flag_changes_90_ticks"] = flag_changes
+
+
+func _case_reverse_hold_timing() -> void:
+	var tuning = d.handling_tuning()
+	d.check(
+		tuning.reverse_hold_time_s >= ArcadeMotorScript.REVERSE_HOLD_TIME_MIN_S - 1e-9,
+		"test tuning respects the design minimum hold"
+	)
+	var zero_hold = d.reverse_tuning(tuning.reverse_trigger_speed_m_s, 0.0)
+	d.check(not zero_hold.is_valid(), "zero reverse hold refused by validation")
+	var below_minimum = d.reverse_tuning(
+		tuning.reverse_trigger_speed_m_s,
+		ArcadeMotorScript.REVERSE_HOLD_TIME_MIN_S - 1e-3
+	)
+	d.check(not below_minimum.is_valid(), "hold below 0.3 s refused by validation")
+	var minimum = d.reverse_tuning(
+		tuning.reverse_trigger_speed_m_s, ArcadeMotorScript.REVERSE_HOLD_TIME_MIN_S
+	)
+	d.check(minimum.is_valid(), "exactly 0.3 s hold accepted")
+
+	var brake_command = DriverCommandScript.create(0.0, 0.0, 1.0, 0.0)
+	var states = d.trace_states(d.make_state(), brake_command, tuning, 60)
+	d.check(states.size() == 60, "timing trace complete")
+	var engaged_tick := -1
+	for index in range(states.size()):
+		if states[index].reverse_engaged:
+			engaged_tick = index + 1
+			break
+	d.check(engaged_tick > 0, "brake hold eventually engages reverse")
+	var min_ticks := int(
+		ceil((ArcadeMotorScript.REVERSE_HOLD_TIME_MIN_S - 1e-9) / ArcadeMotorScript.DT)
+	)
+	if engaged_tick > 0:
+		d.check(
+			engaged_tick >= min_ticks,
+		"engagement waits at least the %.3fs hold (tick %d, min %d)" % [
+				ArcadeMotorScript.REVERSE_HOLD_TIME_MIN_S, engaged_tick, min_ticks
+			]
+		)
+		d.check(
+			not states[min_ticks - 2].reverse_engaged,
+			"no engagement on the tick before the hold elapses"
+		)
+	d.check(not states[0].reverse_engaged, "brake does not engage reverse on the first tick")
+	measurements["hold_engaged_tick"] = engaged_tick
+	measurements["hold_engagement_time_s"] = (
+		engaged_tick * ArcadeMotorScript.DT if engaged_tick > 0 else null
+	)
+	measurements["hold_min_ticks"] = min_ticks
+
+
+func _case_reverse_road_speed() -> void:
+	var tuning = d.handling_tuning()
+	d.check(
+		tuning.reverse_trigger_speed_m_s <= ArcadeMotorScript.REVERSE_TRIGGER_SPEED_MAX_M_S + 1e-9,
+		"test tuning respects the design trigger bound"
+	)
+	var road_trigger = d.reverse_tuning(20.0, tuning.reverse_hold_time_s)
+	d.check(not road_trigger.is_valid(), "20 m/s reverse trigger refused by validation")
+	var over_trigger = d.reverse_tuning(
+		ArcadeMotorScript.REVERSE_TRIGGER_SPEED_MAX_M_S + 0.001, tuning.reverse_hold_time_s
+	)
+	d.check(not over_trigger.is_valid(), "trigger above 1 m/s refused by validation")
+	var at_trigger = d.reverse_tuning(
+		ArcadeMotorScript.REVERSE_TRIGGER_SPEED_MAX_M_S, tuning.reverse_hold_time_s
+	)
+	d.check(at_trigger.is_valid(), "exactly 1 m/s trigger accepted")
+
+	var brake_command = DriverCommandScript.create(0.0, 0.0, 1.0, 0.0)
+	var current = d.make_state(Vector2.ZERO, Vector2(0.0, 20.0))
+	var engaged_tick := -1
+	var engagement_previous_speed := INF
+	for index in range(300):
+		var previous = current
+		var proposal = d.advance(current, brake_command, tuning)
+		if proposal == null:
+			d.check(false, "road-speed probe returned null at tick %d" % (index + 1))
+			break
+		current = proposal.state
+		if current.reverse_engaged and not previous.reverse_engaged:
+			engaged_tick = index + 1
+			engagement_previous_speed = previous.forward_speed_m_s()
+			break
+	d.check(engaged_tick > 0, "braking from 20 m/s eventually engages reverse")
+	if engaged_tick > 0:
+		d.check(
+			engagement_previous_speed <= ArcadeMotorScript.REVERSE_TRIGGER_SPEED_MAX_M_S + 1e-9,
+			"engagement happens at or below 1 m/s (previous speed %s)" % engagement_previous_speed
+		)
+	var high_states = d.trace_states(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 20.0)), brake_command, tuning, 30
+	)
+	var high_engaged := false
+	for state in high_states:
+		if state.reverse_engaged:
+			high_engaged = true
+			break
+	d.check(not high_engaged, "one second of braking from 20 m/s does not engage reverse")
+	measurements["road_speed_engaged_tick"] = engaged_tick
+	measurements["road_speed_at_engagement_mps"] = engagement_previous_speed
+
+
+func _case_reverse_top_speed() -> void:
+	var tuning = d.handling_tuning()
+	var brake_command = DriverCommandScript.create(0.0, 0.0, 1.0, 0.0)
+
+	var committed = d.make_state(Vector2.ZERO, Vector2(0.0, -20.0))
+	committed.reverse_engaged = true
+	var committed_proposal = d.advance(committed, brake_command, tuning)
+	d.check(committed_proposal != null, "committed fast reverse produced a proposal")
+	if committed_proposal != null:
+		var speed = committed_proposal.state.forward_speed_m_s()
+		d.check(
+			speed < -tuning.reverse_top_speed_m_s - 1.0,
+			"committed -20 m/s is not snapped toward the %.1f m/s cap" % tuning.reverse_top_speed_m_s
+		)
+		d.check(speed > -20.0 - 1e-6, "committed -20 m/s only decays under drag")
+		measurements["committed_reverse_after_mps"] = speed
+
+	# The cap still limits newly applied reverse drive when approaching the top.
+	var strong = d.handling_tuning()
+	strong.reverse_acceleration_m_s2 = 40.0
+	var approaching = d.make_state(Vector2.ZERO, Vector2(0.0, -7.99))
+	approaching.reverse_engaged = true
+	var capped_proposal = d.advance(approaching, brake_command, strong)
+	d.check(capped_proposal != null, "capped approach produced a proposal")
+	if capped_proposal != null:
+		var capped_speed = capped_proposal.state.forward_speed_m_s()
+		d.check(
+			capped_speed >= -strong.reverse_top_speed_m_s - 1e-9,
+			"newly applied reverse drive never exceeds the cap"
+		)
+		d.check(
+			capped_speed > -strong.reverse_top_speed_m_s - 0.1,
+			"the cap holds a strong approach near the top instead of allowing %s" % capped_speed
+		)
+		measurements["capped_reverse_speed_mps"] = capped_speed
+
+
+func _case_nonfinite_refusal() -> void:
+	var tuning = d.handling_tuning()
+	# Exact coordinator negative control: finite extreme inputs validate, but
+	# the uncapped yaw math overflows to Inf/NaN.
+	var extreme = tuning
+	extreme.yaw_gain_grip = 1e300
+	extreme.max_yaw_rate_rad_s = INF
+	extreme.drag_aerodynamic = 0.0
+	extreme.drag_rolling = 0.0
+	d.check(extreme.is_valid(), "negative-control tuning validates")
+	var huge_velocity = d.make_state(Vector2.ZERO, Vector2(0.0, 1e20))
+	var steering = DriverCommandScript.create(1.0, 0.0, 0.0, 0.0)
+	var overflow = ArcadeMotorScript.propose(huge_velocity, steering, extreme)
+	d.check(overflow == null, "nonfinite yaw proposal from finite extreme inputs refused")
+
+	var extreme_curve = d.make_tuning(
+		[[0.0, 1e308], [60.0, 0.0]], 12.0, 0.0, 0.0, 0.0, INF, 0.0, 1.0, 0.3, 4.0, 8.0
+	)
+	d.check(extreme_curve.is_valid(), "extreme curve tuning validates")
+	var curve_overflow = ArcadeMotorScript.propose(
+		d.make_state(), DriverCommandScript.create(0.0, 1.0, 0.0, 0.0), extreme_curve
+	)
+	d.check(curve_overflow == null, "overflowing acceleration-curve proposal refused")
+
+	var normal = ArcadeMotorScript.propose(
+		d.make_state(Vector2.ZERO, Vector2(0.0, 10.0)),
+		DriverCommandScript.create(0.0, 1.0, 0.0, 0.0),
+		d.handling_tuning()
+	)
+	d.check(normal != null and normal.state.is_finite(), "ordinary proposal remains available")
+	measurements["overflow_refused"] = overflow == null
+	measurements["curve_overflow_refused"] = curve_overflow == null
