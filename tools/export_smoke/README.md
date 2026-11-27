@@ -36,8 +36,9 @@ exactly what it did and refuses to claim anything it did not run.
 # All three targets from the current committed candidate.
 tools/export_smoke/run_export_smoke.sh --out work/agents/<id>/outputs
 
-# A single target:
-tools/export_smoke/run_export_smoke.sh --platform Linux --out /tmp/rs-linux
+# A single target (use a --out that does not exist yet; omit --out for a
+# unique fresh directory per run):
+tools/export_smoke/run_export_smoke.sh --platform Linux --out work/agents/<id>/outputs-linux
 
 # Launch-test an already-exported macOS package:
 tools/export_smoke/launch_macos_app.sh --app /path/Roadstorm-macOS-universal.zip --out /tmp/rs-mac
@@ -50,6 +51,16 @@ tools/export_smoke/lib/pack_inventory.py list --pck /tmp/rs-linux/Roadstorm-Linu
 tools/export_smoke/lib/pack_inventory.py check --platform Linux \
     --main /tmp/rs-linux/Roadstorm-Linux-x86_64 --pck /tmp/rs-linux/Roadstorm-Linux-x86_64.pck
 ```
+
+`--out` must NOT already exist (directory, file or symlink, dangling or not):
+it is reserved with an exclusive `mkdir`, so an existing output tree is never
+truncated or replaced. Without `--out`, each invocation reserves a unique
+fresh directory under `<project>/work/agents/export-smoke/outputs/`
+(`run.XXXXXX`), so ordinary repeated runs never collide. The runner resolves one
+immutable commit SHA before archiving; the report's `head_commit`,
+`head_tree`, `archive_sha256` and `presets_sha256` all describe the exact bytes
+that were extracted and exported (`presets_sha256` is hashed from the copied
+frozen preset file, not re-read from the live tree).
 
 Environment: `GODOT_BIN`, `OUT_DIR`, `NO_COLOR`. Exit codes: `0` = every
 requested platform exported (and macOS launched), `1` = a platform was
@@ -151,6 +162,38 @@ requires a fresh non-diagnostic export and launch check. Job
 three package inventory checks passed, and the macOS package launched headless
 (exit 0, boot→menu handoff). Its evidence is under
 `work/agents/f463de0e-9510-4c7e-b6c8-57e03afc98d6/run2/`.
+
+## Failure evidence and cleanup
+
+No recursive deletion is ever performed through a mutable pathname, because a
+concurrent replacement of that path could delete a foreign tree. Exclusive
+files are opened once with `O_CREAT|O_EXCL|O_WRONLY` and written through that
+descriptor, so they are never followed or truncated either. Runs therefore
+leave, for inspection: the private staging directory
+(`<out>/.candidate-snapshot.stage.*`, containing the archived candidate plus
+listing/error/digest text), the partial snapshot on failure, the evidence
+file `<out>/.candidate-snapshot.archive-sha256`, the candidate-digest input
+`<out>/.candidate-digest-input`, and a possible partial preset copy inside a
+failed snapshot. Successful runs retain their staging copy too. Bounded cost:
+about one `git archive HEAD` per run plus a few kilobytes.
+
+Safe manual cleanup after review (only inside an output directory you own):
+
+```sh
+rm -rf "<out>/.candidate-snapshot.stage."*
+rm -f  "<out>/.candidate-snapshot.archive-sha256" \
+       "<out>/.candidate-digest-input"
+```
+
+Residual same-UID adversary limits, stated precisely: initial exclusive
+creates and the archive capture/listing copies are descriptor-based. Child
+stdout appended to export logs (`>>`), and external tools that take path
+arguments (`pack_inventory.py`, `codesign`, `screencapture`, the launch
+helper), reopen paths by name, so a concurrent process able to replace those
+names inside the reserved directory after creation could redirect those
+particular writes. No removal, follow or truncation of a replaced path occurs;
+the snapshot itself stays confined to the reserved inode and the tool fails
+closed on every identity change it can observe.
 
 ## Rules this directory keeps
 

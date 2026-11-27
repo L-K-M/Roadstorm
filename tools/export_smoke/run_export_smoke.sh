@@ -45,6 +45,16 @@
 #                       [--export-timeout N] [--launch-timeout N]
 #   Repeat --platform to choose a subset; default is all three.
 #
+#   --out <dir>
+#       The output directory must NOT already exist (not as a directory, file
+#       or symlink, dangling or not): it is reserved with an exclusive mkdir
+#       and every pre-existing path is preserved. Without --out, a unique
+#       fresh directory is created per invocation under
+#       <project>/work/agents/export-smoke/outputs/, so repeated runs never
+#       touch an earlier run's outputs. All reports, logs and packages are
+#       created inside that reserved directory; existing files there are
+#       never truncated or replaced.
+#
 #   --diagnostic-enable-etc2-astc
 #       DIAGNOSTIC ONLY, off by default. Patches the SNAPSHOT copy of
 #       project.godot to set rendering/textures/vram_compression/import_etc2_astc
@@ -66,7 +76,11 @@
 #   package-inventory-<platform>.txt and .json (every component's SHA-256 and
 #   the full res:// tree of the pack), SHA256SUMS.txt (every component; macOS
 #   .app paths are relative to the extracted bundle, so `shasum -c` only checks
-#   the top-level artifacts), and the macOS launch logs.
+#   top-level artifacts), and the macOS launch logs. Exclusive files are opened
+#   once with O_CREAT|O_EXCL and written through that descriptor; no output is
+#   truncated or recursively deleted after creation. Private staging
+#   (.candidate-snapshot.stage.*) and the evidence/digest inputs are retained
+#   for inspection (see README "Failure evidence and cleanup").
 #
 # Environment: GODOT_BIN, OUT_DIR. NO_COLOR.
 # Exit codes: 0 = every requested platform exported (and macOS launched),
@@ -143,30 +157,51 @@ log "candidate source commit: $SRC_SHA"
 log "candidate source tree:   $SRC_TREE"
 
 # --- output dir -------------------------------------------------------------
-# Preserve EVERY existing user path: reserve an entirely fresh output
-# destination with an exclusive mkdir. An existing --out directory (even an
-# empty one) is refused before anything is written, truncated or followed.
-if [ -z "$OUT_DIR" ]; then
-	OUT_DIR="$PROJECT_DIR/work/agents/export-smoke/outputs"
+# Preserve EVERY existing user path.
+#   * Explicit --out: the exact directory must be ABSENT. It is reserved with
+#     an exclusive mkdir; any pre-existing directory/file/symlink (including a
+#     dangling one) is refused before anything is written, truncated or
+#     followed.
+#   * No --out: reserve a UNIQUE fresh directory per invocation under
+#     work/agents/export-smoke/outputs/, so ordinary repeated runs never touch
+#     a previous run's outputs.
+if [ -n "$OUT_DIR" ]; then
+	while [ "$OUT_DIR" != "/" ] && [ "${OUT_DIR%/}" != "$OUT_DIR" ]; do
+		OUT_DIR="${OUT_DIR%/}"
+	done
+	_out_parent="$(dirname "$OUT_DIR")"
+	_out_base="$(basename "$OUT_DIR")"
+	case "$_out_base" in
+	""|"."|"..") die 2 "invalid output dir: $OUT_DIR" ;;
+	esac
+	if ! mkdir -p "$_out_parent" 2>/dev/null; then
+		die 2 "cannot create output parent (file in the way or permission denied): $_out_parent"
+	fi
+	if ! _out_parent="$(cd "$_out_parent" && pwd -P)"; then
+		die 2 "cannot resolve output parent: $_out_parent"
+	fi
+	if [ -e "$_out_parent/$_out_base" ] || [ -L "$_out_parent/$_out_base" ]; then
+		die 2 "output destination already exists; refusing to overwrite or truncate any existing path: $_out_parent/$_out_base (choose a fresh --out)"
+	fi
+	if ! mkdir "$_out_parent/$_out_base" 2>/dev/null; then
+		if [ -e "$_out_parent/$_out_base" ] || [ -L "$_out_parent/$_out_base" ]; then
+			die 2 "output destination appeared; refusing to overwrite it: $_out_parent/$_out_base"
+		fi
+		die 2 "cannot create output dir (permission denied or invalid name): $_out_parent/$_out_base"
+	fi
+	OUT_DIR="$_out_parent/$_out_base"
+else
+	_def_base="$PROJECT_DIR/work/agents/export-smoke/outputs"
+	if [ -L "$_def_base" ]; then
+		die 2 "refusing to follow a symlink at the default output base: $_def_base"
+	fi
+	if [ -e "$_def_base" ] && [ ! -d "$_def_base" ]; then
+		die 2 "default output base is not a directory: $_def_base"
+	fi
+	mkdir -p "$_def_base" 2>/dev/null || die 2 "cannot create the default output base (permission denied): $_def_base"
+	_def_base="$(cd "$_def_base" && pwd -P)" || die 2 "cannot resolve the default output base: $_def_base"
+	OUT_DIR="$(mktemp -d "$_def_base/run.XXXXXX" 2>/dev/null)" || die 2 "cannot reserve a unique default output directory in $_def_base"
 fi
-while [ "$OUT_DIR" != "/" ] && [ "${OUT_DIR%/}" != "$OUT_DIR" ]; do
-	OUT_DIR="${OUT_DIR%/}"
-done
-_out_parent="$(dirname "$OUT_DIR")"
-_out_base="$(basename "$OUT_DIR")"
-case "$_out_base" in
-"""."|"..") die 2 "invalid output dir: $OUT_DIR" ;;
-esac
-if ! mkdir -p "$_out_parent" 2>/dev/null; then
-	die 2 "cannot create output parent: $_out_parent"
-fi
-if ! _out_parent="$(cd "$_out_parent" && pwd -P)"; then
-	die 2 "cannot resolve output parent: $_out_parent"
-fi
-if ! mkdir "$_out_parent/$_out_base" 2>/dev/null; then
-	die 2 "output destination already exists; refusing to overwrite or truncate any existing path: $OUT_DIR (choose a fresh --out)"
-fi
-OUT_DIR="$_out_parent/$_out_base"
 
 # --- frozen snapshot --------------------------------------------------------
 SNAP="$OUT_DIR/candidate-snapshot"
@@ -179,21 +214,29 @@ es_make_frozen_snapshot "$PROJECT_DIR" "$SNAP" "$ARCHIVE_SHA_FILE" "$SRC_SHA" ||
 [ -s "$SNAP/project.godot" ] || die 2 "built snapshot has no usable project.godot: $SNAP"
 # The digest comes from the exact archive bytes that were extracted; there is
 # no second, unchecked `git archive` invocation.
-ARCHIVE_SHA="$(cat "$ARCHIVE_SHA_FILE" 2>/dev/null)"
+_digest_text="$(cat "$ARCHIVE_SHA_FILE" 2>/dev/null)"
+ARCHIVE_SHA="$(printf '%s\n' "$_digest_text" | sed -n 's/^archive_sha256=//p' | head -n 1)"
+PRESETS_SHA="$(printf '%s\n' "$_digest_text" | sed -n 's/^presets_sha256=//p' | head -n 1)"
 if ! es_is_hex_sha256 "$ARCHIVE_SHA"; then
 	die 2 "frozen archive SHA-256 is missing or invalid: '$ARCHIVE_SHA'"
 fi
-# Remove the private evidence file only if it still holds exactly the digest
-# this run produced; never delete a path another process may have placed.
-if [ "$(cat "$ARCHIVE_SHA_FILE" 2>/dev/null)" = "$ARCHIVE_SHA" ]; then
-	rm -f "$ARCHIVE_SHA_FILE"
+if ! es_is_hex_sha256 "$PRESETS_SHA"; then
+	die 2 "frozen presets SHA-256 is missing or invalid: '$PRESETS_SHA'"
 fi
+# The evidence file is left in place: deleting it through a mutable pathname
+# could remove a concurrently planted foreign file. It is a small dotfile in
+# the reserved output directory.
 
-PRESETS_SHA="$(es_sha256 "$PROJECT_DIR/export_presets.cfg")"
-if [ -n "$ARCHIVE_SHA" ]; then
-	CANDIDATE_SHA="$(printf '%s\n%s\n' "$ARCHIVE_SHA" "$PRESETS_SHA" | shasum -a 256 2>/dev/null | awk '{print $1}')"
-else
-	CANDIDATE_SHA="(sha256 utility unavailable)"
+# Both component digests describe the frozen candidate, so the combined
+# candidate digest can be computed from them without re-reading anything.
+# The input temp is created exclusively and also left for inspection.
+_cand_input="$OUT_DIR/.candidate-digest-input"
+if ! _es_create_exclusive "$_cand_input" "$(printf '%s\n%s' "$ARCHIVE_SHA" "$PRESETS_SHA")"; then
+	die 2 "could not create the candidate-digest input exclusively: $_cand_input"
+fi
+CANDIDATE_SHA="$(es_sha256 "$_cand_input")"
+if ! es_is_hex_sha256 "$CANDIDATE_SHA"; then
+	die 2 "could not compute the candidate digest: '$CANDIDATE_SHA'"
 fi
 
 log "candidate archive sha256: $ARCHIVE_SHA"
@@ -224,13 +267,22 @@ fi
 # --- per-platform export ----------------------------------------------------
 REPORT="$OUT_DIR/export-smoke-report.txt"
 SUMS="$OUT_DIR/SHA256SUMS.txt"
-: >"$REPORT"
+# Create exclusively; never truncate an existing path. Later appends go
+# through the pathname (the reserved output dir is guarded at creation), so a
+# concurrent swap after this point could redirect appended text; no removal or
+# truncation of a replaced path is performed after this line.
+if ! _es_create_exclusive "$REPORT" ""; then
+	die 2 "cannot create the report exclusively: $REPORT"
+fi
+if ! _es_create_exclusive "$SUMS" ""; then
+	die 2 "cannot create SHA256SUMS exclusively: $SUMS"
+fi
 {
 	printf '# Roadstorm Racer! export smoke component checksums (E3).\n'
 	printf '# Every produced package component is listed, including the .pck.\n'
 	printf '# macOS .app component paths are relative to the extracted bundle,\n'
 	printf '# so `shasum -c SHA256SUMS.txt` only verifies the top-level artifacts.\n'
-} >"$SUMS"
+} >>"$SUMS"
 
 preset_for() {
 	case "$1" in
@@ -272,6 +324,12 @@ es_check_package() {
 			printf '  artifact=%s sha256=%s bytes=%s\n' "$(basename "$_f")" "$_sum" "$_bytes" >>"$REPORT"
 			printf '%s  %s\n' "$_sum" "$(basename "$_f")" >>"$SUMS"
 		done
+		return 0
+	fi
+	if ! _es_create_exclusive "$OUT_DIR/package-inventory-$_plat.log" ""; then
+		warn "cannot create the package inventory log exclusively for $_plat"
+		printf '  package_inventory=SKIPPED (log creation refused)\n' >>"$REPORT"
+		FAILED=1
 		return 0
 	fi
 	_summary="$(python3 "$PACK_INVENTORY" check --platform "$_plat" --main "$_main" \
@@ -353,20 +411,26 @@ Re-run with --diagnostic-enable-etc2-astc to prove the preset otherwise works."
 	# macOS launch test, only when a package was actually produced.
 	if [ "$plat" = "macOS" ] && [ "$status" = "EXPORTED" ]; then
 		log "macOS package exported; running the $LAUNCH_PROBE launch test"
-		if [ "$LAUNCH_PROBE" = "full" ]; then
-			"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --windowed-seconds 8 \
-				>>"$OUT_DIR/macos-launch.log" 2>&1
-		else
-			"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --skip-windowed \
-				>>"$OUT_DIR/macos-launch.log" 2>&1
-		fi
-		lstatus=$?
-		printf '  macos_launch=%s\n' "$([ "$lstatus" -eq 0 ] && printf PASS || printf FAIL)" >>"$REPORT"
-		if [ "$lstatus" -ne 0 ]; then
-			log "macOS launch test FAILED (see macos-launch.log)"
+		if ! _es_create_exclusive "$OUT_DIR/macos-launch.log" ""; then
+			warn "cannot create macos-launch.log exclusively; skipping the launch test"
+			printf '  macos_launch=SKIPPED (log creation refused)\n' >>"$REPORT"
 			FAILED=1
 		else
-			log "macOS launch test PASSED"
+			if [ "$LAUNCH_PROBE" = "full" ]; then
+				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --windowed-seconds 8 \
+					>>"$OUT_DIR/macos-launch.log" 2>&1
+			else
+				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --skip-windowed \
+					>>"$OUT_DIR/macos-launch.log" 2>&1
+			fi
+			lstatus=$?
+			printf '  macos_launch=%s\n' "$([ "$lstatus" -eq 0 ] && printf PASS || printf FAIL)" >>"$REPORT"
+			if [ "$lstatus" -ne 0 ]; then
+				log "macOS launch test FAILED (see macos-launch.log)"
+				FAILED=1
+			else
+				log "macOS launch test PASSED"
+			fi
 		fi
 		printf '  macos_launch_note=probe=%s; ad-hoc signed, UNNOTARIZED; arm64 slice launched on this Apple Silicon host; x86_64 (Intel) slice UNTESTED\n' "$LAUNCH_PROBE" >>"$REPORT"
 	fi

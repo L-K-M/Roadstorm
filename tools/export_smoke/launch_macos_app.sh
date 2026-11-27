@@ -61,7 +61,10 @@ done
 [ -e "$APP_IN" ] || die 2 "package not found: $APP_IN"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rs-maclaunch.XXXXXX")" || die 2 "could not create a temp dir"
-trap 'rm -rf "$WORK"' EXIT
+# WORK is intentionally NOT deleted on exit. A recursive delete through a
+# mutable pathname could remove a concurrently replaced foreign tree; the
+# bounded extraction is left for inspection (see README). The tool prints its
+# location before exiting.
 
 # Resolve a .app directory from either a .app or a .zip that contains one.
 APP=""
@@ -88,7 +91,10 @@ log "exe:    $EXE"
 
 # Report the code signature (ad-hoc is expected; no Developer ID here).
 SIG_LOG="$OUT_DIR/macos-codesign.txt"
-codesign -dv --verbose=2 "$APP" >"$SIG_LOG" 2>&1
+if ! _es_create_exclusive "$SIG_LOG" ""; then
+	die 2 "cannot create $SIG_LOG exclusively (refusing to overwrite an existing path)"
+fi
+codesign -dv --verbose=2 "$APP" >>"$SIG_LOG" 2>&1
 if grep -qi 'adhoc' "$SIG_LOG"; then
 	log "signature: AD-HOC (unnotarized) - expected without Developer ID credentials"
 else
@@ -123,10 +129,19 @@ if [ "$SKIP_WINDOWED" -eq 1 ]; then
 	log "windowed launch SKIPPED (--skip-windowed): the headless probe above is the"
 	log "launch evidence for this run; no GUI window is opened"
 	WIN_LOG="$OUT_DIR/macos-launch-windowed.txt"
-	printf 'windowed launch skipped (--skip-windowed); headless probe is the launch evidence\n' >"$WIN_LOG"
+	if ! _es_create_exclusive "$WIN_LOG" ""; then
+		die 2 "cannot create $WIN_LOG exclusively"
+	fi
+	printf 'windowed launch skipped (--skip-windowed); headless probe is the launch evidence\n' >>"$WIN_LOG"
 else
 WIN_LOG="$OUT_DIR/macos-launch-windowed.txt"
+if ! _es_create_exclusive "$WIN_LOG" ""; then
+	die 2 "cannot create $WIN_LOG exclusively"
+fi
 SHOT="$OUT_DIR/macos-launch-windowed.png"
+if [ -e "$SHOT" ] || [ -L "$SHOT" ]; then
+	die 2 "screenshot path already exists (refusing to overwrite): $SHOT"
+fi
 log "windowed launch: $EXE (bounded ${WINDOWED_SECONDS}s)"
 "$EXE" >"$WIN_LOG" 2>&1 &
 wpid=$!
@@ -162,4 +177,5 @@ if [ "$rc" -eq 0 ]; then
 else
 	log "FAIL: macOS launch test did not pass"
 fi
+log "temporary extraction retained for inspection: $WORK"
 exit "$rc"
