@@ -22,6 +22,13 @@ This proves a sensing component, not an attraction or landing controller:
   on the three-hit cluster, including when a deeper shoulder is discarded as
   beyond the support bound (the old all-legal-hits spread rule rejected the
   shallow case);
+- the selected support identity, point, height, distance and normal belong to
+  the grounding witness: the centre hit when it grounds, otherwise the
+  closest member of the unique grounding cluster. A centre miss with three
+  agreeing road hits and a closer tilted outlier slab selects the road
+  cluster, never the outlier. When the body is ungrounded the support
+  telemetry is a deterministic diagnostic reading of the closest legal hit
+  and is flagged `support_is_grounding_witness = false`;
 - a single distant hit is not promoted: a support bound rejects far floors,
   and a spread tolerance rejects uneven footprint heights;
 - invalid config, hull, transform or nonfinite input fails atomically with
@@ -92,6 +99,7 @@ Default phases:
 | `spread` | coherent-cluster spread bound replaced by the absolute ray cap | `uneven_support_spread` |
 | `mask` | body mask replaced by all layers | `mask_exclusion` |
 | `direction` | rays cast upward | `ceiling_overpass_rejection` |
+| `witness_binding` | support selection falls back to the closest legal hit of all | `cluster_closer_outlier` |
 
 These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
 `tools/smoke/` only).
@@ -135,6 +143,16 @@ candidate must contain at least `required_footprint_hits` hits. Equal-largest
 candidates, such as a 2+2 split across two levels, are ambiguous and leave
 the body ungrounded. A legal central hit bypasses clustering and grounds on
 its own.
+
+The selected support telemetry follows the same witness. When the centre
+hit grounds, `support_*` and `support_normal` come from that hit alone. When
+a cluster grounds, the closest cluster member supplies identity, point,
+height and distance (ties keep the earliest fixed probe order) and
+`support_normal` averages only that cluster's normals. When the body is
+ungrounded, no witness exists: the reported support is a deterministic
+diagnostic reading of the closest legal hit overall with the normal averaged
+over every legal hit, `grounding_witness_indices` is empty and
+`support_is_grounding_witness` is false.
 
 ## Limitations
 

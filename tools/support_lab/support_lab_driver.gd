@@ -30,6 +30,11 @@ const SUPPORT_BOUND_M := 0.75
 const UNEVEN_SUPPORT_BOUND_M := 1.0
 ## Lower-shoulder drop used by the coherent-cluster case, metres.
 const SHOULDER_DROP_M := 0.30
+## Closer-outlier slab top height and bank used by the witness-binding case.
+## Its top sits 0.20 m below the probe origin, closer than the three agreeing
+## road hits at 0.55 m, and its tilted normal differs from world up.
+const CLOSER_OUTLIER_TOP_Y := 0.35
+const CLOSER_OUTLIER_TILT_DEG := 10.0
 
 ## Internal wall-clock guard: a stalled await must not leave a headless
 ## engine running forever. The runner bounds every invocation as well.
@@ -45,6 +50,7 @@ const CASE_IDS := [
 	"distant_support",
 	"uneven_support_spread",
 	"coherent_cluster_three_plus_one",
+	"cluster_closer_outlier",
 	"too_steep_surface",
 	"absent_floor",
 	"mask_exclusion",
@@ -150,6 +156,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_uneven_support_spread()
 		"coherent_cluster_three_plus_one":
 			await _case_coherent_cluster_three_plus_one()
+		"cluster_closer_outlier":
+			await _case_cluster_closer_outlier()
 		"too_steep_surface":
 			await _case_too_steep_surface()
 		"absent_floor":
@@ -227,6 +235,16 @@ func _result_identity_int(result: ProbeScript.Result, field: String) -> int:
 func _result_identity_rid(result: ProbeScript.Result, field: String) -> RID:
 	var value = result.get(field)
 	return value if typeof(value) == TYPE_RID else RID()
+
+## Witness readers tolerant of an older Result shape, matching the identity
+## readers above. The historical probe has no witness fields.
+func _result_witness_indices(result: ProbeScript.Result) -> Array:
+	var value = result.get("grounding_witness_indices")
+	return value if typeof(value) == TYPE_ARRAY else []
+
+func _result_support_is_witness(result: ProbeScript.Result) -> bool:
+	var value = result.get("support_is_grounding_witness")
+	return value if typeof(value) == TYPE_BOOL else false
 
 
 func _run_intentional_failure() -> Dictionary:
@@ -386,6 +404,45 @@ func _three_road_plus_shoulder_slabs(shoulder_top_y: float) -> Array[Dictionary]
 	]
 
 
+## Three road-level footprint surfaces plus one closer outlier above the
+## front-left footprint. A 0.30 m central seam leaves the centre ray
+## unsupported; the right half carries two road footprints, the rear left
+## carries one, and the front left reads the tilted outlier slab whose top is
+## closer to the probe origin than the road. The outlier is a distinct
+## collider with a distinct normal.
+func _three_road_plus_closer_outlier_slabs(
+	outlier_top_y: float, front_left_offset: Vector3
+) -> Array[Dictionary]:
+	var side_width := FLOOR_SIZE.x - SEAM_HALF_WIDTH
+	var side_depth := 0.5 * FLOOR_SIZE.z
+	var side_center_x := -(SEAM_HALF_WIDTH + 0.5 * side_width)
+	var euler := Vector3(0.0, 0.0, CLOSER_OUTLIER_TILT_DEG)
+	# Narrow enough that neither the central ray nor any other footprint
+	# reaches it: its rotated x extent stays below the 0.15 m seam half-width.
+	var outlier_size := Vector3(1.2, FLOOR_SIZE.y, 4.0)
+	var top_center := Vector3(front_left_offset.x, outlier_top_y, front_left_offset.z)
+	return [
+		_slab(
+			"RoadRight",
+			Vector3(side_width, FLOOR_SIZE.y, FLOOR_SIZE.z),
+			Vector3(SEAM_HALF_WIDTH + 0.5 * side_width, -0.5, 0.0)
+		),
+		_slab(
+			"RoadRearLeft",
+			Vector3(side_width, FLOOR_SIZE.y, side_depth),
+			Vector3(side_center_x, -0.5, 0.25 * FLOOR_SIZE.z)
+		),
+		_slab(
+			"CloserOutlier",
+			outlier_size,
+
+			d.rotated_slab_center(top_center, outlier_size, euler),
+			1,
+			euler
+		),
+	]
+
+
 func _check_common_ok_result(
 	result: ProbeScript.Result,
 	config: ProbeScript.Config,
@@ -437,6 +494,14 @@ func _case_flat_floor() -> void:
 	)
 	d.check(result.has_support, "flat: has support")
 	d.check(result.support_probe_index == 0, "flat: closest support is the central hit")
+	d.check(
+		_result_witness_indices(result) == [0],
+		"flat: witness set is the centre hit (got %s)" % str(_result_witness_indices(result))
+	)
+	d.check(
+		_result_support_is_witness(result),
+		"flat: selected support is the centre grounding witness"
+	)
 	d.check_vector_close(
 		result.support_point, Vector3.ZERO, 1e-5, "flat: support point on the floor"
 	)
@@ -836,7 +901,9 @@ func _case_distant_support() -> void:
 	)
 
 	# Positive control: widening the support bound to the ray length admits
-	# the lower floor through the central ray.
+	# the lower floor through the central ray. The centre is then the
+	# grounding witness, so the selected support must come from it even though
+	# the upper-floor footprints are closer.
 	var wide := d.make_config_with(LONG_RAY_LENGTH_M, LONG_RAY_LENGTH_M, 2, 0.25)
 	var wide_result := _probe(world, "Car", wide, transform)
 	d.check(wide_result.center_supported, "distant control: widened bound admits the central hit")
@@ -847,9 +914,22 @@ func _case_distant_support() -> void:
 		wide_result.probes[0]["distance_m"], 1.55, 1e-5,
 		"distant control: central ray reaches the lower floor"
 	)
+	d.check(
+		wide_result.support_probe_index == 0,
+		"distant control: centre witness supplies the selected support"
+	)
+	d.check(
+		_result_witness_indices(wide_result) == [0],
+		"distant control: witness set is the centre hit (got %s)"
+		% str(_result_witness_indices(wide_result))
+	)
+	d.check(
+		_result_support_is_witness(wide_result),
+		"distant control: selected support is the centre witness"
+	)
 	d.check_close(
-		wide_result.support_distance_m, d.BODY_SUPPORT_Y, 1e-5,
-		"distant control: closest support is still the upper floor"
+		wide_result.support_distance_m, 1.55, 1e-5,
+		"distant control: selected distance is the lower-floor centre reading"
 	)
 	measurements["rejected_central_distance_m"] = center["distance_m"]
 	measurements["accepted_control_distance_m"] = wide_result.support_distance_m
@@ -890,6 +970,14 @@ func _case_uneven_support_spread() -> void:
 	d.check_close(
 		result.support_distance_m, d.BODY_SUPPORT_Y, 1e-5,
 		"uneven: closest legal support is still reported"
+	)
+	d.check(
+		_result_witness_indices(result).is_empty(),
+		"uneven: ungrounded diagnostic exposes no witness set"
+	)
+	d.check(
+		not _result_support_is_witness(result),
+		"uneven: ungrounded diagnostic support is not a grounding witness"
 	)
 
 	# Tie handling is independent of the required count: lowering it does not
@@ -1017,6 +1105,145 @@ func _case_coherent_cluster_three_plus_one() -> void:
 	measurements["coherent_all_hit_spread_m"] = all_hit_spread
 	measurements["coherent_deep_cluster_size"] = _cluster_size_of(deep)
 	await _destroy(deep_world)
+
+
+## Witness-binding case: a centre miss with three agreeing road hits plus a
+## fourth legal hit from a closer, tilted outlier slab. Grounding comes from
+## the three-hit road cluster, so the selected support identity, point,
+## distance, height and normal must all belong to that cluster, never to the
+## closer outlier. The historical selection rule picked the closest legal hit
+## of all, which is exactly the outlier here.
+func _case_cluster_closer_outlier() -> void:
+	var config := d.make_config_with(
+		LONG_RAY_LENGTH_M, UNEVEN_SUPPORT_BOUND_M, 2, 0.25
+	)
+	var transform := d.flat_transform(Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))
+	var offsets := d.expected_offsets(config)
+	var world := await _build(
+		_three_road_plus_closer_outlier_slabs(CLOSER_OUTLIER_TOP_Y, offsets[4]),
+		[],
+		[_car_spec("Car", Vector3(0.0, d.BODY_SUPPORT_Y, 0.0))]
+	)
+	var road_right := world.root.get_node_or_null("RoadRight")
+	var road_rear_left := world.root.get_node_or_null("RoadRearLeft")
+	var outlier := world.root.get_node_or_null("CloserOutlier")
+	d.check(road_right != null, "closer-outlier: right road stage present")
+	d.check(road_rear_left != null, "closer-outlier: rear-left road stage present")
+	d.check(outlier != null, "closer-outlier: outlier stage present")
+
+	var result := _probe(world, "Car", config, transform)
+	_check_common_ok_result(result, config, ProbeScript.PROBE_COUNT, "closer-outlier")
+	var center: Dictionary = result.probes[0]
+	d.check(not center["hit"], "closer-outlier: central ray misses the seam")
+	d.check(
+		center["reason"] == "no_hit",
+		"closer-outlier: central reason no_hit (got %s)" % center["reason"]
+	)
+	d.check(not result.center_supported, "closer-outlier: central probe unsupported")
+	d.check(
+		result.footprint_support_count == 4,
+		"closer-outlier: four legal footprint hits (got %d)"
+		% result.footprint_support_count
+	)
+	d.check(result.grounded, "closer-outlier: three agreeing road hits ground")
+	d.check(
+		_cluster_size_of(result) == 3,
+		"closer-outlier: unique cluster size is three (got %d)"
+		% _cluster_size_of(result)
+	)
+	d.check(
+		_cluster_indices_of(result) == [1, 2, 3],
+		"closer-outlier: cluster is rear_right, rear_left, front_right (got %s)"
+		% str(_cluster_indices_of(result))
+	)
+
+	# The closer outlier really is legal, closer than every road hit, and a
+	# distinct collider with a distinct normal.
+	var outlier_detail: Dictionary = result.probes[4]
+	d.check(outlier_detail["valid"], "closer-outlier: outlier hit is legal support")
+	d.check_close(
+		outlier_detail["distance_m"], d.BODY_SUPPORT_Y - CLOSER_OUTLIER_TOP_Y, 1e-5,
+		"closer-outlier: outlier distance is closer than the road"
+	)
+	d.check(
+		outlier_detail["distance_m"] < result.probes[1]["distance_m"],
+		"closer-outlier: outlier is closer than the agreeing road hits"
+	)
+	d.check_vector_close(
+		outlier_detail["normal"],
+		Vector3(
+			-sin(deg_to_rad(CLOSER_OUTLIER_TILT_DEG)),
+			cos(deg_to_rad(CLOSER_OUTLIER_TILT_DEG)),
+			0.0
+		),
+		1e-6,
+		"closer-outlier: outlier normal is distinct from up"
+	)
+	if outlier != null:
+		d.check(
+			_detail_int(outlier_detail, "collider_id") == outlier.get_instance_id(),
+			"closer-outlier: outlier detail reports the outlier collider"
+		)
+
+	# Selected support must belong to the grounding cluster: identity, point,
+	# distance, height and normal.
+	var witness_indices := _cluster_indices_of(result)
+	d.check(
+		witness_indices.has(result.support_probe_index),
+		"closer-outlier: selected support probe is in the grounding cluster (got %d)"
+		% result.support_probe_index
+	)
+	d.check(
+		result.support_probe_index == 1,
+		"closer-outlier: deterministic tie selects rear_right (got %d)"
+		% result.support_probe_index
+	)
+	d.check(
+		result.support_probe_index != 4,
+		"closer-outlier: selected support is not the closer outlier probe"
+	)
+	d.check(
+		_result_witness_indices(result) == witness_indices,
+		"closer-outlier: exposed witness set is the grounding cluster (got %s)"
+		% str(_result_witness_indices(result))
+	)
+	d.check(
+		_result_support_is_witness(result),
+		"closer-outlier: selected support is flagged as the grounding witness"
+	)
+	if road_right != null:
+		d.check(
+			_result_identity_int(result, "support_collider_id") == road_right.get_instance_id(),
+			"closer-outlier: selected identity is the road cluster collider"
+		)
+	if outlier != null:
+		d.check(
+			_result_identity_rid(result, "support_rid") != outlier.get_rid(),
+			"closer-outlier: selected rid is not the outlier"
+		)
+	d.check_vector_close(
+		result.support_point,
+		Vector3(offsets[1].x, 0.0, offsets[1].z),
+		1e-5,
+		"closer-outlier: selected point lies on the road surface"
+	)
+	d.check_close(
+		result.support_distance_m, d.BODY_SUPPORT_Y, 1e-5,
+		"closer-outlier: selected distance is the road distance"
+	)
+	d.check_close(
+		result.support_height_m, d.BODY_SUPPORT_Y, 1e-5,
+		"closer-outlier: selected height is the road drop"
+	)
+	d.check_vector_close(
+		result.support_normal,
+		Vector3.UP,
+		1e-6,
+		"closer-outlier: selected normal excludes the tilted outlier"
+	)
+	measurements["closer_outlier_selected_probe_index"] = result.support_probe_index
+	measurements["closer_outlier_selected_distance_m"] = result.support_distance_m
+	await _destroy(world)
 
 
 func _case_too_steep_surface() -> void:

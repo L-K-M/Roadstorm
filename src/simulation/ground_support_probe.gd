@@ -48,6 +48,17 @@ extends RefCounted
 ## when three footprints agree and a fourth reads a lower shoulder, while an
 ## ambiguous split or a lone distant hit cannot claim support by itself.
 ##
+## The selected support telemetry is bound to that grounding witness: when
+## the centre hit grounds, identity, point, height, distance and normal come
+## from the centre hit alone; when a footprint cluster grounds, they come
+## from the closest member of that cluster (ties keep the earliest fixed
+## probe order) and `support_normal` averages only that cluster's normals.
+## When the body is not grounded no witness exists, so `support_*` is a
+## deterministic diagnostic reading of the closest legal hit overall with
+## `support_normal` averaged over every legal hit; then
+## `support_is_grounding_witness` is false and the telemetry is not a
+## support claim.
+##
 ## Limitations, stated rather than hidden:
 ##   * point rays have no skin or radius; a seam can fall between the five
 ##     sample points and thin geometry can be missed;
@@ -59,8 +70,10 @@ extends RefCounted
 ##   * every ray hit records stable collider identity (`collider_id`, `rid`,
 ##     `shape`), and the selected support exposes the same triple. The sensor
 ##     keeps IDs and the shape index only, never a strong reference to the
-##     collider object. Identity lets a caller separate a road from a
-##     same-mask car roof; this probe does not judge route, clearance or
+##     collider object. The selected support identity is bound to the
+##     grounding witness above, so a closer hit outside that witness cannot
+##     supply it. Identity lets a caller separate a road from a same-mask
+##     car roof; this probe does not judge route, clearance or
 ##     relative-motion eligibility.
 ##   * only rectangular box hulls with the centred convention above are
 ##     supported; the body scale must be one;
@@ -217,12 +230,17 @@ class Result extends RefCounted:
 	## Probe indices of that cluster in fixed probe order, empty when no
 	## unique cluster exists or the centre supports.
 	var grounding_cluster_indices: Array[int] = []
-	## Closest legal support point below the transform origin, if any.
+	## Selected legal support point below the transform origin, if any. When
+	## grounded this is the grounding-witness hit (the centre, or the closest
+	## cluster member); otherwise it is the deterministic diagnostic closest
+	## legal hit.
 	var has_support := false
 	var support_probe_index := -1
 	var support_point := Vector3.ZERO
-	## Averaged unit normal of the legal hits, zero when none survive the
-	## up-dot check.
+	## Normal of the selected support witness: the centre hit's normal when
+	## the centre grounds, otherwise the normalized average of the grounding
+	## cluster's normals; when ungrounded, the average of every legal hit as
+	## a diagnostic. Zero when the average cancels below `min_up_dot`.
 	var support_normal := Vector3.ZERO
 	## Distance from the transform origin to the support point along local
 	## down, metres.
@@ -237,6 +255,14 @@ class Result extends RefCounted:
 	var support_collider_id := -1
 	var support_rid := RID()
 	var support_shape_index := -1
+	## Probe indices whose hits form the grounding witness used for the
+	## selected support and normal: `[0]` when the centre grounds, the unique
+	## coherent footprint cluster when it grounds, empty when ungrounded.
+	## Empty means the support telemetry above and below is a deterministic
+	## diagnostic reading, not a grounding claim.
+	var grounding_witness_indices: Array[int] = []
+	## True when the selected support belongs to `grounding_witness_indices`.
+	var support_is_grounding_witness := false
 	## Validated detail for each of the five probes, in fixed order.
 	var probes: Array[Dictionary] = []
 	## Actual `intersect_ray` calls issued. Five on success, zero on refusal.
@@ -414,27 +440,51 @@ static func probe(
 	if valid_indices.is_empty():
 		return result
 
-	# Closest legal support below the supplied pose.
-	var best := 0
-	for index in range(1, valid_indices.size()):
-		if valid_distances[index] < valid_distances[best]:
-			best = index
-	var chosen_index: int = valid_indices[best]
+	# Grounding witness: the centre hit when it grounds, otherwise the
+	# uniquely largest coherent footprint cluster. With no witness the body
+	# is ungrounded and the support telemetry below is diagnostic only.
+	var witness_indices: Array[int] = []
+	if result.center_supported:
+		witness_indices.append(0)
+	elif result.grounded:
+		for index in result.grounding_cluster_indices:
+			witness_indices.append(index)
+	result.grounding_witness_indices = witness_indices
+
+	# Selection candidates are the witness hits when one exists, otherwise
+	# every legal hit for the deterministic diagnostic reading. Closest
+	# distance wins; ties keep the earliest slot in fixed probe order.
+	var selection_is_witness := not witness_indices.is_empty()
+	var candidate_slots: Array[int] = []
+	for slot in range(valid_indices.size()):
+		if selection_is_witness and not witness_indices.has(valid_indices[slot]):
+			continue
+		candidate_slots.append(slot)
+
+	var chosen_slot: int = candidate_slots[0]
+	for slot in candidate_slots:
+		if valid_distances[slot] < valid_distances[chosen_slot]:
+			chosen_slot = slot
+	var chosen_index: int = valid_indices[chosen_slot]
 	result.has_support = true
+	result.support_is_grounding_witness = selection_is_witness
 	result.support_probe_index = chosen_index
 	result.support_point = probes[chosen_index]["position"]
-	result.support_distance_m = valid_distances[best]
+	result.support_distance_m = valid_distances[chosen_slot]
 	result.support_height_m = world_transform.origin.y - result.support_point.y
 	result.support_collider_id = int(probes[chosen_index]["collider_id"])
 	result.support_rid = probes[chosen_index]["rid"]
 	result.support_shape_index = int(probes[chosen_index]["shape_index"])
 
-	# Bounded average of the unit normals: at most `PROBE_COUNT` contributions
-	# and renormalized, so the result is always a unit vector or zero. An
-	# average that cancels below the same up-dot floor is reported as zero.
+	# Bounded average of the unit normals of the same candidate hits: the
+	# centre normal alone when it grounds, otherwise the grounding cluster's
+	# normals, or every legal hit for the ungrounded diagnostic reading. At
+	# most `PROBE_COUNT` contributions and renormalized, so the result is
+	# always a unit vector or zero. An average that cancels below the same
+	# up-dot floor is reported as zero.
 	var normal_sum := Vector3.ZERO
-	for unit_normal in valid_normals:
-		normal_sum += unit_normal
+	for slot in candidate_slots:
+		normal_sum += valid_normals[slot]
 	if normal_sum.length() > NORMAL_MIN_LENGTH:
 		var averaged := normal_sum.normalized()
 		if averaged.dot(up) >= config.min_up_dot:

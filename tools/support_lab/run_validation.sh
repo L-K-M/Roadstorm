@@ -188,7 +188,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 	die_usage "python3 is required for the negative-control mutations"
 fi
 
-MUTANTS="upright_gate steep footprint distance probe_count spread mask direction"
+MUTANTS="upright_gate steep footprint distance probe_count spread mask direction witness_binding"
 if [ -n "$MUTANT_ONLY" ]; then
 	case " $MUTANTS " in
 	*" $MUTANT_ONLY "*) ;;
@@ -205,6 +205,7 @@ all | intentional_failure) ;;
 	flat_floor | bank_and_ramp | frame_orientation_gate | \
 	center_gap_seam | near_edge_partial_support | ceiling_overpass_rejection | \
 	distant_support | uneven_support_spread | coherent_cluster_three_plus_one | \
+	cluster_closer_outlier | \
 	too_steep_surface | \
 	absent_floor | mask_exclusion | invalid_input_unchanged | \
 	deterministic_repeat | exactly_five_queries | support_identity)
@@ -221,6 +222,7 @@ if [ -n "$CASE_ID" ]; then
 		flat_floor | bank_and_ramp | frame_orientation_gate | \
 		center_gap_seam | near_edge_partial_support | ceiling_overpass_rejection | \
 		distant_support | uneven_support_spread | coherent_cluster_three_plus_one | \
+		cluster_closer_outlier | \
 		too_steep_surface | \
 		absent_floor | mask_exclusion | invalid_input_unchanged | \
 		deterministic_repeat | exactly_five_queries | support_identity)
@@ -396,6 +398,7 @@ mutant_target_case() {
 	spread) echo uneven_support_spread ;;
 	mask) echo mask_exclusion ;;
 	direction) echo ceiling_overpass_rejection ;;
+	witness_binding) echo cluster_closer_outlier ;;
 	*) return 1 ;;
 	esac
 }
@@ -448,6 +451,9 @@ apply_mutant() {
 		;;
 	direction)
 		replace_literal "$_file" 'var down := -world_transform.basis.y' 'var down := world_transform.basis.y'
+		;;
+	witness_binding)
+		replace_literal "$_file" 'var selection_is_witness := not witness_indices.is_empty()' 'var selection_is_witness := false'
 		;;
 	*)
 		return 1
