@@ -18,9 +18,10 @@ Policy:
 * a skipped test *inside* ``WindowsNativeGuardTestCase`` is a hard failure -
   a skipped native guarded-open test certifies nothing about Windows;
 * native controls are identified by their fully qualified test ID
-  (``<module>.<class>.<method>``). The two named critical controls must appear
-  in the passed set under the native class itself, independently of what the
-  class happens to contain at runtime;
+  (``<module>.<class>.<method>``) in the module namespace unittest discovery
+  reports (``tests.test_manifest_validator``). The two named critical controls
+  must appear in the passed set under the native class itself, independently
+  of what the class happens to contain at runtime;
 * a non-native skip is allowed only when its class/method pair is in the
   reviewed allowlist below - on Windows exactly 13 cases: 6 FIFO controls with
   no Windows equivalent, 5 Unix mode-000 controls with native ACL
@@ -169,18 +170,39 @@ def native_control_ids(native_class):
 
 
 def load_test_module():
-    """Import the test module once, from its directory, independent of cwd."""
-    if str(_TESTS_DIR) not in sys.path:
-        sys.path.insert(0, str(_TESTS_DIR))
-    import test_manifest_validator
+    """Import the test module in the namespace unittest discovery reports.
 
-    return test_manifest_validator
+    Discovery runs with ``tools/asset_manifest`` as the top-level directory
+    and its ``tests`` package as the start directory, so it imports
+    ``tests.test_manifest_validator`` and reports IDs under that namespace.
+    Importing the module directly from ``tests/`` instead creates a second
+    module object whose ``__module__`` is the bare ``test_manifest_validator``.
+    Expected native IDs built from the bare name can never match the prefixed
+    IDs the suite reports, which fails the job even when every native control
+    passed. Import the same dotted name discovery uses.
+    """
+    if str(_TOOL_DIR) not in sys.path:
+        sys.path.insert(0, str(_TOOL_DIR))
+    import importlib
+
+    return importlib.import_module("{}.test_manifest_validator".format(_TESTS_DIR.name))
 
 
-def run_suite(module) -> _RecordingResult:
-    """Run the complete suite and return the recorded outcomes."""
+def discover_suite() -> unittest.TestSuite:
+    """Discover the suite with the same layout as run_tests.sh.
+
+    ``tools/asset_manifest`` is the top-level directory and its ``tests``
+    package is the start directory, so unittest imports the tests as
+    ``tests.test_manifest_validator`` and reports IDs under that namespace.
+    """
     loader = unittest.TestLoader()
-    suite = loader.discover(start_dir=str(_TESTS_DIR), top_level_dir=str(_TOOL_DIR))
+    return loader.discover(start_dir=str(_TESTS_DIR), top_level_dir=str(_TOOL_DIR))
+
+
+def run_suite(suite=None) -> _RecordingResult:
+    """Run the complete suite and return the recorded outcomes."""
+    if suite is None:
+        suite = discover_suite()
     result = _RecordingResult(_WritelnStream(sys.stdout), descriptions=True, verbosity=2)
     suite.run(result)
     return result
@@ -338,7 +360,7 @@ def main(argv=None) -> int:
         print("[fail] cannot import the asset manifest test module: {}".format(exc), file=sys.stderr)
         return 1
 
-    result = run_suite(module)
+    result = run_suite()
     print_diagnostics(result)
 
     native_class = getattr(module, _NATIVE_CLASS, None)
