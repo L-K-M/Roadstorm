@@ -1890,7 +1890,10 @@ EOF
 	_inner_cmd="$(_shq "$0") --project $(_shq "$CI_PROJECT") --godot $(_shq "$GODOT_BIN") --out $(_shq "$CI_OUT") $_source_sha_args __export-inner $(_shq "$_preset") $(_shq "$_mode") $(_shq "$_out")"
 	_lock_opts=""
 	case "$_CI_LOCK_TOOL" in
-		flock) _lock_opts="-x -w $_wait" ;;
+		# util-linux flock exits 1 both for an acquisition timeout and for an
+		# inner command that exits 1. Reserve 99 for acquisition failure so the
+		# wrapper can report the actionable cause instead of failing silently.
+		flock) _lock_opts="-x -w $_wait -E 99" ;;
 		lockf) _lock_opts="-k -t $_wait" ;;
 	esac
 	if [ "$_out" = "$_pck" ]; then
@@ -1901,7 +1904,13 @@ EOF
 		_cmd="$_CI_LOCK_TOOL $_lock_opts $(_shq "$_lock1") $_CI_LOCK_TOOL $_lock_opts $(_shq "$_lock2") $_inner_cmd"
 	fi
 	eval "$_cmd"
-	return $?
+	_rc=$?
+	if [ "$_CI_LOCK_TOOL" = "flock" ] && [ "$_rc" -eq 99 ]; then
+		ci_fail "export --export: destination lock is held by another process (timed out after ${_wait}s): $_out"
+		ci_note "wait for the other export to finish, or move/remove only your own stale outputs before retrying; ci.sh never truncates the lock file"
+		return "$CI_FAIL"
+	fi
+	return "$_rc"
 }
 
 ci_export_build_inner() {
