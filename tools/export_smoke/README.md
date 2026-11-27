@@ -15,7 +15,7 @@ exactly what it did and refuses to claim anything it did not run.
 | --- | --- |
 | Build the candidate from `git archive HEAD` + the owned `export_presets.cfg` only | Copy any concurrent uncommitted file (schemas, fixtures, other jobs' WIP) into the candidate |
 | Cross-export Windows x86-64 and Linux x86-64 packages | Launch Windows or Linux packages — no target host exists; a successful export never verifies a platform (M0 acceptance, M9.2) |
-| Launch the macOS package on this Apple Silicon host (headless, plus a bounded windowed probe with `--launch-probe full`) | Claim a notarized or Developer-ID-signed release; the package is ad-hoc signed and UNNOTARIZED |
+| Launch the macOS package on this host (headless by default; `--launch-probe full` adds a bounded windowed run) | Claim a notarized or Developer-ID-signed release; signature/launch/screenshot claims are printed only when the launch test observed them |
 | Checksum **every** produced package component, including the `.pck` (sidecar for Windows/Linux, embedded in the `.app` for macOS) and, for macOS, every file inside the bundle | Verify the code signature chain, notarization, or Developer ID identity |
 | Re-read the `res://` tree inside each produced `.pck` and prove that no development-only path is packaged and that every required runtime resource still is | Verify that the package launches on its target OS (only macOS is launched, and only as this tool launches it) |
 | Verify every pack entry's MD-5 against the bytes stored for it, and that the pack's own file table is self-consistent | Verify gameplay, final M0 content, or the M9 release notices (`licenses/` and `provenance/` are not packed today: Godot packs only recognised resource types) |
@@ -26,7 +26,7 @@ exactly what it did and refuses to claim anything it did not run.
 | Path | Purpose |
 | --- | --- |
 | `run_export_smoke.sh` | Entry point: frozen snapshot → export requested platforms → package inventory/checksum check → (macOS) launch → report, per-platform inventories and `SHA256SUMS.txt`. |
-| `launch_macos_app.sh` | Reusable macOS launch test for an exported `.app`/`.zip`: reports the code signature, runs a headless launch (validates the ad-hoc signature on exec and boots the shell) and — unless `--skip-windowed` — a bounded windowed launch with a screenshot, then terminates what it launched. |
+| `launch_macos_app.sh` | Reusable macOS launch test for an exported `.app`/`.zip`: checks the code signature, runs a bounded headless launch and — unless `--skip-windowed` — a bounded windowed launch with a screenshot, then terminates what it launched. It prints bare `WINDOWED=`/`SCREENSHOT=`/`SIGNATURE=`/`VERDICT=` evidence lines; the verdict requires the observed signature and, for a full probe, an observed windowed run plus a non-empty screenshot. |
 | `lib/pack_inventory.py` | Package inventory and checksum tool. `list` prints and verifies a `.pck`; `check` enumerates and checksums every component of a produced package, parses and MD-5-verifies the pack's `res://` tree, applies the E4 content policy, and writes a report, JSON and `SHA256SUMS` lines. |
 | `lib/common.sh` | Shared helpers: Godot discovery, pinned-version read, portable bounded-run, sha256, and the frozen-snapshot builder. |
 
@@ -144,8 +144,8 @@ diagnostic flag, which patches only the throwaway snapshot copy:
 tools/export_smoke/run_export_smoke.sh --diagnostic-enable-etc2-astc --out work/agents/<id>/outputs
 ```
 
-With that flag the macOS package exports, is verified **ad-hoc signed**, and
-launches cleanly on this Apple Silicon host (headless exit 0, boot→menu
+With that flag the macOS package exports and is exercised by the launch test;
+the report records the signature it actually observed, and it launches cleanly on this Apple Silicon host (headless exit 0, boot→menu
 handoff, and a windowed screenshot of the placeholder menu). The Intel
 (`x86_64`) slice of the universal binary remains **UNTESTED** (no Intel host),
 and Intel Mac support is therefore not claimed.
@@ -207,7 +207,7 @@ closed on every identity change it can observe.
    the package is labelled ad-hoc signed and unnotarized (PLAN.md M9.3).
 4. **Every process is bounded** (default 120 s) and any GUI app this tool
    launches is terminated before it returns (desktop hygiene). The default
-   launch probe is `headless`; `--launch-probe full` is opt-in.
+   launch probe is `headless`; `--launch-probe full` is opt-in and its PASS additionally requires an observed windowed run and a captured screenshot (`--launch-timeout` bounds the launch).
 5. **No installs, no downloads, no git mutations, no publishing.**
 6. **Package content is checked, not assumed.** The exclude filter lives in the
    presets, but `lib/pack_inventory.py` re-reads what actually landed in each

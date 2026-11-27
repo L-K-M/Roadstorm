@@ -37,6 +37,11 @@ OUT_DIR=""
 QUIT_AFTER=40
 WINDOWED_SECONDS=8
 SKIP_WINDOWED=0
+LAUNCH_TIMEOUT=120
+SIG_RESULT="not-checked"
+EXECUTABLE_EXECUTED=false
+WINDOWED_RESULT="not-requested"
+SCREENSHOT_RESULT="not-attempted"
 
 log() { printf '[launch-macos] %s\n' "$*"; }
 die() { c="$1"; shift; log "FAIL: $*" >&2; exit "$c"; }
@@ -52,6 +57,8 @@ while [ $# -gt 0 ]; do
 	--windowed-seconds) [ $# -ge 2 ] || die 2 "--windowed-seconds needs a number"; WINDOWED_SECONDS="$2"; shift 2 ;;
 	--windowed-seconds=*) WINDOWED_SECONDS="${1#--windowed-seconds=}"; shift ;;
 	--skip-windowed) SKIP_WINDOWED=1; shift ;;
+	--timeout) [ $# -ge 2 ] || die 2 "--timeout needs seconds"; LAUNCH_TIMEOUT="$2"; shift 2 ;;
+	--timeout=*) LAUNCH_TIMEOUT="${1#--timeout=}"; shift ;;
 	-h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) die 2 "unknown argument: $1" ;;
 	esac
@@ -94,21 +101,29 @@ SIG_LOG="$OUT_DIR/macos-codesign.txt"
 if ! _es_create_exclusive "$SIG_LOG" ""; then
 	die 2 "cannot create $SIG_LOG exclusively (refusing to overwrite an existing path)"
 fi
-codesign -dv --verbose=2 "$APP" >>"$SIG_LOG" 2>&1
-if grep -qi 'adhoc' "$SIG_LOG"; then
-	log "signature: AD-HOC (unnotarized) - expected without Developer ID credentials"
-else
-	log "signature: see $SIG_LOG"
-fi
-
 rc=0
+sig_rc=0
+codesign -dv --verbose=2 "$APP" >>"$SIG_LOG" 2>&1 || sig_rc=$?
+if [ "$sig_rc" -ne 0 ]; then
+	SIG_RESULT="check-failed"
+	rc=1
+	log "codesign check FAILED (exit $sig_rc); signature is NOT verified; see $SIG_LOG"
+elif grep -qi 'adhoc' "$SIG_LOG"; then
+	SIG_RESULT="ad-hoc"
+	log "signature: AD-HOC (unnotarized) - observed in $SIG_LOG"
+else
+	SIG_RESULT="unexpected"
+	rc=1
+	log "signature: no adhoc marker in $SIG_LOG; NOT claimed as verified"
+fi
 
 # --- 1. headless launch (validates signature on exec; boots the shell) -------
 HEAD_LOG="$OUT_DIR/macos-launch-headless.txt"
 log "headless launch: $EXE --headless --quit-after $QUIT_AFTER"
-es_run_bounded 120 "$HEAD_LOG" -- "$EXE" --headless --quit-after "$QUIT_AFTER"
+es_run_bounded "$LAUNCH_TIMEOUT" "$HEAD_LOG" -- "$EXE" --headless --quit-after "$QUIT_AFTER"
 hstatus=$?
-log "headless exit status: $hstatus"
+if [ "$hstatus" -eq 0 ]; then EXECUTABLE_EXECUTED=true; fi
+log "headless exit status: $hstatus (executable executed: $EXECUTABLE_EXECUTED)"
 if [ "$hstatus" -ne 0 ]; then
 	log "headless launch did not exit cleanly; see $HEAD_LOG"
 	rc=1
@@ -128,6 +143,8 @@ fi
 if [ "$SKIP_WINDOWED" -eq 1 ]; then
 	log "windowed launch SKIPPED (--skip-windowed): the headless probe above is the"
 	log "launch evidence for this run; no GUI window is opened"
+	WINDOWED_RESULT="skipped"
+	SCREENSHOT_RESULT="not-attempted (headless-only probe)"
 	WIN_LOG="$OUT_DIR/macos-launch-windowed.txt"
 	if ! _es_create_exclusive "$WIN_LOG" ""; then
 		die 2 "cannot create $WIN_LOG exclusively"
@@ -142,8 +159,8 @@ SHOT="$OUT_DIR/macos-launch-windowed.png"
 if [ -e "$SHOT" ] || [ -L "$SHOT" ]; then
 	die 2 "screenshot path already exists (refusing to overwrite): $SHOT"
 fi
-log "windowed launch: $EXE (bounded ${WINDOWED_SECONDS}s)"
-"$EXE" >"$WIN_LOG" 2>&1 &
+log "windowed launch: $EXE (bounded ${WINDOWED_SECONDS}s, timeout ${LAUNCH_TIMEOUT}s)"
+"$EXE" >>"$WIN_LOG" 2>&1 &
 wpid=$!
 alive=0
 i=0
@@ -153,12 +170,27 @@ while [ "$i" -lt "$WINDOWED_SECONDS" ]; do
 	if kill -0 "$wpid" 2>/dev/null; then alive=1; else break; fi
 done
 if [ "$alive" -eq 1 ]; then
+	WINDOWED_RESULT="ran"
 	log "windowed GUI running after ${WINDOWED_SECONDS}s"
 	if command -v screencapture >/dev/null 2>&1; then
-		screencapture -x "$SHOT" 2>/dev/null && log "screenshot: $SHOT ($(es_sha256 "$SHOT" >/dev/null 2>&1; wc -c <"$SHOT" | tr -d ' ') bytes)"
+		if screencapture -x "$SHOT" 2>/dev/null && [ -s "$SHOT" ]; then
+			SCREENSHOT_RESULT="captured"
+			log "screenshot captured: $SHOT ($(wc -c <"$SHOT" | tr -d ' ') bytes)"
+		else
+			SCREENSHOT_RESULT="missing"
+			log "screenshot was NOT produced; the full probe cannot pass"
+			rc=1
+		fi
+	else
+		SCREENSHOT_RESULT="tool-unavailable"
+		log "screencapture is unavailable; the full probe cannot pass"
+		rc=1
 	fi
 else
-	log "windowed GUI exited before ${WINDOWED_SECONDS}s (may still be fine for a headless CI host)"
+	WINDOWED_RESULT="failed"
+	SCREENSHOT_RESULT="not-attempted (windowed failed)"
+	log "windowed GUI exited before ${WINDOWED_SECONDS}s; the full probe cannot pass"
+	rc=1
 fi
 # Always terminate the GUI we launched (desktop hygiene).
 kill "$wpid" 2>/dev/null
@@ -172,10 +204,19 @@ else
 fi
 fi
 
+# Evidence block consumed by run_export_smoke.sh. Claims are made only from
+# these observed fields; nothing below is inferred from the probe name alone.
+if [ "$SKIP_WINDOWED" -eq 1 ]; then _lp=headless; else _lp=full; fi
+printf 'LAUNCH_PROBE=%s\n' "$_lp"
+printf 'HEADLESS_EXIT=%s\n' "$hstatus"
+printf 'WINDOWED=%s\n' "$WINDOWED_RESULT"
+printf 'SCREENSHOT=%s\n' "$SCREENSHOT_RESULT"
+printf 'SIGNATURE=%s\n' "$SIG_RESULT"
+printf 'EXECUTABLE_EXECUTED=%s\n' "$EXECUTABLE_EXECUTED"
 if [ "$rc" -eq 0 ]; then
-	log "PASS: macOS package launched cleanly"
+	printf 'VERDICT=PASS\n'
 else
-	log "FAIL: macOS launch test did not pass"
+	printf 'VERDICT=FAIL\n'
 fi
 log "temporary extraction retained for inspection: $WORK"
 exit "$rc"

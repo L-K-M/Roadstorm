@@ -497,7 +497,24 @@ FAKEGODOT_DIR="$WORK/fake-godot-bin"
 mkdir -p "$FAKEGODOT_DIR"
 cat >"$FAKEGODOT_DIR/godot" <<EOF
 #!/bin/sh
-if [ "\$1" = "--version" ]; then printf '%s\\n' "$PINNED"; exit 0; fi
+[ -n "\${FAKE_GODOT_LOG:-}" ] && printf '%s\n' "\$*" >> "\$FAKE_GODOT_LOG"
+if [ "\$1" = "--version" ]; then printf '%s\n' "$PINNED"; exit 0; fi
+if [ "\${FAKE_GODOT_EXPORT_MODE:-fail}" = "app" ]; then
+	_last=""
+	for _a in "\$@"; do _last="\$_a"; done
+	FAKE_APP_SRC="\$FAKE_APP_SRC" python3 - "\$_last" <<'INNER'
+import os,sys,zipfile
+src=os.environ["FAKE_APP_SRC"]
+out=sys.argv[1]
+data=open(src,"rb").read()
+with zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED) as z:
+	zi=zipfile.ZipInfo("Fake.app/Contents/MacOS/FakeApp")
+	zi.external_attr=(0o100755 << 16)
+	z.writestr(zi,data)
+INNER
+	[ \$? -eq 0 ] && exit 0
+	exit 1
+fi
 exit 1
 EOF
 chmod +x "$FAKEGODOT_DIR/godot"
@@ -849,6 +866,134 @@ _es_copy_exclusive "$WORK/link-src" "$FIFO_OUT/dst2" "$FIFO_OUT/err2" 2>/dev/nul
 assert_rc_nonzero "symlink source refused" "$_src"
 assert_file_eq "symlink target untouched" "target-keep" "$SL_TARGET"
 assert_absent "no destination created through a symlink source" "$FIFO_OUT/dst2"
+
+# --- 22. platform validation, duplicates, macOS probe verdicts --------------
+APP_SRC="$WORK/fake-app-bin/FakeApp"
+mkdir -p "$(dirname "$APP_SRC")"
+cat >"$APP_SRC" <<'APP_EOF'
+#!/bin/sh
+if [ "$1" = "--headless" ]; then
+	printf '[boot]\n[menu]\n'
+	exit "${FAKE_APP_HEADLESS_EXIT:-0}"
+fi
+sleep "${FAKE_APP_WINDOWED_SLEEP:-3}"
+exit "${FAKE_APP_WINDOWED_EXIT:-0}"
+APP_EOF
+chmod +x "$APP_SRC"
+LAUNCH_SHIM="$WORK/fake-launch-bin"
+mkdir -p "$LAUNCH_SHIM"
+cat >"$LAUNCH_SHIM/screencapture" <<'SHOT_EOF'
+#!/bin/sh
+_last=""
+for _a in "$@"; do _last="$_a"; done
+[ "${FAKE_SCREENSHOT_FAIL:-0}" = "1" ] && exit 1
+printf 'PNG' > "$_last"
+SHOT_EOF
+cat >"$LAUNCH_SHIM/codesign" <<'CS_EOF'
+#!/bin/sh
+[ "${FAKE_CODESIGN_FAIL:-0}" = "1" ] && { echo "codesign failed" >&2; exit 1; }
+echo "Executable=/x"
+echo "Signature=adhoc"
+CS_EOF
+chmod +x "$LAUNCH_SHIM/screencapture" "$LAUNCH_SHIM/codesign"
+_rep_val() { sed -n "s/^[ ]*$1=//p" "$2" | tail -n 1; }
+
+# (a) Unsupported and mixed platform requests fail before engine/output work.
+ENGLOG="$WORK/engine-calls.log"
+rm -f "$ENGLOG"
+_out="$( GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_LOG="$ENGLOG" sh "$RUNNER" --platform Linuz --out "$WORK/out-badplat" 2>&1 )"; _rc=$?
+assert_rc_nonzero "unsupported platform fails closed" "$_rc"
+assert_contains "unsupported platform diagnostic" "$_out" "unknown --platform value 'Linuz'"
+assert_absent "unsupported platform reserves no output dir" "$WORK/out-badplat"
+assert_absent "unsupported platform never runs the engine" "$ENGLOG"
+_out="$( GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_LOG="$ENGLOG" sh "$RUNNER" --platform Linux --platform Linuz --out "$WORK/out-mixedplat" 2>&1 )"; _rc=$?
+assert_rc_nonzero "mixed valid/invalid platform request fails closed" "$_rc"
+assert_contains "mixed request diagnostic" "$_out" "unknown --platform value 'Linuz'"
+assert_absent "mixed request reserves no output dir" "$WORK/out-mixedplat"
+
+# (b) Repeated flags de-duplicate deterministically without a misleading Godot
+# failure, and a failed export cannot claim packaging checks passed.
+DUP_OUT="$WORK/out-dup"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" sh "$RUNNER" --platform Linux --platform Linux --out "$DUP_OUT" 2>&1 )"; _rc=$?
+assert_eq "duplicate platform request still reports export failure once" "1" "$_rc"
+DUP_REP="$DUP_OUT/export-smoke-report.txt"
+_plines="$(grep -c '^platform=Linux ' "$DUP_REP" 2>/dev/null || printf '0')"
+assert_eq "duplicate flag yields exactly one Linux attempt" "1" "$_plines"
+_dlogs="$(find "$DUP_OUT" -maxdepth 1 -name 'export-Linux.log*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "duplicate flag creates one export log" "1" "$_dlogs"
+assert_eq "requested platforms de-duplicated" " Linux" "$(_rep_val requested_platforms "$DUP_REP")"
+assert_contains "duplicate attempt names the engine result, not log creation" "$(sed -n '/^platform=Linux/,+3p' "$DUP_REP")" "godot --export-release exited"
+case "$(_rep_val dev_tooling_packaged "$DUP_REP")" in
+NOT_VERIFIED*) ok "failed export does not claim dev-tool exclusion verified" ;;
+*) bad "failed export claimed dev-tool exclusion verification" ;;
+esac
+case "$(_rep_val all_package_components_checksummed "$DUP_REP")" in
+NOT_VERIFIED*) ok "failed export does not claim component checksums verified" ;;
+*) bad "failed export claimed component checksum verification" ;;
+esac
+assert_eq "failed export marks packaging incomplete" "false" "$(_rep_val packaging_checks_complete "$DUP_REP")"
+if grep -q '^  package_inventory=PASS' "$DUP_REP"; then bad "failed export claimed a packaging PASS"; else ok "failed export claims no packaging PASS"; fi
+
+# (c) Full macOS probe: verdict follows observed windowed run, screenshot,
+# signature and executable evidence.
+MAC_OK="$WORK/out-mac-full-ok"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_APP_HEADLESS_EXIT=0 FAKE_APP_WINDOWED_SLEEP=2 FAKE_APP_WINDOWED_EXIT=0 \
+	PATH="$LAUNCH_SHIM:$PATH" sh "$RUNNER" --platform macOS --launch-probe full --out "$MAC_OK" 2>&1 )"; _rc=$?
+MAC_REP="$MAC_OK/export-smoke-report.txt"
+assert_exists "full macOS probe wrote a report" "$MAC_REP"
+assert_rc_nonzero "full probe run still fails closed on the fake package inventory" "$_rc"
+assert_eq "full probe verdict is PASS" "PASS" "$(_rep_val macos_launch "$MAC_REP")"
+assert_eq "full probe observed ad-hoc signature" "ad-hoc" "$(_rep_val macos_signature "$MAC_REP")"
+assert_eq "full probe observed windowed execution" "ran" "$(_rep_val macos_windowed "$MAC_REP")"
+assert_eq "full probe captured a screenshot" "captured" "$(_rep_val macos_screenshot "$MAC_REP")"
+assert_eq "full probe executed the target binary" "true" "$(_rep_val macos_executable_executed "$MAC_REP")"
+assert_eq "ad-hoc claim is evidence-bound" "true" "$(_rep_val ad_hoc_signature_observed "$MAC_REP")"
+assert_exists "screenshot artifact was produced" "$MAC_OK/macos-launch-windowed.png"
+assert_eq "inventory failure keeps packaging incomplete" "false" "$(_rep_val packaging_checks_complete "$MAC_REP")"
+
+# (d) Windowed child exiting nonzero fails the probe.
+MAC_WF="$WORK/out-mac-windowed-fail"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_APP_HEADLESS_EXIT=0 FAKE_APP_WINDOWED_SLEEP=0 FAKE_APP_WINDOWED_EXIT=7 \
+	PATH="$LAUNCH_SHIM:$PATH" sh "$RUNNER" --platform macOS --launch-probe full --out "$MAC_WF" 2>&1 )"; _rc=$?
+MAC_WF_REP="$MAC_WF/export-smoke-report.txt"
+assert_rc_nonzero "windowed failure fails the run" "$_rc"
+assert_eq "windowed failure reported" "failed" "$(_rep_val macos_windowed "$MAC_WF_REP")"
+assert_eq "windowed failure fails verdict" "FAIL" "$(_rep_val macos_launch "$MAC_WF_REP")"
+
+# (e) Screenshot failure fails the full probe.
+MAC_SF="$WORK/out-mac-shot-fail"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_APP_HEADLESS_EXIT=0 FAKE_APP_WINDOWED_SLEEP=2 FAKE_APP_WINDOWED_EXIT=0 \
+	FAKE_SCREENSHOT_FAIL=1 PATH="$LAUNCH_SHIM:$PATH" sh "$RUNNER" --platform macOS --launch-probe full --out "$MAC_SF" 2>&1 )"; _rc=$?
+MAC_SF_REP="$MAC_SF/export-smoke-report.txt"
+assert_rc_nonzero "screenshot failure fails the run" "$_rc"
+assert_eq "screenshot failure reported" "missing" "$(_rep_val macos_screenshot "$MAC_SF_REP")"
+assert_eq "screenshot failure fails verdict" "FAIL" "$(_rep_val macos_launch "$MAC_SF_REP")"
+
+# (f) Signature-check failure fails the probe and suppresses the claim.
+MAC_CF="$WORK/out-mac-codesign-fail"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_APP_HEADLESS_EXIT=0 FAKE_APP_WINDOWED_SLEEP=2 FAKE_APP_WINDOWED_EXIT=0 \
+	FAKE_CODESIGN_FAIL=1 PATH="$LAUNCH_SHIM:$PATH" sh "$RUNNER" --platform macOS --launch-probe full --out "$MAC_CF" 2>&1 )"; _rc=$?
+MAC_CF_REP="$MAC_CF/export-smoke-report.txt"
+assert_rc_nonzero "signature failure fails the run" "$_rc"
+assert_eq "signature failure reported" "check-failed" "$(_rep_val macos_signature "$MAC_CF_REP")"
+assert_eq "ad-hoc claim suppressed on signature failure" "false" "$(_rep_val ad_hoc_signature_observed "$MAC_CF_REP")"
+assert_eq "signature failure fails verdict" "FAIL" "$(_rep_val macos_launch "$MAC_CF_REP")"
+
+# (g) Headless-only probe stays honest about what it did not observe.
+MAC_H="$WORK/out-mac-headless"
+_out="$( PROJECT_DIR="$REPO" GODOT_BIN="$FAKEGODOT_DIR/godot" FAKE_GODOT_EXPORT_MODE=app \
+	FAKE_APP_SRC="$APP_SRC" FAKE_APP_HEADLESS_EXIT=0 PATH="$LAUNCH_SHIM:$PATH" \
+	sh "$RUNNER" --platform macOS --launch-probe headless --out "$MAC_H" 2>&1 )"; _rc=$?
+MAC_H_REP="$MAC_H/export-smoke-report.txt"
+assert_eq "headless probe verdict is PASS" "PASS" "$(_rep_val macos_launch "$MAC_H_REP")"
+assert_eq "headless probe records windowed skipped" "skipped" "$(_rep_val macos_windowed "$MAC_H_REP")"
+assert_contains "headless probe records screenshot not run" "$(_rep_val macos_screenshot "$MAC_H_REP")" "not-attempted"
+assert_absent "headless probe creates no screenshot" "$MAC_H/macos-launch-windowed.png"
+assert_contains "headless note makes no window/arm64 claim" "$(_rep_val macos_launch_note "$MAC_H_REP")" "NOT_RUN"
 
 printf '[export-smoke-tests] summary pass=%s fail=%s\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then

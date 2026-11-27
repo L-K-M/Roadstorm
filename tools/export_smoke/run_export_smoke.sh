@@ -13,9 +13,10 @@
 #   * A successful cross-export is NOT a platform launch. Windows and Linux
 #     packages are produced but NOT launched (no target host); an untested
 #     platform never becomes verified through a successful export (M0/M9.2).
-#   * The macOS package is launched here (the only host available). It is
-#     AD-HOC signed and UNNOTARIZED (no Developer ID credentials exist); it is
-#     NOT a notarized release and NOT claimed as such.
+#   * The macOS package is launched here (the only host available). No
+#     Developer ID/notarization credentials exist; any signature or launch
+#     claim is made only from the observed evidence fields the launch test
+#     prints, never assumed from the probe name.
 #   * This is an M0 smoke build of a placeholder shell. It is NOT final M0, NOT
 #     gameplay, and NOT a verified release package.
 #
@@ -54,6 +55,11 @@
 #       touch an earlier run's outputs. All reports, logs and packages are
 #       created inside that reserved directory; existing files there are
 #       never truncated or replaced.
+#
+#   --launch-timeout N
+#       Seconds the headless launch may run before being terminated
+#       (default 120). The flag is passed through to the launch test; an
+#       overrun fails the launch rather than hanging the smoke run.
 #
 #   --diagnostic-enable-etc2-astc
 #       DIAGNOSTIC ONLY, off by default. Patches the SNAPSHOT copy of
@@ -135,6 +141,21 @@ esac
 [ -f "$PACK_INVENTORY" ] || die 2 "missing $PACK_INVENTORY"
 
 [ -n "$PLATFORMS" ] || PLATFORMS="macOS Windows Linux"
+# Validate every requested platform and de-duplicate deterministically (first
+# occurrence wins) BEFORE the engine is discovered or any output is reserved.
+_VALID_PLATFORMS=""
+for _p in $PLATFORMS; do
+	case "$_p" in
+	macOS|Windows|Linux) : ;;
+	*) die 2 "unknown --platform value '$_p' (expected macOS|Windows|Linux)" ;;
+	esac
+	case " $_VALID_PLATFORMS " in
+	*" $_p "*) : ;;
+	*) _VALID_PLATFORMS="$_VALID_PLATFORMS $_p" ;;
+	esac
+done
+PLATFORMS="$_VALID_PLATFORMS"
+unset _p
 
 # --- engine -----------------------------------------------------------------
 GODOT_BIN="$(es_default_godot)" || die 2 "no Godot binary found; set GODOT_BIN"
@@ -325,20 +346,14 @@ es_check_package() {
 	_inv="$OUT_DIR/package-inventory-$_plat.txt"
 	_json="$OUT_DIR/package-inventory-$_plat.json"
 	if ! command -v python3 >/dev/null 2>&1; then
-		warn "python3 not found: skipping the package inventory/MD-5 checks for $_plat"
-		printf '  package_inventory=SKIPPED (python3 unavailable; top-level artifacts checksummed only)\n' >>"$REPORT"
-		for _f in "$_main" "${_main%.*}.pck"; do
-			[ -e "$_f" ] || continue
-			_sum="$(es_sha256 "$_f")"
-			_bytes="$(wc -c <"$_f" | tr -d ' ')"
-			printf '  artifact=%s sha256=%s bytes=%s\n' "$(basename "$_f")" "$_sum" "$_bytes" >>"$REPORT"
-			printf '%s  %s\n' "$_sum" "$(basename "$_f")" >>"$SUMS"
-		done
+		warn "python3 not found: the deep package inventory is REQUIRED for $_plat"
+		printf '  package_inventory=NOT_RUN (python3 unavailable)\n' >>"$REPORT"
+		FAILED=1
 		return 0
 	fi
 	if ! _es_create_exclusive "$OUT_DIR/package-inventory-$_plat.log" ""; then
 		warn "cannot create the package inventory log exclusively for $_plat"
-		printf '  package_inventory=SKIPPED (log creation refused)\n' >>"$REPORT"
+		printf '  package_inventory=NOT_RUN (log creation refused)\n' >>"$REPORT"
 		FAILED=1
 		return 0
 	fi
@@ -349,9 +364,12 @@ es_check_package() {
 		printf '  %s\n' "$_summary" >>"$REPORT"
 	fi
 	if [ "$_pstatus" -ne 0 ]; then
+		printf '  package_inventory=FAIL (exit %s)\n' "$_pstatus" >>"$REPORT"
 		log "package inventory check FAILED for $_plat (see $_inv)"
 		FAILED=1
 	else
+		printf '  package_inventory=PASS\n' >>"$REPORT"
+		INV_OK="$INV_OK $_plat"
 		log "package inventory check passed for $_plat (see $_inv)"
 	fi
 	return 0
@@ -377,11 +395,13 @@ es_check_package() {
 	printf '\n'
 } >>"$REPORT"
 
+EXPORTED_OK=""
+INV_OK=""
+_req_n=0
+for _p in $PLATFORMS; do _req_n=$((_req_n + 1)); done
+unset _p
+
 for plat in $PLATFORMS; do
-	case "$plat" in
-	macOS|Windows|Linux) : ;;
-	*) warn "ignoring unknown platform '$plat'"; continue ;;
-	esac
 	preset="$(preset_for "$plat")"
 	outname="$(outfile_for "$plat")"
 	out="$OUT_DIR/$outname"
@@ -414,6 +434,7 @@ Re-run with --diagnostic-enable-etc2-astc to prove the preset otherwise works."
 	fi
 
 	if [ "$status" = "EXPORTED" ]; then
+		EXPORTED_OK="$EXPORTED_OK $plat"
 		# E3/E4: checksum every produced component and policy-check the pack.
 		es_check_package "$plat" "$out"
 	else
@@ -429,22 +450,46 @@ Re-run with --diagnostic-enable-etc2-astc to prove the preset otherwise works."
 			FAILED=1
 		else
 			if [ "$LAUNCH_PROBE" = "full" ]; then
-				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --windowed-seconds 8 \
+				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --timeout "$LAUNCH_TIMEOUT" --windowed-seconds 8 \
 					>>"$OUT_DIR/macos-launch.log" 2>&1
 			else
-				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --skip-windowed \
+				"$SCRIPT_DIR/launch_macos_app.sh" --app "$out" --out "$OUT_DIR" --quit-after 40 --timeout "$LAUNCH_TIMEOUT" --skip-windowed \
 					>>"$OUT_DIR/macos-launch.log" 2>&1
 			fi
-			lstatus=$?
-			printf '  macos_launch=%s\n' "$([ "$lstatus" -eq 0 ] && printf PASS || printf FAIL)" >>"$REPORT"
-			if [ "$lstatus" -ne 0 ]; then
+			_llog="$OUT_DIR/macos-launch.log"
+			_lv="$(grep '^VERDICT=' "$_llog" | tail -n 1 | cut -d= -f2-)"
+			_ls="$(grep '^SIGNATURE=' "$_llog" | tail -n 1 | cut -d= -f2-)"
+			_lw="$(grep '^WINDOWED=' "$_llog" | tail -n 1 | cut -d= -f2-)"
+			_lsh="$(grep '^SCREENSHOT=' "$_llog" | tail -n 1 | cut -d= -f2-)"
+			_le="$(grep '^EXECUTABLE_EXECUTED=' "$_llog" | tail -n 1 | cut -d= -f2-)"
+			[ -n "$_lv" ] || _lv=FAIL
+			printf '  macos_launch=%s\n' "$( [ "$_lv" = PASS ] && printf PASS || printf FAIL)" >>"$REPORT"
+			printf '  macos_signature=%s\n' "${_ls:-NOT_CHECKED}" >>"$REPORT"
+			printf '  macos_windowed=%s\n' "${_lw:-UNKNOWN}" >>"$REPORT"
+			printf '  macos_screenshot=%s\n' "${_lsh:-UNKNOWN}" >>"$REPORT"
+			printf '  macos_executable_executed=%s\n' "${_le:-false}" >>"$REPORT"
+			if [ "$_lv" != "PASS" ]; then
 				log "macOS launch test FAILED (see macos-launch.log)"
 				FAILED=1
 			else
 				log "macOS launch test PASSED"
 			fi
+			if [ "$_ls" = "ad-hoc" ]; then
+				printf '  ad_hoc_signature_observed=true\n' >>"$REPORT"
+			else
+				printf '  ad_hoc_signature_observed=false\n' >>"$REPORT"
+			fi
+			if [ "$_le" = "true" ]; then
+				printf '  target_executable_executed=true\n' >>"$REPORT"
+			else
+				printf '  target_executable_executed=false\n' >>"$REPORT"
+			fi
+			if [ "$LAUNCH_PROBE" = "full" ]; then
+				printf '  macos_launch_note=probe=full; windowed=%s; screenshot=%s; signature=%s; x86_64 slice NOT claimed\n' "$_lw" "$_lsh" "$_ls" >>"$REPORT"
+			else
+				printf '  macos_launch_note=probe=headless; windowed NOT_RUN (--skip-windowed); screenshot NOT_RUN; arm64/x86_64 slices NOT claimed\n' >>"$REPORT"
+			fi
 		fi
-		printf '  macos_launch_note=probe=%s; ad-hoc signed, UNNOTARIZED; arm64 slice launched on this Apple Silicon host; x86_64 (Intel) slice UNTESTED\n' "$LAUNCH_PROBE" >>"$REPORT"
 	fi
 	if [ "$plat" = "macOS" ] && [ "$status" = "BLOCKED" ]; then
 		printf '  macos_launch=NOT_RUN (no package: export blocked)\n' >>"$REPORT"
@@ -455,15 +500,31 @@ Re-run with --diagnostic-enable-etc2-astc to prove the preset otherwise works."
 done
 
 {
+	_exp_n=0
+	for _x in $EXPORTED_OK; do _exp_n=$((_exp_n + 1)); done
+	unset _x
+	_inv_n=0
+	for _x in $INV_OK; do _inv_n=$((_inv_n + 1)); done
+	unset _x
+	packaging_complete=false
+	if [ "$FAILED" -eq 0 ] && [ "$_req_n" -gt 0 ] && [ "$_exp_n" -eq "$_req_n" ] && [ "$_inv_n" -eq "$_req_n" ]; then
+		packaging_complete=true
+	fi
 	printf '\n# Honest status\n'
 	printf 'm0_smoke_only=true  # placeholder shell; NOT final M0, NOT gameplay\n'
-	printf 'notarized=false     # ad-hoc signed; no Developer ID/notarization credentials\n'
+	printf 'notarized=false  # no Developer ID/notarization credentials exist; not claimed as a release\n'
 	printf 'windows_launched=false\n'
 	printf 'linux_launched=false\n'
-	printf 'dev_tooling_packaged=false  # enforced by tools/export_smoke/lib/pack_inventory.py\n'
-	printf 'all_package_components_checksummed=true  # E3: zip/exe/binary, .pck and macOS .app files\n'
-	printf 'packaging_verifies=component checksums, pack MD-5s, no dev-only content, required runtime resources\n'
-	printf 'packaging_does_not_verify=target-OS launch (except macOS, headless by default), signature/notarization, gameplay, M9 notices\n'
+	if [ "$packaging_complete" = true ]; then
+		printf 'dev_tooling_packaged=false  # verified by tools/export_smoke/lib/pack_inventory.py on every requested platform\n'
+		printf 'all_package_components_checksummed=true  # verified for every requested platform\n'
+	else
+		printf 'dev_tooling_packaged=NOT_VERIFIED  # inventory passes %s/%s requested platforms\n' "$_inv_n" "$_req_n"
+		printf 'all_package_components_checksummed=NOT_VERIFIED  # exports %s/%s requested platforms\n' "$_exp_n" "$_req_n"
+	fi
+	printf 'packaging_checks_complete=%s\n' "$packaging_complete"
+	printf 'packaging_verifies=component checksums, pack MD-5s, no dev-only content, required runtime resources (when complete)\n'
+	printf 'packaging_does_not_verify=target-OS launch (only what the recorded probe observed), signature/notarization, gameplay, M9 notices\n'
 } >>"$REPORT"
 
 log "report: $REPORT"
