@@ -312,7 +312,7 @@
       "expectation_id": "expect.source_link",
       "check": "source_observation",
       "path": "records.0",
-      "statement": "The first intent's source observation obs.t000996.ai_surge_1 resolves and agrees on participant, tick, difficulty, style, traffic age, reset generation, history validity, route frame and road width."
+      "statement": "The first intent's source observation obs.t000996.ai_surge_1 resolves and agrees on participant, tick, difficulty, style, traffic age, reset generation, history validity and route frame; the local section width is deliberately not compared with the observation's 20 m lookahead feature."
     },
     {
       "expectation_id": "expect.source_illustrative",
@@ -447,7 +447,7 @@
       "until": "M4.2"
     }
   ],
-  "content_hash": "sha256:75dc370200b7c48f1a3e81ec025a50fecf035243ddf33eebb9cbdeb032fe7517",
+  "content_hash": "sha256:0adcdd97d44dd8d9528708f4942e19220a9e18f90dbefb253a3e084f80fecd75",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
     "author": "pi coding agent (job 13001f38-b8b9-42bc-a930-99c85ccfb04c)",

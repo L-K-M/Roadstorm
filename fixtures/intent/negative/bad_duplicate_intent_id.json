@@ -1,0 +1,459 @@
+{
+  "schema_version": "1.1.0",
+  "fixture_id": "fixture.intent.negative_duplicate_intent_id",
+  "fixture_family": "safety_correction",
+  "title": "NEGATIVE fixture: two distinct 5 Hz proposals share one intent_id",
+  "description": "Deliberately invalid variant used by fixtures/intent/validate_intent_contract.py to keep this rejection rejected. Defect: records.1 reuses records.0's intent_id (intent.surge_fallback.t000996). The two records are distinct proposals 12 ticks apart, and BENCHMARKS.md 'AI metrics' counts corrections/emergencies once per proposed 5 Hz intent by this identity, so the collision would corrupt that accounting. Derived from fixture.intent.classic_fallback_substitution; everything else is identical to the base.",
+  "revision": "1.0.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "road_width_m": 12.0,
+    "car_width_m": 1.8,
+    "difficulty": "racer",
+    "style": "surge",
+    "producer_kind": "learned_policy",
+    "producer_revision": "pending_m4b1_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.1.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.surge_fallback.t000996",
+      "participant_id": "ai.surge_1",
+      "source_observation_id": "obs.t000996.ai_surge_1",
+      "producer": {
+        "kind": "learned_policy",
+        "producer_revision": "pending_m4b1_ratification"
+      },
+      "difficulty": "racer",
+      "style": "surge",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 996,
+      "sampled_tick": 1000,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 12,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": 0.0,
+        "legal_corridor_half_width_m": 4.6,
+        "decoded_offset_m": 0.0,
+        "note": "Corridor half-width is (12.0 - 1.8)/2 - 0.5 m = 4.6 m; the safe Classic control recenters the line at 0.0 m."
+      },
+      "pace": {
+        "pace_norm": 0.5,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": "Decoding the racer desired speed-profile interval is unratified; see unknowns."
+      },
+      "commitment": {
+        "commitment_raw": -0.6,
+        "label": "follow",
+        "executed_label": "follow",
+        "commit_started_tick": null,
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": "-0.6 is below -1/3, so the executed label is follow; no pass commitment is active."
+      },
+      "drift": {
+        "drift_raw": 0.0,
+        "label": "retain",
+        "executed_preference": "grip",
+        "note": "Between the drift thresholds, so the decode band is retain; the safe Classic control runs a grip preference."
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "interventions": {
+          "ticks": [
+            1000
+          ],
+          "note": "Per-tick safety held the safe Classic line at tick 1000, the tick the invalid output was detected; no field correction was needed because the whole intent was replaced."
+        },
+        "emergency": {
+          "substituted": true,
+          "kind": "classic_fallback",
+          "tick": 1000,
+          "persistent": false,
+          "reason": "nonfinite actor output at tick 1000; safe Classic control took over with a visible diagnostic"
+        },
+        "note": "A wholesale replacement is recorded in safety.emergency, not as a correction entry."
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    },
+    {
+      "schema_version": "1.1.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.surge_fallback.t000996",
+      "participant_id": "ai.surge_1",
+      "source_observation_id": "obs.t001008.ai_surge_1",
+      "producer": {
+        "kind": "learned_policy",
+        "producer_revision": "pending_m4b1_ratification"
+      },
+      "difficulty": "racer",
+      "style": "surge",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 1008,
+      "sampled_tick": 1012,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 12,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": 0.0,
+        "legal_corridor_half_width_m": 4.6,
+        "decoded_offset_m": 0.0,
+        "note": "The safe Classic control keeps the recentered line at 0.0 m."
+      },
+      "pace": {
+        "pace_norm": 0.5,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": null
+      },
+      "commitment": {
+        "commitment_raw": -0.6,
+        "label": "follow",
+        "executed_label": "follow",
+        "commit_started_tick": null,
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": null
+      },
+      "drift": {
+        "drift_raw": 0.0,
+        "label": "retain",
+        "executed_preference": "grip",
+        "note": null
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "interventions": {
+          "ticks": [],
+          "note": null
+        },
+        "emergency": {
+          "substituted": true,
+          "kind": "classic_fallback",
+          "tick": 1010,
+          "persistent": true,
+          "reason": "the invalid output persisted, so safe Classic control continues; the substitution tick is recorded inside this intent's own hold window"
+        },
+        "note": "persistent is true because the same substitution continues the previous intent's; BENCHMARKS.md counts such a run as a learned failure, not a learned finish."
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.decode_recenter",
+      "check": "decode_consistency",
+      "path": "records.0",
+      "statement": "The recentered fallback target decodes to 0.0 m inside the corridor with no correction."
+    },
+    {
+      "expectation_id": "expect.decode_recenter_fallback",
+      "check": "decode_consistency",
+      "path": "records.1",
+      "statement": "The continuing fallback target also decodes to 0.0 m inside the corridor with no correction."
+    },
+    {
+      "expectation_id": "expect.emergency_substitution",
+      "check": "emergency_consistency",
+      "path": "records.0",
+      "statement": "A wholesale replacement carries substituted true with a kind, a tick inside the hold window and a reason, and it is not persistent because it is the first intent of the run."
+    },
+    {
+      "expectation_id": "expect.emergency_persistence",
+      "check": "emergency_consistency",
+      "path": "records.1",
+      "statement": "The second intent continues the same classic_fallback substitution, so persistent is true and the tick lies inside its own hold window."
+    },
+    {
+      "expectation_id": "expect.emergency_not_correction",
+      "check": "emergency_consistency",
+      "path": "records",
+      "statement": "A classic_fallback on a learned_policy producer is legal; the same kind on a classic_planner producer is rejected."
+    },
+    {
+      "expectation_id": "expect.intervention_window",
+      "check": "intervention_window",
+      "path": "records.0",
+      "statement": "The single per-tick override tick 1000 lies inside the first intent's hold window [996, 1008)."
+    },
+    {
+      "expectation_id": "expect.commit_follow",
+      "check": "commitment_hold",
+      "path": "records",
+      "statement": "The fallback executes follow with no active pass commitment, so commit_started_tick is null throughout."
+    },
+    {
+      "expectation_id": "expect.executed_drift",
+      "check": "executed_drift_preference",
+      "path": "records.0",
+      "statement": "The retain band keeps a grip preference as the executed preference; history is valid, so it is not 'none'."
+    },
+    {
+      "expectation_id": "expect.pace_decode",
+      "check": "pace_decode_consistency",
+      "path": "records",
+      "statement": "The racer speed-profile interval is null (unratified until M4.3), so no target speed is determined and no pace correction may appear."
+    },
+    {
+      "expectation_id": "expect.cadence",
+      "check": "sampling_cadence",
+      "path": "records",
+      "statement": "Consecutive intents are 12 ticks apart at the 5 Hz tactical rate on a 60 Hz tick."
+    },
+    {
+      "expectation_id": "expect.age",
+      "check": "age_arithmetic",
+      "path": "records.0",
+      "statement": "intent_age_ticks equals sampled_tick minus generated_tick."
+    },
+    {
+      "expectation_id": "expect.age_fallback",
+      "check": "age_arithmetic",
+      "path": "records.1",
+      "statement": "The second intent's age arithmetic is consistent."
+    },
+    {
+      "expectation_id": "expect.traffic_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Racer difficulty uses the 12-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.traffic_age_fallback",
+      "check": "difficulty_age",
+      "path": "records.1",
+      "statement": "The second intent carries the same difficulty traffic age."
+    },
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style, producer kind and revision match the fixture context."
+    },
+    {
+      "expectation_id": "expect.context_fallback",
+      "check": "context_agreement",
+      "path": "records.1",
+      "statement": "The second record also matches the fixture context."
+    },
+    {
+      "expectation_id": "expect.deferral",
+      "check": "safety_deferral",
+      "path": "records.0",
+      "statement": "Hazard checks are never deferred, including while a fallback substitution runs."
+    },
+    {
+      "expectation_id": "expect.source_link",
+      "check": "source_observation",
+      "path": "records.0",
+      "statement": "The first intent's source observation obs.t000996.ai_surge_1 resolves and agrees on participant, tick, difficulty, style, traffic age, reset generation, history validity and route frame; the local section width is deliberately not compared with the observation's 20 m lookahead feature."
+    },
+    {
+      "expectation_id": "expect.source_illustrative",
+      "check": "source_observation",
+      "path": "records.1",
+      "statement": "The second intent's source observation is declared illustrative because the observation slice ships no such record."
+    },
+    {
+      "expectation_id": "expect.min_commit",
+      "check": "min_commitment",
+      "path": "records.0",
+      "statement": "The intent carries the 0.4 s minimum commitment constant even while following."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the standing intervention targets the fallback telemetry feeds, plus the requirement that persistent Classic replacement counts as a learned failure.",
+    "metrics": [
+      {
+        "name": "emergency_replacements_fraction",
+        "description": "Emergency safety substitutions per proposed 5 Hz intent.",
+        "comparator": "lt",
+        "value": 0.01,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "material_corrections_fraction",
+        "description": "Material road/collision corrections per proposed 5 Hz intent, material per BENCHMARKS.md.",
+        "comparator": "lt",
+        "value": 0.05,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; no measurements."
+  },
+  "illustrative_sources": [
+    {
+      "observation_id": "obs.t001008.ai_surge_1",
+      "reason": "The observation slice ships no obs.t001008.ai_surge_1 record; the second intent's source observation is illustrative only and follows the observation contract's obs.t<tick>.<participant> convention. Nothing further is claimed about it."
+    }
+  ],
+  "unknowns": [
+    {
+      "path": "records.0.pace.speed_profile_interval_m_s",
+      "reason": "The racer desired speed-profile interval is tuned at M4.3 and is not numerically specified by OPPONENT_AI.md.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.speed_profile_interval_m_s",
+      "reason": "Same unratified interval as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.pace.target_speed_m_s",
+      "reason": "Target speed cannot be decoded until the difficulty interval is ratified.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.target_speed_m_s",
+      "reason": "Same unratified decoding as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.commitment.hold_window_s",
+      "reason": "OPPONENT_AI.md requires holding 'a short commitment window' but does not fix its length.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.commitment.hold_window_s",
+      "reason": "Same unratified window length as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.interpolation.curve",
+      "reason": "OPPONENT_AI.md requires interpolating intents but does not specify the curve.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.interpolation.curve",
+      "reason": "Same unratified curve as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.producer_revision",
+      "reason": "Placeholder only: no learned policy revision is ratified yet. The fixture instantiates the producer kind to exercise the shared contract, not to claim a model exists.",
+      "blocking": false,
+      "until": "M4B.1"
+    },
+    {
+      "path": "intent_age_ticks",
+      "reason": "Required behavior for an intent at or beyond the 12-tick staleness threshold (a missed 5 Hz update) is not specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.interventions.ticks",
+      "reason": "The hold window [generated_tick, generated_tick + period_ticks) is this contract's modeling decision for tick-level safety exposure; OPPONENT_AI.md does not say whether a record exported at sampled_tick inside the window must truncate its intervention list.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.emergency.kind",
+      "reason": "The emergency kind vocabulary (emergency_stop, reset, classic_fallback) is provisional until the intervention categories are preregistered before evaluation (OPPONENT_AI.md 'Implementation and acceptance'); the metric itself is a later measured run.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:d5b375186e12da4620aec43a966d41a57ff66c4d06059cc77700baf76f600969",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
+    "author": "pi coding agent (job 13001f38-b8b9-42bc-a930-99c85ccfb04c)",
+    "model": "stepfun-ai-step-plan/step-5-preview",
+    "provider": "stepfun",
+    "date_utc": "2026-11-27",
+    "note": "Authored at the M0.9 independent schema recheck follow-up to pin per-fixture intent identity uniqueness."
+  }
+}

@@ -32,8 +32,9 @@ It does three jobs a plain JSON Syntax check cannot:
    the executed drift preference, the 5 Hz sampling cadence, intent age
    arithmetic, the difficulty traffic ages, reset masking, zero safety
    deferral, the per-tick intervention window, emergency substitution
-   coherence, BENCHMARKS correction materiality, the source-observation
-   linkage into the shipped observation fixtures, the null/unknowns pairing
+   coherence, BENCHMARKS correction materiality, distinct intent IDs,
+   the source-observation linkage into the shipped observation fixtures,
+   the null/unknowns pairing
    rule, context agreement, metric honesty (no measured status in a fixture
    file), metric comparator shape (threshold vs range vs report bounds) and
    the canonical content hash.
@@ -131,6 +132,8 @@ IMPLEMENTED_CHECKS = frozenset(
         "emergency_consistency",
         "correction_materiality",
         "correction_shape",
+        "intent_identity",
+        "record_sequence",
         "source_observation",
         "min_commitment",
         "metric_status_honesty",
@@ -1245,11 +1248,53 @@ def check_commitment_hold(
         previous_commitment = (previous.get("commitment") or {}) if previous is not None else {}
         previous_executed = previous_commitment.get("executed_label")
         previous_start = previous_commitment.get("commit_started_tick")
-        continuing = executed == "commit_pass" and previous_start is not None and start == previous_start
+        previous_generation = (previous.get("reset") or {}).get("reset_generation") if previous is not None else None
+        current_generation = (record.get("reset") or {}).get("reset_generation")
+        reset_boundary = (
+            _is_number(previous_generation)
+            and _is_number(current_generation)
+            and int(current_generation) > int(previous_generation)
+        )
+        continuing = (
+            executed == "commit_pass"
+            and previous_start is not None
+            and start == previous_start
+            and not reset_boundary
+        )
+        if (
+            interrupted
+            and executed == "commit_pass"
+            and previous_executed == "commit_pass"
+            and previous_start is not None
+            and start == previous_start
+        ):
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "commitment.interrupted"),
+                    "the record claims a hazard interruption while the same executing "
+                    "commit_pass continues unchanged from the previous record; an "
+                    "interruption must end or restart the commitment",
+                    check="commitment_hold",
+                )
+            )
         if previous_executed == "commit_pass" and previous_start is not None and _is_number(generated):
-            if not continuing:
+            if reset_boundary and executed == "commit_pass" and start == previous_start:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "commitment.commit_started_tick"),
+                        f"the executing commit_pass continues from tick {previous_start} "
+                        f"across a reset_generation increase "
+                        f"({previous_generation} -> {current_generation}); a reset "
+                        "restores timers and history, so the commitment must end or "
+                        "restart at this record",
+                        check="commitment_hold",
+                    )
+                )
+            elif not continuing:
                 elapsed = int(generated) - int(previous_start)
-                if elapsed < min_ticks and not interrupted:
+                if elapsed < min_ticks and not interrupted and not reset_boundary:
                     failures.append(
                         Failure(
                             "semantic",
@@ -1545,6 +1590,100 @@ def check_emergency_consistency(
     return failures
 
 
+def check_intent_identity(
+    fixture: Mapping[str, Any], constants: ContractConstants | None = None
+) -> list[Failure]:
+    """Distinct proposals in one fixture carry distinct intent_ids.
+
+    ``intent_id`` is the identity BENCHMARKS 'AI metrics' uses to count
+    material corrections and emergency replacements once per proposed 5 Hz
+    intent (and ``safety.interventions.ticks`` is the tick-level exposure
+    reported beside that count). Two records of one fixture are two distinct
+    proposals, so sharing an ID would make that accounting collapse them.
+    The checked scope is one fixture - a self-contained scenario run; a
+    deployed capture stream must keep the same per-record uniqueness across
+    every intent it counts together. No cross-run reuse rule is invented here
+    because no document states one.
+    """
+    failures: list[Failure] = []
+    seen: dict[str, int] = {}
+    for index, record in enumerate(fixture["records"]):
+        intent_id = record.get("intent_id")
+        if not isinstance(intent_id, str):
+            continue
+        if intent_id in seen:
+            failures.append(
+                Failure(
+                    "semantic",
+                    _record_path(index, "intent_id"),
+                    f"intent_id {intent_id!r} is already used by "
+                    f"records.{seen[intent_id]}; intent identity counts each "
+                    "proposed 5 Hz intent once (BENCHMARKS 'AI metrics'), so two "
+                    "distinct proposals may not share an ID",
+                    check="intent_identity",
+                )
+            )
+        else:
+            seen[intent_id] = index
+    return failures
+
+
+def check_record_sequence(
+    fixture: Mapping[str, Any], constants: ContractConstants | None = None
+) -> list[Failure]:
+    """One fixture is one participant's ascending 5 Hz sequence.
+
+    ``check_commitment_hold`` and the emergency-persistence rule compare
+    consecutive records as the same car's state over time, so every record of
+    a fixture must name the same ``participant_id``. ``reset_generation`` is
+    the counter a reset advances; over a forward-moving intent sequence it
+    cannot decrease. Both facts follow from the record semantics rather than
+    from an invented schedule.
+    """
+    failures: list[Failure] = []
+    first_participant_index: int | None = None
+    first_participant: str | None = None
+    last_generation_index: int | None = None
+    last_generation: int | None = None
+    for index, record in enumerate(fixture["records"]):
+        participant = record.get("participant_id")
+        if isinstance(participant, str):
+            if first_participant is None:
+                first_participant = participant
+                first_participant_index = index
+            elif participant != first_participant:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "participant_id"),
+                        f"participant_id {participant!r} differs from "
+                        f"records.{first_participant_index}'s {first_participant!r}; "
+                        "commitment-hold and emergency-persistence rules compare "
+                        "consecutive records as one participant's 5 Hz sequence",
+                        check="record_sequence",
+                    )
+                )
+        generation = (record.get("reset") or {}).get("reset_generation")
+        if _is_number(generation):
+            value = int(generation)
+            if last_generation is not None and value < last_generation:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "reset.reset_generation"),
+                        f"reset_generation {value} is lower than "
+                        f"records.{last_generation_index}'s {last_generation}; the "
+                        "reset counter advances with resets and cannot decrease "
+                        "across a forward-moving intent sequence",
+                        check="record_sequence",
+                    )
+                )
+            else:
+                last_generation = value
+                last_generation_index = index
+    return failures
+
+
 def check_source_observation(
     fixture: Mapping[str, Any], constants: ContractConstants
 ) -> list[Failure]:
@@ -1554,17 +1693,23 @@ def check_source_observation(
     observation contract. When the ID resolves to a shipped positive
     observation record, the intent must agree with it on participant,
     difficulty, style, delayed traffic age, reset generation, history
-    validity, route frame and the section road width (observation feature 14
-    x 20 m), and the intent's generated_tick may not precede the
-    observation's sampled_tick. An ID that does not resolve is legal only
-    when the fixture declares it in illustrative_sources, and declaring an ID
-    that does resolve is itself a failure, so a broken reference stays
+    validity and route frame, and its ``generated_tick`` may neither precede
+    the observation's ``sampled_tick`` nor lag it by more than one 5 Hz
+    sampling period: GAME_DESIGN documents an additional 0-200 ms of 5 Hz
+    planning phase latency, so an older source must still come from the
+    current or immediately preceding tactical sample. Exact observation-to-
+    decision synchrony is not specified, so equality is deliberately not
+    required; ``traffic_age_ticks`` remains the source snapshot's age and the
+    phase delay is the extra latency on top of it. The local section road width is
+    deliberately not compared - observation features 14/19/24 describe the
+    road 20/50/100 m ahead, which can differ from the scenario section's
+    local width on a legitimately varying-width road; the local width stays
+    under the decode/geometry rules. An ID that does not resolve is legal
+    only when the fixture declares it in illustrative_sources, and declaring
+    an ID that does resolve is itself a failure, so a broken reference stays
     distinguishable from an intentional illustration. Within one fixture each
-    record uses its own source observation.
-
-    When the source observation ran with the safe diagnostic fallback active
-    its features are safe defaults rather than measurements, so the road-width
-    comparison is skipped for it.
+    record uses its own source observation, including a declared illustrative
+    one.
     """
     sources = constants.observation_sources
     declared: dict[str, Mapping[str, Any]] = {}
@@ -1572,8 +1717,6 @@ def check_source_observation(
         if isinstance(entry, Mapping) and isinstance(entry.get("observation_id"), str):
             declared[entry["observation_id"]] = entry
     failures: list[Failure] = []
-    context = fixture.get("context") or {}
-    road_width = context.get("road_width_m")
     seen: dict[str, int] = {}
     for index, record in enumerate(fixture["records"]):
         source_id = record.get("source_observation_id")
@@ -1593,6 +1736,20 @@ def check_source_observation(
             continue
         if not matches:
             if source_id in declared:
+                if source_id in seen:
+                    failures.append(
+                        Failure(
+                            "semantic",
+                            _record_path(index, "source_observation_id"),
+                            f"declared illustrative source observation {source_id!r} "
+                            f"is already used by records.{seen[source_id]}; each 5 Hz "
+                            "intent is computed from its own observation, and the "
+                            "illustrative declaration does not relax that uniqueness",
+                            check="source_observation",
+                        )
+                    )
+                else:
+                    seen[source_id] = index
                 continue
             failures.append(
                 Failure(
@@ -1688,36 +1845,32 @@ def check_source_observation(
                 )
         generated = record.get("generated_tick")
         sampled = observation.get("sampled_tick")
-        if _is_number(generated) and _is_number(sampled) and int(generated) < int(sampled):
-            failures.append(
-                Failure(
-                    "semantic",
-                    _record_path(index, "generated_tick"),
-                    f"generated_tick {generated} precedes the source observation's "
-                    f"sampled_tick {sampled}",
-                    check="source_observation",
-                )
-            )
-        fallback = observation.get("fallback") or {}
-        if not fallback.get("active"):
-            features = observation.get("feature_vector") or []
-            if (
-                _is_number(road_width)
-                and len(features) > 14
-                and _is_number(features[14])
-            ):
-                observed_width = float(features[14]) * 20.0
-                if abs(float(road_width) - observed_width) > TOLERANCE:
-                    failures.append(
-                        Failure(
-                            "semantic",
-                            "context.road_width_m",
-                            f"context road width {road_width} m does not match the "
-                            f"source observation's feature-14 road width "
-                            f"{observed_width} m",
-                            check="source_observation",
-                        )
+        if _is_number(generated) and _is_number(sampled):
+            delay = int(generated) - int(sampled)
+            if delay < 0:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "generated_tick"),
+                        f"generated_tick {generated} precedes the source "
+                        f"observation's sampled_tick {sampled}",
+                        check="source_observation",
                     )
+                )
+            elif delay > constants.sampling_period_ticks:
+                failures.append(
+                    Failure(
+                        "semantic",
+                        _record_path(index, "generated_tick"),
+                        f"generated_tick {generated} lags the source observation's "
+                        f"sampled_tick {sampled} by {delay} ticks, beyond the "
+                        f"{constants.sampling_period_s} s ("
+                        f"{constants.sampling_period_ticks}-tick) 5 Hz planning "
+                        "phase latency GAME_DESIGN documents; the source must be "
+                        "the current or immediately preceding tactical sample",
+                        check="source_observation",
+                    )
+                )
     return failures
 
 
@@ -1984,6 +2137,8 @@ SEMANTIC_CHECKS = (
     check_emergency_consistency,
     check_correction_materiality,
     check_correction_shape,
+    check_intent_identity,
+    check_record_sequence,
     check_source_observation,
     check_min_commitment,
     check_metric_status_honesty,

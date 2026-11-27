@@ -1,0 +1,493 @@
+{
+  "schema_version": "1.1.0",
+  "fixture_id": "fixture.intent.varying_width_road",
+  "fixture_family": "regression",
+  "title": "Legitimate varying-width road keeps local decode geometry distinct from lookahead width",
+  "description": "Two consecutive 5 Hz intents for one learned_policy participant on a section whose local usable width is 12 m. The referenced observations obs.t001008.ai_surge_2 and obs.t001020.ai_surge_2 measure 11 m at 20 m and 50 m ahead and 10 m at 100 m ahead, so the road narrows ahead: the observation's lookahead width features describe the road ahead, not the local decode geometry, and the source link deliberately does not equate them. The intents decode lateral targets against the local corridor (12 - 1.8)/2 - 0.5 m = 4.6 m; the first proposes a right-side pass (commitment_raw 0.5) that passing_room safety trims from 3.68 m to 3.2 m (material), and the second holds the commitment through its 0.4 s minimum while proposing wait. Both source observations are shipped positive records of ai.surge_2, so every compared field including decision timing is verified. Status 'example': the learned_policy producer kind is exercised to prove the shared contract admits it; no trained model is claimed to exist (producer_revision is a placeholder and is listed in unknowns).",
+  "revision": "1.0.0",
+  "status": "example",
+  "units": {
+    "length": "m",
+    "speed": "m/s",
+    "time": "s"
+  },
+  "context": {
+    "tick_rate_hz": 60,
+    "road_width_m": 12.0,
+    "car_width_m": 1.8,
+    "difficulty": "racer",
+    "style": "surge",
+    "producer_kind": "learned_policy",
+    "producer_revision": "pending_m4b1_ratification",
+    "traffic_age_is_difficulty_default": true
+  },
+  "records": [
+    {
+      "schema_version": "1.1.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.surge_varying.t001008",
+      "participant_id": "ai.surge_2",
+      "source_observation_id": "obs.t001008.ai_surge_2",
+      "producer": {
+        "kind": "learned_policy",
+        "producer_revision": "pending_m4b1_ratification"
+      },
+      "difficulty": "racer",
+      "style": "surge",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 1008,
+      "sampled_tick": 1012,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 12,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": 0.8,
+        "legal_corridor_half_width_m": 4.6,
+        "decoded_offset_m": 3.2,
+        "note": "Corridor half-width is (12.0 - 1.8)/2 - 0.5 m = 4.6 m; proposal decoded to 3.68 m, safety trimmed to 3.2 m."
+      },
+      "pace": {
+        "pace_norm": 0.9,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": "Decoding the racer desired speed-profile interval is unratified; see unknowns."
+      },
+      "commitment": {
+        "commitment_raw": 0.5,
+        "label": "commit_pass",
+        "executed_label": "commit_pass",
+        "commit_started_tick": 1008,
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": "0.5 is above the +1/3 commit threshold; the commitment starts at this intent's generated_tick 1008."
+      },
+      "drift": {
+        "drift_raw": 0.1,
+        "label": "retain",
+        "executed_preference": "grip",
+        "note": "Between the +/-0.25 drift thresholds, so the decode band is retain; the preference retained from before this window was grip."
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [
+          {
+            "field": "lateral.decoded_offset_m",
+            "category": "passing_room",
+            "proposed": 3.68,
+            "applied": 3.2,
+            "material": true,
+            "note": "0.48 m change exceeds 0.1 car widths (0.18 m) at a 1.8 m car, so it is material per BENCHMARKS."
+          }
+        ],
+        "interventions": {
+          "ticks": [],
+          "note": null
+        },
+        "emergency": {
+          "substituted": false,
+          "kind": null,
+          "tick": null,
+          "persistent": false,
+          "reason": null
+        },
+        "note": null
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    },
+    {
+      "schema_version": "1.1.0",
+      "intent_layout_revision": "tactical_intent_v1",
+      "intent_id": "intent.surge_varying.t001020",
+      "participant_id": "ai.surge_2",
+      "source_observation_id": "obs.t001020.ai_surge_2",
+      "producer": {
+        "kind": "learned_policy",
+        "producer_revision": "pending_m4b1_ratification"
+      },
+      "difficulty": "racer",
+      "style": "surge",
+      "road_frame": {
+        "forward": "route_forward_tangent",
+        "right": "route_right_lateral",
+        "up": "route_up_normal"
+      },
+      "generated_tick": 1020,
+      "sampled_tick": 1024,
+      "intent_age_ticks": 4,
+      "traffic_age_ticks": 12,
+      "sampling": {
+        "tactical_rate_hz": 5,
+        "period_ticks": 12,
+        "period_s": 0.2
+      },
+      "lateral": {
+        "lateral_target_norm": 0.75,
+        "legal_corridor_half_width_m": 4.6,
+        "decoded_offset_m": 3.45,
+        "note": "0.75 x 4.6 m = 3.45 m, inside the corridor; no safety correction."
+      },
+      "pace": {
+        "pace_norm": 0.88,
+        "speed_profile_interval_m_s": null,
+        "target_speed_m_s": null,
+        "note": null
+      },
+      "commitment": {
+        "commitment_raw": 0.0,
+        "label": "wait",
+        "executed_label": "commit_pass",
+        "commit_started_tick": 1008,
+        "min_commitment_s": 0.4,
+        "hold_window_s": null,
+        "interrupted": false,
+        "interruption_reason": null,
+        "note": "12 ticks (0.2 s) since the commit at tick 1008, inside the 0.4 s minimum commitment and no hazard interrupted it, so the executed label stays commit_pass even though the proposed decode is wait."
+      },
+      "drift": {
+        "drift_raw": 0.05,
+        "label": "retain",
+        "executed_preference": "grip",
+        "note": null
+      },
+      "interpolation": {
+        "enabled": true,
+        "window_s": 0.2,
+        "curve": null,
+        "note": null
+      },
+      "safety": {
+        "max_deferral_ticks": 0,
+        "corrections": [],
+        "interventions": {
+          "ticks": [],
+          "note": null
+        },
+        "emergency": {
+          "substituted": false,
+          "kind": null,
+          "tick": null,
+          "persistent": false,
+          "reason": null
+        },
+        "note": null
+      },
+      "reset": {
+        "reset_generation": 0,
+        "history_valid": 1,
+        "post_reset_defaults_applied": false,
+        "defaults_applied": [],
+        "note": null
+      },
+      "units": {
+        "length": "m",
+        "speed": "m/s",
+        "time": "s"
+      }
+    }
+  ],
+  "expectations": [
+    {
+      "expectation_id": "expect.decode_corridor",
+      "check": "decode_consistency",
+      "path": "records.0",
+      "statement": "decoded_offset_m equals lateral_target_norm times the local corridor (12 - 1.8)/2 - 0.5 m = 4.6 m unless a safety correction says otherwise, and stays inside the corridor."
+    },
+    {
+      "expectation_id": "expect.decode_legal",
+      "check": "decode_consistency",
+      "path": "records.1",
+      "statement": "With no correction, decoded_offset_m equals the raw decode 3.45 m."
+    },
+    {
+      "expectation_id": "expect.commit_label",
+      "check": "label_thresholds",
+      "path": "records.0",
+      "statement": "commitment_raw 0.5 is above +1/3, so the label is commit_pass; drift_raw 0.1 is between +/-0.25, so the label is retain."
+    },
+    {
+      "expectation_id": "expect.commit_label_hold",
+      "check": "label_thresholds",
+      "path": "records.1",
+      "statement": "commitment_raw 0.0 decodes to wait; the executed label is a separate member checked by commitment_hold."
+    },
+    {
+      "expectation_id": "expect.commit_start",
+      "check": "commitment_hold",
+      "path": "records.0",
+      "statement": "A commitment that starts at a record matches that record's threshold decode and begins at its generated_tick 1008."
+    },
+    {
+      "expectation_id": "expect.commit_hold",
+      "check": "commitment_hold",
+      "path": "records.1",
+      "statement": "The executed commit_pass is held 12 ticks (0.2 s) into the 0.4 s minimum even though the proposed decode has moved to wait, and no hazard interrupted it."
+    },
+    {
+      "expectation_id": "expect.executed_drift",
+      "check": "executed_drift_preference",
+      "path": "records.0",
+      "statement": "The retain band keeps the prior grip preference as the executed preference; history is valid, so it is not 'none'."
+    },
+    {
+      "expectation_id": "expect.cadence",
+      "check": "sampling_cadence",
+      "path": "records",
+      "statement": "Consecutive intents are 12 ticks apart at 5 Hz on a 60 Hz tick."
+    },
+    {
+      "expectation_id": "expect.age",
+      "check": "age_arithmetic",
+      "path": "records.0",
+      "statement": "intent_age_ticks equals sampled_tick minus generated_tick."
+    },
+    {
+      "expectation_id": "expect.age_hold",
+      "check": "age_arithmetic",
+      "path": "records.1",
+      "statement": "The second record's age arithmetic is consistent at its sampled tick."
+    },
+    {
+      "expectation_id": "expect.traffic_age",
+      "check": "difficulty_age",
+      "path": "records.0",
+      "statement": "Racer difficulty uses the 12-tick delayed traffic snapshot."
+    },
+    {
+      "expectation_id": "expect.traffic_age_hold",
+      "check": "difficulty_age",
+      "path": "records.1",
+      "statement": "The second intent carries the same difficulty traffic age."
+    },
+    {
+      "expectation_id": "expect.context",
+      "check": "context_agreement",
+      "path": "records.0",
+      "statement": "Record difficulty, style, producer kind and revision match the fixture context."
+    },
+    {
+      "expectation_id": "expect.context_hold",
+      "check": "context_agreement",
+      "path": "records.1",
+      "statement": "The second record also matches the fixture context."
+    },
+    {
+      "expectation_id": "expect.deferral",
+      "check": "safety_deferral",
+      "path": "records.0",
+      "statement": "Hazard checks are never deferred while a tactical intent is held."
+    },
+    {
+      "expectation_id": "expect.intervention_window",
+      "check": "intervention_window",
+      "path": "records",
+      "statement": "No per-tick safety override occurred inside either intent's 12-tick hold window, so every interventions.ticks list is empty."
+    },
+    {
+      "expectation_id": "expect.emergency_none",
+      "check": "emergency_consistency",
+      "path": "records",
+      "statement": "No emergency substitution or Classic fallback ran: substituted is false with a null kind, tick and reason and persistent false."
+    },
+    {
+      "expectation_id": "expect.pace_decode",
+      "check": "pace_decode_consistency",
+      "path": "records",
+      "statement": "The racer speed-profile interval is null (unratified until M4.3), so no target speed is determined and no pace correction may appear."
+    },
+    {
+      "expectation_id": "expect.material",
+      "check": "correction_materiality",
+      "path": "records.0",
+      "statement": "The 0.48 m lateral correction exceeds 0.1 car widths and is flagged material."
+    },
+    {
+      "expectation_id": "expect.source_link",
+      "check": "source_observation",
+      "path": "records.0",
+      "statement": "The source observation obs.t001008.ai_surge_2 resolves and agrees on participant, decision timing, difficulty, style, traffic age, reset generation, history validity and route frame. Its 11 m lookahead width differs from the local 12 m section width and is deliberately not compared."
+    },
+    {
+      "expectation_id": "expect.source_link_hold",
+      "check": "source_observation",
+      "path": "records.1",
+      "statement": "The second source observation obs.t001020.ai_surge_2 also resolves with its own 12-tick traffic age; the road continues to narrow ahead (11 m then 10 m) while the local decode width stays 12 m."
+    },
+    {
+      "expectation_id": "expect.intent_identity",
+      "check": "intent_identity",
+      "path": "records",
+      "statement": "The two distinct 5 Hz proposals carry distinct intent_id values, the identity BENCHMARKS 'AI metrics' deduplicates corrections by."
+    },
+    {
+      "expectation_id": "expect.min_commit",
+      "check": "min_commitment",
+      "path": "records.0",
+      "statement": "A pass commitment carries the 0.4 s minimum and is interruptible by hazards."
+    },
+    {
+      "expectation_id": "expect.min_commit_hold",
+      "check": "min_commitment",
+      "path": "records.1",
+      "statement": "The held commitment still carries the 0.4 s minimum."
+    },
+    {
+      "expectation_id": "expect.metric_honesty",
+      "check": "metric_status_honesty",
+      "path": "comparison.metrics",
+      "statement": "Every declared metric is a documented initial target or an explicit undecided requirement; no fixture metric claims a measured status."
+    },
+    {
+      "expectation_id": "expect.metric_shape",
+      "check": "metric_shape",
+      "path": "comparison.metrics",
+      "statement": "Each metric's bound members match its comparator: threshold comparators carry value, range/ratio_range carry ordered value_min/value_max, report carries no bound."
+    },
+    {
+      "expectation_id": "expect.unknowns",
+      "check": "unknown_pairing",
+      "path": "records",
+      "statement": "Every null that means 'not yet determined' has a matching unknowns entry."
+    }
+  ],
+  "comparison": {
+    "purpose": "Document the initial acceptance targets a correct intent implementation must later be measured against (OPPONENT_AI.md 'Implementation and acceptance').",
+    "metrics": [
+      {
+        "name": "emergency_replacements_fraction",
+        "description": "Emergency safety substitutions per proposed 5 Hz intent.",
+        "comparator": "lt",
+        "value": 0.01,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "material_corrections_fraction",
+        "description": "Material road/collision corrections per proposed 5 Hz intent, material per BENCHMARKS.md.",
+        "comparator": "lt",
+        "value": 0.05,
+        "unit": "fraction",
+        "status": "documented_initial_target"
+      },
+      {
+        "name": "tactical_update_budget_ms",
+        "description": "Provisional tactical-update budget for both learned rivals together, including observation assembly.",
+        "comparator": "lte",
+        "value": 0.5,
+        "unit": "ms",
+        "status": "documented_initial_target"
+      }
+    ],
+    "note": "Targets only; this fixture executes no implementation and reports no measurements."
+  },
+  "illustrative_sources": [],
+  "unknowns": [
+    {
+      "path": "records.0.pace.speed_profile_interval_m_s",
+      "reason": "The racer desired speed-profile interval is tuned at M4.3 and is not numerically specified by OPPONENT_AI.md.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.speed_profile_interval_m_s",
+      "reason": "Same unratified interval as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.pace.target_speed_m_s",
+      "reason": "Target speed cannot be decoded until the difficulty interval is ratified.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.1.pace.target_speed_m_s",
+      "reason": "Same unratified decoding as records.0.",
+      "blocking": true,
+      "until": "M4.3"
+    },
+    {
+      "path": "records.0.commitment.hold_window_s",
+      "reason": "OPPONENT_AI.md requires holding 'a short commitment window' but does not fix its length.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.commitment.hold_window_s",
+      "reason": "Same unratified window length as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.0.interpolation.curve",
+      "reason": "OPPONENT_AI.md requires interpolating intents but does not specify the curve.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "records.1.interpolation.curve",
+      "reason": "Same unratified curve as records.0.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "context.producer_revision",
+      "reason": "Placeholder only: no learned policy revision is ratified yet. The fixture instantiates the producer kind to exercise the shared contract, not to claim a model exists.",
+      "blocking": false,
+      "until": "M4B.1"
+    },
+    {
+      "path": "intent_age_ticks",
+      "reason": "Required behavior for an intent at or beyond the 12-tick staleness threshold (a missed 5 Hz update) is not specified.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.interventions.ticks",
+      "reason": "The hold window [generated_tick, generated_tick + period_ticks) is this contract's modeling decision for tick-level safety exposure; OPPONENT_AI.md does not say whether a record exported at sampled_tick inside the window must truncate its intervention list.",
+      "blocking": true,
+      "until": "M4.2"
+    },
+    {
+      "path": "safety.emergency.kind",
+      "reason": "The emergency kind vocabulary (emergency_stop, reset, classic_fallback) is provisional until the intervention categories are preregistered before evaluation (OPPONENT_AI.md 'Implementation and acceptance'); the metric itself is a later measured run.",
+      "blocking": true,
+      "until": "M4.2"
+    }
+  ],
+  "content_hash": "sha256:b8677df24df07e1ec8d4b0c599496a9a4010335f8dcf11aefa8b24d7d6e05ab7",
+  "provenance": {
+    "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md; docs/BENCHMARKS.md",
+    "author": "pi coding agent (job cd8a5eda-4a90-46df-bbf6-948f70062608)",
+    "model": "longcat/LongCat-2.5",
+    "provider": "longcat",
+    "date_utc": "2026-11-27",
+    "note": "Authored at the M0.9 independent schema recheck follow-up: exercises a legitimately varying-width road where the scenario section's local width differs from the source observations' 20/50/100 m lookahead width features."
+  }
+}

@@ -387,6 +387,46 @@ class MeasuredRecordAccountingTests(unittest.TestCase):
             msg=str(failures),
         )
 
+    def test_sector_splits_must_sum_to_the_clean_lap_time(self) -> None:
+        document = build_measured_record()
+        lap = document["reference_records"][0]["results"]["laps"][0]
+        lap["sector_splits_s"] = [100.0] * 4
+        failures = run_record_checks(document, self.contracts)
+        self.assertTrue(
+            any(
+                f.check == "clean_lap_accounting"
+                and f.path == "reference_records.0.results.laps.0"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_sector_split_sum_within_tolerance_passes(self) -> None:
+        # The capture format's precision is unratified. Independent rounding of
+        # four splits and the lap total to the nearest millisecond can differ by
+        # up to 2.5 ms; the conservative bound is one 60 Hz tick, so this legal
+        # measurement must pass.
+        document = build_measured_record()
+        lap = document["reference_records"][0]["results"]["laps"][0]
+        lap["sector_splits_s"] = [10.000625] * 4
+        self.assertEqual(run_record_checks(document, self.contracts), [])
+
+    def test_sector_split_sum_beyond_one_tick_is_rejected(self) -> None:
+        # A disagreement larger than the conservative one-tick bound cannot be
+        # explained by timing resolution and is rejected.
+        document = build_measured_record()
+        lap = document["reference_records"][0]["results"]["laps"][0]
+        lap["sector_splits_s"] = [10.017, 10.0, 10.0, 10.0]
+        failures = run_record_checks(document, self.contracts)
+        self.assertTrue(
+            any(
+                f.check == "clean_lap_accounting"
+                and f.path == "reference_records.0.results.laps.0"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
     def test_unclean_lap_needs_an_invalid_reason(self) -> None:
         document = build_measured_record()
         document["reference_records"][0]["results"]["laps"][5].pop("invalid_reason")
@@ -1034,6 +1074,33 @@ class ParticipantPoseDistinctnessTests(unittest.TestCase):
     def test_shipped_fixture_has_distinguishable_participants(self) -> None:
         self.assertEqual(self._check(), [])
 
+    def test_near_identical_poses_are_accepted_by_design(self) -> None:
+        # Each participant's forward_gap_m is its gap to its own predecessor,
+        # so the entries share no position frame and the contract defines no
+        # separation tolerance. Only byte-identical authored tuples are a
+        # machine-checkable defect until that design decision is made.
+        document = json.loads(json.dumps(self.document))
+        document["scenario"]["participants"].append(
+            {
+                "slot": "traffic_1",
+                "role": "traffic",
+                "car_id": "car.balanced_starter",
+                "loadout": "stock",
+                "assists": "standard",
+                "driver": {"kind": "scripted"},
+            }
+        )
+        document["scenario"]["initial_state"]["per_participant_state"].append(
+            {
+                "slot": "traffic_1",
+                "forward_gap_m": 10,
+                "lateral_offset_m": 0,
+                "speed_m_s": 31,
+                "heading_offset_deg": 0,
+            }
+        )
+        self.assertEqual(self._check(document), [])
+
     def test_two_participants_at_one_pose_are_rejected(self) -> None:
         document = json.loads(json.dumps(self.document))
         document["scenario"]["participants"].append(
@@ -1169,6 +1236,62 @@ class ContractCorrectionTests(unittest.TestCase):
             any(
                 f.check == "comparison_arm_identity"
                 and f.path == "scenario.comparison.arms.3.driver"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_arms_must_share_one_declared_difficulty(self) -> None:
+        mixed = json.loads(json.dumps(self.tactical))
+        mixed["scenario"]["comparison"]["arms"][0]["driver"]["difficulty"] = "expert"
+        failures = vsc.check_comparison_arm_identity(mixed)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.1.driver.difficulty"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+        missing = json.loads(json.dumps(self.tactical))
+        missing["scenario"]["comparison"]["arms"][0]["driver"].pop("difficulty")
+        failures = vsc.check_comparison_arm_identity(missing)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.0.driver.difficulty"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+        # Two classic arms differing only by difficulty are the same producer
+        # under unmatched conditions, not two distinct compared producers.
+        duplicate = json.loads(json.dumps(self.tactical))
+        duplicate["scenario"]["comparison"]["arms"] = [
+            {
+                "arm_id": "classic_a",
+                "driver": {
+                    "kind": "classic_planner",
+                    "difficulty": "rookie",
+                    "style": "none",
+                },
+            },
+            {
+                "arm_id": "classic_b",
+                "driver": {
+                    "kind": "classic_planner",
+                    "difficulty": "expert",
+                    "style": "none",
+                },
+            },
+        ]
+        failures = vsc.check_comparison_arm_identity(duplicate)
+        self.assertTrue(
+            any(
+                f.check == "comparison_arm_identity"
+                and f.path == "scenario.comparison.arms.1.driver.difficulty"
                 for f in failures
             ),
             msg=str(failures),

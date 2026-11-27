@@ -34,6 +34,42 @@ record schema stays 1.1.0; only the fixture wrapper's expectation vocabulary
 gained `correction_shape`, matching how the observation checkpoint added
 checks without moving its 1.0.0 revision.
 
+**M0.9 recheck follow-up (2026-11-27, job
+cd8a5eda-4a90-46df-bbf6-948f70062608).** The independent schema recheck
+(`review/implementation/m0-schema-sol-recheck-d1827be.md`) reproduced four
+supported defects and this slice closed them without changing either record
+or fixture schema_version. The source link no longer equates the scenario
+section's local road width with the observation's 20 m lookahead feature:
+local width stays under the decode/geometry rules, and the new
+`fixture.intent.varying_width_road` positive fixture exercises a road whose
+local width differs from its lookahead widths. A resolvable source may not
+precede the intent's `generated_tick` and may lag it by at most one 5 Hz
+sampling period (12 ticks): GAME_DESIGN documents an additional 0-200 ms of
+5 Hz planning phase latency, so a source older than the immediately
+preceding tactical sample is stale. Exact observation-to-decision synchrony
+is not specified, so equality is deliberately not required. Two distinct
+proposals in one fixture may no longer share an `intent_id` (new
+`intent_identity` check;
+the checked scope is one self-contained scenario run, and a deployed capture
+stream must keep the ID unique per emitted record across every intent it
+counts together - no cross-run reuse rule is invented), and a declared
+illustrative source is tracked for reuse like a resolved one, so the
+declaration cannot mask a second use. Three negatives pin the new
+rejections. The record schemas stay 1.1.0; only the fixture wrapper's
+expectation vocabulary gained `intent_identity`.
+
+**M0.9 Opus recheck follow-up (2026-11-27, same job).** The independent
+Opus pass reproduced cross-record gaps and this slice closed them: every
+record of one fixture must name one `participant_id`, and
+`reset_generation` may not decrease across the sequence (new
+`record_sequence` check); an executing `commit_pass` may not continue with
+its old start tick across a `reset_generation` increase, because a reset
+restores timers/history; and `interrupted: true` may no longer coexist with
+an unchanged continuing commitment. A proposed `commit_pass` that does not
+execute without any recorded safety event remains an open representation
+question (see Remaining decisions), because the anti-jitter hold window is
+unratified and `safety.corrections` has no commitment field.
+
 Sources of truth for every field, bound and rule below:
 [docs/OPPONENT_AI.md](../../docs/OPPONENT_AI.md) ("Architecture", "Shared
 schema version 1", "Training approach", "Implementation and acceptance"),
@@ -54,7 +90,7 @@ contracts", row `AIObservation/TacticalIntent`), and
 | Pace | `pace_norm` in [0,1] = `(a+1)/2` mapped into the difficulty's desired speed-profile interval before safety counting. When a record fixes the interval it is ordered (`min <= max`), the decoded `target_speed_m_s` is `min + pace_norm x (max - min)`, and a pace correction's `proposed` is that same pre-safety decode with nonnegative `proposed`/`applied`; the corrected target equals the applied value. |
 | Commitment | `commitment_raw` in [-1,1]; below -1/3 `follow`, -1/3 through +1/3 `wait`, above +1/3 `commit_pass`; minimum commitment 0.4 s (24 ticks at 60 Hz), interrupted by hazards. `label` is the proposed threshold decode; `executed_label` and `commit_started_tick` record the executed state, so a commitment held inside its minimum is visible even when the proposal has moved on. |
 | Drift | `drift_raw` in [-1,1]; above +0.25 `drift`, below -0.25 `grip`, `retain` between; `executed_preference` resolves `retain` to the preference actually run (`drift`/`grip`, or `none` when masked post-reset history leaves nothing to retain). The follower still enforces legal entry conditions. |
-| Age | 5 Hz decisions = 12-tick period at 60 Hz; `intent_age_ticks = sampled_tick - generated_tick`; 12-tick staleness threshold; `traffic_age_ticks` 18/12/7 by difficulty, inherited from the delayed traffic snapshot of the source observation. |
+| Age | 5 Hz decisions = 12-tick period at 60 Hz; `intent_age_ticks = sampled_tick - generated_tick`; 12-tick staleness threshold; `traffic_age_ticks` 18/12/7 by difficulty, inherited from the delayed traffic snapshot of the source observation. A resolvable source observation may precede the intent's `generated_tick` by at most one 12-tick sampling period (the documented 0-200 ms planning phase); exact synchrony is not required. |
 | Interpolation | Required, window 0.2 s (the sampling period), to prevent jitter and lane weaving. |
 | Safety | `max_deferral_ticks` 0 — a held intent never suspends hazard checks; corrections recorded per field with the four constraint categories (road, passing_room, contact_rule, physical_capability), proposed/applied values and the BENCHMARKS materiality flag. Tick-level exposure lives in `safety.interventions.ticks` (ascending, distinct 60 Hz ticks inside the intent's hold window `[generated_tick, generated_tick + 12)` at which per-tick safety overrode the intent), and wholesale replacement lives in `safety.emergency` (`substituted`, `kind` in emergency_stop/reset/classic_fallback, `tick`, `persistent`, `reason`). One intent corrected on several ticks counts once by intent identity (BENCHMARKS.md); the tick list is the exposure reported beside that count. |
 | Reset | `reset_generation` counter, `history_valid` mask (0 after a reset, mirroring the observation's zero/masked defaults), `post_reset_defaults_applied` and the reverted field list. |
@@ -117,6 +153,7 @@ field) plus an `unknowns` entry, or an `unknowns` entry alone:
   with masked history and Expert 7-tick traffic age; `reset_generation` 2
   matches the referenced observation `obs.t000800.ai_classic_4`, and its 10 m
   section matches that observation's 10 m road width.
+- `positive/fixture.intent.varying_width_road.json` — recheck-follow-up regression fixture: two resolvable 5 Hz intents for `ai.surge_2` on a section whose local usable width is 12 m while the source observations measure 11 m at 20/50 m and 10 m at 100 m ahead. It proves a legitimately varying-width road is accepted: the source link no longer compares the local width to the lookahead feature, and both sources are shipped positive records.
 - `positive/fixture.intent.hazard_interrupted_commit.json` — a Classic
   planner `commit_pass` whose held commitment ends after 12 ticks because a
   hazard interrupted it: the counterpart to the held commitment, and the only
@@ -128,7 +165,7 @@ field) plus an `unknowns` entry, or an `unknowns` entry alone:
   intent continues the substitution with `persistent` true, which BENCHMARKS.md
   counts as a learned failure rather than a learned finish; the fixture records
   the representation, not a measured outcome.
-- `negative/*.json` — 44 deliberately invalid fixtures, each derived from a
+- `negative/*.json` — 47 deliberately invalid fixtures, each derived from a
   valid base with exactly one defect (schema `const`/`enum`/`maximum`/
   `required`/`additionalProperties` violations and semantic violations:
   unknown pairing, content hash, decode mismatch, pace interval/decode/
@@ -136,7 +173,9 @@ field) plus an `unknowns` entry, or an `unknowns` entry alone:
   0.4 s hold, interruption pairing, executed drift preference, intervention
   window, emergency substitution coherence, difficulty age, cadence, age
   arithmetic, reset mask, materiality flag, one-entry-per-field correction
-  shape, retain resolution, context disagreement, source observation linkage,
+  shape, retain resolution, context disagreement, source observation linkage
+  (participant/age/reset agreement, source-sample ordering and phase-latency
+  bound, and reuse of a declared illustrative source), intent identity,
   measured metric status, and comparator/bound shape:
   report carrying a threshold, range carrying a point value, inverted range
   bounds, threshold missing `value`). Each has a `.expected.json` sidecar
@@ -165,18 +204,29 @@ read-only for this slice). The rule, implemented as the `source_observation`
 check:
 
 - a resolvable link must agree with the observation on participant,
-  difficulty, style, delayed traffic age, reset generation, history validity,
-  route frame and the section road width (observation feature 14 x 20 m), and
-  the intent's `generated_tick` may not precede the observation's
-  `sampled_tick`;
+  difficulty, style, delayed traffic age, reset generation, history validity
+  and route frame, and its `sampled_tick` may neither follow the intent's
+  `generated_tick` nor precede it by more than one 5 Hz sampling period
+  (12 ticks): GAME_DESIGN adds 0-200 ms of 5 Hz planning phase latency to the
+  traffic observation age, so an older source must still come from the
+  current or immediately preceding tactical sample. Exact synchrony is not
+  required. The local section road width is deliberately not compared:
+  observation features 14/19/24 describe the road 20/50/100 m ahead, which may
+  legitimately differ from the section's local width; local width is
+  exercised by the decode/geometry checks and
+  `fixture.intent.varying_width_road`;
 - an ID that resolves must be unique across the shipped records, and one
-  fixture may not use the same source observation twice;
+  fixture may not use the same source observation twice; a declared
+  illustrative ID is held to the same one-record rule, and its reuse is
+  rejected before the illustrative exception applies;
 - an ID that does **not** resolve is legal only when the fixture declares it
   in `illustrative_sources` with a reason, and declaring an ID that does
   resolve is itself a failure, so the declarations cannot be used to skip
   verification;
 - a source observation captured with the safe diagnostic fallback active
-  carries safe-default features, so its road width is not compared.
+  carries safe-default features, so no feature-derived quantity is compared;
+  the link still verifies participant, decision timing, difficulty, style,
+  traffic age, reset generation, history validity and route frame.
 
 The three first records of `fixture.intent.surge_commit_pass.json`,
 `fixture.intent.classic_wait_hold.json` and
@@ -218,8 +268,8 @@ semantic checks named in `intent_fixture.schema.json`'s expectation enum
 hold, executed drift preference, sampling cadence, age arithmetic,
 difficulty age, context agreement, reset mask, safety deferral, intervention
 window, emergency consistency, correction materiality, correction shape,
-source observation, minimum commitment, metric status honesty, metric shape,
-unknown pairing).
+intent identity, one-participant record sequence, source observation,
+minimum commitment, metric status honesty, metric shape, unknown pairing).
 Schema failures short-circuit semantic checks so each negative fixture pins
 exactly one rejection.
 
@@ -239,9 +289,9 @@ The pace-correction nonnegativity rule lives in both layers by design:
 and the slice's `pace_decode_consistency` check rejects the same file
 semantically, because the subset evaluator ignores `allOf`. The suite was
 cross-checked with Ajv 8.20.0 from the local Cline bundle on 2026-11-27: all
-11 schema documents pass meta-schema validation, all 5 positive fixtures
-validate, and of the 44 negatives 13 are rejected at the schema layer, 2 fail
-strict JSON parsing (the non-finite literals) and the remaining 29 are
+11 schema documents pass meta-schema validation, all 6 positive fixtures
+validate, and of the 47 negatives 15 are rejected at the schema layer, 2 fail
+strict JSON parsing (the non-finite literals) and the remaining 30 are
 rejected by the semantic checks.
 
 Exit codes: 0 = all fixtures valid / all negatives rejected as declared;
@@ -265,22 +315,36 @@ Exit codes: 0 = all fixtures valid / all negatives rejected as declared;
    executed `commit_pass` satisfies the minimum at `elapsed >= 24` ticks, so
    a commitment may lapse exactly at 0.4 s, and only a strict early lapse
    without interruption is rejected.
-6. Whether a resolvable `source_observation_id` must be the observation
-   sampled at the intent's decision tick. Every shipped link has
-   `generated_tick == sampled_tick`, but the validator enforces only
-   `generated_tick >= sampled_tick`, so an older observation of the same
-   participant, difficulty, style, age and road width still resolves. The
-   docs do not state the equality rule explicitly; this probe reports it
-   rather than inventing it.
+6. Resolved at the 2026-11-27 recheck follow-up: a resolvable
+   `source_observation_id` may not be sampled after the intent's
+   `generated_tick`, and may not precede it by more than one 5 Hz sampling
+   period (`sampling_period_ticks`, 12). GAME_DESIGN ('AI families') states
+   "5 Hz planning adds another 0-200 ms of phase latency" on top of the
+   18/12/7-tick traffic ages, and REVIEW_RESPONSE F7/4 accept exactly that
+   additive phase latency. Exact observation-to-decision synchrony is not
+   specified, so equality is deliberately not enforced; the recorded
+   `traffic_age_ticks` remains the source snapshot's age and the phase delay
+   is the additional reaction latency. A future design may narrow or widen
+   the 12-tick bound only through a recorded contract change.
 7. Whether `commitment.interrupted: true` needs evidence that a commitment
-   was held at or before that record. Today any record may claim a hazard
-   interruption with a reason; a fresh wait/follow record with no prior
-   `commit_started_tick` is accepted.
-8. Whether `drift.label retain` must repeat the immediately preceding
+   was held at or before that record. Today a record with no executing or
+   preceding `commit_pass` may still claim an interruption with a reason; only
+   the self-contradictory combination of `interrupted: true` with an
+   unchanged continuing commitment is rejected. The broader evidence rule
+   needs the intervention-category preregistration.
+8. Whether a proposed `commit_pass` that does not execute must carry a
+   recorded safety event. `executed_label` is otherwise unconstrained outside
+   a held commitment: a starting proposal could decode `commit_pass` while
+   `executed_label` stays `wait` with no interruption, correction or
+   emergency. The contract has no commitment correction field and the
+   anti-jitter `hold_window_s` is unratified, so the validator does not invent
+   an equality rule here; deciding how a refused commit is recorded (and
+   whether the hold window may delay execution) is left to the M4.2 design.
+9. Whether `drift.label retain` must repeat the immediately preceding
    record's `executed_preference`. The current check resolves the value
    (`none` only when masked; otherwise drift/grip) but does not compare
    across records, so a retain band may switch preference between intents.
-9. Whether `reset.defaults_applied` must be non-empty when
+10. Whether `reset.defaults_applied` must be non-empty when
    `post_reset_defaults_applied` is true. The observation record contract
    states the non-empty rule; the intent schema does not, so the validator
    does not enforce it.
@@ -301,7 +365,7 @@ Exit codes: 0 = all fixtures valid / all negatives rejected as declared;
 - The observation slice is read-only for this validator. If it later ships
   the two missing records, remove the matching `illustrative_sources`
  declarations and the links verify automatically; if it changes a compared
-  field (road width encoding, traffic age, masks), the resolvable links fail
+  field (decision timing, traffic age, masks), the resolvable links fail
   until the intent fixtures are refreshed with it.
 - Strict JSON now matches the observation slice: NaN/Infinity literals are
   refused at parse time and non-finite numbers fail the evaluator. The

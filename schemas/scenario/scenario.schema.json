@@ -374,7 +374,7 @@
         },
         "difficulty": {
           "enum": ["rookie", "racer", "expert"],
-          "description": "Explicit difficulty input. Absent when the driver has no difficulty input (calibration driver, proxies, scripted drivers)."
+          "description": "Explicit difficulty input. Absent when the driver has no difficulty input (calibration driver, proxies, scripted drivers). A compared producer arm must carry the matched difficulty: BENCHMARKS matches evaluated producers by car, loadout, difficulty, assists, initial scenario and reference revision, so arms of one comparison share one difficulty."
         },
         "style": {
           "enum": ["surge", "switch", "none"],
@@ -400,7 +400,7 @@
         },
         "driver": { "$ref": "#/$defs/driver" }
       },
-      "description": "One compared producer: a driver spec that runs the evaluated slot in a separate execution of this scenario, from the same seed, initial state and history as every other arm. An arm is a run, not a car: two arms are never on the track together, which is what keeps the matched histories of BENCHMARKS 'Tactical comparison' intact. For the six preregistered tactical families the compared producers are classic_planner, cloning_only_policy and learned_policy (Surge/Switch are learned-policy styles); human_proxy and scripted drivers are fixed context participants, not compared producers. A scenario may instantiate any subset of at least two distinct producers."
+      "description": "One compared producer: a driver spec that runs the evaluated slot in a separate execution of this scenario, from the same seed, initial state and history as every other arm. An arm is a run, not a car: two arms are never on the track together, which is what keeps the matched histories of BENCHMARKS 'Tactical comparison' intact. Every arm carries the same matched difficulty. For the six preregistered tactical families the compared producers are classic_planner, cloning_only_policy and learned_policy (Surge/Switch are learned-policy styles); human_proxy and scripted drivers are fixed context participants, not compared producers. A scenario may instantiate any subset of at least two distinct producers."
     },
     "participant_initial_state": {
       "type": "object",

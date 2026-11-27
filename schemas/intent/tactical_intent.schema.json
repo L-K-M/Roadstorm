@@ -41,7 +41,7 @@
     "intent_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Stable ID of this intent record, e.g. intent.surge_commit.t000996."
+      "description": "Stable ID of this intent record, e.g. intent.surge_commit.t000996. Two records are two distinct proposals and must not share an ID: BENCHMARKS.md 'AI metrics' counts material corrections and emergency replacements once per proposed 5 Hz intent by this identity. Within a fixture every record's ID is unique; a deployed capture stream must keep the same uniqueness across every intent it counts together (the cross-run scope is not further specified)."
     },
     "participant_id": {
       "$ref": "../common.schema.json#/$defs/stable_id",
@@ -50,7 +50,7 @@
     "source_observation_id": {
       "type": "string",
       "minLength": 1,
-      "description": "ID of the observation record this intent was computed from, as defined by schemas/observation/observation_record.schema.json (observation_id). The intent never observes more than that contract allows."
+      "description": "ID of the observation record this intent was computed from, as defined by schemas/observation/observation_record.schema.json (observation_id). The intent never observes more than that contract allows. A resolvable source's sampled_tick may not follow this record's generated_tick, and may not precede it by more than one 5 Hz sampling period (12 ticks at 60 Hz): GAME_DESIGN documents an additional 0-200 ms of 5 Hz planning phase latency on top of the traffic observation age, so the source must be the current or immediately preceding tactical sample. Exact observation-to-decision synchrony is not specified, so equality is deliberately not required; traffic_age_ticks remains the source snapshot's age and the phase delay is extra reaction latency."
     },
     "producer": {
       "type": "object",

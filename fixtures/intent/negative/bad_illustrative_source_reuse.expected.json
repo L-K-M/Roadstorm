@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.2.source_observation_id",
+      "check": "source_observation"
+    }
+  ]
+}

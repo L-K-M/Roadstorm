@@ -15,6 +15,18 @@ coherence, the tactical context car, course-revision linkage, slot/record/unknow
 uniqueness, and the standing-start medal exemption, and corrected the stale
 measured-evidence expectation wording. This job modified only the owned
 `fixtures/scenario/**` and `schemas/scenario/**` paths.
+Opus recheck follow-up (job `cd8a5eda-4a90-46df-bbf6-948f70062608`,
+2026-11-27): the independent Opus pass reproduced matched-comparison and
+co-location gaps. D1 is fixed: every tactical comparison arm must declare the
+matched difficulty and all arms must share it, and `difficulty` is no longer
+part of arm identity, so two classic arms at different difficulties can no
+longer look like distinct producers or hide a duplicate baseline. D2 is
+documented rather than patched with invented physics: per-participant
+`forward_gap_m` values use different reference cars, so the validator's
+`participant_pose_distinctness` enforces authored-pose identity only; a
+physical near-collision rule is an open design issue in
+[`../../schemas/scenario/README.md`](../../schemas/scenario/README.md).
+
 Owned paths: `fixtures/scenario/**`. The contracts these files implement are
 in [`../../schemas/scenario/`](../../schemas/scenario/); the checker is
 [`./validate_scenario_contract.py`](./validate_scenario_contract.py). Every
@@ -79,7 +91,9 @@ fixture's only defect is again the negative exclusion count.
   inside a fixture file outright, and a measured record (unit-test only) must
   additionally retain the evidence BENCHMARKS and TECHNICAL_DESIGN promise:
   speed samples, the car/loadout/assist/track/handling hashes and four sector
-  splits per clean lap.
+  splits per clean lap, where each clean lap's splits must sum to its lap time
+  within one 60 Hz tick (a conservative, unresolved precision bound recorded in
+  [`../../schemas/scenario/README.md`](../../schemas/scenario/README.md)).
 * **No invented undetermined numbers.** Unratified revisions (handling,
   calibration driver, line, course, producers, the cloning-only arm's
   `producer_revision`), the unrecorded platform, the unspecified warm-up lap
@@ -110,8 +124,9 @@ fixture's only defect is again the negative exclusion count.
   carrying results" and "measured record without results" rejections are
   demonstrated with a hash and a status change, not with invented lap times.
   The measured-record accounting rules (five clean laps, median/min/max,
-  medal arithmetic) are exercised only inside the unit tests, with round
-  arithmetic test data.
+  medal arithmetic, sector splits summing to each clean lap time within one
+  60 Hz tick) are exercised only inside the unit tests, with round arithmetic
+  test data.
 * **No claim that AI exists.** The tactical fixture's Classic, cloning-only
   and learned-policy arms are contract placeholders; the fixture status is
   `example` and the producer revisions are null with unknowns.

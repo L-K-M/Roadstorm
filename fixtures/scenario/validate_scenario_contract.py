@@ -191,6 +191,18 @@ CONTENT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 TOLERANCE = 1e-9
 
+# Maximum allowed difference between the sum of a clean lap's retained sector
+# splits and its recorded lap time, in seconds. BENCHMARKS.md and
+# TECHNICAL_DESIGN.md require retaining both but do not state the capture
+# format's precision, so no decimal precision contract is invented. As a
+# deliberately conservative bound we allow one 60 Hz simulation tick
+# (1/60 s), the coarsest timing unit the fixed-tick contract names; any
+# capture that rounds to milliseconds or finer can disagree by well under
+# this. Exact agreement precision stays unresolved until M1 capture tooling
+# exists; grossly impossible totals (for example four 100 s sectors against a
+# 40 s lap) are still rejected.
+SECTOR_SPLIT_SUM_TOLERANCE_S = 1.0 / 60.0
+
 # Sentinel for "this dotted path does not exist" (distinct from JSON null).
 MISSING = object()
 
@@ -970,6 +982,24 @@ def check_clean_lap_accounting(
                         check="clean_lap_accounting",
                     )
                 )
+            elif (
+                splits is not None
+                and lap.get("clean") is True
+                and lap.get("time_s") is not None
+            ):
+                total = float(lap["time_s"])
+                split_total = sum(float(value) for value in splits)
+                if abs(split_total - total) > SECTOR_SPLIT_SUM_TOLERANCE_S:
+                    failures.append(
+                        Failure(
+                            "semantic",
+                            f"{prefix}.results.laps.{position}",
+                            f"retained sector splits sum to {split_total} s but the "
+                            f"clean lap time is {total} s; they must agree within "
+                            f"{SECTOR_SPLIT_SUM_TOLERANCE_S} s",
+                            check="clean_lap_accounting",
+                        )
+                    )
         statistics = record["results"]["statistics"]
         if any(value is None for value in statistics.values()):
             failures.append(
@@ -1495,10 +1525,16 @@ def check_comparison_arms(
 
 
 def _arm_spec_key(driver: Mapping[str, Any]) -> tuple[Any, ...]:
-    """Identity of a compared producer: kind, difficulty, style and revision."""
+    """Identity of a compared producer run: kind, style and revision.
+
+    Difficulty is deliberately not part of the identity: BENCHMARKS matches
+    the evaluated producers by difficulty, so two arms at different
+    difficulties are the same producer under unmatched conditions, not two
+    distinct producers. ``check_comparison_arm_identity`` separately requires
+    every arm to carry one shared difficulty.
+    """
     return (
         driver.get("kind"),
-        driver.get("difficulty"),
         driver.get("style"),
         driver.get("producer_revision"),
     )
@@ -1530,6 +1566,8 @@ def check_comparison_arm_identity(
     if comparison is None:
         return failures
     seen: dict[tuple[Any, ...], str] = {}
+    reference_difficulty: str | None = None
+    reference_arm_id: str | None = None
     for index, arm in enumerate(comparison.get("arms", [])):
         driver = arm.get("driver", {})
         arm_id = arm.get("arm_id")
@@ -1560,6 +1598,34 @@ def check_comparison_arm_identity(
                     check="comparison_arm_identity",
                 )
             )
+        difficulty = driver.get("difficulty")
+        if difficulty is None:
+            failures.append(
+                Failure(
+                    "semantic",
+                    f"scenario.comparison.arms.{index}.driver.difficulty",
+                    f"comparison arm {arm_id!r} declares no difficulty; BENCHMARKS "
+                    "matches an evaluated producer by car, loadout, difficulty, "
+                    "assists, initial scenario and reference revision, so every "
+                    "compared arm must pin the matched difficulty",
+                    check="comparison_arm_identity",
+                )
+            )
+        elif reference_difficulty is None:
+            reference_difficulty = difficulty
+            reference_arm_id = arm_id
+        elif difficulty != reference_difficulty:
+            failures.append(
+                Failure(
+                    "semantic",
+                    f"scenario.comparison.arms.{index}.driver.difficulty",
+                    f"arm {arm_id!r} uses difficulty {difficulty!r} while arm "
+                    f"{reference_arm_id!r} uses {reference_difficulty!r}; BENCHMARKS "
+                    "compares the producers from matched conditions, which include "
+                    "difficulty",
+                    check="comparison_arm_identity",
+                )
+            )
         key = _arm_spec_key(driver)
         if key in seen:
             failures.append(
@@ -1567,9 +1633,9 @@ def check_comparison_arm_identity(
                     "semantic",
                     f"scenario.comparison.arms.{index}.driver",
                     f"arm {arm_id!r} repeats the producer already declared by arm "
-                    f"{seen[key]!r} (kind, difficulty, style and producer_revision "
-                    "are equal); two runs of one producer cannot be told apart in "
-                    "results reported per arm",
+                    f"{seen[key]!r} (kind, style and producer_revision are equal); "
+                    "two runs of one producer cannot be told apart in results "
+                    "reported per arm",
                     check="comparison_arm_identity",
                 )
             )
@@ -1619,15 +1685,20 @@ def check_tactical_context_required(
 def check_participant_pose_distinctness(
     document: Mapping[str, Any], constants: ContractConstants | None = None
 ) -> list[Failure]:
-    """No two simultaneous participants of one execution may declare the same pose.
+    """No two simultaneous participants may declare an identical authored pose.
 
     Participants of a scenario are the cars present in one execution, so two
-    of them must be distinguishable on the road. A pair whose authored
-    per-participant states agree on every pose member (forward gap, lateral
-    offset, speed, heading offset) are co-located cars: the window would start
-    in contact and each car would be traffic for the other. Entries that
-    author no pose member at all are not compared - an unauthored pose is
-    simply not configuration.
+    entries that author exactly the same pose members (forward gap, lateral
+    offset, speed, heading offset) cannot be told apart. This is an
+    authored-pose identity lint, not a physical collision test: each
+    participant's ``forward_gap_m`` is its gap to its own car ahead, so the
+    entries do not share a position frame, and the contract defines no
+    tolerance or car-footprint geometry for turning near-equal tuples into a
+    separation check. That reference-frame decision is recorded as an open
+    design issue in schemas/scenario/README.md; until it is made, a
+    near-identical but not byte-identical pair is accepted by design.
+    Entries that author no pose member at all are not compared - an
+    unauthored pose is simply not configuration.
     """
     failures: list[Failure] = []
     scenario = document["scenario"]
@@ -1652,10 +1723,10 @@ def check_participant_pose_distinctness(
                 Failure(
                     "semantic",
                     f"scenario.initial_state.per_participant_state.{position_b}.slot",
-                    f"participants {slot_a!r} and {slot_b!r} declare the same "
-                    "initial pose (forward gap, lateral offset, speed and heading "
-                    "offset all equal); simultaneous participants must be "
-                    "distinguishable on the road",
+                    f"participants {slot_a!r} and {slot_b!r} declare identical "
+                    "authored initial pose members (forward gap, lateral offset, "
+                    "speed and heading offset all equal); simultaneous "
+                    "participants must not share one authored pose",
                     check="participant_pose_distinctness",
                 )
             )

@@ -190,7 +190,7 @@
         }
       },
       "reset": {
-        "reset_generation": 0,
+        "reset_generation": 1,
         "history_valid": 1,
         "post_reset_defaults_applied": false,
         "defaults_applied": [],
@@ -403,7 +403,7 @@
       "reason": "The observation slice ships no obs.t000512.ai_classic_2 record; this 5 Hz intent's source observation is illustrative only and follows the observation contract's obs.t<tick>.<participant> convention. Nothing further is claimed about it."
     }
   ],
-  "content_hash": "sha256:085d25fb465989a7d510b421fd0926a0d8670085ea1dd029aca801aeda3fa6ab",
+  "content_hash": "sha256:d4a4ee7de54f564e196d6da291797da5eb3dc5e07e11472833bd7badb5fcab76",
   "provenance": {
     "source_contract": "docs/OPPONENT_AI.md; docs/TECHNICAL_DESIGN.md",
     "author": "pi coding agent (job 8cfeb70f-e5b3-4cac-8b4c-83a933d0970b)",

@@ -135,6 +135,13 @@ The central honesty rule, enforced by the validator:
   revisions; stable-ID patterns for scenario, record and fixture IDs;
   `content_hash` recomputes exactly over canonical JSON with the member
   removed.
+* **Measured-record accounting.** A measured record (unit-test only: fixture
+  files reject measured status) must retain five clean laps with median/min/max
+  over exactly those laps, an invalid reason for every rejected lap, complete
+  dependencies and the retained evidence; each clean lap's four sector splits
+  must sum to that lap's recorded time within one 60 Hz tick. That is a
+  deliberately conservative, unresolved precision bound, not a ratified
+  format - see Recorded decisions.
 * **Family agreement.** `fixture_family` equals the enclosed scenario's
   `scenario_family`.
 * **Reference linkage.** A scenario's `reference` member must resolve to an
@@ -164,9 +171,10 @@ The central honesty rule, enforced by the validator:
   evaluated participant. Each arm must name one of the compared producer kinds
   (`classic_planner`, `cloning_only_policy`, `learned_policy`), carry a style
   coherent with that kind (`none` for Classic and cloning-only, `surge`/`switch`
-  for a Roadstormer), and be pairwise distinct in kind/difficulty/style/
-  producer_revision; human proxies and scripted drivers are context
-  participants, not compared producers. Arms are separate executions of the
+  for a Roadstormer), declare the matched `difficulty`, be pairwise distinct
+  in kind/style/producer_revision, and all share one difficulty; human
+  proxies and scripted drivers are context participants, not compared
+  producers. Arms are separate executions of the
   same scenario with the same seed, initial state and history, so the compared
   producers are never simultaneous cars (BENCHMARKS 'Tactical comparison').
 * **Tactical context car.** Every tactical family is an encounter with another
@@ -182,9 +190,11 @@ The central honesty rule, enforced by the validator:
   `record_id`s are unique (linkage resolves by ID), and each null has exactly
   one `unknowns` explanation.
 * **Participant pose distinctness.** No two participants of one execution may
-  declare the same initial pose (forward gap, lateral offset, speed and
-  heading offset all equal); entries that author no pose member are not
-  compared.
+  declare an identical authored initial pose (forward gap, lateral offset,
+  speed and heading offset all equal); entries that author no pose member are
+  not compared. This is an authored-pose identity lint, not a physical
+  collision test: the forward gaps use per-participant frames (see Recorded
+  decisions).
 * **Driver revision pinning.** A `cloning_only_policy` driver - on a
   participant or on a comparison arm - must carry `driver.producer_revision`,
   because no dependencies member pins that producer and OPPONENT_AI evaluates
@@ -305,6 +315,28 @@ They belong to the `schemas/handling/` + `fixtures/handling/` slice; the gap
 is recorded here so the schema claim stays honest about its scope.
 
 ## Recorded decisions
+
+* **Pose comparison is authored-pose identity only.** Each
+  `per_participant_state.forward_gap_m` is that participant's gap to its own
+  car ahead, so two entries do not share an absolute position frame;
+  `lateral_offset_m` is centerline-relative but still cannot establish
+  longitudinal separation. The contract also fixes no position tolerance or
+  car-footprint geometry. The validator therefore rejects only byte-identical
+  authored pose tuples. A near-collision rule needs a design decision on the
+  reference frame and minimum separation; until then it is an open issue, not
+  an enforced guarantee.
+* **Sector-split sum tolerance.** BENCHMARKS 'Reference driver and records'
+  requires retaining individual lap times and sector splits but does not state
+  the capture format's precision, and TECHNICAL_DESIGN adds no precision. No
+  decimal precision contract is invented. As a deliberately conservative
+  unresolved constraint the validator accepts a discrepancy of at most one
+  60 Hz simulation tick (1/60 s), the coarsest timing unit the fixed-tick
+  contract names; independent millisecond rounding of four splits and the lap
+  total can differ by up to 2.5 ms, well inside this bound. Grossly impossible
+  totals (four 100 s sectors against a 40 s lap) remain rejected. Exact
+  agreement precision stays open until M1 capture tooling defines it; no
+  measured record is authored at M0.9, so this affects only the unit-test
+  accounting rule until then.
 
 * **Hashes versus revisions.** `docs/TECHNICAL_DESIGN.md` 'Content contracts'
   asks for "car/loadout/assist/track/handling hashes" while

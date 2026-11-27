@@ -1,0 +1,9 @@
+{
+  "expected_failures": [
+    {
+      "code": "semantic",
+      "path": "records.1.intent_id",
+      "check": "intent_identity"
+    }
+  ]
+}

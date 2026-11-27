@@ -730,13 +730,47 @@ class ValidatorMachineryTests(unittest.TestCase):
         self.assertEqual(
             [f.path for f in failures], ["records.0.traffic_age_ticks"]
         )
-        # A road width that disagrees with observation feature 14 x 20 m.
+        # A local section road width that differs from the observation's 20 m
+        # lookahead feature is legitimate on a varying-width road; the link
+        # check does not equate the two quantities.
         failures = self._run_check(
             vic.check_source_observation,
             base,
             lambda d: d["context"].__setitem__("road_width_m", 11.0),
         )
-        self.assertEqual([f.path for f in failures], ["context.road_width_m"])
+        self.assertEqual(failures, [])
+        # GAME_DESIGN documents 0-200 ms of 5 Hz planning phase latency on
+        # top of the traffic age, so a one-period-old source is legal and
+        # exact synchrony is not required.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: (
+                d["records"][0].__setitem__("generated_tick", 512),
+                d["records"][0].__setitem__("sampled_tick", 516),
+            ),
+        )
+        self.assertEqual(failures, [])
+        # One tick beyond the documented phase window is stale.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: (
+                d["records"][0].__setitem__("generated_tick", 513),
+                d["records"][0].__setitem__("sampled_tick", 517),
+            ),
+        )
+        self.assertEqual([f.path for f in failures], ["records.0.generated_tick"])
+        # A decision cannot be computed from an observation sampled later.
+        failures = self._run_check(
+            vic.check_source_observation,
+            base,
+            lambda d: (
+                d["records"][0].__setitem__("generated_tick", 499),
+                d["records"][0].__setitem__("sampled_tick", 503),
+            ),
+        )
+        self.assertEqual([f.path for f in failures], ["records.0.generated_tick"])
         # Two records sharing one source observation.
         failures = self._run_check(
             vic.check_source_observation,
@@ -762,8 +796,22 @@ class ValidatorMachineryTests(unittest.TestCase):
 
         failures = self._run_check(vic.check_source_observation, base, declare)
         self.assertEqual(failures, [])
+        # Reusing a declared illustrative source does not become legal because
+        # the declaration exits before the uniqueness rule.
+        def reuse_declared(document):
+            document["illustrative_sources"] = [
+                {"observation_id": "obs.t000504.ai_classic_2", "reason": "illustrative only"}
+            ]
+            document["records"][0]["source_observation_id"] = "obs.t000504.ai_classic_2"
+            document["records"][1]["source_observation_id"] = "obs.t000504.ai_classic_2"
+
+        failures = self._run_check(vic.check_source_observation, base, reuse_declared)
+        self.assertEqual(
+            [f.path for f in failures], ["records.1.source_observation_id"]
+        )
         # A source observation captured with the safe diagnostic fallback active
-        # carries safe-default features, so its road width is not compared.
+        # carries safe-default features, so no feature-derived quantity is
+        # compared; the link still verifies the metadata fields.
         def fallback_source(document):
             record = document["records"][0]
             record["participant_id"] = "ai.switch_3"
@@ -776,6 +824,105 @@ class ValidatorMachineryTests(unittest.TestCase):
 
         failures = self._run_check(vic.check_source_observation, base, fallback_source)
         self.assertEqual(failures, [])
+
+    def test_intent_identity_rules(self) -> None:
+        base = "fixture.intent.surge_commit_pass.json"
+        failures = self._run_check(vic.check_intent_identity, base, lambda d: None)
+        self.assertEqual(failures, [])
+
+        def duplicate(document):
+            document["records"][1]["intent_id"] = document["records"][0]["intent_id"]
+
+        failures = self._run_check(vic.check_intent_identity, base, duplicate)
+        self.assertEqual(
+            [(f.code, f.path, f.check) for f in failures],
+            [("semantic", "records.1.intent_id", "intent_identity")],
+        )
+
+    def test_commitment_cannot_cross_a_reset_or_claim_false_interruption(self) -> None:
+        base = "fixture.intent.classic_wait_hold.json"
+
+        def commit_then_hold(document):
+            first = document["records"][0]["commitment"]
+            first["commitment_raw"] = 0.5
+            first["label"] = "commit_pass"
+            first["executed_label"] = "commit_pass"
+            first["commit_started_tick"] = 500
+            second = document["records"][1]["commitment"]
+            second["commitment_raw"] = 0.0
+            second["label"] = "wait"
+            second["executed_label"] = "commit_pass"
+            second["commit_started_tick"] = 500
+
+        # A reset restores timers/history, so the same executing commitment
+        # cannot continue with its old start tick.
+        def commit_across_reset(document):
+            commit_then_hold(document)
+            document["records"][1]["reset"]["reset_generation"] = 1
+
+        failures = self._run_check(vic.check_commitment_hold, base, commit_across_reset)
+        self.assertTrue(
+            any(
+                f.path == "records.1.commitment.commit_started_tick"
+                and f.check == "commitment_hold"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+        # Interrupted must not coexist with an unchanged continuing commit.
+        def interrupted_continuation(document):
+            commit_then_hold(document)
+            second = document["records"][1]["commitment"]
+            second["interrupted"] = True
+            second["interruption_reason"] = "contact ahead"
+
+        failures = self._run_check(
+            vic.check_commitment_hold, base, interrupted_continuation
+        )
+        self.assertTrue(
+            any(
+                f.path == "records.1.commitment.interrupted"
+                and f.check == "commitment_hold"
+                for f in failures
+            ),
+            msg=str(failures),
+        )
+
+    def test_record_sequence_rules(self) -> None:
+        # One fixture is one participant's sequence: cross-record continuity
+        # rules are meaningless across two cars.
+        failures = self._run_check(
+            vic.check_record_sequence,
+            "fixture.intent.surge_commit_pass.json",
+            lambda d: d["records"][1].__setitem__("participant_id", "ai.surge_2"),
+        )
+        self.assertEqual(
+            [(f.code, f.path, f.check) for f in failures],
+            [("semantic", "records.1.participant_id", "record_sequence")],
+        )
+
+        # The reset counter advances with resets; it cannot decrease across a
+        # forward-moving sequence.
+        def decrease_reset(document):
+            document["records"][0]["reset"]["reset_generation"] = 1
+            document["records"][1]["reset"]["reset_generation"] = 0
+
+        failures = self._run_check(
+            vic.check_record_sequence,
+            "fixture.intent.classic_wait_hold.json",
+            decrease_reset,
+        )
+        self.assertEqual(
+            [(f.code, f.path, f.check) for f in failures],
+            [
+                (
+                    "semantic",
+                    "records.1.reset.reset_generation",
+                    "record_sequence",
+                )
+            ],
+        )
 
     def test_expectation_path_may_reference_a_metric(self) -> None:
         document = {

@@ -1,9 +1,9 @@
 # M0.9 schema slices: integration record
 
-This file records what the M0.9 schema integration pass (2026-11-27) did across
-the four provisional slices, the cross-slice decisions it took, and the evidence
-that the shared JSON Schema contracts and each slice's standard-library checker
-agree. It adds no contract of its own: the contracts of record are the schema
+This file records the historical M0.9 schema integration pass of 2026-11-27.
+Its decisions and counts below describe that earlier candidate; later review
+findings and repairs supersede parts of it. The contracts remain provisional,
+and agreement with a JSON Schema checker does not prove semantic correctness. It adds no contract of its own: the contracts of record are the schema
 documents in this directory and the slice READMEs beside them.
 
 ## The slices
@@ -18,12 +18,16 @@ documents in this directory and the slice READMEs beside them.
 
 `ai_observation.schema.json` is the earlier **partial, unaccepted** draft of the
 observation contract. It is retained for its authoring record but now declares
-its own `feature_layout_revision` `ai_shared_partial_v0`; the ratified
+its own `feature_layout_revision` `ai_shared_partial_v0`; the provisional
 `ai_shared_v1` layout belongs solely to
 `observation/observation_record.schema.json`. Deleting the partial file outright
 is a coordinator decision that this pass did not take.
 
-## Cross-slice decisions taken on 2026-11-27
+## Historical cross-slice decisions taken on 2026-11-27
+
+The first decision below was later superseded: local road width and widths at
+20/50/100 m ahead can differ. See the current slice READMEs and the varying-width
+intent fixture; do not infer equality from the earlier example.
 
 1. **Surge road width.** `fixtures/observation/positive/fixture.observation.surge_full_vector.json`
    described a 12 m section but encoded road widths of 11/11/10 m and a 5.0 m
@@ -73,7 +77,7 @@ is a coordinator decision that this pass did not take.
    `provenance.note`). The member was added so all four slices carry the same
    provenance shape; hashes were recomputed and no authored value changed.
 
-## Independent JSON Schema verification
+## Historical independent JSON Schema verification
 
 Each slice ships a small standard-library JSON Schema subset evaluator. To check
 that the subset evaluators and the schemas themselves agree, an **independent**
@@ -114,7 +118,7 @@ defect is missed, but the rule lives in two places; a future slice should either
 extend the evaluator with `allOf`/`if` or move the metric rules out of the
 shared schema.
 
-## Honesty checks
+## Historical honesty checks
 
 No fixture claims a measured value: every record is `planned`/`provisional`/
 `example`, no metric uses status `measured` outside the negative fixtures whose
@@ -123,7 +127,7 @@ completed-test outcome appears in any fixture. All 90 content hashes recompute
 except the two negative fixtures whose broken hash is their declared defect.
 Every provenance block names source documents that exist in the tree.
 
-## Suite results (isolated snapshot copies)
+## Historical suite results (isolated snapshot copies)
 
 ```
 schemas/handling/run_tests.sh      -> 59 tests OK; 8 fixtures + schema document, 0 errors, 0 warnings
@@ -134,3 +138,15 @@ fixtures/scenario/run_tests.sh     -> 48 tests OK; all 22 fixtures behave as con
 
 The suites were run on copies of the tree under `/tmp`, never on the working tree
 directly, and they write nothing outside a temporary directory.
+
+## Later checks
+
+An independent copied-tree run on 2026-11-27 after the schema review repairs
+(`work/agents/schema-recheck-20261127-032226`) passed handling 59 tests;
+observation 37 tests and 44 fixture cases; intent 30 tests and 53 fixture
+cases; and scenario 83 tests and 44 fixture cases. This was an uncommitted
+snapshot, not a ratified schema or gameplay measurement. Named rechecks are
+required on the corresponding committed candidate. Open issues include the
+physical start-position reference frame, execution of refused commitments,
+observation timing, and capture precision. See slice READMEs and
+`docs/STATUS.md` for their dispositions.
