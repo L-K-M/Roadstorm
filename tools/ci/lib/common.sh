@@ -1013,11 +1013,43 @@ CI_REPORT=""
 ci_init_report() {
 	mkdir -p "$CI_OUT/reports" 2>/dev/null
 	_stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%s)"
-	CI_REPORT="$CI_OUT/reports/${CI_RUN_NAME}-${_stamp}.txt"
+	# Opus R1: same-second export-check/list/build processes used to truncate
+	# each other's report (and the preset rename then moved the shared file).
+	# mktemp creates a unique file atomically, so same-second processes -- and
+	# background subshells that share $$ -- can never claim the same report path.
+	# The final name keeps the readable <command>-<utc>-<random>.txt form.
+	CI_REPORT=""
+	_tmp=""
+	_try=0
+	while [ "$_try" -le 100 ]; do
+		_tmp="$(mktemp "$CI_OUT/reports/.ci-report.XXXXXX" 2>/dev/null)" && {
+			_rand="${_tmp##*/}"
+			_rand="${_rand#.ci-report.}"
+			_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${_stamp}-${_rand}.txt"
+			if mv "$_tmp" "$_new_report" 2>/dev/null; then
+				CI_REPORT="$_new_report"
+				_tmp=""
+				break
+			fi
+			rm -f "$_tmp" 2>/dev/null
+			_tmp=""
+		}
+		_try=$((_try + 1))
+	done
+	# Fallback for a host without mktemp: PID + bounded existence probe.
+	if [ -z "$CI_REPORT" ]; then
+		_base="${CI_RUN_NAME:-run}-${_stamp}-$$"
+		CI_REPORT="$CI_OUT/reports/${_base}.txt"
+		_n=1
+		while [ -e "$CI_REPORT" ]; do
+			CI_REPORT="$CI_OUT/reports/${_base}-${_n}.txt"
+			_n=$((_n + 1))
+		done
+	fi
 	{
-		printf 'command: %s\n' "$CI_RUN_NAME"
+		printf 'command: %s\n' "${CI_RUN_NAME:-run}"
 		printf 'utc: %s\n' "$_stamp"
-		printf 'project: %s\n' "$CI_PROJECT"
+		printf 'project: %s\n' "${CI_PROJECT:-not set}"
 		printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}"
 		printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
 		printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
@@ -1142,9 +1174,13 @@ ci_relpath() {
 # sentinel "<rel-out-dir>/.gitignore" that keeps the scratch directory ignored
 # while itself staying tracked. Every other tracked path is build output and is
 # a failure: exempting the whole directory, or every dotfile, would defeat the
-# check this function exists for. Prints nothing when Git or an index is not
-# available; the caller decides whether that case is testable. Returns 1 only
-# for a malformed invocation.
+# check this function exists for.
+#
+# The real status of `git ls-files` is captured and returned: piping it would
+# mask a failure, and a truncated or unreadable index must NEVER look like an
+# empty path list (Sol recheck 8c6c928: git exited 128 while validate stayed
+# green). Prints nothing and returns 0 only when Git/index is unavailable (the
+# caller already decided whether that case applies).
 ci_tracked_output_paths() {
 	_top_root="$1"
 	_top_rel="$2"
@@ -1153,12 +1189,17 @@ ci_tracked_output_paths() {
 	if [ ! -d "$_top_root/.git" ] && [ ! -f "$_top_root/.git" ]; then
 		return 0
 	fi
-	(cd "$_top_root" && git ls-files -- "$_top_rel" 2>/dev/null) |
-		while IFS= read -r _top_path || [ -n "$_top_path" ]; do
-			[ -n "$_top_path" ] || continue
-			[ "$_top_path" = "$_top_rel/.gitignore" ] && continue
-			printf '%s\n' "$_top_path"
-		done
+	_top_out="$(cd "$_top_root" && git ls-files -- "$_top_rel")"
+	_top_rc=$?
+	if [ "$_top_rc" -ne 0 ]; then
+		printf 'ci_tracked_output_paths: git ls-files failed in %s (exit %s)\n' "$_top_root" "$_top_rc" >&2
+		return "$_top_rc"
+	fi
+	printf '%s\n' "$_top_out" | while IFS= read -r _top_path || [ -n "$_top_path" ]; do
+		[ -n "$_top_path" ] || continue
+		[ "$_top_path" = "$_top_rel/.gitignore" ] && continue
+		printf '%s\n' "$_top_path"
+	done
 	return 0
 }
 

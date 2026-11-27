@@ -762,6 +762,20 @@ if command -v git >/dev/null 2>&1; then
 		_ok=no
 	fi
 	log "case $CASES_RUN: a non-sentinel dotfile does not inherit the exemption -> $_ok"
+
+	# Sol 8c6c928: a truncated/unreadable index makes git ls-files exit 128.
+	# The helper must propagate that status, never report an empty list as
+	# clean. This is the same corruption shape the reviewer used in a throwaway
+	# repository; nothing outside this suite's private directory is touched.
+	printf 'invalid Git index\n' >"$GITCHECK/.git/index"
+	CASES_RUN=$((CASES_RUN + 1))
+	if ci_tracked_output_paths "$GITCHECK" tools/ci/out >/dev/null 2>&1; then
+		_ok=no
+	else
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	fi
+	log "case $CASES_RUN: a truncated/unreadable Git index fails closed, not clean -> $_ok"
 else
 	log "note: git is not installed; the tracked-output sentinel cases were skipped"
 fi
@@ -874,6 +888,69 @@ else
 	_ok=no
 fi
 log "case $CASES_RUN: the scratch copy excludes ./build but preserves project resources -> $_ok"
+
+# R1: report files are named per process (PID) so two invocations started in
+# the same UTC second -- export --check, --list-presets and the first preset
+# build all run within one second on a fast runner -- cannot truncate each
+# other's evidence.
+COLL_OUT="$WORK_DIR/report-collision"
+rm -rf "$COLL_OUT"
+mkdir -p "$COLL_OUT/reports"
+(
+	CI_OUT="$COLL_OUT"
+	CI_RUN_NAME=export-check
+	export CI_OUT CI_RUN_NAME
+	. "$COMMON_SH" >/dev/null 2>&1
+	ci_init_report
+	printf '%s\n' "$CI_REPORT" >"$COLL_OUT/name-a"
+) &
+_coll_a=$!
+(
+	CI_OUT="$COLL_OUT"
+	CI_RUN_NAME=export-check
+	export CI_OUT CI_RUN_NAME
+	. "$COMMON_SH" >/dev/null 2>&1
+	ci_init_report
+	printf '%s\n' "$CI_REPORT" >"$COLL_OUT/name-b"
+) &
+_coll_b=$!
+wait "$_coll_a" "$_coll_b" 2>/dev/null
+_coll_r1="$(cat "$COLL_OUT/name-a" 2>/dev/null)"
+_coll_r2="$(cat "$COLL_OUT/name-b" 2>/dev/null)"
+CASES_RUN=$((CASES_RUN + 1))
+if [ -n "$_coll_r1" ] && [ -n "$_coll_r2" ] &&
+	[ "$_coll_r1" != "$_coll_r2" ] && [ -s "$_coll_r1" ] && [ -s "$_coll_r2" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: two report inits in the same process window leave distinct non-empty reports -> $_ok"
+[ "$_ok" = "yes" ] || log "  a='$_coll_r1' b='$_coll_r2'" >&2
+
+# Same-process repeat: the existence probe must pick a fresh name instead of
+# opening (and emptying) the report just written.
+(
+	CI_OUT="$COLL_OUT"
+	CI_RUN_NAME=repeat
+	export CI_OUT CI_RUN_NAME
+	. "$COMMON_SH" >/dev/null 2>&1
+	ci_init_report
+	printf '%s\n' "$CI_REPORT" >"$COLL_OUT/name-c"
+	ci_init_report
+	printf '%s\n' "$CI_REPORT" >"$COLL_OUT/name-d"
+) >/dev/null 2>&1
+_coll_r3="$(cat "$COLL_OUT/name-c" 2>/dev/null)"
+_coll_r4="$(cat "$COLL_OUT/name-d" 2>/dev/null)"
+CASES_RUN=$((CASES_RUN + 1))
+if [ -n "$_coll_r3" ] && [ -n "$_coll_r4" ] &&
+	[ "$_coll_r3" != "$_coll_r4" ] && [ -s "$_coll_r3" ] && [ -s "$_coll_r4" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: a repeated report init never truncates the first report -> $_ok"
 
 # ---------------------------------------------------------------------------
 # 10. The export-preset platform mapping and coverage.
@@ -1898,6 +1975,93 @@ fi
 log "case $CASES_RUN: the export-logs artifact uploads only logs/ and reports/, not the scratch copy -> $_ok"
 [ "$_ok" = "yes" ] || printf '%s\n' "$_up_block" | sed 's/^/  | /' >&2
 
+# A failed or inventory-rejected build must never be uploaded as a successful
+# package set. The package upload therefore runs only when every prior step
+# succeeded; failure evidence still uploads via the always() logs step.
+CASES_RUN=$((CASES_RUN + 1))
+_pkg_block=""
+if [ -f "$WORKFLOW" ]; then
+	_pkg_block="$(awk '/name: Upload built packages/{f=1} f{print}' "$WORKFLOW")"
+fi
+if [ -n "$_pkg_block" ] && printf '%s\n' "$_pkg_block" | grep -q 'if: success()'; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the package upload is skipped unless all prior steps succeeded -> $_ok"
+[ "$_ok" = "yes" ] || printf '%s\n' "$_pkg_block" | sed 's/^/  | /' >&2
+
+# M0.5: the contract suites must run from the checked-out candidate in a
+# headless standard-library job. It must need no editor/templates, cover all
+# five suites, and fail explicitly on a missing or failing suite.
+_contract_block=""
+if [ -f "$WORKFLOW" ]; then
+	_contract_block="$(awk '/^  contract-suites:/{f=1} f{print}' "$WORKFLOW")"
+fi
+
+CASES_RUN=$((CASES_RUN + 1))
+if [ -n "$_contract_block" ] &&
+	printf '%s\n' "$_contract_block" | grep -q '^  contract-suites:' &&
+	printf '%s\n' "$_contract_block" | grep -q 'runs-on: ubuntu-latest' &&
+	! printf '%s\n' "$_contract_block" | grep -q 'ci.sh' &&
+	! printf '%s\n' "$_contract_block" | grep -q 'install-templates'; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the contract-suites job is headless and needs no editor/templates -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+_missing_suite=no
+for _need_suite in schemas/handling/run_tests.sh fixtures/observation/run_tests.sh \
+	fixtures/intent/run_tests.sh fixtures/scenario/run_tests.sh tools/python_pin/tests/test_verify.sh; do
+	if ! printf '%s\n' "$_contract_block" | grep -qF -- "$_need_suite"; then
+		_missing_suite=yes
+	fi
+done
+if [ "$_missing_suite" = "no" ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the contract-suites job runs all five required suites -> $_ok"
+
+CASES_RUN=$((CASES_RUN + 1))
+if printf '%s\n' "$_contract_block" | grep -q 'required contract suite is missing' &&
+	printf '%s\n' "$_contract_block" | grep -q 'failed=1' &&
+	printf '%s\n' "$_contract_block" | grep -q 'exit 1' &&
+	printf '%s\n' "$_contract_block" | grep -q 'bash is unavailable' &&
+	printf '%s\n' "$_contract_block" | grep -q 'python3 is unavailable'; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: the contract-suites job fails closed on missing/failing suites and checks bash+python3 -> $_ok"
+
+# Every build/check invocation in the export job must bind its evidence to the
+# exact source revision (R3): export --check and each preset export.
+CASES_RUN=$((CASES_RUN + 1))
+_exp_block=""
+if [ -f "$WORKFLOW" ]; then
+	_exp_block="$(awk '/^  export-preparation:/{f=1} f{print}' "$WORKFLOW")"
+fi
+_src_count=0
+if [ -n "$_exp_block" ]; then
+	_src_count="$(printf '%s\n' "$_exp_block" | grep -Fc -- '--source-sha "${{ github.sha }}"')"
+fi
+if [ "$_src_count" -ge 2 ]; then
+	_ok=yes
+	CASES_OK=$((CASES_OK + 1))
+else
+	_ok=no
+fi
+log "case $CASES_RUN: every export-job check/build call records the source SHA ($_src_count) -> $_ok"
+[ "$_ok" = "yes" ] || printf '%s\n' "$_exp_block" | sed 's/^/  | /' >&2
+
 if command -v actionlint >/dev/null 2>&1; then
 	expect_case "actionlint accepts the committed workflow" 0 actionlint "$WORKFLOW"
 else
@@ -1941,7 +2105,8 @@ if [ "$_e2e" = "yes" ]; then
 		# the real path even when TMPDIR itself is a symlink (macOS /var).
 		_pkg_dir="$(cd "$PKG" && pwd -P)"
 		expect_case "export builds the Linux preset with the pinned templates" 0 \
-			ci_at_home "$REALHOME" "$SPROJ" export --export "Linux x86-64" --out "$PKG/linux"
+			ci_at_home "$REALHOME" "$SPROJ" --source-sha "deadbeefcafe1234" \
+			export --export "Linux x86-64" --out "$PKG/linux"
 		# The report the run wrote must carry the sidecar's path and digest: the
 		# main Linux binary is the pinned stock template, so its digest alone
 		# says nothing about the game content that was packaged.
@@ -1957,6 +2122,18 @@ if [ "$_e2e" = "yes" ]; then
 			_ok=no
 		fi
 		log "case $CASES_RUN: the Linux package's sidecar .pck exists, is non-empty and is hashed -> $_ok"
+
+	# The inventory report filename carries the supplied source SHA, so a
+	# downloaded artifact names its source revision (R3). Without a SHA it keeps
+	# the plain per-preset name used by the other cases.
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ -s "$SPROJ/tools/ci/out/reports/export-package-inventory-linux-x86-64-deadbeefcafe.txt" ]; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: the inventory report filename carries the supplied source SHA -> $_ok"
 
 	# Relative --out for every preset, from a caller-specified working
 	# directory, exactly as the workflow invokes it. Before canonicalisation,
@@ -2038,6 +2215,71 @@ Windows x86-64|exe
 Linux x86-64|
 EOF
 
+	# R2: a pre-existing output or sidecar must be REFUSED, never silently
+	# reused by a later engine run that writes nothing, and never deleted or
+	# overwritten by ci.sh. Both files stay byte-identical.
+	REFUSE_CWD="$WORK_DIR/refuse-cwd"
+	rm -rf "$REFUSE_CWD"
+	mkdir -p "$REFUSE_CWD/build"
+	printf 'STALE MAIN\n' >"$REFUSE_CWD/build/stale-package"
+	printf 'STALE PCK\n' >"$REFUSE_CWD/build/stale-package.pck"
+	REFUSE_LOG="$WORK_DIR/refuse-export.log"
+	ci_rel_at_home "$REFUSE_CWD" "$REALHOME" "$SPROJ" --godot "$_e2e_bin" \
+		export --export "Linux x86-64" --out "build/stale-package" \
+		>"$REFUSE_LOG" 2>&1
+	_refuse_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_refuse_rc" -ne 0 ] &&
+		grep -q "refusing to overwrite existing output" "$REFUSE_LOG" &&
+		! grep -q "export result=pass" "$REFUSE_LOG" &&
+		[ "$(cat "$REFUSE_CWD/build/stale-package")" = "STALE MAIN" ] &&
+		[ "$(cat "$REFUSE_CWD/build/stale-package.pck")" = "STALE PCK" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an existing main+sidecar target is refused and left byte-identical -> $_ok"
+	[ "$_ok" = "yes" ] || sed 's/^/  | /' "$REFUSE_LOG" >&2
+
+	# A leftover sidecar alone must also refuse: otherwise an engine run that
+	# wrote no main file could still be validated against old pack bytes.
+	rm -f "$REFUSE_CWD/build/stale-package"
+	REFUSE_LOG2="$WORK_DIR/refuse-export-2.log"
+	ci_rel_at_home "$REFUSE_CWD" "$REALHOME" "$SPROJ" --godot "$_e2e_bin" \
+		export --export "Linux x86-64" --out "build/stale-package" \
+		>"$REFUSE_LOG2" 2>&1
+	_refuse_rc2=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_refuse_rc2" -ne 0 ] &&
+		grep -q "refusing to overwrite existing output" "$REFUSE_LOG2" &&
+		[ "$(cat "$REFUSE_CWD/build/stale-package.pck")" = "STALE PCK" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a pre-existing sidecar alone is refused, not treated as the package -> $_ok"
+
+	# A dangling symlink at the target is an existing path too: ci.sh must
+	# never write through a link.
+	ln -s "$REFUSE_CWD/does-not-exist" "$REFUSE_CWD/build/broken-package"
+	REFUSE_LOG3="$WORK_DIR/refuse-export-3.log"
+	ci_rel_at_home "$REFUSE_CWD" "$REALHOME" "$SPROJ" --godot "$_e2e_bin" \
+		export --export "Linux x86-64" --out "build/broken-package" \
+		>"$REFUSE_LOG3" 2>&1
+	_refuse_rc3=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_refuse_rc3" -ne 0 ] &&
+		grep -q "refusing to overwrite existing output" "$REFUSE_LOG3" &&
+		[ ! -e "$REFUSE_CWD/build/broken-package" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a dangling symlink target is refused and never written through -> $_ok"
+
 	# End-to-end Sol 245ee1d reproduction: `via -> elsewhere/inner` and a
 	# caller-relative --out of `via/../package`. Filesystem semantics put the
 	# package in elsewhere/, not beside the symlink.
@@ -2073,6 +2315,78 @@ EOF
 		_ok=no
 	fi
 	log "case $CASES_RUN: all three preset export logs survived with distinct names -> $_ok"
+
+	# Sol 8c6c928 fault injection: delegate to the real pinned editor, then
+	# replace the freshly written sidecar .pck with garbage after a successful
+	# --export-release call. The wrapper lives only in this suite's private
+	# temporary directory; it links nothing and writes no installed tool.
+	CORRUPT_GODOT="$WORK_DIR/godot-corrupt-pck"
+	cat >"$CORRUPT_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+"\$_real" "\$@"
+_rc=\$?
+case " \$* " in
+	*" --export-"*)
+		[ "\$_rc" -eq 0 ] || exit "\$_rc"
+		_last=""
+		for _a in "\$@"; do _last="\$_a"; done
+		_dir="\$(dirname "\$_last")"
+		_base="\$(basename "\$_last")"
+		_stem="\${_base%%.*}"
+		[ -n "\$_stem" ] || _stem="\$_base"
+		printf 'corrupt pack\n' >"\$_dir/\$_stem.pck" 2>/dev/null
+		;;
+esac
+exit "\$_rc"
+EOF
+	chmod +x "$CORRUPT_GODOT"
+	CORRUPT_CWD="$WORK_DIR/corrupt-cwd"
+	rm -rf "$CORRUPT_CWD"
+	mkdir -p "$CORRUPT_CWD"
+	CORRUPT_LOG="$WORK_DIR/corrupt-export.log"
+	ci_rel_at_home "$CORRUPT_CWD" "$REALHOME" "$SPROJ" --godot "$CORRUPT_GODOT" \
+		export --export "Linux x86-64" --out "build/corrupt-package" \
+		>"$CORRUPT_LOG" 2>&1
+	_corrupt_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_corrupt_rc" -ne 0 ] &&
+		grep -q "package inventory check FAILED" "$CORRUPT_LOG" &&
+		! grep -q "export: PASS" "$CORRUPT_LOG" &&
+		! grep -q "export result=pass" "$CORRUPT_LOG"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a corrupted package exits nonzero, prints no PASS and names the inventory failure -> $_ok"
+	[ "$_ok" = "yes" ] || sed 's/^/  | /' "$CORRUPT_LOG" >&2
+
+	# The per-run report must carry exactly one verdict, and it must be the
+	# failing one. A stale or premature pass line would leave a rejected build
+	# looking successful to any consumer of the report.
+	_corrupt_rep="$(ls -1t "$SPROJ/tools/ci/out/reports/"export-linux-x86-64-*.txt 2>/dev/null | head -n 1)"
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ -n "$_corrupt_rep" ] &&
+		[ "$(grep -c '^export result=' "$_corrupt_rep" 2>/dev/null)" = "1" ] &&
+		grep -q '^export result=fail .*reason=pack-inventory' "$_corrupt_rep"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: the rejected export report carries one fail verdict and no pass verdict -> $_ok"
+
+	# A failed inventory run must not leave an older PASS report at the same
+	# per-preset path behind it.
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ ! -s "$SPROJ/tools/ci/out/reports/export-package-inventory-linux-x86-64.txt" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a rejected run leaves no stale passing inventory report -> $_ok"
 	else
 		log "note: the pinned export templates are not installed on this host; the sidecar .pck export case was skipped"
 	fi

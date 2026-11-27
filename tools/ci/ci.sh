@@ -928,14 +928,15 @@ ci_tooling_selfcheck() {
 	# the whole directory or every dotfile would defeat the check.
 	if [ -n "$CI_OUT_REL_PATH" ] && command -v git >/dev/null 2>&1 &&
 		{ [ -d "$CI_PROJECT/.git" ] || [ -f "$CI_PROJECT/.git" ]; }; then
-		# Fail closed: if Git cannot read this index (for example a
-		# "dubious ownership" refusal on a persistent runner), the check must
-		# not report an empty path list as clean.
-		if ! (cd "$CI_PROJECT" && git rev-parse --git-dir >/dev/null 2>&1); then
-			ci_fail "tracked-output check: Git cannot read this repository index (dubious ownership or broken .git); refusing to report it clean"
+		# Fail closed: the helper returns git ls-files' real status, so an
+		# unreadable or truncated index fails here instead of looking like an
+		# empty path list (Sol recheck 8c6c928).
+		_tracked_list="$(ci_tracked_output_paths "$CI_PROJECT" "$CI_OUT_REL_PATH")"
+		_tracked_rc=$?
+		if [ "$_tracked_rc" -ne 0 ]; then
+			ci_fail "tracked-output check: could not list tracked paths under $CI_OUT_REL_PATH (git exited $_tracked_rc); refusing to report it clean"
 			_self_rc="$CI_FAIL"
 		else
-			_tracked_list="$(ci_tracked_output_paths "$CI_PROJECT" "$CI_OUT_REL_PATH")"
 			_tracked="$(printf '%s\n' "$_tracked_list" | ci_count_lines)"
 			if [ "$_tracked" = "0" ]; then
 				ci_ok "no tracked build output under $CI_OUT_REL_PATH (its own .gitignore sentinel is the intended exception)"
@@ -1809,7 +1810,7 @@ ci_export_build() {
 		ci_fail "export --export: no export_presets.cfg at the project root; native export preparation is not implemented yet (PLAN.md M0.5/M9.1)"
 		return "$CI_FAIL"
 	}
-	if ! ci_export_list names | grep -qx "$_preset"; then
+	if ! ci_export_list names | grep -Fqx -- "$_preset"; then
 		ci_fail "export --export: preset '$_preset' is not declared in export_presets.cfg"
 		ci_note "declared presets: $(ci_export_list names | tr '\n' ' ')"
 		return "$CI_FAIL"
@@ -1830,9 +1831,37 @@ ci_export_build() {
 		_report_stamp="${_report_file#export-}"
 		_report_stamp="${_report_stamp%.txt}"
 		_new_report="$CI_OUT/reports/export-${_slug}-${_report_stamp}.txt"
-		if [ "$_new_report" != "$CI_REPORT" ]; then
+		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ]; then
 			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
+		fi
 	fi
+
+	# Sidecar path, derived from the output BASENAME so a dot in a directory
+	# component cannot move it. Computed before the engine runs.
+	case "$_out" in
+		*/*) _pck_dir="${_out%/*}"; _pck_base="${_out##*/}" ;;
+		*) _pck_dir="."; _pck_base="$_out" ;;
+	esac
+	case "$_pck_base" in
+		*.*) _pck_base="${_pck_base%.*}" ;;
+	esac
+	_pck="$_pck_dir/$_pck_base.pck"
+
+	# Refuse to reuse an output path that already holds a file or sidecar
+	# (Opus R2). Without this, a later engine run that silently writes nothing
+	# would be validated against the PREVIOUS package and its inventory would
+	# pass on old bytes. ci.sh never deletes or replaces existing user outputs:
+	# the caller moves/removes them explicitly and re-runs.
+	_stale=""
+	{ [ -e "$_out" ] || [ -L "$_out" ]; } && _stale="$_out"
+	if [ -z "$_stale" ]; then
+		{ [ -e "$_pck" ] || [ -L "$_pck" ]; } && _stale="$_pck"
+	fi
+	if [ -n "$_stale" ]; then
+		ci_fail "export --export: refusing to overwrite existing output: $_stale"
+		ci_note "ci.sh never deletes or replaces existing outputs; move or remove it and re-run"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=output-exists output=$_out"
+		return "$CI_FAIL"
 	fi
 
 	ci_prepared_copy || return "$CI_FAIL"
@@ -1873,19 +1902,11 @@ ci_export_build() {
 	_idx="$(ci_preset_index_for "$_cfg" "$_preset" 2>/dev/null)"
 	_embed=""
 	[ -n "$_idx" ] && _embed="$(ci_preset_field "$_cfg" "$_idx" binary_format/embed_pck 2>/dev/null)"
-	# <out> -> <out with the extension replaced by .pck>, computed on the
-	# BASENAME so a dot in a directory component cannot move the sidecar.
-	case "$_out" in
-		*/*) _pck_dir="${_out%/*}"; _pck_base="${_out##*/}" ;;
-		*) _pck_dir="."; _pck_base="$_out" ;;
-	esac
-	case "$_pck_base" in
-		*.*) _pck_base="${_pck_base%.*}" ;;
-	esac
-	_pck="$_pck_dir/$_pck_base.pck"
 	_size="$(wc -c <"$_out" 2>/dev/null | tr -d ' ')"
 	_sha="$(ci_sha256 "$_out")"
 	_pck_note=""
+	_pass_msg=""
+	_pass_fields=""
 	if [ -e "$_pck" ]; then
 		if [ ! -s "$_pck" ]; then
 			ci_fail "export wrote an empty sidecar .pck: $_pck (the package carries no project data)"
@@ -1895,8 +1916,8 @@ ci_export_build() {
 		_pck_size="$(wc -c <"$_pck" 2>/dev/null | tr -d ' ')"
 		_pck_sha="$(ci_sha256 "$_pck")"
 		_pck_note="; pck $_pck ($_pck_size bytes, sha256 $_pck_sha)"
-		ci_ok "export: PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
-		ci_report "export result=pass preset=$_preset mode=$_mode output=$_out bytes=$_size sha256=$_sha pck=$_pck pck_bytes=$_pck_size pck_sha256=$_pck_sha embed_pck=${_embed:-not-declared}"
+		_pass_msg="PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
+		_pass_fields="output=$_out bytes=$_size sha256=$_sha pck=$_pck pck_bytes=$_pck_size pck_sha256=$_pck_sha embed_pck=${_embed:-not-declared}"
 	elif [ "$_embed" = "false" ]; then
 		# Declared, and then missing: the package was not produced as configured.
 		ci_fail "export: preset '$_preset' declares binary_format/embed_pck=false but no sidecar .pck was written next to $_out (expected $_pck)"
@@ -1905,8 +1926,8 @@ ci_export_build() {
 		return "$CI_FAIL"
 	else
 		_pck_note="; no sidecar .pck was written (binary_format/embed_pck=${_embed:-not declared}; the macOS preset embeds the .pck inside the app bundle)"
-		ci_ok "export: PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
-		ci_report "export result=pass preset=$_preset mode=$_mode output=$_out bytes=$_size sha256=$_sha embed_pck=${_embed:-not-declared} sidecar_pck=absent"
+		_pass_msg="PASS (main $_out $_size bytes, sha256 $_sha$_pck_note)"
+		_pass_fields="output=$_out bytes=$_size sha256=$_sha embed_pck=${_embed:-not-declared} sidecar_pck=absent"
 	fi
 
 	# Re-read the produced package with the project's own pack inventory
@@ -1942,18 +1963,34 @@ ci_export_build() {
 		ci_report "export result=fail preset=$_preset reason=no-python3"
 		return "$CI_FAIL"
 	fi
-	_inv_report="$CI_OUT/reports/export-package-inventory-${_slug}.txt"
+	# Bind the inventory evidence to the source revision when one was supplied
+	# (--source-sha). The SHA is also in this run's report header; putting it in
+	# the inventory filename means a downloaded artifact names its source even
+	# though tools/export_smoke (not owned here) writes the file itself.
+	_inv_tag="$_slug"
+	_sha_tag="$(printf '%s' "${ROADSTORM_SOURCE_SHA:-}" | tr -c '[:alnum:]-' '-' | cut -c 1-12)"
+	[ -n "$_sha_tag" ] && _inv_tag="${_inv_tag}-${_sha_tag}"
+	_inv_report="$CI_OUT/reports/export-package-inventory-${_inv_tag}.txt"
 	mkdir -p "$(dirname "$_inv_report")" 2>/dev/null || ci_die "cannot create report directory for $_inv_report"
+	# Remove any report left by an earlier run of this preset first: a failed
+	# inventory run must not leave a stale PASS report behind at the same path.
+	rm -f "$_inv_report" 2>/dev/null
 	_inv_out="$(python3 "$_inv_script" check --platform "$_inv_plat" --main "$_out" --report "$_inv_report" --quiet 2>&1)"
 	_inv_rc=$?
 	if [ "$_inv_rc" -ne 0 ]; then
 		ci_fail "export: package inventory check FAILED for preset '$_preset' ($_inv_plat); report: $_inv_report"
 		printf '%s\n' "$_inv_out" | sed 's/^/    /'
-		ci_report "export result=fail preset=$_preset reason=pack-inventory"
+		ci_report "export result=fail preset=$_preset reason=pack-inventory inventory_rc=$_inv_rc"
 		return "$CI_FAIL"
 	fi
+
+	# Emit PASS only AFTER the package itself and its inventory have both
+	# succeeded. Printing or recording a passing verdict first let a rejected
+	# package look successful and left it eligible for the package upload
+	# (Sol recheck 8c6c928).
+	ci_ok "export: $_pass_msg"
 	ci_ok "export: package inventory passed ($_inv_plat; report $_inv_report)"
-	ci_report "export pack_inventory=pass platform=$_inv_plat report=$_inv_report"
+	ci_report "export result=pass preset=$_preset mode=$_mode $_pass_fields pack_inventory=pass platform=$_inv_plat report=$_inv_report"
 
 	ci_note "This is a locally built package, not a verified release: launching it on the target OS (PLAN.md M9.2) and signing/notarization (M9.3) are separate steps."
 	return "$CI_OK"

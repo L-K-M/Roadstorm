@@ -328,7 +328,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Export preparation check (templates and presets)
-        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --check
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" export --check
 
       # A locally produced package is not a verified release: PLAN.md M9.2 still
       # requires launching each package on its target OS, and M9.3 covers
@@ -357,7 +357,7 @@ jobs:
               esac
               out="build/${name}${ext:+.$ext}"
               echo "Exporting preset '${name}' (${platform}) to ${out}"
-              tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" export --export "$name" --out "$out"
+              tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" export --export "$name" --out "$out"
             done
 
       # Export failures are only actionable with the engine log. Godot's export
@@ -365,9 +365,9 @@ jobs:
       # anchored ERROR lines alone hid the reason; ci.sh now prints the full
       # captured log, and this upload preserves it when the job is read later.
       # Only logs/ and reports/ are uploaded: tools/ci/out/project-copy/ is a
-      # scratch copy of the project (~100 MB with earlier packages) and is not
-      # evidence. Reports include the per-preset pack-inventory report written
-      # by ci.sh export.
+      # scratch copy of the project, not evidence. Reports include the
+      # per-preset pack-inventory report written by ci.sh export; its filename
+      # carries the source SHA passed to the export job.
       - name: Upload export logs and reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -381,12 +381,94 @@ jobs:
 
       # The build step reports the main file AND the sidecar .pck (which carries
       # the project data; on Linux the main binary is the pinned stock template).
-      # This upload therefore contains the package as it was actually produced.
+      # Upload only when every prior step succeeded: a failed or inventory-
+      # rejected export must never publish its files as a successful package
+      # set. Failure evidence still uploads through the always() export-logs
+      # step above (Sol recheck 8c6c928). `success()` also covers a failure in
+      # an earlier preset, so partial builds are not presented as complete.
       - name: Upload built packages
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: export-packages
           path: build/
           if-no-files-found: warn
           retention-days: 14
+
+  # Contract suites (M0.5: tests must run from the checked-out candidate).
+  # These are standard-library Python/shell suites over schemas/, fixtures/
+  # and tools/python_pin. This is deliberately a separate headless job: it
+  # needs no Godot editor, no templates and no generation-service accounts,
+  # and it does not touch them. A missing or failing suite fails the job
+  # explicitly rather than being skipped silently.
+  contract-suites:
+    name: contract suites (standard library)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Both interpreters are required by the suites. Fail with an annotation
+      # instead of letting a suite exit 2 ambiguously.
+      - name: Verify suite prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v bash >/dev/null 2>&1 || { echo "::error::bash is unavailable"; exit 1; }
+          command -v python3 >/dev/null 2>&1 || { echo "::error::python3 is unavailable"; exit 1; }
+          printf 'bash: %s\n' "$(bash --version | head -n 1)"
+          python3 --version
+
+      - name: Run contract suites on the exact checkout
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -uo pipefail
+
+          # Private temp/cache/config/data roots: the suites never write into
+          # the checkout, shared home, templates or another job's files.
+          _root="$RUNNER_TEMP/contract-suites"
+          mkdir -p "$_root/tmp" "$_root/cache" "$_root/home/.config" "$_root/home/.local/share"
+          export TMPDIR="$_root/tmp"
+          export HOME="$_root/home"
+          export XDG_CACHE_HOME="$_root/cache"
+          export XDG_CONFIG_HOME="$_root/home/.config"
+          export XDG_DATA_HOME="$_root/home/.local/share"
+
+          _summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          {
+            echo "### Contract suites"
+            echo ""
+          } >>"$_summary"
+
+          failed=0
+          for _suite in \
+            schemas/handling/run_tests.sh \
+            fixtures/observation/run_tests.sh \
+            fixtures/intent/run_tests.sh \
+            fixtures/scenario/run_tests.sh \
+            tools/python_pin/tests/test_verify.sh
+          do
+            echo "=== contract suite: $_suite ==="
+            if [ ! -f "$_suite" ]; then
+              echo "::error::required contract suite is missing: $_suite"
+              printf -- '- FAIL %s (missing)\n' "$_suite" >>"$_summary"
+              failed=1
+              continue
+            fi
+            if bash "$_suite"; then
+              printf -- '- PASS %s\n' "$_suite" >>"$_summary"
+            else
+              _rc=$?
+              echo "::error::contract suite FAILED: $_suite (exit $_rc)"
+              printf -- '- FAIL %s (exit %s)\n' "$_suite" "$_rc" >>"$_summary"
+              failed=1
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::one or more contract suites were missing or failed"
+            exit 1
+          fi
+          echo "All contract suites passed."
