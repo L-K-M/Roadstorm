@@ -1,4 +1,4 @@
-> Coordinator identity and source attestation: The Codex invocation log records `model: gpt-6.2-sol`, `provider: openai`, `sandbox: read-only`. The reviewer inspected a separate immutable `git archive` snapshot of candidate `4ff7becfdadea1788c6ba2606f4ae61d50b4b8b5`. The reviewer output follows verbatim.
+> Coordinator identity and source attestation: The Codex invocation log records `model: gpt-6.2-sol`, `provider: openai`, `sandbox: read-only`. The reviewer inspected a separate immutable `git archive` snapshot of candidate `4ff7becfdadea1788c6ba2606f4ae61d50b4b8b5`. The reviewer output follows verbatim. Run date: 2026-11-27 20:29–20:32 UTC.
 
 # Roadstorm M1 interim driving review
 

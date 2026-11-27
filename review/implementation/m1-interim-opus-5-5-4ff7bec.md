@@ -1,4 +1,4 @@
-> Coordinator identity and source attestation: Claude Code JSON records `claude-opus-5-5`, provider `firstParty`, successful completion. The reviewer inspected a separate immutable `git archive` snapshot of candidate `4ff7becfdadea1788c6ba2606f4ae61d50b4b8b5`. The reviewer output follows verbatim.
+> Coordinator identity and source attestation: Claude Code JSON records `claude-opus-5-5`, provider `firstParty`, successful completion. The reviewer inspected a separate immutable `git archive` snapshot of candidate `4ff7becfdadea1788c6ba2606f4ae61d50b4b8b5`. The reviewer output follows verbatim. Run date: 2026-11-27 20:29–20:35 UTC.
 
 # Roadstorm interim M1 review: Opus 5.5, candidate `4ff7bec`
 
