@@ -53,7 +53,7 @@ The numbers are work order, not calendar promises. M1, M3, M4B, and M5 are delib
 
 **Result:** a reproducible empty game shell with clear rights and reliable checks. Dependency: none.
 
-- [ ] M0.1 Pin Godot 4.7.2 Standard, matching templates, built-in Jolt/settings and asset-generation Python, with checksums. Verify before installation; update only through a recorded regression decision. The [official archive](https://godotengine.org/download/archive/) is the version authority.
+- [x] M0.1 Pin Godot 4.7.2 Standard, matching templates, built-in Jolt/settings and asset-generation Python, with checksums. Verify before installation; update only through a recorded regression decision. The [official archive](https://godotengine.org/download/archive/) is the version authority. Scoped decision and verify-before-private-install evidence: [M0.1 pin decision](docs/evidence/m01-pin-decision-20261127.md).
 - [ ] M0.2 Create `project.godot`, a boot scene, game/menu scenes, typed resource schemas, the planned directory structure, and ignore rules for caches and local credentials.
 - [ ] M0.3 Preserve the Unlicense; add explicit material-specific CC0 scope, owner/contributor authority basis, provider-terms intake for all LLM-authored work, dependency inventory and provenance manifests. Extract actual pinned-runtime notices; never invent signatures or rights holders.
 - [ ] M0.4 Build original command-line import, test, content-validation, capture, and export entry points. A deliberately failing test must return a failing exit code.

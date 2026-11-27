@@ -320,9 +320,10 @@ or Sigstore success is claimed for a mismatching input.
    setup, `PYTHON_BIN`, a doctor check) needs their own change.
 8. **The macOS installer publishes no SPDX SBOM** (blank on the release page);
    recorded as absent, not assumed.
-9. **M0.1 acceptance is not claimed.** This record addresses interpreter
-   provenance and publisher artifact authenticity; engine/Jolt/templates and
-   the other M0.1 items remain per `docs/TOOLCHAIN.md` and `docs/STATUS.md`.
+9. **This record alone did not accept M0.1.** The later [scoped pin decision](evidence/m01-pin-decision-20261127.md)
+   approved the combined engine/Jolt/templates/Python pin after private-prefix
+   verify-before-extract evidence. The host Homebrew interpreter remains a
+   local, unauthenticated drift baseline.
 
 ## Checks run and results
 
