@@ -11,6 +11,18 @@ const AdapterScript := preload("res://src/simulation/motor_body_adapter.gd")
 const ArcadeMotorScript := preload("res://src/simulation/arcade_motor.gd")
 const CarStateScript := preload("res://src/simulation/car_state.gd")
 const DriverCommandScript := preload("res://src/simulation/driver_command.gd")
+const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
+const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
+
+## Label node paths inside the committed HUD scene, used to read the display
+## without re-implementing the HUD's own text rules.
+const HUD_LABEL_PATHS := {
+	"SpeedLabel": "Contents/SpeedLabel",
+	"UnitLabel": "Contents/UnitLabel",
+	"ReverseLabel": "Contents/ReverseLabel",
+	"DriftLabel": "Contents/DriftLabel",
+	"QualifyingLabel": "Contents/QualifyingLabel",
+}
 
 var checks := 0
 var failures: Array[String] = []
@@ -53,6 +65,64 @@ func check_number_finite(value: float, message: String) -> void:
 	checks += 1
 	if is_nan(value) or is_inf(value):
 		failures.append("%s (value=%s)" % [message, value])
+
+
+# --- Node census helpers ---------------------------------------------------
+
+
+## Counts `node` and every descendant that is an instance of `script`. The root
+## itself is included, so counting viewports starts at the root window.
+func count_script_instances(node: Node, script: GDScript) -> int:
+	if node == null or script == null:
+		return 0
+	var count := 0
+	if node.get_script() == script:
+		count += 1
+	for child in node.get_children():
+		count += count_script_instances(child, script)
+	return count
+
+
+## Collects `node` and every descendant whose class matches `target_class`.
+func find_class_instances(node: Node, target_class: String) -> Array:
+	var found: Array = []
+	if node == null:
+		return found
+	if node.is_class(target_class):
+		found.append(node)
+	for child in node.get_children():
+		found.append_array(find_class_instances(child, target_class))
+	return found
+
+
+func count_class_instances(node: Node, target_class: String) -> int:
+	return find_class_instances(node, target_class).size()
+
+
+## Label text from the committed HUD scene, or "" when the node is missing.
+## Returns the empty string rather than inventing a value.
+func hud_label_text(hud, label_name: String) -> String:
+	if hud == null or not HUD_LABEL_PATHS.has(label_name):
+		return ""
+	var label := hud.get_node_or_null(String(HUD_LABEL_PATHS[label_name])) as Label
+	if label == null:
+		return ""
+	return label.text
+
+
+## Unit-normalized camera forward axis (-Z of the camera basis).
+func camera_forward(camera: Camera3D) -> Vector3:
+	if camera == null:
+		return Vector3.ZERO
+	return -camera.global_transform.basis.z.normalized()
+
+
+## Unit-normalized world forward axis (-Z) of any `Node3D`.
+func node_forward(node: Node3D) -> Vector3:
+	if node == null:
+		return Vector3.ZERO
+	return -node.global_transform.basis.z.normalized()
+
 
 
 # --- Fixtures --------------------------------------------------------------

@@ -5,11 +5,27 @@ extends Node3D
 ##
 ## The laboratory owns exactly one `CharacterBody3D` with a `BoxShape3D` hull
 ## that matches `MotorBodyAdapter.Config.hull_size_m`, one visible graybox
-## mesh, and one `CameraRig` chase instance. Every physics tick it samples one
-## command (scripted schedule or minimal keyboard), calls
-## `MotorBodyAdapter.step()` exactly once, commits the returned `CarState` and
-## leaves the visual pose on the committed body transform. There is no second
-## integration path: a refusal halts the run and paints the hull red.
+## mesh, one `CameraRig` chase instance and one `SpeedHud` instance under its
+## own `CanvasLayer`. Every physics tick it samples one command (scripted
+## schedule or minimal keyboard), calls `MotorBodyAdapter.step()` exactly once,
+## commits the returned `CarState` and leaves the visual pose on the committed
+## body transform. There is no second integration path: a refusal halts the run
+## and paints the hull red.
+##
+## Presentation wiring (M1.5 slice): the committed components are instantiated
+## into the real node tree instead of being merely preloaded. The HUD is the
+## committed `scenes/ui/speed_hud.tscn` under one `CanvasLayer` owned by this
+## laboratory, and it is refreshed only from a committed `CarState`. The camera
+## rig is the committed `CameraRig`, whose single `Camera3D` follows the body.
+## Keyboard mode adds two presentation controls: `C` cycles the camera mode and
+## `Shift` is a momentary rear view. Scripted and headless mode never reads GUI
+## input at all. Presentation actions never call the adapter, never write
+## simulation or body state and never create a second viewport or camera.
+##
+## The laboratory has no drift telemetry source, so the HUD cue is the honest
+## `GRIP` phase with a zero slip reading and no qualifying flag: it never claims
+## a drift the flat straight cannot produce. Nothing here claims audio
+## playback, visual readability or M1.5/M1 acceptance.
 ##
 ## Scope: flat-ground one-car integration only. Ground adhesion, jumps, drift,
 ## car-car contact, full input routing, reset placement, surface modifiers and
@@ -25,6 +41,8 @@ const ArcadeMotorScript := preload("res://src/simulation/arcade_motor.gd")
 const CarStateScript := preload("res://src/simulation/car_state.gd")
 const DriverCommandScript := preload("res://src/simulation/driver_command.gd")
 const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
+const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
+const SpeedHudScene := preload("res://scenes/ui/speed_hud.tscn")
 
 enum CommandMode { SCRIPTED, KEYBOARD }
 
@@ -43,6 +61,16 @@ const COURSE_START_MARGIN_M := 10.0
 const GRAYBOX_COLOR := Color(0.55, 0.56, 0.60)
 const FAILURE_COLOR := Color(0.85, 0.12, 0.10)
 
+## Speed unit preference handed to the HUD. The laboratory reports the road-plane
+## speed in km/h, matching the HUD's default unit.
+const HUD_SPEED_UNIT: int = SpeedHudScript.SpeedUnit.KM_H
+## The only drift phase this laboratory can honestly report: the flat straight
+## has no slip or airborne telemetry to source a drift phase from.
+const HUD_DRIFT_PHASE: int = SpeedHudScript.DriftPhase.GRIP
+## Keyboard mode presentation controls.
+const KEY_CAMERA_CYCLE := Key.KEY_C
+const KEY_REAR_VIEW := Key.KEY_SHIFT
+
 ## Scripted schedules consume one array entry per tick; keyboard mode ignores
 ## the array and samples live key state instead.
 var command_mode: CommandMode = CommandMode.SCRIPTED
@@ -54,7 +82,13 @@ var body: CharacterBody3D = null
 var hull_shape: BoxShape3D = null
 var graybox_mesh: MeshInstance3D = null
 var camera_rig: CameraRig = null
+var hud_layer: CanvasLayer = null
+var speed_hud: SpeedHud = null
 var lab_manifest: Dictionary = {}
+## Presentation defects are recorded instead of being papered over: a HUD that
+## cannot be built or refuses a committed state leaves this string nonempty and
+## is reported by validation rather than presented as working evidence.
+var hud_error := ""
 
 var state: CarState = null
 var last_result: MotorBodyAdapter.Result = null
@@ -62,6 +96,10 @@ var start_position_m := Vector2.ZERO
 
 var steps_called := 0
 var ticks_committed := 0
+var hud_updates := 0
+var hud_rejected_updates := 0
+var camera_mode_cycles := 0
+var rear_view_holds := 0
 var physics_callbacks := 0
 var total_accepted_motion_m := 0.0
 var max_speed_m_s := 0.0
@@ -110,8 +148,9 @@ func _ready() -> void:
 		_fail(manifest_error)
 	_build_car()
 	_build_camera_rig()
+	_build_presentation()
 	_apply_start_pose()
-	_sync_camera()
+	_update_presentation()
 	if not failed and (tuning == null or not tuning.is_valid()):
 		_fail("invalid laboratory motor tuning")
 	elif not failed and (adapter_config == null or not adapter_config.is_valid()):
@@ -123,6 +162,12 @@ func _exit_tree() -> void:
 		camera_rig.clear_target()
 		camera_rig.queue_free()
 		camera_rig = null
+	if speed_hud != null and is_instance_valid(speed_hud):
+		speed_hud.queue_free()
+		speed_hud = null
+	if hud_layer != null and is_instance_valid(hud_layer):
+		hud_layer.queue_free()
+		hud_layer = null
 
 
 func _physics_process(_delta: float) -> void:
@@ -155,6 +200,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		var key := event as InputEventKey
 		if key.keycode != 0:
 			_keys[key.keycode] = key.pressed
+		_apply_presentation_key(key)
 
 
 # --- Public laboratory API -------------------------------------------------
@@ -234,6 +280,95 @@ func is_auto_tick() -> bool:
 	return _auto_tick
 
 
+# --- Presentation API ------------------------------------------------------
+
+
+## Cycles the single camera rig's mode CHASE -> NEAR_CHASE -> HOOD -> CHASE and
+## returns the new mode. Presentation only: no adapter call, no state write.
+## Without a usable rig there is nothing to cycle: the returned mode stays
+## CHASE, exactly as `get_camera_mode()` reports it, and no cycle is counted.
+func cycle_camera_mode() -> CameraRig.Mode:
+	if camera_rig == null or not is_instance_valid(camera_rig):
+		return CameraRig.Mode.CHASE
+	var mode: CameraRig.Mode = camera_rig.cycle_mode()
+	camera_mode_cycles += 1
+	return mode
+
+
+func get_camera_mode() -> CameraRig.Mode:
+	if camera_rig == null or not is_instance_valid(camera_rig):
+		return CameraRig.Mode.CHASE
+	return camera_rig.get_mode()
+
+
+func get_camera_mode_name() -> String:
+	if camera_rig == null or not is_instance_valid(camera_rig):
+		return ""
+	return camera_rig.get_mode_name(camera_rig.get_mode())
+
+
+## Momentary rear view on the same camera node. While held, the rig redirects
+## its single `Camera3D` backwards; releasing restores the selected forward
+## mode. No second camera or viewport is created.
+func set_rear_view_held(active: bool) -> void:
+	if camera_rig == null or not is_instance_valid(camera_rig):
+		return
+	if camera_rig.is_rear_held() == active:
+		return
+	camera_rig.hold_rear(active)
+	rear_view_holds += 1
+
+
+func is_rear_view_held() -> bool:
+	if camera_rig == null or not is_instance_valid(camera_rig):
+		return false
+	return camera_rig.is_rear_held()
+
+
+## The one speed HUD instance owned by this laboratory, or null when the HUD
+## could not be built (see `get_hud_error()`).
+func get_speed_hud() -> SpeedHud:
+	return speed_hud
+
+
+## The one `CanvasLayer` that carries the HUD. Owning it here keeps HUD
+## teardown bound to the laboratory's own lifetime.
+func get_hud_layer() -> CanvasLayer:
+	return hud_layer
+
+
+func get_hud_error() -> String:
+	return hud_error
+
+
+## True when the camera rig, its camera, the HUD layer and the HUD instance are
+## all present and valid.
+func is_presentation_ready() -> bool:
+	return (
+		camera_rig != null and is_instance_valid(camera_rig)
+		and camera_rig.get_camera() != null
+		and hud_layer != null and is_instance_valid(hud_layer)
+		and speed_hud != null and is_instance_valid(speed_hud)
+	)
+
+
+## Presentation-side counters for validation reporting. These describe
+## presentation activity only; they never gate or alter the simulation run.
+func get_presentation_telemetry() -> Dictionary:
+	return {
+		"hud_layer_present": hud_layer != null and is_instance_valid(hud_layer),
+		"hud_instance_present": speed_hud != null and is_instance_valid(speed_hud),
+		"hud_updates": hud_updates,
+		"hud_rejected_updates": hud_rejected_updates,
+		"hud_error": hud_error,
+		"camera_mode": int(get_camera_mode()),
+		"camera_mode_name": get_camera_mode_name(),
+		"camera_mode_cycles": camera_mode_cycles,
+		"rear_view_held": is_rear_view_held(),
+		"rear_view_holds": rear_view_holds,
+	}
+
+
 ## Exactly one integration call. Shared by `_physics_process()` and by tests;
 ## there is no other place that calls the adapter.
 func step_once(command) -> MotorBodyAdapter.Result:
@@ -259,7 +394,7 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		ticks_committed += 1
 		_update_telemetry(result)
 		_append_tick_log(result)
-		_sync_camera()
+		_update_presentation()
 		return result
 	var reason := result.rejection_reason
 	if reason.is_empty():
@@ -360,6 +495,26 @@ func _build_camera_rig() -> void:
 		camera_rig.get_camera().current = true
 	if body != null:
 		camera_rig.set_target(body)
+
+
+## Builds the laboratory's own presentation nodes: one `CanvasLayer` carrying
+## exactly one `SpeedHud` instance. Both are children of the laboratory, so
+## freeing the laboratory frees them. A HUD that cannot be instantiated is
+## recorded as a presentation defect and reported, never faked.
+func _build_presentation() -> void:
+	hud_layer = CanvasLayer.new()
+	hud_layer.name = "DriveLabHudLayer"
+	add_child(hud_layer)
+	var instance = SpeedHudScene.instantiate()
+	if instance == null or not (instance is SpeedHud):
+		if instance != null:
+			instance.free()
+		hud_error = "speed HUD scene did not instantiate a SpeedHud"
+		print("[drive_lab] PRESENTATION DEFECT: ", hud_error)
+		return
+	instance.name = "SpeedHud"
+	hud_layer.add_child(instance)
+	speed_hud = instance as SpeedHud
 
 
 func _apply_start_pose() -> void:
@@ -463,6 +618,47 @@ func _sync_camera() -> void:
 		camera_rig.update_target_pose(0.0)
 
 
+## Refreshes every presentation consumer from the committed state: the camera
+## pose and the speed HUD. Called after the initial pose and after every
+## committed tick, so no presentation read ever observes an uncommitted state.
+func _update_presentation() -> void:
+	_sync_camera()
+	_update_speed_hud()
+
+
+## Pushes one committed `CarState` into the HUD. The cue is the honest grip
+## phase for a flat straight: no slip reading, no qualifying claim. A rejected
+## update is counted and recorded, because silently presenting a stale or wrong
+## readout would be worse than reporting the defect.
+func _update_speed_hud() -> void:
+	if speed_hud == null or not is_instance_valid(speed_hud):
+		return
+	if state == null or not state.is_finite():
+		hud_rejected_updates += 1
+		hud_error = "committed state is absent or nonfinite at a HUD refresh"
+		return
+	var cue := SpeedHudScript.DriftCue.new(HUD_DRIFT_PHASE, false, 0.0)
+	if speed_hud.update(state, cue, HUD_SPEED_UNIT):
+		hud_updates += 1
+		return
+	hud_rejected_updates += 1
+	if hud_error.is_empty():
+		hud_error = "speed HUD refused a committed-state update"
+
+
+## Keyboard-mode presentation controls. Called only from `_unhandled_input()`,
+## which returns immediately in scripted and headless mode, so no GUI input is
+## ever read there.
+func _apply_presentation_key(key: InputEventKey) -> void:
+	match key.keycode:
+		KEY_CAMERA_CYCLE:
+			# Auto-repeat must not advance the mode more than once per press.
+			if key.pressed and not key.echo:
+				cycle_camera_mode()
+		KEY_REAR_VIEW:
+			set_rear_view_held(key.pressed)
+
+
 func _reset_run_state() -> void:
 	failed = false
 	failure_reason = ""
@@ -488,6 +684,7 @@ func _reset_run_state() -> void:
 	last_result = null
 	if _material != null:
 		_material.albedo_color = GRAYBOX_COLOR
+	_update_presentation()
 
 
 func _reject_configuration(reason: String) -> bool:

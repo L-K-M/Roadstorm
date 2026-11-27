@@ -14,6 +14,7 @@ const DriveLabScript := preload("res://src/laboratory/drive_lab.gd")
 const ChecksScript := preload("res://tools/drive_lab/drive_lab_checks.gd")
 const AdapterScript := preload("res://src/simulation/motor_body_adapter.gd")
 const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
+const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -24,6 +25,12 @@ const PENETRATION_TOLERANCE_M := 0.03
 const RAY_TOLERANCE_M := 0.35
 const ROAD_HALF_WIDTH_M := 6.0
 const LOG_BOUND := 1800
+## Bounded scripted tick count for the M1.5 presentation case.
+const PRESENTATION_TICKS := 30
+## Independent conversion oracle, mirroring the HUD's documented km/h factor.
+const KMH_PER_M_S := 3.6
+## Bounded wait for a synthetic key event to reach the input pipeline.
+const INPUT_WAIT_FRAMES := 20
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
@@ -35,12 +42,26 @@ const CASE_IDS: Array[String] = [
 	"hull_road_overlap",
 	"one_call_per_tick",
 	"refusal_halts",
+	"presentation_integration",
 ]
 
 var d := DriveLabChecks.new()
 var measurements: Dictionary = {}
 var _results: Array[Dictionary] = []
 var _holder: Node3D = null
+var _input_probe: InputEventProbe = null
+
+
+## Records synthetic key events that reach the input pipeline. A check that
+## expects no reaction uses it to prove the event really was delivered, so an
+## unchanged laboratory cannot pass merely because the event never arrived.
+class InputEventProbe extends Node:
+	var events: Array = []
+
+	func _unhandled_input(event: InputEvent) -> void:
+		if event is InputEventKey:
+			var key := event as InputEventKey
+			events.append({"keycode": key.keycode, "pressed": key.pressed, "echo": key.echo})
 
 
 func _ready() -> void:
@@ -48,6 +69,9 @@ func _ready() -> void:
 	_holder = Node3D.new()
 	_holder.name = "DriveLabHolder"
 	add_child(_holder)
+	_input_probe = InputEventProbe.new()
+	_input_probe.name = "InputEventProbe"
+	add_child(_input_probe)
 	_run()
 
 
@@ -99,6 +123,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_one_call_per_tick()
 		"refusal_halts":
 			await _case_refusal_halts()
+		"presentation_integration":
+			await _case_presentation_integration()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	var result := {
@@ -693,3 +719,404 @@ func _case_refusal_halts() -> void:
 	await _settle()
 	d.check(int(lab.steps_called) == settled_steps, "refusal.halted_no_more_calls")
 	await _teardown_lab(lab)
+
+
+# --- M1.5 presentation integration -----------------------------------------
+
+
+## Wires the committed `CameraRig` and `SpeedHud` into the laboratory's real
+## node tree and proves the integration is honest: exactly one camera and one
+## HUD, a display that only ever reads committed state, camera mode cycling and
+## momentary rear view that never touch the simulation, and scripted/headless
+## mode that ignores synthetic keyboard input. Every wait is bounded, so a
+## broken integration fails instead of hanging.
+func _case_presentation_integration() -> void:
+	var commands: Array = []
+	for _index in range(PRESENTATION_TICKS):
+		commands.append(d.throttle_command(1.0))
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	if not _presentation_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	await _presentation_structure_checks(lab)
+	await _presentation_initial_display_checks(lab)
+	_presentation_negative_control(lab)
+	await _presentation_committed_display_checks(lab)
+	await _presentation_camera_action_checks(lab)
+	await _presentation_scripted_input_immunity_checks(lab)
+	await _presentation_teardown_checks(lab)
+	await _presentation_keyboard_checks()
+
+
+## The laboratory must expose the presentation API this case exercises. A
+## laboratory without it fails the case cleanly instead of erroring out.
+func _presentation_api_available(lab) -> bool:
+	var required := [
+		"get_speed_hud", "get_hud_layer", "get_hud_error", "is_presentation_ready",
+		"cycle_camera_mode", "get_camera_mode", "get_camera_mode_name",
+		"set_rear_view_held", "is_rear_view_held", "get_presentation_telemetry",
+	]
+	var missing: Array = []
+	for name in required:
+		if not lab.has_method(name):
+			missing.append(name)
+	d.check(missing.is_empty(), "presentation.api_present: missing " + str(missing))
+	return missing.is_empty()
+
+
+func _presentation_structure_checks(lab) -> void:
+	d.check(str(lab.get_hud_error()).is_empty(), "hud.build_error: " + str(lab.get_hud_error()))
+	d.check(lab.is_presentation_ready(), "presentation.rig_hud_and_camera_ready")
+	var layer: CanvasLayer = lab.get_hud_layer()
+	d.check(layer != null, "hud.canvas_layer_present")
+	if layer != null:
+		d.check(layer is CanvasLayer, "hud.canvas_layer_type")
+		d.check(layer.is_inside_tree(), "hud.canvas_layer_inside_tree")
+		d.check(layer.get_child_count() == 1, "hud.canvas_layer_holds_exactly_one_child")
+	var hud: SpeedHud = lab.get_speed_hud()
+	d.check(hud != null, "hud.instance_present")
+	if hud != null and layer != null:
+		d.check(hud.get_parent() == layer, "hud.parent_is_the_lab_canvas_layer")
+		d.check(hud.get_script() == SpeedHudScript, "hud.uses_the_committed_component")
+	d.check(
+		d.count_script_instances(get_tree().root, SpeedHudScript) == 1,
+		"hud.exactly_one_instance_in_tree"
+	)
+	d.check(
+		d.count_class_instances(get_tree().root, "Camera3D") == 1,
+		"camera.exactly_one_camera3d"
+	)
+	var cameras := d.find_class_instances(get_tree().root, "Camera3D")
+	if cameras.size() == 1 and lab.camera_rig != null:
+		d.check(
+			cameras[0] == lab.camera_rig.get_camera(),
+			"camera.rig_owns_the_only_camera"
+		)
+	d.check(
+		d.count_class_instances(get_tree().root, "Viewport") == 1,
+		"camera.exactly_one_viewport"
+	)
+	d.check(
+		int(lab.get_camera_mode()) == int(CameraRigScript.Mode.CHASE),
+		"camera.initial_mode_is_chase"
+	)
+	d.check(lab.get_camera_mode_name() == "chase", "camera.initial_mode_name")
+	d.check(lab.camera_rig.get_target_node() == lab.body, "camera.target_is_the_car")
+	d.check(not lab.is_rear_view_held(), "camera.rear_view_initially_released")
+
+
+func _presentation_initial_display_checks(lab) -> void:
+	var hud: SpeedHud = lab.get_speed_hud()
+	if hud == null:
+		d.check(false, "hud.initial_display_requires_an_instance")
+		return
+	d.check(int(lab.ticks_committed) == 0, "hud.initial_display_before_any_commit")
+	d.check(hud.has_display(), "hud.initial_display_committed")
+	d.check(d.hud_label_text(hud, "SpeedLabel") == "0", "hud.initial_speed_zero")
+	d.check(d.hud_label_text(hud, "UnitLabel") == "km/h", "hud.initial_unit_km_h")
+	d.check(d.hud_label_text(hud, "DriftLabel") == "GRIP", "hud.initial_drift_text_grip")
+	d.check(d.hud_label_text(hud, "ReverseLabel") == "", "hud.initial_no_reverse_text")
+	d.check(d.hud_label_text(hud, "QualifyingLabel") == "", "hud.initial_no_qualifying_text")
+	d.check(
+		int(hud.get_last_phase()) == int(SpeedHudScript.DriftPhase.GRIP),
+		"hud.initial_phase_is_grip"
+	)
+	d.check(
+		int(hud.get_last_units()) == int(SpeedHudScript.SpeedUnit.KM_H),
+		"hud.initial_units_km_h"
+	)
+	var marker = hud.get_marker()
+	d.check(marker != null and marker.get_shape_name() == "ring", "hud.initial_grip_marker_ring")
+	var reverse_label: Control = hud.get_node_or_null("Contents/ReverseLabel") as Control
+	d.check(reverse_label != null and not reverse_label.visible, "hud.initial_reverse_hidden")
+
+
+## Deliberate negative control for this case: a scratch collector fed a
+## deliberately wrong expectation about a real measurement must record exactly
+## one failure, and the live collector must be untouched. Without it, a set of
+## assertions that can never fail would look like passing evidence.
+func _presentation_negative_control(lab) -> void:
+	var measured := d.hud_label_text(lab.get_speed_hud(), "SpeedLabel")
+	var live_failures_before := d.failures.size()
+	var scratch := ChecksScript.new()
+	scratch.check(
+		measured == "999",
+		"negative control: deliberately wrong speed expectation"
+	)
+	scratch.check(true, "negative control: passing control assertion")
+	d.check(scratch.checks == 2, "negative_control.collector_counted_both_assertions")
+	d.check(scratch.failures.size() == 1, "negative_control.deliberate_failure_detected")
+	d.check(
+		d.failures.size() == live_failures_before,
+		"negative_control.live_collector_untouched"
+	)
+	measurements["negative_control_measured_speed_text"] = measured
+
+
+func _presentation_committed_display_checks(lab) -> void:
+	var hud: SpeedHud = lab.get_speed_hud()
+	if hud == null:
+		d.check(false, "hud.committed_display_requires_an_instance")
+		return
+	var run := await _run_auto(lab, PRESENTATION_TICKS)
+	d.check(not lab.failed, "hud.committed_run_not_failed: " + str(lab.failure_reason))
+	d.check(int(run["committed"]) == PRESENTATION_TICKS, "hud.committed_ticks_ran")
+	var expected := str(int(round(lab.state.speed_m_s() * KMH_PER_M_S)))
+	d.check(
+		d.hud_label_text(hud, "SpeedLabel") == expected,
+		"hud.speed_matches_committed_state (shown=%s expected=%s)"
+			% [d.hud_label_text(hud, "SpeedLabel"), expected]
+	)
+	d.check(expected != "0", "hud.speed_nonzero_after_throttle")
+	d.check(d.hud_label_text(hud, "DriftLabel") == "GRIP", "hud.committed_drift_text_still_grip")
+	d.check(
+		int(hud.get_last_phase()) == int(SpeedHudScript.DriftPhase.GRIP),
+		"hud.committed_phase_still_grip"
+	)
+	var telemetry: Dictionary = lab.get_presentation_telemetry()
+	d.check(
+		int(telemetry["hud_updates"]) == 1 + PRESENTATION_TICKS,
+		"hud.one_update_per_commit_plus_the_initial_one (updates=%s)"
+			% str(telemetry["hud_updates"])
+	)
+	d.check(int(telemetry["hud_rejected_updates"]) == 0, "hud.no_rejected_updates")
+	d.check(str(telemetry["hud_error"]).is_empty(), "hud.no_refresh_defect")
+	measurements["hud_speed_text"] = d.hud_label_text(hud, "SpeedLabel")
+	measurements["committed_speed_m_s"] = lab.state.speed_m_s()
+	measurements["hud_updates"] = int(telemetry["hud_updates"])
+
+
+func _presentation_camera_action_checks(lab) -> void:
+	var steps_before := int(lab.steps_called)
+	var committed_before := int(lab.ticks_committed)
+	var callbacks_before := int(lab.physics_callbacks)
+	var log_before := int(lab.tick_log.size())
+	var state_before := d.snapshot_state(lab.state)
+	var transform_before: Transform3D = lab.body.global_transform
+	var car_forward: Vector3 = d.node_forward(lab.body)
+	var camera: Camera3D = lab.camera_rig.get_camera()
+	var chase_dot := 0.0
+	var rear_dot := 0.0
+	d.check(camera != null, "camera.single_camera_node")
+	d.check(lab.get_camera_mode_name() == "chase", "camera.actions_start_in_chase")
+	var first = lab.cycle_camera_mode()
+	d.check(
+		int(first) == int(CameraRigScript.Mode.NEAR_CHASE),
+		"camera.cycle_chase_to_near_chase (got=%s)" % str(first)
+	)
+	d.check(lab.get_camera_mode_name() == "near_chase", "camera.mode_name_near_chase")
+	var second = lab.cycle_camera_mode()
+	d.check(
+		int(second) == int(CameraRigScript.Mode.HOOD),
+		"camera.cycle_near_chase_to_hood (got=%s)" % str(second)
+	)
+	d.check(lab.get_camera_mode_name() == "hood", "camera.mode_name_hood")
+	var third = lab.cycle_camera_mode()
+	d.check(
+		int(third) == int(CameraRigScript.Mode.CHASE),
+		"camera.cycle_wraps_back_to_chase (got=%s)" % str(third)
+	)
+	if camera != null:
+		chase_dot = d.camera_forward(camera).dot(car_forward)
+		d.check(
+			chase_dot > 0.9,
+			"camera.chase_looks_along_the_car_forward_axis (dot=%s)" % str(chase_dot)
+		)
+		lab.set_rear_view_held(true)
+		d.check(lab.is_rear_view_held(), "camera.rear_view_held_flag_set")
+		rear_dot = d.camera_forward(camera).dot(car_forward)
+		d.check(
+			rear_dot < -0.9,
+			"camera.rear_view_looks_backwards (dot=%s)" % str(rear_dot)
+		)
+		lab.set_rear_view_held(false)
+		d.check(not lab.is_rear_view_held(), "camera.rear_view_released_flag_cleared")
+		var restored_dot := d.camera_forward(camera).dot(car_forward)
+		d.check(
+			restored_dot > 0.9,
+			"camera.forward_view_restored_after_release (dot=%s)" % str(restored_dot)
+		)
+	d.check(
+		d.count_class_instances(get_tree().root, "Camera3D") == 1,
+		"camera.actions_created_no_second_camera"
+	)
+	d.check(
+		d.count_class_instances(get_tree().root, "Viewport") == 1,
+		"camera.actions_created_no_second_viewport"
+	)
+	d.check(int(lab.steps_called) == steps_before, "camera.actions_called_no_adapter_step")
+	d.check(int(lab.ticks_committed) == committed_before, "camera.actions_committed_no_tick")
+	d.check(
+		int(lab.physics_callbacks) == callbacks_before,
+		"camera.actions_caused_no_physics_frame"
+	)
+	d.check(lab.tick_log.size() == log_before, "camera.actions_logged_no_tick")
+	d.check(
+		lab.body.global_transform == transform_before,
+		"camera.actions_left_body_transform_unchanged"
+	)
+	d.check_state_unchanged(lab.state, state_before, "camera.actions_left_committed_state_unchanged")
+	measurements["camera_chase_dot"] = chase_dot
+	measurements["camera_rear_dot"] = rear_dot
+
+
+func _presentation_scripted_input_immunity_checks(lab) -> void:
+	var mode_before: String = lab.get_camera_mode_name()
+	var steps_before := int(lab.steps_called)
+	var committed_before := int(lab.ticks_committed)
+	var state_before := d.snapshot_state(lab.state)
+	var transform_before: Transform3D = lab.body.global_transform
+	var frames_before := int(lab.physics_callbacks)
+	for _index in range(4):
+		await get_tree().physics_frame
+	var idle_delta := int(lab.physics_callbacks) - frames_before
+	_input_probe.events.clear()
+	_deliver_key(Key.KEY_C, true)
+	_deliver_key(Key.KEY_SHIFT, true)
+	var delivered := await _await_input_events(2, INPUT_WAIT_FRAMES)
+	d.check(delivered, "scripted_input.synthetic_events_reached_the_input_pipeline")
+	var frames_after := int(lab.physics_callbacks)
+	for _index in range(4):
+		await get_tree().physics_frame
+	var action_delta := int(lab.physics_callbacks) - frames_after
+	d.check(
+		action_delta == idle_delta,
+		"scripted_input.caused_no_extra_physics_frames (idle=%d action=%d)"
+			% [idle_delta, action_delta]
+	)
+	d.check(lab.get_camera_mode_name() == mode_before, "scripted_input.camera_mode_unchanged")
+	d.check(not lab.is_rear_view_held(), "scripted_input.rear_view_not_held")
+	d.check(int(lab.steps_called) == steps_before, "scripted_input.called_no_adapter_step")
+	d.check(int(lab.ticks_committed) == committed_before, "scripted_input.committed_no_tick")
+	d.check(
+		lab.body.global_transform == transform_before,
+		"scripted_input.body_transform_unchanged"
+	)
+	d.check_state_unchanged(lab.state, state_before, "scripted_input.committed_state_unchanged")
+	measurements["scripted_input_events_delivered"] = _input_probe.events.size()
+
+
+func _presentation_teardown_checks(lab) -> void:
+	var hud = lab.get_speed_hud()
+	var layer: CanvasLayer = lab.get_hud_layer()
+	var rig = lab.camera_rig
+	var camera: Camera3D = null
+	if rig != null:
+		camera = rig.get_camera()
+	await _teardown_lab(lab)
+	d.check(not is_instance_valid(hud), "teardown.hud_instance_freed")
+	d.check(not is_instance_valid(layer), "teardown.hud_canvas_layer_freed")
+	d.check(not is_instance_valid(rig), "teardown.camera_rig_freed")
+	d.check(not is_instance_valid(camera), "teardown.camera_freed")
+	d.check(
+		d.count_script_instances(get_tree().root, SpeedHudScript) == 0,
+		"teardown.no_hud_left_in_tree"
+	)
+	d.check(
+		d.count_class_instances(get_tree().root, "Camera3D") == 0,
+		"teardown.no_camera_left_in_tree"
+	)
+	d.check(
+		d.count_class_instances(get_tree().root, "CanvasLayer") == 0,
+		"teardown.no_canvas_layer_left_in_tree"
+	)
+
+
+## Keyboard mode only: synthetic `C` and `Shift` must reach the laboratory
+## through the real input pipeline and drive the presentation, and the normal
+## keyboard drive path must still work. Every wait is bounded.
+func _presentation_keyboard_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _presentation_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.command_mode = DriveLabScript.CommandMode.KEYBOARD
+	lab.set_auto_tick(false)
+	await _settle()
+	var steps_before := int(lab.steps_called)
+	_input_probe.events.clear()
+	_deliver_key(Key.KEY_C, true)
+	var cycled := await _await_camera_mode_name(lab, "near_chase", INPUT_WAIT_FRAMES)
+	d.check(cycled, "keyboard_input.c_cycles_the_camera_mode")
+	d.check(
+		_input_probe.events.size() >= 1,
+		"keyboard_input.synthetic_key_reached_the_input_pipeline"
+	)
+	_deliver_key(Key.KEY_SHIFT, true)
+	var held := await _await_rear_view(lab, true, INPUT_WAIT_FRAMES)
+	d.check(held, "keyboard_input.shift_holds_the_rear_view")
+	_deliver_key(Key.KEY_SHIFT, false)
+	var released := await _await_rear_view(lab, false, INPUT_WAIT_FRAMES)
+	d.check(released, "keyboard_input.shift_release_restores_the_forward_view")
+	# Auto-repeat must not advance the mode a second time for one press.
+	_deliver_key(Key.KEY_C, true, true)
+	await _settle()
+	d.check(
+		lab.get_camera_mode_name() == "near_chase",
+		"keyboard_input.key_repeat_does_not_cycle_the_mode"
+	)
+	d.check(
+		int(lab.steps_called) == steps_before,
+		"keyboard_input.presentation_keys_called_no_adapter_step"
+	)
+	_deliver_key(Key.KEY_W, true)
+	lab.set_auto_tick(true)
+	var guard := 0
+	while int(lab.steps_called) - steps_before < 6 and guard < 120:
+		await get_tree().physics_frame
+		guard += 1
+	lab.set_auto_tick(false)
+	var driven := int(lab.steps_called) - steps_before
+	d.check(
+		driven >= 6,
+		"keyboard_input.throttle_key_drove_bounded_ticks (ticks=%d)" % driven
+	)
+	d.check(not lab.failed, "keyboard_input.run_not_failed: " + str(lab.failure_reason))
+	d.check(lab.state.speed_m_s() > 0.0, "keyboard_input.car_accelerated_from_the_throttle_key")
+	d.check(
+		d.hud_label_text(lab.get_speed_hud(), "SpeedLabel") != "0",
+		"keyboard_input.hud_follows_the_keyboard_commits"
+	)
+	measurements["keyboard_driven_ticks"] = driven
+	measurements["keyboard_speed_m_s"] = lab.state.speed_m_s()
+	await _teardown_lab(lab)
+
+
+# --- Bounded waits and synthetic input -------------------------------------
+
+
+func _deliver_key(keycode: Key, pressed: bool, echo := false) -> void:
+	var event := InputEventKey.new()
+	event.keycode = keycode
+	event.pressed = pressed
+	event.echo = echo
+	Input.parse_input_event(event)
+
+
+func _await_input_events(count: int, limit: int) -> bool:
+	var waited := 0
+	while waited < limit and _input_probe.events.size() < count:
+		await get_tree().physics_frame
+		waited += 1
+	return _input_probe.events.size() >= count
+
+
+func _await_camera_mode_name(lab, name: String, limit: int) -> bool:
+	var waited := 0
+	while waited < limit and lab.get_camera_mode_name() != name:
+		await get_tree().physics_frame
+		waited += 1
+	return lab.get_camera_mode_name() == name
+
+
+func _await_rear_view(lab, held: bool, limit: int) -> bool:
+	var waited := 0
+	while waited < limit and lab.is_rear_view_held() != held:
+		await get_tree().physics_frame
+		waited += 1
+	return lab.is_rear_view_held() == held
