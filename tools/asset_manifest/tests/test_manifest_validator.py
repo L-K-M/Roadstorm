@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -219,6 +220,33 @@ def error_codes(findings: Findings) -> list[str]:
 
 def messages(findings: Findings) -> str:
     return "\n".join(f.render() for f in findings)
+
+
+def bounded_call(func, timeout: float = 30):
+    """Run ``func`` in a worker thread; return ``(result, timed_out)``.
+
+    A read that blocks - a FIFO with no writer - would otherwise hang the
+    suite instead of failing it. The deadline is part of the assertion, so the
+    caller must check ``timed_out`` rather than trusting a ``None`` result. An
+    exception raised by ``func`` is re-raised here, never swallowed into a
+    ``None`` that a refusal assertion would accept.
+    """
+    outcome: dict = {}
+
+    def run() -> None:
+        try:
+            outcome["result"] = func()
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return None, True
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome.get("result"), False
 
 
 REGISTER_BASENAME = "PROVIDER_TERMS.md"
@@ -666,6 +694,168 @@ class ManifestValidatorTestCase(unittest.TestCase):
         # The hash step refused the key instead of hashing through the link.
         self.assertIn("missing-file", codes)
         self.assertNotIn("hash-mismatch", codes)
+
+    # -- hashing refuses what it cannot safely read -------------------------
+    # (2026-11-27 Sol recheck finding 1 / Opus independent finding F2: an
+    # unreadable or swapped output used to raise out of the hash step.)
+
+    def test_digest_hashes_a_regular_output_file(self):
+        """Positive control: a readable regular output hashes normally."""
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+        self.assertEqual(checker.digest(relative), digest_of(self.root / relative)[len("sha256:"):])
+        findings = validate(self.root, write_manifest(self.root, [entry]), check_hashes=True)
+        self.assertEqual(findings.errors, [], messages(findings))
+
+    def test_unreadable_output_is_a_structured_finding_not_a_traceback(self):
+        """Independent failure: a mode-000 output fails closed, with a finding."""
+        if os.geteuid() == 0:
+            self.skipTest("running as root: permission bits do not block reads")
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        target = self.root / relative
+        target.chmod(0)
+        self.addCleanup(target.chmod, 0o644)
+        manifest = write_manifest(self.root, [entry])
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+        self.assertIsNone(checker.digest(relative))
+        findings = validate(self.root, manifest, check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("missing-file", codes)
+        text = messages(findings)
+        self.assertIn("cannot hash", text)
+        self.assertIn("unreadable", text)
+        self.assertNotIn("hash-mismatch", codes)
+
+    def test_unreadable_output_cli_emits_json_instead_of_a_traceback(self):
+        """End to end: the CLI reports the structured finding, not a traceback."""
+        if os.geteuid() == 0:
+            self.skipTest("running as root: permission bits do not block reads")
+        import contextlib
+        import io
+
+        entry = materialize(self.root, complete_entry())
+        target = self.root / entry["identity"]["output_paths"][0]
+        target.chmod(0)
+        self.addCleanup(target.chmod, 0o644)
+        manifest = write_manifest(self.root, [entry])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = main(
+                [str(manifest), "--root", str(self.root), "--check-hashes", "--json"]
+            )
+        self.assertEqual(exit_code, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["result"], "fail")
+        self.assertEqual([error["code"] for error in payload["errors"]], ["missing-file"])
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_oversized_json_integer_is_an_invalid_json_finding(self):
+        """Independent failure: a huge integer literal must not escape as ValueError."""
+        limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+        if not limit:
+            self.skipTest("this interpreter has no integer digit limit")
+        manifest = self.write_raw('{"schema_version": ' + ("9" * (limit + 100)) + "}")
+        findings = validate(self.root, manifest)
+        self.assertIn("invalid-json", error_codes(findings))
+        self.assertIn("not valid JSON", messages(findings))
+
+    def test_oversized_json_integer_cli_exits_2_with_json(self):
+        """End to end: the decode failure keeps the documented exit contract."""
+        import contextlib
+        import io
+
+        limit = getattr(sys, "get_int_max_str_digits", lambda: 0)()
+        if not limit:
+            self.skipTest("this interpreter has no integer digit limit")
+        manifest = self.write_raw('{"schema_version": ' + ("9" * (limit + 100)) + "}")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            exit_code = main([str(manifest), "--root", str(self.root), "--json"])
+        self.assertEqual(exit_code, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["result"], "fail")
+        self.assertEqual([error["code"] for error in payload["errors"]], ["invalid-json"])
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_digest_refuses_a_fifo_swapped_in_at_the_open_boundary(self):
+        """The fd-level defenses are exercised, not just the path checks.
+
+        The pre-check is replaced by one that swaps the real output for a FIFO
+        at the moment it is asked, exactly the window between the path check
+        and the open. The guarded open must refuse it without blocking, and the
+        outside content must never be hashed.
+        """
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("this platform has no FIFOs")
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        target = self.root / relative
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+
+        def swapped_pre_check(root, spelled):
+            target.unlink()
+            os.mkfifo(target)
+            return True
+
+        with mock.patch.object(manifest_validator, "_record_file_is_readable", swapped_pre_check):
+            digest, timed_out = bounded_call(lambda: checker.digest(relative))
+        self.assertFalse(timed_out, "digest blocked on a FIFO swapped in at the open boundary")
+        self.assertIsNone(digest)
+
+    def test_digest_refuses_a_symlink_swapped_in_at_the_open_boundary(self):
+        """A leaf swapped for a symlink at the open boundary is not followed."""
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        target = self.root / relative
+        outside = self.root.parent / ("roadstorm-fixture-hash-swap-" + self.root.name)
+        outside.write_text("outside the checkout\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        outside_digest = digest_of(outside)
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+
+        def swapped_pre_check(root, spelled):
+            target.unlink()
+            target.symlink_to(outside)
+            return True
+
+        with mock.patch.object(manifest_validator, "_record_file_is_readable", swapped_pre_check):
+            digest, timed_out = bounded_call(lambda: checker.digest(relative))
+        self.assertFalse(timed_out)
+        self.assertIsNone(digest)
+        self.assertNotEqual(digest, outside_digest)
+        # Full validation reports the refusal rather than a hash mismatch, so
+        # the recorded hash can never be satisfied by the file outside.
+        findings = validate(self.root, write_manifest(self.root, [entry]), check_hashes=True)
+        codes = error_codes(findings)
+        self.assertIn("missing-file", codes)
+        self.assertNotIn("hash-mismatch", codes)
+
+    def test_guarded_open_fails_closed_without_fd_protections(self):
+        """Where no-follow/non-blocking flags are unavailable, reads refuse."""
+        entry = materialize(self.root, complete_entry())
+        relative = entry["identity"]["output_paths"][0]
+        checker = manifest_validator.PathChecker(
+            self.root, file_checks=True, check_hashes=True
+        )
+        register = write_terms_register(self.root, ["pi-stepfun"])
+        self.assertTrue(register.is_file())
+        with mock.patch.object(manifest_validator, "_guarded_open_flags", lambda: None):
+            self.assertIsNone(checker.digest(relative))
+            self.assertIsNone(
+                manifest_validator._read_record_text(
+                    self.root, manifest_validator.PROVIDER_TERMS_REGISTER
+                )
+            )
 
     def test_malformed_hash_spelling_is_an_error(self):
         entry = materialize(self.root, complete_entry())
@@ -2069,6 +2259,107 @@ class RegisterReadGuardTestCase(unittest.TestCase):
             self.assertFalse(
                 self.register_is_readable(spelling),
                 "{} must not be readable".format(spelling),
+            )
+
+    # -- the window after the pre-check (Opus independent finding F1) ------
+
+    def test_refuses_a_fifo_swapped_in_after_the_pre_check(self):
+        """The fd-level defenses are exercised, not just the path checks.
+
+        The pre-check is replaced by one that swaps the real register for a
+        FIFO at the moment it is asked - exactly the window between
+        ``_record_file_is_readable`` and ``os.open``. The guarded open must
+        refuse it without blocking, so no row can resolve from it.
+        """
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("this platform has no FIFOs")
+        register = self.register_path()
+        register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
+
+        def swapped_pre_check(root, spelled):
+            register.unlink()
+            os.mkfifo(register)
+            return True
+
+        with mock.patch.object(manifest_validator, "_record_file_is_readable", swapped_pre_check):
+            text, timed_out = bounded_call(lambda: self.read_register())
+        self.assertFalse(timed_out, "reading a FIFO swapped in after the check blocked")
+        self.assertIsNone(text)
+        # No rows resolve from a register the checker refused to read: the
+        # path is now a FIFO, and the row reader refuses it too.
+        self.assertIsNone(manifest_validator._terms_register_route_ids(self.root))
+
+    def test_refuses_a_symlink_swapped_in_after_the_pre_check(self):
+        """A leaf swapped for a symlink after the pre-check is not followed."""
+        register = self.register_path()
+        register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
+        outside = self.root.parent / ("roadstorm-fixture-register-swap-" + self.root.name)
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        target = outside / REGISTER_BASENAME
+        target.write_text("| `pi-outside` | s | m | t | b | c | V |\n", encoding="utf-8")
+
+        def swapped_pre_check(root, spelled):
+            register.unlink()
+            register.symlink_to(target)
+            return True
+
+        with mock.patch.object(manifest_validator, "_record_file_is_readable", swapped_pre_check):
+            text, timed_out = bounded_call(lambda: self.read_register())
+        self.assertFalse(timed_out)
+        self.assertIsNone(text)
+        self.assertNotIn("pi-outside", text or "")
+
+    def test_guarded_open_returns_a_descriptor_for_a_regular_file(self):
+        """Positive control for the primitive the readers share."""
+        register = self.register_path()
+        register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
+        descriptor = manifest_validator._open_regular_file_descriptor(
+            self.root, manifest_validator.PROVIDER_TERMS_REGISTER
+        )
+        try:
+            self.assertIsNotNone(descriptor)
+            self.assertTrue(stat.S_ISREG(os.fstat(descriptor).st_mode))
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def test_guarded_open_refuses_a_fifo_without_blocking(self):
+        """Directly at the open: a FIFO is opened non-blocking and rejected."""
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("this platform has no FIFOs")
+        register = self.register_path()
+        os.mkfifo(register)
+        descriptor, timed_out = bounded_call(
+            lambda: manifest_validator._open_regular_file_descriptor(
+                self.root, manifest_validator.PROVIDER_TERMS_REGISTER
+            )
+        )
+        self.assertFalse(timed_out, "opening a FIFO blocked")
+        self.assertIsNone(descriptor)
+
+    def test_guarded_open_refuses_a_symlink_leaf(self):
+        """Directly at the open: a symlinked leaf is refused, not followed."""
+        outside = self.root.parent / ("roadstorm-fixture-open-link-" + self.root.name)
+        outside.write_text("outside\n", encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        register = self.register_path()
+        register.symlink_to(outside)
+        self.assertIsNone(
+            manifest_validator._open_regular_file_descriptor(
+                self.root, manifest_validator.PROVIDER_TERMS_REGISTER
+            )
+        )
+
+    def test_guarded_open_fails_closed_where_flags_are_unavailable(self):
+        """Without no-follow/non-blocking the primitive refuses to open."""
+        register = self.register_path()
+        register.write_text("| `pi-stepfun` | s | m | t | b | c | V |\n", encoding="utf-8")
+        with mock.patch.object(manifest_validator, "_guarded_open_flags", lambda: None):
+            self.assertIsNone(
+                manifest_validator._open_regular_file_descriptor(
+                    self.root, manifest_validator.PROVIDER_TERMS_REGISTER
+                )
             )
 
 

@@ -107,7 +107,7 @@ Cross-entry, once the whole registry is known:
 | Check | Rule |
 | --- | --- |
 | Output ownership | Each `identity.output_paths` entry has exactly one owning entry, and is listed once inside it (`duplicate-output-path`). Two entries claiming one output path make the provenance, lineage and hash of that file ambiguous. Sharing a *source* path is ordinary lineage and stays allowed. |
-| Path safety | Referenced paths must be regular files inside the root reached through real directories: a symlink is rejected (`symlinked-path`) - at the leaf *and* at any parent directory, because a parent symlink resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for symlinks before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. A record the checker *reads* (the provider-terms register, whose rows a `#route-id` anchor is resolved against) is read only after the reference itself resolved to a real, readable, non-symlinked regular file inside the root, and the read re-validates the path and the open descriptor - a rejected register path is never opened. |
+| Path safety | Referenced paths must be regular files inside the root reached through real directories: a symlink is rejected (`symlinked-path`) - at the leaf *and* at any parent directory, because a parent symlink resolves to a file outside the checkout that the entry does not govern, and its existence and hash would vouch for unaccounted content. Hash keys are spelling-checked and re-checked for symlinks before hashing, so a malformed `output_paths` cannot make `--check-hashes` read `/etc/hosts`. Every root-relative record or hash file the checker opens - a hashed output or the provider-terms register - goes through one guarded open: no-follow, non-blocking and an `fstat` regular-file check, failing closed where those flags do not exist, so an unreadable, missing, special-file or swapped path yields a structured finding rather than a traceback, a hang or a followed symlink. A record the checker *reads* (the register, whose rows a `#route-id` anchor is resolved against) is additionally read only after the reference itself resolved to a real, readable, non-symlinked regular file inside the root, so a rejected register path is never opened. |
 | Dependency order | `lineage.depends_on` is acyclic (`dependency-cycle`): direct (A↔B), self (A→A) and indirect (A→B→C→A) loops are all rejected, because an asset can only be built once the entries it depends on exist. The search is iterative, so a long chain cannot exhaust the stack. |
 
 Document level:
@@ -178,6 +178,24 @@ Document level:
   time-of-check/time-of-use window, by tests that swap the file - or its
   parent directory - for a symlink inside the hash step and require the
   digest to refuse rather than follow it.
+- **unreadable, special and swapped outputs under `--check-hashes`** (the
+  2026-11-27 Sol recheck finding 1 / Opus independent finding F2): a mode-000
+  output is the structured `missing-file` finding ("cannot hash ...",
+  unreadable), not a `PermissionError` traceback - checked directly, through
+  the CLI in `--json` mode (exit 1, empty stderr), and by the digest unit
+  control; a FIFO and a symlink swapped in at the pre-check/open boundary
+  are refused by the guarded descriptor without blocking and without
+  following the link (the outside bytes are never hashed); a passing
+  regular file still hashes normally. The fd-level primitive
+  (`_open_regular_file_descriptor`) has direct controls too: it returns a
+  descriptor for a regular file, refuses a FIFO without blocking and a
+  symlinked leaf, and fails closed when no-follow/non-blocking flags are
+  unavailable.
+- **oversized JSON integers** (the 2026-11-27 Sol recheck finding 2): a
+  decimal integer literal longer than this interpreter's conversion limit is
+  the structured `invalid-json` finding, not a `ValueError` traceback -
+  checked in text mode and through the CLI in `--json` mode (exit 2, empty
+  stderr). Skipped where the interpreter has no digit limit.
 - **reference resolution**: a `service_terms_ref` that is the first-party
   `not_applicable` sentinel, another placeholder, an arbitrary string, a
   record outside `provenance/`, or a record that does not exist is an error,
@@ -275,6 +293,16 @@ temporary directory.
   reached through real directories: a symlink at any component is rejected
   rather than followed. Cross-platform path case sensitivity is not
   simulated.
+- **Reads narrow, they do not close, the swap window.** Every open this tool
+  performs re-validates spelling, every component for symlinks, file type and
+  read permission before opening, then re-checks the descriptor with `fstat`
+  and opens no-follow and non-blocking. That catches a leaf swapped between
+  the check and the open. It does **not** make resolution race-free: parent
+  components are still resolved by name by the kernel after those checks, so
+  a parent directory replaced by a symlink in that window would be followed,
+  and a swap after the open is invisible. A `dir_fd`-based walk would be
+  needed for that, and it is not implemented. Where the platform offers
+  neither `O_NOFOLLOW` nor `O_NONBLOCK`, reads fail closed instead.
 - **Limited CI wiring.** The committed GitHub workflow runs the manifest CLI
   separately; full content validation and package inventory remain open.
 - **No asset entries exist.** The positive-control entry in the tests is a
@@ -388,3 +416,31 @@ gained that row in a later provenance commit (outside this tool's ownership),
 so the test asserted nothing. It now derives a fragment that is provably
 absent from the rows the register records, which keeps it meaningful as rows
 are added.
+
+## Disposition of the 6cc0058 manifest rechecks (Sol and Opus, 2026-11-27)
+
+Recorded from
+`review/implementation/m0-manifest-sol-recheck-6cc0058.md` and
+`review/implementation/m0-manifest-opus-5-5-6cc0058-independent.md`
+(candidate `6cc0058af4680f8ac04409974888c8b12e053e01`). The prior rejected-path
+read fix is preserved untouched. Only the in-scope low findings are addressed
+here.
+
+| Finding | Disposition |
+| --- | --- |
+| Sol 1 / Opus F2 - `--check-hashes` raises or hangs on an unreadable or special output file | Fixed. `PathChecker.digest` now goes through the same guarded open as `_read_record_text`: spelling, symlinked components, file type and read permission are re-checked before the open, then `_open_regular_file_descriptor` opens no-follow and non-blocking and requires `S_ISREG` from `fstat`. Any refusal or read error yields `None`, which the caller reports as the existing structured `missing-file` finding ("cannot hash ... unreadable"); no `OSError` escapes. Where `O_NOFOLLOW`/`O_NONBLOCK` are unavailable the primitive fails closed rather than opening without them. |
+| Sol 2 - an oversized JSON integer raises `ValueError` out of the decoder | Fixed. `_decode_manifest_document` catches `ValueError` alongside `JSONDecodeError` and reports the existing `invalid-json` finding, so the CLI keeps its exit-2 contract with JSON output and empty stderr. |
+| Opus F1 - the descriptor-level defenses have no test | Fixed. New controls swap a FIFO and a symlink in at the pre-check/open boundary of both the register reader and the digest path, and assert refusal with a bounded deadline; direct unit tests cover `_open_regular_file_descriptor` itself. |
+
+New controls: an unreadable mode-000 regular output under a non-root user
+(skipped as root), an oversized integer literal (skipped where the interpreter
+has no digit limit), FIFO and symlink swaps at the final open boundary for both
+readers, a fail-closed control with the fd flags unavailable, passing regular
+files for both readers, and CLI end-to-end runs (`--json`) asserting the
+structured result and empty stderr. Against the pre-fix module the new suite
+reports 2 failures and 9 errors; against the fixed module all 149 tests pass.
+
+Residual limits (unchanged and documented): parent components are resolved by
+name after the checks, so a parent swapped for a symlink in that window is
+still followed - this narrows the window, it is not race-free resolution, and
+no `dir_fd` walk is implemented.

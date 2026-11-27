@@ -487,16 +487,17 @@ def _symlinked_component(root: Path, relative: str) -> str | None:
 
 
 def _record_file_is_readable(root: Path, relative: str) -> bool:
-    """Whether ``root/relative`` can be opened as a real record file.
+    """Whether ``root/relative`` can be opened as a real file this process reads.
 
-    A record the checker is going to *read* (the provider-terms register, whose
-    rows a ``#route-id`` anchor is resolved against) must be a regular file
-    inside the checkout, reached through real directories, that this process
-    may open for reading. This predicate answers that before anything is
-    opened, so a symlinked, missing, special-file, unreadable or
-    outside-the-root path is refused rather than read: ``Path.exists`` is True
-    for a FIFO and a device node, and opening a FIFO for reading blocks until
-    a writer appears, so "it exists" is not "it can be read".
+    Every root-relative file this checker reads as a record or hashes goes
+    through this predicate first - the provider-terms register, whose rows a
+    ``#route-id`` anchor is resolved against, and every ``--check-hashes``
+    output. It must be a regular file inside the checkout, reached through real
+    directories, that this process may open for reading, so a symlinked,
+    missing, special-file, unreadable or outside-the-root path is refused
+    rather than read: ``Path.exists`` is True for a FIFO and a device node,
+    and opening a FIFO for reading blocks until a writer appears, so "it
+    exists" is not "it can be read".
 
     Spelling is re-checked here because this is the last gate before a path is
     resolved against the root by name.
@@ -514,16 +515,74 @@ def _record_file_is_readable(root: Path, relative: str) -> bool:
         return False
 
 
+# Open-time protections for every file this checker reads: no-follow so a leaf
+# swapped for a symlink between the path check and the open is refused, and
+# non-blocking so a FIFO or device node swapped in its place is opened without
+# blocking. Both are ordinary POSIX flags; where a platform provides neither,
+# the guarded open fails closed (see _guarded_open_flags).
+_NO_FOLLOW_FLAG = getattr(os, "O_NOFOLLOW", None)
+_NON_BLOCK_FLAG = getattr(os, "O_NONBLOCK", None)
+
+
+def _guarded_open_flags() -> int | None:
+    """Flags for an open that cannot follow a leaf or block on a special file.
+
+    Returns ``None`` when the platform offers neither guarantee, so the caller
+    refuses to open rather than read a path whose type could change underneath
+    it. This is deliberately fail-closed: a missing flag makes the whole class
+    of time-of-check/time-of-use swap undetectable at the fd level.
+    """
+    if _NO_FOLLOW_FLAG is None or _NON_BLOCK_FLAG is None:
+        return None
+    return os.O_RDONLY | _NO_FOLLOW_FLAG | _NON_BLOCK_FLAG
+
+
+def _open_regular_file_descriptor(root: Path, relative: str) -> int | None:
+    """Open ``root/relative`` as a real regular file, or ``None``.
+
+    Callers validate the path with ``_record_file_is_readable`` first; this
+    function adds what only an open can guarantee. The descriptor must
+    describe a regular file, so a path swapped for a FIFO or device node
+    between the check and here is closed unread. ``O_NOFOLLOW`` refuses a leaf
+    that became a symlink, and ``O_NONBLOCK`` keeps a swapped-in FIFO from
+    blocking; blocking is then restored on the descriptor so the caller's
+    streaming reads behave normally.
+    """
+    flags = _guarded_open_flags()
+    if flags is None:
+        # No fd-level protection available: fail closed instead of opening a
+        # path that cannot be checked against the filesystem's own answer.
+        return None
+    try:
+        descriptor = os.open(root / relative, flags)
+    except OSError:
+        return None
+    try:
+        mode = os.fstat(descriptor).st_mode
+    except OSError:
+        os.close(descriptor)
+        return None
+    if not stat.S_ISREG(mode):
+        os.close(descriptor)
+        return None
+    try:
+        os.set_blocking(descriptor, True)
+    except OSError:
+        # Non-blocking mattered for the open itself; a regular file reads fine
+        # either way.
+        pass
+    return descriptor
+
+
 def _read_record_text(root: Path, relative: str) -> str | None:
-    """Read a record file as UTF-8 text, or ``None`` when it cannot be read.
+    """Read a file this checker treats as text, or ``None`` when unreadable.
 
     The path is validated immediately before it is opened
     (``_record_file_is_readable``) and the *descriptor* is validated again
-    after it: it must describe a regular file, so a path swapped for a special
-    file between the two steps is closed unread. The open itself uses
-    ``O_NOFOLLOW`` (a leaf swapped for a symlink is refused instead of
-    followed) and ``O_NONBLOCK`` (a FIFO or device node swapped in its place is
-    opened without blocking, then rejected by ``fstat``).
+    after it (``_open_regular_file_descriptor``): it must describe a regular
+    file, so a path swapped for a special file between the two steps is closed
+    unread; the open uses ``O_NOFOLLOW`` and ``O_NONBLOCK``, and fails closed
+    where those flags do not exist.
 
     This narrows the window between check and read; it does not close it. The
     path is still resolved by name more than once, so nothing here is
@@ -534,15 +593,11 @@ def _read_record_text(root: Path, relative: str) -> str | None:
     """
     if not _record_file_is_readable(root, relative):
         return None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    try:
-        descriptor = os.open(root / relative, flags)
-    except OSError:
+    descriptor = _open_regular_file_descriptor(root, relative)
+    if descriptor is None:
         return None
+    chunks: list[bytes] = []
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            return None
-        chunks: list[bytes] = []
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
             if not chunk:
@@ -620,6 +675,21 @@ class PathChecker:
             )
 
     def digest(self, relative: str) -> str | None:
+        """Hash a manifest-recorded output, or ``None`` when it cannot be read.
+
+        The path is re-validated here rather than trusted from an earlier
+        existence check - spelling, symlinked components, file type and read
+        permission - then opened through the same guarded descriptor as
+        ``_read_record_text``: no-follow, non-blocking and an ``fstat``
+        regular-file check. An unreadable, missing, non-regular or swapped path
+        therefore yields ``None`` (never an exception), which the caller reports
+        as the structured ``missing-file`` finding; no read error escapes.
+
+        Like every other read in this checker, the parent components are
+        resolved by name, so a parent directory swapped for a symlink after the
+        component check is still followed: this narrows the window, it is not
+        race-free resolution.
+        """
         if self.root is None:
             return None
         if _path_spelling_error(relative) is not None:
@@ -627,19 +697,31 @@ class PathChecker:
             # absolute key such as /etc/hosts would otherwise be hashed.
             return None
         target = self.resolve(relative)
-        if (
-            target is None
-            or _symlinked_component(self.root, relative) is not None
-            or not target.is_file()
-        ):
+        if target is None or _symlinked_component(self.root, relative) is not None:
             # Re-checked here rather than trusted from an earlier existence
             # check: the file can become a symlink between the two steps, and
             # hashing must never follow one.
             return None
+        if not _record_file_is_readable(self.root, relative):
+            # Missing, not a regular file (directory, FIFO, device node), or
+            # unreadable by this process: refuse before opening anything.
+            return None
+        descriptor = _open_regular_file_descriptor(self.root, relative)
+        if descriptor is None:
+            # Swapped for a special file or a symlink at the open boundary, or
+            # the platform offers no fd-level protection to check with.
+            return None
         hasher = hashlib.sha256()
-        with open(target, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        try:
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
                 hasher.update(chunk)
+        except OSError:
+            return None
+        finally:
+            os.close(descriptor)
         return hasher.hexdigest()
 
 
@@ -688,7 +770,11 @@ def _decode_manifest_document(
     collector = _DuplicateMemberCollector()
     try:
         document = json.loads(raw, object_pairs_hook=collector)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
+        # JSONDecodeError is a ValueError, and the interpreter raises a plain
+        # ValueError for an integer literal too long to convert (the digit
+        # limit). Both mean "this text is not a JSON record": report the same
+        # structured finding instead of letting a traceback escape the CLI.
         findings.error(
             "invalid-json",
             "<manifest>",
