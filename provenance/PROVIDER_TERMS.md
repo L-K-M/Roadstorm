@@ -1,6 +1,6 @@
 # Provider-terms intake
 
-Status: **OPEN — no provider/service terms entry has been verified.** On
+Status: **OPEN — no provider/service terms entry has been verified.** Public candidate documents for the Claude Code and native Codex reviewer routes were captured on 2026-11-27; their account applicability remains unknown. On
 2026-11-26 the two observed routes below had their official primary-source
 terms located and captured as bounded snapshots, but locating a document is not
 verification: account/version applicability and output-dedication compatibility
@@ -50,9 +50,7 @@ Committed reports under [`review/`](../review/) self-identify the authoring
 route that produced them. Those are tracked repository files, so the earlier
 statement that no advertised route had "produced repository material yet" was
 inaccurate. Each route below is registered with its self-reported model and the
-committed evidence, but **no provider/account terms have been captured or
-verified** for any of them; every row is UNKNOWN / BLOCKING for shipping
-affected material. Whether review reports count as dedicated "project
+committed evidence, but **no provider/account terms have been verified** for any of them. Public candidate documents for Claude Code and native Codex have since been captured; every row remains UNKNOWN / BLOCKING for shipping affected material. Whether review reports count as dedicated "project
 material" (as opposed to review evidence) is an open policy decision recorded
 as OI-12 and is not settled here. Attributions are read from the files' own
 headers; they are evidence of the route used, not verification of terms, and no
@@ -63,9 +61,9 @@ credential, account, or private identifier was inspected to compile this table.
 | `devin-cli` | Local Devin CLI | `swe-2-1-max` | `973757bc-5a9b-492b-b9aa-9926f7c5d33c` | **UNKNOWN / BLOCKING** — no terms captured |
 | `opencode-zai-glm` | Zai coding-plan through OpenCode | `zai-coding-plan/glm-5.4` | `baddc856-cf9f-4c90-922a-3c23a75f00f4` | **UNKNOWN / BLOCKING** — no terms captured |
 | `pi-mistral` | Mistral Large 4 via the local Pi harness (exact Pi provider ID not recorded in the file) | `mistral-large-4` | `84f146b5-54df-4256-a229-ec14c0a834e7` | **UNKNOWN / BLOCKING** — no terms captured |
-| `claude-code-opus` | Claude Opus 5.5 as a Claude Code agent | `claude-opus-5-5` | `2506a658-428a-4846-ad5d-f0a1c9af0ded` | **UNKNOWN / BLOCKING** — no terms captured |
+| `claude-code-opus` | Claude Opus 5.5 through first-party Claude Code | `claude-opus-5-5` | `2506a658-428a-4846-ad5d-f0a1c9af0ded`; implementation review `a525aeef-0873-477c-a666-a4d8d8795041` | **UNKNOWN / BLOCKING** — [candidate public documents captured](provider_terms/claude-code-opus/INTAKE.md); account applicability unverified |
 | `pi-venice-opus` | Claude Opus 5.5, provider `venice`, through Pi | `claude-opus-5-5` | `implementation/m0-five-jobs-opus-0bbb2f75…`, `…-opus-recheck-929c4082…`, `m0-checkpoint-opus-recheck-2963edd5…` | **UNKNOWN / BLOCKING** — no terms captured |
-| `openai-codex-sol` | OpenAI Codex, GPT-6.2 Sol (native) | `gpt-6.2-sol` | `implementation/m0-five-jobs-sol-native`, `…-sol-recheck-bdeb8e2`, `m0-checkpoint-sol-recheck-15faf0d` | **UNKNOWN / BLOCKING** — no terms captured |
+| `openai-codex-sol` | OpenAI Codex, GPT-6.2 Sol (native) | `gpt-6.2-sol` | `implementation/m0-five-jobs-sol-native`, `…-sol-recheck-bdeb8e2`, `m0-checkpoint-sol-recheck-15faf0d` | **UNKNOWN / BLOCKING** — [candidate public documents captured](provider_terms/openai-codex-sol/INTAKE.md); account applicability unverified |
 | `codex-cli-agent` | Codex CLI/agent (plan reviews); exact model not exposed | unknown (one self-reports GPT-5-based) | plan reviews `386eb383…`, `6a45bc14…`, `737d6d48…`, `82923d41…`, `acd5167d…`, `eb571c59…` | **UNKNOWN / BLOCKING** — no terms captured; model unknown |
 
 The `pi-venice-opus` and `openai-codex-sol` routes are the plan's mandated
