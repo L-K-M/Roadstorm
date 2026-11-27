@@ -11,8 +11,9 @@ extends RefCounted
 ## and routing `ShiftEvent` to presentation/audio.
 ##
 ## Inputs and output:
-##   * input: one committed `CarState`; the relevant fields are the finite
-##     signed forward speed (`velocity_m_s` projected on `heading_rad`) and the
+##   * input: one committed `CarState` whose every numeric field is finite
+##     (`CarState.is_finite()`); the consumed fields are the finite signed
+##     forward speed (`velocity_m_s` projected on `heading_rad`) and the
 ##     committed `reverse_engaged` latch produced by `ArcadeMotor`;
 ##   * output: `GearboxProposal` with `gear_index` (`-1` reverse, `1..N`
 ##     forward), a bounded `normalized_rpm` in `[0, 1]`, and a `ShiftEvent`
@@ -34,10 +35,12 @@ extends RefCounted
 ## uses the forward-speed magnitude for forward gears, so a forward gear is
 ## always selected while the latch is released.
 ##
-## Invalid configuration, a nonfinite car state/dt, or an unexpected nonfinite
-## result is refused atomically: `create()` returns `null`, `propose()`
-## returns `null`, and no gearbox or input state changes. `reset()` returns the
-## instance to the deterministic initial state (gear 1, zero dwell, zero rpm).
+## Invalid configuration, a nonfinite committed `CarState` record (any
+## numeric field, per `CarState.is_finite()`), a nonfinite dt, or an unexpected
+## nonfinite result is refused atomically: `create()` returns `null`,
+## `propose()` returns `null`, and no gearbox or input state changes. `reset()`
+## returns the instance to the deterministic initial state (gear 1, zero dwell,
+## zero rpm).
 ## Fixed-step contract: callers pass `DT` (1/60 s); other positive step sizes
 ## are refused, matching `ArcadeMotor`.
 ##
@@ -51,6 +54,14 @@ extends RefCounted
 ## Deferred seams owned elsewhere: actual torque/rpm physics, throttle/brake
 ## awareness, airborne behaviour, launch logic, shift audio and HUD display.
 ## This component only indicates a gear and an event.
+##
+## Integration seam (open): `CarState.gear_index` defaults to 0 while this
+## kernel uses `-1`/`1..N` and keeps `shift_cooldown_s` privately, so a replay
+## or reset restored from a committed `CarState` cannot reproduce gearbox
+## state. Before integration, decide the single source of truth for the gear
+## index, the shared initial value, and whether the shift cooldown lives in
+## `CarState`, in the gearbox, or is rebuilt on restore. This slice writes no
+## `CarState.gear_index`.
 
 const DT := 1.0 / 60.0
 ## Absolute tolerance for accepting a caller-supplied step size as 60 Hz.
@@ -277,20 +288,23 @@ func config_snapshot() -> Dictionary:
 	}
 
 
-## Evaluate one fixed 60 Hz gearbox tick. Returns `null` for null input, a
-## nonfinite velocity/heading/forward speed, or a step size that is not the
-## declared 60 Hz tick. A refusal leaves this gearbox unchanged; a valid call
-## advances the owned state and returns a proposal.
+## Evaluate one fixed 60 Hz gearbox tick. Returns `null` for null input, any
+## nonfinite numeric field of the committed `CarState` record (checked with
+## `CarState.is_finite()` before anything is derived), or a step size that is
+## not the declared 60 Hz tick. A refusal leaves this gearbox unchanged; a
+## valid call advances the owned state and returns a proposal.
 func propose(car_state: CarState, dt: float = DT) -> GearboxProposal:
 	if car_state == null:
 		return null
+	# Honor the full committed-record contract: position and the inert seams
+	# are validated too, even though only motion and the reverse latch are
+	# consumed below.
+	if not car_state.is_finite():
+		return null
 	if not _finite(dt) or dt <= 0.0 or absf(dt - DT) > DT_TOLERANCE_S:
 		return null
-	var velocity := car_state.velocity_m_s
-	if not _vector2_finite(velocity):
-		return null
-	if not _finite(car_state.heading_rad):
-		return null
+	# `is_finite()` rejects nonfinite inputs, but a dot product of very large
+	# finite values can still overflow; keep the derived guard.
 	var forward_speed := car_state.forward_speed_m_s()
 	if not _finite(forward_speed):
 		return null
@@ -382,7 +396,3 @@ func _normalized_rpm(gear_index: int, speed_abs: float) -> float:
 
 static func _finite(value: float) -> bool:
 	return not is_nan(value) and not is_inf(value)
-
-
-static func _vector2_finite(value: Vector2) -> bool:
-	return _finite(value.x) and _finite(value.y)

@@ -11,6 +11,7 @@
 #   tools/gear_lab/run_validation.sh [--project DIR] [--godot BIN]
 #       [--private-dir FRESH_DIR] [--timeout SECONDS] [--log FILE]
 #       [--case <id>|all|intentional_failure]
+#       [--legacy-gearbox FILE] [--legacy-case ID]
 #
 # Exit codes: 0 = every check passed and the deliberate failure proof exited
 # nonzero, 1 = a check/output gate failed, 2 = unsafe inputs or unusable engine.
@@ -27,6 +28,8 @@ PRIVATE_DIR=""
 TIMEOUT="300"
 LOG_FILE=""
 CASE_ID="all"
+LEGACY_GEARBOX=""
+LEGACY_CASE="invalid_atomicity"
 KEEP_SCRATCH="${KEEP_SCRATCH:-0}"
 
 SCRATCH=""
@@ -43,9 +46,13 @@ usage() {
 Usage: run_validation.sh [--project DIR] [--godot BIN]
                          [--private-dir FRESH_DIR] [--timeout SECONDS]
                          [--log FILE] [--case <id>|all|intentional_failure]
+                         [--legacy-gearbox FILE] [--legacy-case ID]
 
 --private-dir must not already exist. It is reserved with an atomic mkdir and
 the project is staged into it. Omit it for an auto-created temporary copy.
+With --legacy-gearbox, runs only the historical-source negative control:
+the supplied older gearbox source is staged over the isolated copy and must
+fail --legacy-case (default invalid_atomicity).
 EOF
 }
 
@@ -82,6 +89,12 @@ while [ $# -gt 0 ]; do
 		--case)
 			[ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
 			CASE_ID="$2"; shift 2 ;;
+		--legacy-gearbox)
+			[ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
+			LEGACY_GEARBOX="$2"; shift 2 ;;
+		--legacy-case)
+			[ $# -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
+			LEGACY_CASE="$2"; shift 2 ;;
 		-h|--help)
 			usage; exit 0 ;;
 		*)
@@ -111,6 +124,21 @@ fi
 if [ ! -x "$GODOT_BIN" ] && ! command -v "$GODOT_BIN" >/dev/null 2>&1; then
 	echo "FAIL: Godot binary not found or not executable: $GODOT_BIN" >&2
 	exit 2
+fi
+
+if [ -n "$LEGACY_GEARBOX" ]; then
+	if [ ! -r "$LEGACY_GEARBOX" ]; then
+		echo "FAIL: --legacy-gearbox is not readable: $LEGACY_GEARBOX" >&2
+		exit 2
+	fi
+	case "$LEGACY_CASE" in
+	custom_config_boundaries|acceleration_through_each_threshold|downshifts|\
+	boundary_dithering|reverse_latch_transition|rpm_bounds|invalid_atomicity|reset_replay) ;;
+	*)
+		echo "FAIL: unknown --legacy-case '$LEGACY_CASE'" >&2
+		exit 2
+		;;
+	esac
 fi
 
 canonical_dir() {
@@ -290,6 +318,45 @@ fi
 if grep -nE "$error_re" "$IMPORT_LOG"; then
 	echo "FAIL: import log reported engine errors" >&2
 	exit 1
+fi
+
+if [ -n "$LEGACY_GEARBOX" ]; then
+	echo "[gear-lab] staging legacy gearbox source over the isolated copy"
+	cp "$LEGACY_GEARBOX" "$PRIVATE_CANON/src/simulation/automatic_gearbox.gd" || {
+		echo "FAIL: cannot stage legacy gearbox source" >&2
+		exit 1
+	}
+	: >"$MAIN_LOG"
+	run_bounded "$TIMEOUT" "$MAIN_LOG" env \
+		XDG_CACHE_HOME="$RUN_CACHE/cache" \
+		XDG_CONFIG_HOME="$RUN_CACHE/config" \
+		XDG_DATA_HOME="$RUN_CACHE/data" \
+		TMPDIR="$RUN_CACHE/tmp" \
+		"$GODOT_BIN" --headless --fixed-fps 60 \
+		--path "$PRIVATE_CANON" \
+		--script res://tools/gear_lab/validate_gear_lab.gd "--case=$LEGACY_CASE"
+	legacy_status=$?
+	cat "$MAIN_LOG"
+	note_log "$MAIN_LOG"
+	status=0
+	if grep -nE "$error_re" "$MAIN_LOG"; then
+		echo "FAIL: legacy gearbox control log reported engine errors" >&2
+		status=1
+	fi
+	if [ "$legacy_status" -eq 0 ]; then
+		echo "FAIL: legacy gearbox passed $LEGACY_CASE; the regression does not detect the old behavior" >&2
+		status=1
+	fi
+	if ! grep -q 'nonfinite position is refused' "$MAIN_LOG"; then
+		echo "FAIL: legacy control did not fail the nonfinite-position assertion" >&2
+		status=1
+	fi
+	if [ "$status" -eq 0 ]; then
+		echo "[gear-lab] legacy gearbox control failed $LEGACY_CASE as expected"
+	else
+		echo "[gear-lab] legacy gearbox control FAILED" >&2
+	fi
+	exit "$status"
 fi
 
 echo "[gear-lab] running validator (case: $CASE_ID)"

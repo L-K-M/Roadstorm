@@ -15,6 +15,7 @@ automatic transmission exists.
 | `tools/gear_lab/validate_gear_lab.gd` | headless `SceneTree` validator with one case per required behavior |
 | `tools/gear_lab/gear_lab_driver.gd` | shared builders/checks; calls the real gearbox, never re-implements its math |
 | `tools/gear_lab/run_validation.sh` | bounded isolated-copy wrapper (stages, imports, runs validator and failure proof) |
+| `tools/gear_lab/legacy_automatic_gearbox.gd.txt` | historical motion-only-guard gearbox source for the old-source negative control (inert text, staged over the gearbox only for `--legacy-gearbox`) |
 
 Helper scripts live only under `tools/gear_lab/`; nothing here is placed in
 `tests/`, so CI's test auto-discovery does not pick up lab helpers.
@@ -24,7 +25,8 @@ Helper scripts live only under `tools/gear_lab/`; nothing here is placed in
 - `AutomaticGearbox.create(config)` copies and validates a `GearboxConfig`;
   it returns `null` for null/invalid configuration. Config values are copied,
   so later caller mutation cannot change a live gearbox.
-- `gearbox.propose(car_state, dt)` reads the finite signed forward speed
+- `gearbox.propose(car_state, dt)` requires a fully finite committed record
+  (`CarState.is_finite()`), then reads the signed forward speed
   (`velocity_m_s` projected on `heading_rad`) and the committed
   `car_state.reverse_engaged` latch. It returns `GearboxProposal` with
   `gear_index` (`-1` or `1..N`), `normalized_rpm` in `[0, 1]`, and a
@@ -32,7 +34,10 @@ Helper scripts live only under `tools/gear_lab/`; nothing here is placed in
   `normalized_rpm`) only when the gear actually changed. `dt` must be the
   declared `DT` (1/60 s).
 - Invalid input or an unexpected nonfinite result is refused atomically:
-  `propose` returns `null` and leaves the gearbox and car untouched.
+  `propose` returns `null` and leaves the gearbox and car untouched. Any
+  nonfinite numeric `CarState` field refuses, including fields the gearbox
+  does not consume (`position_m` and the inert seams); motion is validated as
+  part of the whole record rather than by a narrower field subset.
 - `gearbox.reset()` restores the deterministic initial state: gear 1, zero
   dwell, zero rpm. No clock, RNG or input is consulted.
 - Reverse obeys the existing motor latch, never signed velocity alone: a
@@ -49,6 +54,12 @@ The future simulation integrator owns committing `CarState.gear_index`,
 choosing whether to feed this indicator from throttle/brake state, and routing
 `ShiftEvent` to presentation/audio. This component neither applies torque nor
 emits sound.
+
+Open integration decision (Opus F4): `CarState.gear_index` defaults to `0`
+while the kernel uses `-1`/`1..N` and holds `shift_cooldown_s` privately, so a
+replay or reset restored from a committed record cannot reproduce gearbox
+state. Before wiring, decide the single source of truth for the gear index,
+the shared initial value, and where the shift cooldown lives.
 
 ## Provisional defaults
 
@@ -81,6 +92,9 @@ unless `--godot` overrides it, stages an isolated project copy, performs a
 headless import, runs every case under the wall-clock limit, then reruns a
 deliberate failing assertion and requires a nonzero exit. Options:
 `--case <id>|all|intentional_failure`, `--private-dir FRESH_DIR`, `--log FILE`.
+`--legacy-gearbox FILE` runs only the historical-source negative control: the
+supplied older source is staged over the isolated gearbox and must fail
+`--legacy-case` (default `invalid_atomicity`).
 
 Cases: `custom_config_boundaries`, `acceleration_through_each_threshold`,
 `downshifts`, `boundary_dithering`, `reverse_latch_transition`, `rpm_bounds`,

@@ -721,6 +721,38 @@ func _case_invalid_atomicity(driver) -> void:
 	driver.check(gearbox.snapshot() == snapshot_before, "refusals leave gearbox state unchanged")
 	driver.check(driver.snapshot_car(car) == car_before, "refusals leave the car record unchanged")
 
+	# Full committed-record contract: a nonfinite numeric field the gearbox does
+	# not consume still refuses atomically, before any derivation or write.
+	# Position is the reviewed gap; `valid_progress_m` is an inert documented
+	# seam. Both cars have finite motion and would shift on the old narrower
+	# motion-only guard, so a refusal also proves no shift was committed.
+	var record_probe = driver.fresh_gearbox()
+	var record_snapshot: Dictionary = record_probe.snapshot()
+
+	var nan_position_car = driver.make_car(20.0)
+	nan_position_car.position_m = Vector2(NAN, 20.0)
+	driver.check(not nan_position_car.is_finite(), "position probe really is nonfinite")
+	var nan_position_result = record_probe.propose(nan_position_car)
+	driver.check(nan_position_result == null, "nonfinite position is refused")
+	driver.check(
+		not (nan_position_result != null and nan_position_result.has_event()),
+		"nonfinite position emits no shift event"
+	)
+	driver.check(is_nan(nan_position_car.position_m.x), "nonfinite position is left untouched")
+	driver.check(record_probe.snapshot() == record_snapshot, "nonfinite position leaves gearbox state unchanged")
+
+	var inf_progress_car = driver.make_car(20.0)
+	inf_progress_car.valid_progress_m = INF
+	driver.check(not inf_progress_car.is_finite(), "inert-seam probe really is nonfinite")
+	var inf_progress_result = record_probe.propose(inf_progress_car)
+	driver.check(inf_progress_result == null, "nonfinite inert progress seam is refused")
+	driver.check(
+		not (inf_progress_result != null and inf_progress_result.has_event()),
+		"nonfinite inert progress seam emits no shift event"
+	)
+	driver.check(is_inf(inf_progress_car.valid_progress_m), "inert progress seam is left untouched")
+	driver.check(record_probe.snapshot() == record_snapshot, "inert-seam refusal leaves gearbox state unchanged")
+
 	var after_refusals = driver.step(gearbox, car)
 	driver.check(after_refusals != null, "valid input still evaluates after refusals")
 	if after_refusals != null:
