@@ -52,6 +52,8 @@ const CASE_IDS := [
 	"collision_mask_consistency",
 	"wall_approach_no_tunnel",
 	"oblique_wall_response",
+	"tilted_wall_response",
+	"multi_contact_collection",
 	"wall_contact_normal_authority",
 	"rotated_hull_wall_orientation",
 	"envelope_refusal",
@@ -65,6 +67,28 @@ var _case_results: Array[Dictionary] = []
 var requested_case := "all"
 var _recording_deltas := false
 var _physics_deltas: Array[float] = []
+
+
+## Deterministic collision-like fixture for the collection seam. It exposes the
+## same `get_collision_count()`, `get_normal(index)` and
+## `get_position(index)` surface as a real `KinematicCollision3D`, with an
+## explicit contact order the physics server cannot be made to emit.
+class SeamCollision extends RefCounted:
+	var normals: Array = []
+	var positions: Array = []
+
+	func _init(normals_: Array, positions_: Array) -> void:
+		normals = normals_
+		positions = positions_
+
+	func get_collision_count() -> int:
+		return normals.size()
+
+	func get_normal(index: int = 0) -> Vector3:
+		return normals[index]
+
+	func get_position(index: int = 0) -> Vector3:
+		return positions[index]
 
 
 func _ready() -> void:
@@ -147,6 +171,10 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_wall_approach()
 		"oblique_wall_response":
 			await _case_oblique_wall()
+		"tilted_wall_response":
+			await _case_tilted_wall_response()
+		"multi_contact_collection":
+			await _case_multi_contact_collection()
 		"wall_contact_normal_authority":
 			await _case_wall_contact_normal_authority()
 		"rotated_hull_wall_orientation":
@@ -887,6 +915,223 @@ func _case_oblique_wall() -> void:
 	measurements["post_contact_normal_speed_mps"] = inward_speed
 	measurements["first_contact_tick"] = first_contact + 1
 
+	await _destroy_world(world)
+
+
+func _case_tilted_wall_response() -> void:
+	# Regression for the GPT-6.2 Sol tilted-wall finding on 4ff7bec: the old
+	# response removed the inward component along the full 3D normal and then
+	# flattened the velocity, leaving about -1.6 m/s of inward road speed for
+	# this exact scenario. The adapter now resolves against the normalized
+	# road-plane projection, and this case drives the real adapter into a real
+	# pinned-Jolt rolled wall whose measured normal is (sqrt(0.84), 0.4, 0).
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+	# Keep the approach velocity exactly (-10, 0, 0) for the reported
+	# geometry; the shared tuning's lateral damping would decay it first.
+	tuning.lateral_damping_grip_per_s = 0.0
+	var expected_normal := Vector3(sqrt(0.84), 0.4, 0.0)
+	var wall_spec := {
+		"point": Vector3(1.0, 0.55, 0.0),
+		"normal": expected_normal,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(Vector2(2.5, 0.0), Vector2(-10.0, 0.0), 0.0)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var commands: Array = []
+	for _index in range(8):
+		commands.append(d.make_idle_command())
+	var records := await _drive(world, state, commands, tuning, config)
+	d.check(records.size() == 8, "tilted: 8 ticks driven")
+	var first_contact := _first_contact_index(records)
+	d.check(first_contact > 0, "tilted: contact occurred")
+	if first_contact < 0:
+		await _destroy_world(world)
+		return
+	var impact = records[first_contact]["result"]
+	d.check(
+		impact.status == AdapterScript.Status.COMMITTED,
+		"tilted: impact tick committed"
+	)
+	d.check(impact.contact, "tilted: contact telemetry set")
+	d.check(impact.wall_contact, "tilted: tilted normal classified as wall contact")
+	d.check(
+		impact.wall_contact_normal.distance_to(expected_normal) <= 1e-4,
+		"tilted: authoritative normal matches the rolled wall (%s)"
+		% impact.wall_contact_normal
+	)
+	var projected_normal := Vector3(
+		expected_normal.x, 0.0, expected_normal.z
+	).normalized()
+	var committed_world := AdapterScript.road_vector_to_world(
+		impact.committed_state.velocity_m_s
+	)
+	var inward_projected := committed_world.dot(projected_normal)
+	var inward_full := committed_world.dot(expected_normal.normalized())
+	d.check(
+		inward_projected >= -1e-6,
+		"tilted: no inward road-plane projected component (%.9f m/s)" % inward_projected
+	)
+	d.check(
+		inward_full >= -1e-6,
+		"tilted: no inward full-normal component (%.9f m/s)" % inward_full
+	)
+	d.check(
+		impact.committed_state.speed_m_s() <= 10.0 + 1e-6,
+		"tilted: committed speed does not increase"
+	)
+	measurements["wall_contact_normal"] = impact.wall_contact_normal
+	measurements["inward_projected_speed_mps"] = inward_projected
+	measurements["inward_full_normal_speed_mps"] = inward_full
+	measurements["worst_hull_plane_distance_m"] = (
+		_assert_hull_within_wall_bounds(
+			world, records, PENETRATION_TOLERANCE_M, "tilted"
+		)
+	)
+	await _destroy_world(world)
+
+
+func _case_multi_contact_collection() -> void:
+	# Regression for the second GPT-6.2 Sol finding: one collision result can
+	# report several contacts, so reading only the default index can drop a
+	# wall listed after a floor-like contact. Pinned Jolt did not reproduce a
+	# literal floor-first/wall-second batch here (see README); the ordered batch
+	# is injected at the collection seam the sweep uses, and a real engine
+	# collision flows through the same helper below.
+	var config := d.make_config()
+	var adapter := AdapterScript.new()
+	var has_collector: bool = adapter.has_method("_collect_collision_contacts")
+	d.check(
+		has_collector,
+		"seam: adapter exposes the collision collection helper"
+	)
+	if not has_collector:
+		# Old source lacks the collection seam; the tilted-wall case carries the
+		# behavioral negative control instead.
+		return
+	var floor_normal := Vector3(0.0, 1.0, 0.0)
+	var wall_normal := Vector3(0.0, 0.0, 1.0)
+	var opposite_wall_normal := Vector3(0.0, 0.0, -1.0)
+	var floor_first := SeamCollision.new(
+		[floor_normal, wall_normal],
+		[Vector3(0.0, 0.0, -1.0), Vector3(0.0, 0.5, -1.0)]
+	)
+	var collected: Dictionary = adapter.call(
+		"_collect_collision_contacts", floor_first, config
+	)
+	d.check(
+		collected["generic_normal"] == floor_normal,
+		"seam: generic telemetry stays the first reported contact"
+	)
+	d.check(
+		collected["generic_point"] == Vector3(0.0, 0.0, -1.0),
+		"seam: generic point stays the first reported contact"
+	)
+	d.check(
+		collected["wall_normals"].size() == 1,
+		"seam: floor-first batch still yields the wall candidate"
+	)
+	d.check(
+		collected["wall_normals"][0] == wall_normal,
+		"seam: retained wall normal is exact"
+	)
+	# The retained candidate must drive the real response: the old
+	# default-index-only rule would have left this inward wall speed.
+	var approach_velocity := Vector3(0.0, 0.0, -20.0)
+	var injected_chosen := AdapterScript._select_wall_response_normal(
+		collected["wall_normals"], approach_velocity
+	)
+	d.check(
+		injected_chosen == wall_normal,
+		"seam: collected wall candidate is selectable"
+	)
+	var injected_corrected := AdapterScript._apply_wall_response(
+		approach_velocity, injected_chosen, config
+	)
+	d.check(
+		injected_corrected.dot(wall_normal) >= -1e-6,
+		"seam: injected batch responds without inward wall remainder"
+	)
+
+	var two_walls := SeamCollision.new(
+		[wall_normal, floor_normal, opposite_wall_normal],
+		[Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+	)
+	var collected_two: Dictionary = adapter.call(
+		"_collect_collision_contacts", two_walls, config
+	)
+	d.check(
+		collected_two["generic_normal"] == wall_normal,
+		"seam: first of three contacts is generic"
+	)
+	d.check(
+		collected_two["wall_normals"].size() == 2,
+		"seam: both wall candidates survive a floor between them"
+	)
+	d.check(
+		collected_two["wall_normals"][0] == wall_normal
+		and collected_two["wall_normals"][1] == opposite_wall_normal,
+		"seam: wall candidates keep reported order"
+	)
+
+	# Degenerate road-plane projection guard.
+	var vertical_normal := Vector3(0.0, 1.0, 0.0)
+	var zero_projection: Vector3 = adapter.call(
+		"_road_plane_unit_normal", vertical_normal
+	)
+	d.check(
+		zero_projection == Vector3.ZERO,
+		"guard: vertical normal has no road-plane projection"
+	)
+	d.check(
+		AdapterScript._apply_wall_response(
+			Vector3(1.0, 2.0, 3.0), vertical_normal, config
+		) == Vector3(1.0, 2.0, 3.0),
+		"guard: degenerate projection leaves the velocity unchanged"
+	)
+
+	# A real pinned-Jolt collision object flows through the same helper.
+	var wall_spec := {
+		"point": Vector3(0.0, 2.0, STRAIGHT_WALL_Z),
+		"yaw_deg": 0.0,
+	"thickness_m": WALL_THICKNESS_M,
+	"width_m": WALL_WIDTH_M,
+	}
+	var world := await _build_world(config, wall_spec)
+	var state := d.make_state(Vector2.ZERO, Vector2(0.0, 20.0), 0.0)
+	await _place_body(world, state, d.BODY_SUPPORT_Y)
+	var real_collision: KinematicCollision3D = null
+	for _index in range(60):
+		var motion := Vector3(0.0, 0.0, -20.0 * DT)
+		real_collision = world.body.move_and_collide(motion, false, 0.0, false, 8)
+		if real_collision != null:
+			break
+		await _await_frames(1)
+	d.check(real_collision != null, "seam: real pinned-Jolt wall collision captured")
+	if real_collision != null:
+		var real_collected: Dictionary = adapter.call(
+			"_collect_collision_contacts", real_collision, config
+		)
+		d.check(
+			real_collected["generic_normal"].distance_to(Vector3(0.0, 0.0, 1.0)) <= 1e-4,
+			"seam: real generic telemetry is the wall normal"
+		)
+		d.check(
+			real_collected["wall_normals"].size() >= 1,
+			"seam: real multi-contact result yields wall candidates"
+		)
+		var approach := Vector3(0.0, 0.0, -20.0)
+		var chosen := AdapterScript._select_wall_response_normal(
+			real_collected["wall_normals"], approach
+		)
+		var corrected := AdapterScript._apply_wall_response(approach, chosen, config)
+		d.check(
+			corrected.dot(chosen.normalized()) >= -1e-6,
+			"seam: collected real wall normal responds without inward remainder"
+		)
+		measurements["real_wall_contact_count"] = real_collected["wall_normals"].size()
 	await _destroy_world(world)
 
 

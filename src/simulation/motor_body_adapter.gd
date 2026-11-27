@@ -27,13 +27,18 @@ extends RefCounted
 ##     ended the sweep (reported through `remainder_m`);
 ##   * a wall-like contact removes the inward normal component of the committed
 ##     velocity and applies the configured bounded tangential retention. The
-##     response uses an authoritative wall-like normal chosen independently of
-##     the generic last-contact telemetry: when several wall contacts occur in
-##     one tick, the normal most opposed to the proposed world velocity wins,
-##     and the earliest contact breaks an exact tie. A later floor or ceiling
-##     contact therefore cannot silently replace the wall response. Any further
-##     contact response (deflection shaping, restitution tuning, depenetration,
-##     multi-car response) is M1.4 work.
+##     response resolves against the normalized road-plane projection of the
+##     wall normal, because the committed state stores only the road plane; a
+##     vertical normal with no usable projection is guarded and leaves the
+##     velocity unchanged. The response uses an authoritative wall-like normal
+##     chosen independently of the generic first-contact telemetry: every
+##     contact of every collision result is inspected, so a wall reported after
+##     a floor-like contact is still collected, and when several wall contacts
+##     occur in one tick, the road-plane-projected normal most opposed to the
+##     proposed world velocity wins, with the earliest contact breaking an exact
+##     tie. A later floor or ceiling contact therefore cannot silently replace
+##     the wall response. Any further contact response (deflection shaping,
+##     restitution tuning, depenetration, multi-car response) is M1.4 work.
 ##   * the translation sweep uses the tick-start basis; before the tick is
 ##     committed, a bounded nonmutating world check probes the installed hull
 ##     at the proposed yaw, using the body's actual collision mask and
@@ -86,6 +91,12 @@ const MAX_ORIENTATION_CONTACT_TOLERANCE_M := 0.1
 ## Fixed probe count when a proposed yaw is blocked. Two full-pose probes plus
 ## this bounded bisection is the entire orientation work for one tick.
 const MAX_HEADING_CONSTRAINT_PROBES := 12
+## Squared road-plane length below which a contact normal has no usable
+## horizontal projection. The default 0.5 alignment cutoff does not classify
+## vertical normals as wall-like, but the guard keeps a caller-widened cutoff
+## or unexpected telemetry from dividing by zero; such a contact receives no
+## planar response.
+const MIN_WALL_NORMAL_PROJECTION_SQ := 1e-12
 
 ## Step outcome. `COMMITTED` means the body was moved and a committed state was
 ## produced. The other statuses are refusals that leave the body at its
@@ -274,11 +285,12 @@ class Result extends RefCounted:
 	var contact := false
 	## True when a collision normal was classified as wall-like.
 	var wall_contact := false
-	## Authoritative wall-like normal used for the wall response: the normal
-	## most opposed to the proposed world velocity, earliest on an exact tie.
-	## Zero when no wall-like contact occurred. Deliberately independent of
-	## `contact_normal`, which reports the generic last contact and can be
-	## overwritten by a later floor or ceiling contact within the same tick.
+	## Authoritative wall-like normal used for the wall response: the
+	## road-plane-projected normal most opposed to the proposed world velocity,
+	## earliest on an exact tie. Zero when no wall-like contact occurred.
+	## Deliberately independent of `contact_normal`, which reports the generic
+	## first contact of the last colliding substep and can be a floor or
+	## ceiling contact even when a later contact in the same result is a wall.
 	var wall_contact_normal := Vector3.ZERO
 	var contact_normal := Vector3.ZERO
 	var contact_point := Vector3.ZERO
@@ -390,15 +402,15 @@ static func step(
 		if collision != null:
 			actual = collision.get_travel()
 			hit = true
-			hit_normal = collision.get_normal()
-			hit_point = collision.get_position()
-			if absf(hit_normal.normalized().dot(SUPPORT_UP)) \
-					<= config.wall_normal_max_up_alignment:
+			var collected := _collect_collision_contacts(collision, config)
+			# Generic telemetry intentionally stays the first reported contact of
+			# the last colliding substep. It is diagnostic and is not the wall
+			# response input.
+			hit_normal = collected["generic_normal"]
+			hit_point = collected["generic_point"]
+			if not collected["wall_normals"].is_empty():
 				wall_hit = true
-				# Keep every wall-like candidate; the authoritative normal is
-				# chosen after the sweep so generic last-contact telemetry cannot
-				# overwrite it.
-				wall_normals.append(hit_normal)
+				wall_normals.append_array(collected["wall_normals"])
 
 		var committed_end := simulated.origin + actual
 		worst_prediction_error = maxf(
@@ -632,11 +644,43 @@ static func _test_move_travel(
 	return collision.get_travel()
 
 
+## Collect one collision result for the tick's contact accounting. The
+## parameter is an untyped collision-like object: production passes the real
+## `KinematicCollision3D`, while the laboratory can pass a deterministic
+## fixture exposing the same `get_collision_count()`, `get_normal(index)`
+## and `get_position(index)` methods.
+##
+## Generic telemetry stays the first reported contact of this result. Every
+## reported normal is inspected, so a wall-like contact listed after a
+## floor-like contact is still returned for the authoritative selection
+## instead of being hidden by collection order.
+@warning_ignore("unsafe_method_access")
+static func _collect_collision_contacts(
+	collision,
+	config: Config
+) -> Dictionary:
+	var contacts := {
+		"generic_normal": Vector3.ZERO,
+		"generic_point": Vector3.ZERO,
+		"wall_normals": [] as Array,
+	}
+	if collision == null:
+		return contacts
+	contacts["generic_normal"] = collision.get_normal()
+	contacts["generic_point"] = collision.get_position()
+	for index in range(collision.get_collision_count()):
+		var normal: Vector3 = collision.get_normal(index)
+		if absf(normal.normalized().dot(SUPPORT_UP)) \
+				<= config.wall_normal_max_up_alignment:
+			contacts["wall_normals"].append(normal)
+	return contacts
+
 ## Deterministic choice among the wall-like contact normals collected in one
-## tick. The normal most opposed to `velocity_world` (smallest dot product) is
-## authoritative, because it is the wall that most directly opposes the
-## commanded motion; the earliest contact wins an exact tie. Normals are
-## compared normalized, while the stored candidate is returned unchanged.
+## tick. The road-plane-projected normal most opposed to `velocity_world`
+## (smallest dot product) is authoritative, because it is the wall that most
+## directly opposes the commanded planar motion; the earliest contact wins an
+## exact tie. Candidates are compared by their normalized road-plane
+## projections, while the stored candidate is returned unchanged.
 static func _select_wall_response_normal(
 	normals: Array,
 	velocity_world: Vector3
@@ -646,24 +690,36 @@ static func _select_wall_response_normal(
 	var has_best := false
 	for normal in normals:
 		var candidate: Vector3 = normal
-		var opposition := candidate.normalized().dot(velocity_world)
+		var opposition := _road_plane_unit_normal(candidate).dot(velocity_world)
 		if not has_best or opposition < best_opposition:
 			best = candidate
 			best_opposition = opposition
 			has_best = true
 	return best
 
-## Bounded wall response: remove the inward normal component (with the
-## configured capped restitution) and retain at most the configured fraction of
-## the tangential component. It never adds speed and never reverses the normal
-## component past zero at restitution 0.
+## Normalized road-plane (horizontal) projection of a contact normal. Returns
+## zero when the projection is too short to define a direction, so callers can
+## guard the degenerate case instead of dividing by zero.
+static func _road_plane_unit_normal(normal: Vector3) -> Vector3:
+	var projected := Vector3(normal.x, 0.0, normal.z)
+	var length_sq := projected.length_squared()
+	if length_sq < MIN_WALL_NORMAL_PROJECTION_SQ:
+		return Vector3.ZERO
+	return projected / sqrt(length_sq)
+
+## Bounded wall response: remove the inward component along the normalized
+## road-plane projection of `normal` (with the configured capped restitution)
+## and retain at most the configured fraction of the tangential component. It
+## never adds speed and never reverses the normal component past zero at
+## restitution 0. A normal with no usable road-plane projection is guarded and
+## returns the velocity unchanged.
 static func _apply_wall_response(
 	velocity_world: Vector3,
 	normal: Vector3,
 	config: Config
 ) -> Vector3:
-	var unit_normal := normal.normalized()
-	if unit_normal.length_squared() < 0.5:
+	var unit_normal := _road_plane_unit_normal(normal)
+	if unit_normal == Vector3.ZERO:
 		return velocity_world
 	var normal_speed := velocity_world.dot(unit_normal)
 	if normal_speed >= 0.0:

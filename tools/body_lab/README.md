@@ -17,6 +17,12 @@ This proves one 60 Hz integration tick at a time:
   points the nose toward +X;
 - a frontal or oblique thick static wall produces no tunneling at 65 m/s and
   leaves no inward normal velocity in the committed state;
+- a rolled wall whose measured normal is `(sqrt(0.84), 0.4, 0)` leaves no
+  inward road-plane velocity after the response resolves against the
+  normalized horizontal projection of that normal;
+- every contact of a multi-contact `move_and_collide()` result is collected, so
+  a wall reported after a non-wall-like contact still drives the response,
+  while generic telemetry stays the first reported contact;
 - an unchecked yaw that would install the hull across a parallel wall is
   constrained to the largest safe fraction of the proposed yaw, or refused;
   clear open-ground steering still rotates freely;
@@ -89,28 +95,41 @@ These scripts are not discovered by `tools/ci` (CI discovers `tests/` and
   beyond the tight epsilon is now refused unless a genuine collision stopped
   the sweep; that case is reported through `remainder_m` and
   `contact_limited_remainder`.
-- Wall response: remove the inward normal component (restitution 0) and retain
-  the configured tangential fraction (1.0). Deflection shaping, restitution
-  tuning, depenetration and multi-car response remain M1.4 work.
+- Wall response: remove the inward component along the normalized road-plane
+  (horizontal) projection of the wall normal (restitution 0) and retain the
+  configured tangential fraction (1.0). A normal whose road-plane projection is
+  degenerate is guarded and leaves the velocity unchanged. Deflection shaping,
+  restitution tuning, depenetration and multi-car response remain M1.4 work.
 - Authoritative wall normal: `wall_hit` latches once any substep reports a
-  wall-like normal, but the generic last-contact `contact_normal` keeps being
-  overwritten. The response therefore does not read that telemetry. Every
-  wall-like normal is retained, and after the sweep the normal most opposed to
-  the proposed world velocity (smallest dot product) is authoritative; the
-  earliest contact wins an exact tie. The choice is exposed as
-  `Result.wall_contact_normal`. This closes interim review N2: a later floor
-  or ceiling contact can no longer replace the wall normal and leave inward
-  wall velocity.
-- Wall-then-floor regression limit: `wall_contact_normal_authority` drives the
-  documented wall-then-floor telemetry through the deterministic selection seam
-  because the pinned Jolt staging could not reliably produce that order inside
-  one tick. A configuration search over grounded/penetrating supports, wall
-  yaw/width/offset, approach angles and initial wall penetration found only
-  single-collision ticks or wall-after-wall sequences; floor contacts occurred
-  only when no wall was involved. The case therefore proves the selection and
-  response rule and reproduces the pre-fix failure on old source, not the
-  engine's own contact ordering. The real-Jolt portion checks the wiring for a
-  normal wall impact.
+  wall-like normal. Every reported normal of every collision result is
+  inspected, not just the default index, so one result listing a floor-like
+  contact before a wall cannot hide the wall. The generic first-contact
+  `contact_normal` is retained as diagnostic telemetry and is not the response
+  input. All wall-like normals are retained, and after the sweep the
+  road-plane-projected normal most opposed to the proposed world velocity
+  (smallest dot product) is authoritative; the earliest contact wins an exact
+  tie. The choice is exposed as `Result.wall_contact_normal`. This closes
+  interim review N2: a later floor or ceiling contact can no longer replace the
+  wall normal and leave inward wall velocity.
+- Tilted-wall response regression: `tilted_wall_response` stages a real
+  pinned-Jolt rolled wall with measured normal `(sqrt(0.84), 0.4, 0)`, drives
+  the adapter into it at a 10 m/s approach directly against its horizontal
+  projection, and checks `COMMITTED`, `wall_contact`, the measured normal and
+  zero inward road-plane speed. On the pre-fix `4ff7bec` source the same case
+  reports -1.600 m/s projected and -1.466 m/s full-normal residual inward
+  speed, reproducing the reviewer finding; the fixed source measures zero.
+- Multi-contact collection regression limit: a literal floor-first/
+  wall-second physical batch was not reproduced. Pinned Jolt's
+  `move_and_collide()` returned only motion-blocking contacts for horizontal
+  motion; a raised deck, ground penetration and a steep-ramp/wall junction all
+  produced either single-feature or repeated identical normals, never a
+  floor-like contact preceding a wall. `multi_contact_collection` therefore
+  injects a deterministic ordered `[floor, wall]` batch at the collection seam
+  helper `_collect_collision_contacts()`, asserts the second wall candidate is
+  retained while generic telemetry stays the first contact, and separately
+  passes a real captured `KinematicCollision3D` through the same helper. The
+  existing `wall_contact_normal_authority` selection-seam case remains a
+  selector-level check, not end-to-end proof of collection order.
 - Installed orientation: after the translation sweep, the adapter probes the
   final hull pose with a nonmutating `intersect_shape` query using the body's
   collision mask and excluding its RID. The probe is a real box hull reduced

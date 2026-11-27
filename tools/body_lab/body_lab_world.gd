@@ -57,6 +57,15 @@ static func build(
 		var width: float = wall_spec.get("width_m", 20.0)
 		var yaw := deg_to_rad(yaw_deg)
 		var normal := Vector3(sin(yaw), 0.0, cos(yaw))
+		# An explicit `normal` key stages a rolled wall whose near-face normal
+		# is not horizontal, for the tilted-wall response regression. Its
+		# vertical component makes the road-plane projection meaningful.
+		var explicit_normal := false
+		if wall_spec.has("normal"):
+			var specified: Vector3 = wall_spec["normal"]
+			if specified.length_squared() > 1e-12:
+				normal = specified.normalized()
+				explicit_normal = true
 		var wall := StaticBody3D.new()
 		wall.name = "Wall"
 		var wall_shape := CollisionShape3D.new()
@@ -64,12 +73,27 @@ static func build(
 		wall_box.size = Vector3(width, WALL_HEIGHT, thickness)
 		wall_shape.shape = wall_box
 		wall.add_child(wall_shape)
-		wall.rotation.y = yaw
-		wall.position = point - normal * (thickness * 0.5)
-		wall.position.y = WALL_CENTER_Y
 		world.root.add_child(wall)
+		if explicit_normal:
+			# Orient the box so its local +Z (near face) follows `normal`.
+			var z_axis := normal
+			var helper := (
+				Vector3.UP if absf(z_axis.dot(Vector3.UP)) < 0.9 else Vector3.BACK
+			)
+			var y_axis := (helper - z_axis * helper.dot(z_axis)).normalized()
+			var x_axis := y_axis.cross(z_axis)
+			wall.transform = Transform3D(
+				Basis(x_axis, y_axis, z_axis),
+				point - normal * (thickness * 0.5)
+			)
+		else:
+			wall.rotation.y = yaw
+			wall.position = point - normal * (thickness * 0.5)
+			wall.position.y = WALL_CENTER_Y
 		world.wall = wall
-		world.wall_point = Vector3(point.x, WALL_CENTER_Y, point.z)
+		world.wall_point = (
+			point if explicit_normal else Vector3(point.x, WALL_CENTER_Y, point.z)
+		)
 		world.wall_normal = normal
 		world.wall_thickness_m = thickness
 
