@@ -1083,12 +1083,17 @@ ci_init_report() {
 			printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
 			printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
 		} >"$_body" 2>/dev/null
-		if ci_link_create_only "$_body" "$_new_report"; then
+		_link_rc=0
+		ci_link_create_only "$_body" "$_new_report" || _link_rc=$?
+		if [ "$_link_rc" -eq 0 ]; then
 			rm -f "$_body" 2>/dev/null
 			CI_REPORT="$_new_report"
 			break
 		fi
 		rm -f "$_body" 2>/dev/null
+		if [ "$_link_rc" -eq 2 ]; then
+			ci_die "no atomic hard-link mechanism is available (need a working python3, or GNU/busybox ln -T on Linux); refusing to reserve a report in $CI_OUT/reports"
+		fi
 		_try=$((_try + 1))
 	done
 	if [ -z "$CI_REPORT" ] || [ -z "$CI_ATTEMPT_ID" ]; then
@@ -1113,6 +1118,27 @@ ci_new_evidence_file() {
 	mktemp "$_nef_dir/ci-evidence.XXXXXX" 2>/dev/null
 }
 
+# ci_link_mechanism : print the available exact-destination link(2)
+# mechanism once per process: python3 (os.link), lnT (GNU/busybox ln -T on
+# Linux) or none. The Python probe is bounded so a missing or broken interpreter
+# cannot turn a reserved-name collision into 101 slow retries.
+_ci_LINK_MECHANISM=""
+ci_link_mechanism() {
+	if [ -n "$_ci_LINK_MECHANISM" ]; then
+		printf '%s\n' "$_ci_LINK_MECHANISM"
+		return 0
+	fi
+	if command -v python3 >/dev/null 2>&1 &&
+		ci_run_bounded 10 python3 -I -c 'import os' >/dev/null 2>&1; then
+		_ci_LINK_MECHANISM="python3"
+	elif [ "$(uname -s 2>/dev/null)" = "Linux" ] && command -v ln >/dev/null 2>&1; then
+		_ci_LINK_MECHANISM="lnT"
+	else
+		_ci_LINK_MECHANISM="none"
+	fi
+	printf '%s\n' "$_ci_LINK_MECHANISM"
+}
+
 # ci_link_create_only <source> <destination> : create a hard link at exactly
 # <destination>, atomically, without writing through or into an occupant.
 #
@@ -1125,24 +1151,35 @@ ci_new_evidence_file() {
 # directory or symlink-to-directory occupant. When Python 3 is unavailable,
 # GNU coreutils/busybox `ln -T` provides the same exact-destination link(2)
 # semantics on Linux. Returns 0 only when the link exists at <destination>;
-# every failure leaves the destination byte/link-exact.
+# every failure leaves the destination byte/link-exact. Returns 2 when no
+# linker mechanism is available at all (distinct from an occupied name, so the
+# caller can fail fast instead of retrying).
 ci_link_create_only() {
 	_lco_src="$1"
 	_lco_dst="$2"
 	[ -n "$_lco_src" ] && [ -n "$_lco_dst" ] || return 1
 	[ -f "$_lco_src" ] || return 1
-	if command -v python3 >/dev/null 2>&1; then
-		python3 -c 'import os, sys
+	case "$(ci_link_mechanism)" in
+	python3)
+		python3 -I -c 'import os, sys
 try:
     os.link(sys.argv[1], sys.argv[2])
 except OSError:
     sys.exit(1)' "$_lco_src" "$_lco_dst" 2>/dev/null
-		return "$?"
-	fi
-	if [ "$(uname -s 2>/dev/null)" = "Linux" ]; then
+		_lco_rc=$?
+		# 126/127 mean the interpreter itself is unusable now; that is not an
+		# occupied destination and must not be retried as one.
+		[ "$_lco_rc" -ge 126 ] && return 2
+		return "$_lco_rc"
+		;;
+	lnT)
 		ln -T -- "$_lco_src" "$_lco_dst" 2>/dev/null && return 0
-	fi
-	return 1
+		return 1
+		;;
+	*)
+		return 2
+		;;
+	esac
 }
 
 # ci_publish_report_exclusive <source> <final-name> : publish an existing report

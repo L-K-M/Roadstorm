@@ -288,23 +288,63 @@ ci_export_sidecar_for_out() {
 	printf '%s/%s.pck\n' "$_cso_dir" "$_cso_base"
 }
 
+# _ci_assert_publishable_report : fail closed unless this process holds an
+# attempt-bound, regular report source. An empty pointer, a vanished file, a
+# symlink/directory in its place or an empty attempt id must never silently
+# skip the preset-specific publication and let the export produce a headerless
+# PASS report later.
+_ci_assert_publishable_report() {
+	if [ -z "$CI_REPORT" ]; then
+		ci_fail "export --export: no per-attempt report source is reserved (CI_REPORT is empty); refusing to export without an attempt-bound verdict"
+		return "$CI_FAIL"
+	fi
+	if [ -L "$CI_REPORT" ] || [ ! -f "$CI_REPORT" ]; then
+		ci_fail "export --export: the reserved report source is not a regular file: $CI_REPORT"
+		return "$CI_FAIL"
+	fi
+	if [ -z "$CI_ATTEMPT_ID" ]; then
+		ci_fail "export --export: no attempt id is reserved (CI_ATTEMPT_ID is empty); refusing to export without an attempt-bound verdict"
+		ci_report "export result=fail reason=no-attempt-id"
+		return "$CI_FAIL"
+	fi
+	return "$CI_OK"
+}
+
+# _ci_early_emit_request <out> <preset> <mode> : print the three request
+# fields, or a single marker when the output path contains a literal newline.
+# The newline marker matters: serializing a raw path through line-delimited
+# fields truncates it, so `line<newline>end.CI-LOCK` would otherwise look like a
+# harmless first line and bypass the guard before ci_abs_path could mangle it.
+_ci_early_emit_request() {
+	_eer_out="$1"
+	case "$(printf '%s' "$_eer_out" | wc -l | tr -d ' ')" in
+	0) : ;;
+	*) printf '%s\n' "__ROADSTORM_CI_INVALID_OUTPUT_PATH__"; return 0 ;;
+	esac
+	printf '%s\n%s\n%s\n' "$_eer_out" "$2" "$3"
+}
+
 # _ci_early_export_request <command> [args...] : print three lines
 # (<out>, <preset>, <mode>) for a package-building request, or nothing when the
-# invocation cannot be recognised as one. Anything unusual returns nothing and
-# is left to the real parsers, which fail in their own way.
+# invocation cannot be recognised as one. The outer grammar mirrors cmd_export:
+# the subcommand comes first, then leading --mode/--mode= options, then the
+# ci_export_build arguments (positional or --preset, --out). Anything unusual
+# returns nothing and is left to the real parsers, which fail in their own way.
 _ci_early_export_request() {
 	_eer_cmd="$1"
 	shift
 	case "$_eer_cmd" in
 	export)
+		case "${1:-}" in
+		--export | export) shift ;;
+		*) return 0 ;;
+		esac
 		_eer_mode="release"
 		while [ $# -gt 0 ]; do
 			case "$1" in
 			--mode) [ $# -ge 2 ] || return 0; _eer_mode="$2"; shift 2 ;;
 			--mode=*) _eer_mode="${1#--mode=}"; shift ;;
-			--export | export) shift; break ;;
-			--check | check | --list-presets | list-presets) return 0 ;;
-			*) return 0 ;;
+			*) break ;;
 			esac
 		done
 		_eer_preset=""
@@ -321,12 +361,12 @@ _ci_early_export_request() {
 			esac
 		done
 		[ -n "$_eer_out" ] || return 0
-		printf '%s\n%s\n%s\n' "$_eer_out" "$_eer_preset" "$_eer_mode"
+		_ci_early_emit_request "$_eer_out" "$_eer_preset" "$_eer_mode"
 		;;
 	__export-inner)
 		[ $# -ge 3 ] || return 0
 		[ -n "$3" ] || return 0
-		printf '%s\n%s\n%s\n' "$3" "$1" "$2"
+		_ci_early_emit_request "$3" "$1" "$2"
 		;;
 	esac
 	return 0
@@ -340,6 +380,16 @@ _ci_early_export_request() {
 ci_early_namespace_guard() {
 	_eng_req="$(_ci_early_export_request "$@" 2>/dev/null)" || return "$CI_OK"
 	[ -n "$_eng_req" ] || return "$CI_OK"
+	case "$_eng_req" in
+	__ROADSTORM_CI_INVALID_OUTPUT_PATH__)
+		ci_init_logs
+		ci_init_report
+		ci_fail "export: refusing an output path that contains a literal newline before engine discovery"
+		ci_report "export result=fail reason=invalid-output-path"
+		ci_info "report: $CI_REPORT" >&2
+		return "$CI_FAIL"
+		;;
+	esac
 	_eng_out_raw="$(printf '%s\n' "$_eng_req" | sed -n '1p')"
 	_eng_preset="$(printf '%s\n' "$_eng_req" | sed -n '2p')"
 	_eng_mode="$(printf '%s\n' "$_eng_req" | sed -n '3p')"
@@ -1960,16 +2010,23 @@ ci_export_build() {
 	# one inode behind both names so the parent/worker handoff stays coherent.
 	# A failure here aborts before the engine writes anything: continuing would
 	# let an export exit 0 while its verdict landed nowhere.
-	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
-		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if ! ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
-			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
-			ci_note "refusing to continue without a writable per-attempt verdict; the attempt keeps its report at $CI_REPORT"
-			ci_report "export result=fail preset=$_preset mode=$_mode reason=report-publication-failed output=$_out report=$_new_report"
-			return "$CI_FAIL"
-		fi
-		CI_REPORT="$_new_report"
+	if ! _ci_assert_publishable_report; then
+		return "$CI_FAIL"
 	fi
+	_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
+	_pub_rc=0
+	ci_publish_report_exclusive "$CI_REPORT" "$_new_report" || _pub_rc=$?
+	if [ "$_pub_rc" -ne 0 ]; then
+		if [ "$_pub_rc" -eq 2 ]; then
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report: no atomic hard-link mechanism is available (need a working python3, or GNU/busybox ln -T on Linux)"
+		else
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
+		fi
+		ci_note "refusing to continue without a writable per-attempt verdict; the attempt keeps its report at $CI_REPORT"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=report-publication-failed output=$_out report=$_new_report"
+		return "$CI_FAIL"
+	fi
+	CI_REPORT="$_new_report"
 
 	# Sidecar path, derived from the output BASENAME so a dot in a directory
 	# component cannot move it. Computed before the engine runs.
@@ -2110,16 +2167,23 @@ ci_export_build_inner() {
 	# Same exact-destination create-only publication as the outer path: a
 	# direct __export-inner call must not replace an existing report path
 	# either, and must abort before any lock or engine write if it cannot.
-	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
-		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if ! ci_publish_report_exclusive "$CI_REPORT" "$_new_report"; then
-			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
-			ci_note "refusing to continue without a writable per-attempt verdict; the attempt keeps its report at $CI_REPORT"
-			ci_report "export result=fail preset=$_preset mode=$_mode reason=report-publication-failed output=$_out report=$_new_report"
-			return "$CI_FAIL"
-		fi
-		CI_REPORT="$_new_report"
+	if ! _ci_assert_publishable_report; then
+		return "$CI_FAIL"
 	fi
+	_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
+	_pub_rc=0
+	ci_publish_report_exclusive "$CI_REPORT" "$_new_report" || _pub_rc=$?
+	if [ "$_pub_rc" -ne 0 ]; then
+		if [ "$_pub_rc" -eq 2 ]; then
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report: no atomic hard-link mechanism is available (need a working python3, or GNU/busybox ln -T on Linux)"
+		else
+			ci_fail "export --export: cannot publish the preset-specific report at $_new_report; the name is occupied by something that is not this attempt's report"
+		fi
+		ci_note "refusing to continue without a writable per-attempt verdict; the attempt keeps its report at $CI_REPORT"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=report-publication-failed output=$_out report=$_new_report"
+		return "$CI_FAIL"
+	fi
+	CI_REPORT="$_new_report"
 	_pck="$(ci_export_sidecar_for_out "$_out")"
 
 	# Reserved lock namespace must be rejected even for a direct worker call,

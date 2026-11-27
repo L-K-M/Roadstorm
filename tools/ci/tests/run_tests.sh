@@ -3257,6 +3257,215 @@ EOF
 	log "case $CASES_RUN: an uppercase inner .CI-LOCK destination invokes no Godot process -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-inner-upper.log" >&2; }
 
+	# The outer --mode forms are valid cmd_export grammar (subcommand first,
+	# then --mode/--mode=, then preset/--out). Both must be caught by the early
+	# guard, with zero Godot invocations including --version.
+	NS_SEAM_OUT="$CONC/ns-seam-outer-mode"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nscwd-mode" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nscwd-mode"
+	( export TMPDIR="$CONC/tmp-ns-mode"
+		ci_rel_at_home "$CONC/nscwd-mode" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" export --export --mode debug "Linux x86-64" --out "$CONC/nscwd-mode/namespace.exe.CI-LOCK" ) >"$CONC/ns-seam-outer-mode.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns-seam-outer-mode.log" &&
+		grep -rq 'reason=lock-namespace' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$CONC/nscwd-mode/namespace.exe.CI-LOCK" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an outer --mode debug .CI-LOCK destination invokes no Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-outer-mode.log" >&2; }
+
+	NS_SEAM_OUT="$CONC/ns-seam-outer-mode-eq"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nscwd-modeeq" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nscwd-modeeq"
+	( export TMPDIR="$CONC/tmp-ns-modeeq"
+		ci_rel_at_home "$CONC/nscwd-modeeq" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" export --export --mode=debug --preset "Linux x86-64" --out "$CONC/nscwd-modeeq/namespace.EXE.CI-LOCK" ) >"$CONC/ns-seam-outer-mode-eq.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns-seam-outer-mode-eq.log" &&
+		grep -rq 'reason=lock-namespace' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$CONC/nscwd-modeeq/namespace.EXE.CI-LOCK" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an outer --mode=debug .CI-LOCK destination invokes no Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-outer-mode-eq.log" >&2; }
+
+	# A literal newline in the output path must be rejected before engine
+	# discovery on either entry point: serializing it through line-delimited
+	# fields would truncate the suffix and bypass the guard.
+	_pub_nl_outer="$CONC/pubcwd-nl/line
+end.CI-LOCK"
+	NS_SEAM_OUT="$CONC/ns-seam-outer-newline"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nscwd-nl" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nscwd-nl"
+	( export TMPDIR="$CONC/tmp-ns-nl"
+		ci_rel_at_home "$CONC/nscwd-nl" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" export --export "Linux x86-64" --out "$_pub_nl_outer" ) >"$CONC/ns-seam-outer-newline.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'literal newline' "$CONC/ns-seam-outer-newline.log" &&
+		grep -rq 'reason=invalid-output-path' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$_pub_nl_outer" ] &&
+		[ ! -e "$_pub_nl_outer.ci-lock" ] && [ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an outer newline output path is refused before any Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-outer-newline.log" >&2; }
+
+	_pub_nl_inner="$CONC/pubcwd-nli/inner
+end.CI-LOCK"
+	NS_SEAM_OUT="$CONC/ns-seam-inner-newline"
+	rm -rf "$NS_SEAM_OUT" "$CONC/nsicwd-nl" "$PUB_SEAM_LOG" "$PUB_WRITER"
+	mkdir -p "$CONC/nsicwd-nl"
+	( export TMPDIR="$CONC/tmp-ns-inl"
+		ci_rel_at_home "$CONC/nsicwd-nl" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$NS_SEAM_OUT" __export-inner "Linux x86-64" release "$_pub_nl_inner" ) >"$CONC/ns-seam-inner-newline.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'literal newline' "$CONC/ns-seam-inner-newline.log" &&
+		grep -rq 'reason=invalid-output-path' "$NS_SEAM_OUT/reports" 2>/dev/null &&
+		[ ! -s "$PUB_SEAM_LOG" ] && [ ! -e "$_pub_nl_inner" ] &&
+		[ ! -d "$NS_SEAM_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a direct inner newline output path is refused before any Godot process -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/ns-seam-inner-newline.log" >&2; }
+
+	# A report source that disappears or stops being a regular file after the
+	# attempt has started must fail closed at both publication sites: no export
+	# writer, no PASS, nonzero exit. The fake --version seam invalidates the
+	# environment-provided source before dispatch.
+	PUB_INV_SEAM="$CONC/godot-pub-invalidate"
+	cat >"$PUB_INV_SEAM" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$CONC/pub-invocations.log"
+case " \$* " in
+	*" --version "*)
+		if [ -n "\$FAKE_INVALIDATE_MODE" ] && [ -n "\$ROADSTORM_CI_REPORT" ]; then
+			rm -rf "\$ROADSTORM_CI_REPORT" 2>/dev/null
+			[ "\$FAKE_INVALIDATE_MODE" = "dir" ] && mkdir -p "\$ROADSTORM_CI_REPORT" 2>/dev/null
+		fi
+		printf '4.7.2.stable.official.ed1daf0bf\n'
+		exit 0
+		;;
+esac
+case " \$* " in
+	*" --export-"*) touch "$CONC/pub-inv-writer-called"; exit 0 ;;
+esac
+exit 0
+EOF
+	chmod +x "$PUB_INV_SEAM"
+
+	INV_OUT="$CONC/pub-inv-outer"
+	rm -rf "$INV_OUT" "$CONC/invcwd-o" "$CONC/pub-invocations.log" "$CONC/pub-inv-writer-called"
+	mkdir -p "$INV_OUT/reports" "$CONC/invcwd-o"
+	printf 'reserved body\n' >"$INV_OUT/reports/pre-inv1.txt"
+	( export TMPDIR="$CONC/tmp-inv-o" ROADSTORM_CI_REPORT="$INV_OUT/reports/pre-inv1.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=inv1 FAKE_INVALIDATE_MODE=rm
+		ci_rel_at_home "$CONC/invcwd-o" "$CONC/home-ia" "$SPROJ" --godot "$PUB_INV_SEAM" \
+			--out "$INV_OUT" export --export "Linux x86-64" --out "$CONC/invcwd-o/pkg" ) >"$CONC/pub-inv-outer.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'not a regular file' "$CONC/pub-inv-outer.log" &&
+		[ ! -e "$CONC/pub-inv-writer-called" ] && [ ! -e "$CONC/invcwd-o/pkg" ] &&
+		[ ! -e "$CONC/invcwd-o/pkg.ci-lock" ] && [ ! -d "$INV_OUT/attempts" ] &&
+		! grep -q 'PASS' "$CONC/pub-inv-outer.log" &&
+		[ ! -e "$INV_OUT/reports/pre-inv1.txt" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an outer missing report source aborts before writer and PASS -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-inv-outer.log" >&2; }
+
+	INV_INNER="$CONC/pub-inv-inner"
+	rm -rf "$INV_INNER" "$CONC/invcwd-i" "$CONC/pub-invocations.log" "$CONC/pub-inv-writer-called"
+	mkdir -p "$INV_INNER/reports" "$CONC/invcwd-i"
+	printf 'reserved body\n' >"$INV_INNER/reports/pre-inv2.txt"
+	( export TMPDIR="$CONC/tmp-inv-i" ROADSTORM_CI_REPORT="$INV_INNER/reports/pre-inv2.txt" \
+		ROADSTORM_CI_ATTEMPT_ID=inv2 FAKE_INVALIDATE_MODE=dir
+		ci_rel_at_home "$CONC/invcwd-i" "$CONC/home-ia" "$SPROJ" --godot "$PUB_INV_SEAM" \
+			--out "$INV_INNER" __export-inner "Linux x86-64" release "$CONC/invcwd-i/pkginner" ) >"$CONC/pub-inv-inner.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'not a regular file' "$CONC/pub-inv-inner.log" &&
+		[ ! -e "$CONC/pub-inv-writer-called" ] && [ ! -e "$CONC/invcwd-i/pkginner" ] &&
+		[ ! -e "$CONC/invcwd-i/pkginner.ci-lock" ] && [ ! -d "$INV_INNER/attempts" ] &&
+		! grep -q 'PASS' "$CONC/pub-inv-inner.log" &&
+		[ -d "$INV_INNER/reports/pre-inv2.txt" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a direct inner non-regular report source aborts before writer and PASS -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-inv-inner.log" >&2; }
+
+	# An empty attempt id must also fail closed instead of skipping publication.
+	INV_OUT="$CONC/pub-noattempt"
+	rm -rf "$INV_OUT" "$CONC/noattcwd" "$CONC/pub-invocations.log" "$CONC/pub-inv-writer-called"
+	mkdir -p "$INV_OUT/reports" "$CONC/noattcwd"
+	printf 'reserved body\n' >"$INV_OUT/reports/pre-noatt.txt"
+	( export TMPDIR="$CONC/tmp-noatt" ROADSTORM_CI_REPORT="$INV_OUT/reports/pre-noatt.txt"
+		ci_rel_at_home "$CONC/noattcwd" "$CONC/home-ia" "$SPROJ" --godot "$PUB_SEAM" \
+			--out "$INV_OUT" export --export "Linux x86-64" --out "$CONC/noattcwd/pkg" ) >"$CONC/pub-noattempt.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -ne 0 ] && grep -q 'no attempt id is reserved' "$CONC/pub-noattempt.log" &&
+		grep -q '^export result=fail .*reason=no-attempt-id' "$INV_OUT/reports/pre-noatt.txt" &&
+		[ ! -e "$CONC/pub-inv-writer-called" ] && [ ! -e "$CONC/noattcwd/pkg" ] &&
+		[ ! -e "$CONC/noattcwd/pkg.ci-lock" ] && [ ! -d "$INV_OUT/attempts" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: an empty attempt id aborts publication before writer -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc" >&2; sed 's/^/  | /' "$CONC/pub-noattempt.log" >&2; }
+
+	# No usable hard-link mechanism must fail immediately and clearly, not
+	# retry the reservation 101 times.
+	PY_MISSING="$CONC/py-missing"
+	rm -rf "$PY_MISSING" "$CONC/mktemp-count" "$CONC/py-missing-out"
+	mkdir -p "$PY_MISSING"
+	printf '#!/bin/sh\nexit 127\n' >"$PY_MISSING/python3"
+	_real_mktemp2="$(command -v mktemp)"
+	cat >"$PY_MISSING/mktemp" <<EOF
+#!/bin/sh
+printf 'x\\n' >> "$CONC/mktemp-count"
+exec "$_real_mktemp2" "\$@"
+EOF
+	chmod +x "$PY_MISSING/python3" "$PY_MISSING/mktemp"
+	( export PATH="$PY_MISSING:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$CONC/py-missing-out" pin ) >"$CONC/py-missing.log" 2>&1
+	_pub_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pub_rc" -eq 2 ] && grep -q 'no atomic hard-link mechanism' "$CONC/py-missing.log" &&
+		[ "$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" = "1" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a missing hard-link mechanism fails once, clearly and immediately -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc=$_pub_rc mktemp=$(wc -l <"$CONC/mktemp-count" 2>/dev/null | tr -d ' ')" >&2; sed 's/^/  | /' "$CONC/py-missing.log" >&2; }
+
 	# A pre-existing symlink at the lock path is refused and never followed.
 	LOCK_SYM_CWD="$CONC/lock-symlink"
 	mkdir -p "$LOCK_SYM_CWD"
