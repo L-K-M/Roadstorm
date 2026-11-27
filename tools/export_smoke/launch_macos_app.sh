@@ -15,10 +15,11 @@
 #      signed bundle launches and the shell boots. Exits 0 on success.
 #   2. WINDOWED: run the .app's executable for a few seconds so the GUI opens,
 #      take a screenshot, then terminate it. Proves the graphical path renders.
+#      Pass --skip-windowed to run probe 1 only (no window is ever opened).
 #
 # Usage:
 #   launch_macos_app.sh --app <path.app|path.zip> [--out <dir>]
-#                       [--quit-after N] [--windowed-seconds N]
+#                       [--quit-after N] [--windowed-seconds N] [--skip-windowed]
 #   GODOT-less: this only needs the exported package.
 #
 # Exit codes: 0 = package launched (headless clean exit AND windowed ran),
@@ -35,6 +36,7 @@ APP_IN=""
 OUT_DIR=""
 QUIT_AFTER=40
 WINDOWED_SECONDS=8
+SKIP_WINDOWED=0
 
 log() { printf '[launch-macos] %s\n' "$*"; }
 die() { c="$1"; shift; log "FAIL: $*" >&2; exit "$c"; }
@@ -49,7 +51,8 @@ while [ $# -gt 0 ]; do
 	--quit-after=*) QUIT_AFTER="${1#--quit-after=}"; shift ;;
 	--windowed-seconds) [ $# -ge 2 ] || die 2 "--windowed-seconds needs a number"; WINDOWED_SECONDS="$2"; shift 2 ;;
 	--windowed-seconds=*) WINDOWED_SECONDS="${1#--windowed-seconds=}"; shift ;;
-	-h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+	--skip-windowed) SKIP_WINDOWED=1; shift ;;
+	-h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 	*) die 2 "unknown argument: $1" ;;
 	esac
 done
@@ -116,6 +119,12 @@ else
 fi
 
 # --- 2. windowed launch (bounded; GUI render path) --------------------------
+if [ "$SKIP_WINDOWED" -eq 1 ]; then
+	log "windowed launch SKIPPED (--skip-windowed): the headless probe above is the"
+	log "launch evidence for this run; no GUI window is opened"
+	WIN_LOG="$OUT_DIR/macos-launch-windowed.txt"
+	printf 'windowed launch skipped (--skip-windowed); headless probe is the launch evidence\n' >"$WIN_LOG"
+else
 WIN_LOG="$OUT_DIR/macos-launch-windowed.txt"
 SHOT="$OUT_DIR/macos-launch-windowed.png"
 log "windowed launch: $EXE (bounded ${WINDOWED_SECONDS}s)"
@@ -145,6 +154,7 @@ if pgrep -f "$(basename "$EXE")" >/dev/null 2>&1; then
 	log "WARNING: a matching process is still running; leaving it for the operator"
 else
 	log "no leftover process for $(basename "$EXE")"
+fi
 fi
 
 if [ "$rc" -eq 0 ]; then
