@@ -63,18 +63,18 @@ godot --headless --max-fps 60 --path tools/tick_probe \
 
 # Independent focused contract tests (isolated copy, XDG/TMPDIR redirected, <=30 s).
 # Run them under every pacing mode: --pacing fixed|default|max.
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 91
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 91
-python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 91
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing fixed --expect-checks 128
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing default --expect-checks 128
+python3 tools/tick_probe/tests/run_contract_tests.py --pacing max --expect-checks 128
 
 # Runner must fail closed when a well-formed report says checks failed but the
 # child exits 0 (must exit 1):
 FAKE_CHECKS=85 FAKE_FAILED=1 python3 tools/tick_probe/tests/run_contract_tests.py \
     --godot tools/tick_probe/tests/inject_failure_fake_godot.sh \
-    --pacing fixed --expect-checks 85; echo $?   # 1
+    --pacing fixed --expect-checks 128; echo $?   # 1
 
 # Dynamic server-step regression (strict isolated runner)
-python3 tools/tick_probe/tests/run_n1_tests.py --pacing fixed --expect-checks 21
+python3 tools/tick_probe/tests/run_n1_tests.py --pacing fixed --expect-checks 76
 
 # Deterministic per-tick trace for the cross-pacing digest comparison
 godot --headless --fixed-fps 60 --path tools/tick_probe \
@@ -96,7 +96,7 @@ Exit code `0` means every check passed, `1` means at least one failed.
 `TICK_PROBE_DEBUG=1` additionally prints per-substep query/commit diagnostics.
 
 The broad structural suite currently has **108 checks**; the independent
-contract suite has **91 checks** and passes under `--fixed-fps 60`, default
+contract suite has **128 checks** and passes under `--fixed-fps 60`, default
 and `--max-fps 60` pacing. Recorded totals and outputs live under `evidence/`.
 
 ## Coordinator contract
@@ -181,18 +181,19 @@ deterministic controls. The previous hard `k−1` cold expectation was an invali
 nondeterministic gate and was removed with this causal evidence, not to hide a
 regression: request-step counts remained exact in every failing sample.
 
-**Server steps per tick, including the first request.** A normal request keeps
-the tree unpaused through its final physics callback so that tick's
-`PhysicsServer3D` step still runs; the coordinator pauses on the next physics
-callback, before that iteration's own server step. A freshly created active
-`RigidBody3D` added to the frozen world receives exactly one counted
-`_integrate_forces` step per requested tick, including the first request of
-1, 12 and 24 ticks (measured fixed-fps, default and max-fps pacing). The pause
-callback adds one engine frame beyond the logical ticks (`engine_pf_delta =
-n + 1`), which the accounting boundary separates from integration count.
-Freezing directly inside the final callback suppresses that step (measured at
-11 steps per 12-tick request on the original); `tests/n1_regression_entry.gd`
-fails on the unfixed behavior with eight failures.
+**Server steps per tick.** A request runs one physics-server step per logical
+tick. Completion pauses synchronously in the final tick's own callback, so the
+final tick's step is counted and the *next* iteration is skipped: no extra
+boundary iteration exists. Warm-body controls (the counting body is activated
+for several frames, then settled while frozen) assert exact equality for
+requests of 1, 12 and 24 ticks under fixed/default/max pacing. Cold-spawned
+bodies can absorb or add one registration iteration, so fresh-body scenarios
+use an explicit `[n-1, n]` registration bound while warmed cycles carry the
+exact gates. Each idle-origin request first spends one fully paused settling
+iteration (honest engine-frame cost), so its signal-time span is exactly
+`n + 1` frames; server steps remain exactly `n`. The same-world 12+12+1
+sequence is gated per request with no reset or artificial unpause between
+requests.
 
 **Waiting.** The authoritative world is frozen whenever the coordinator is
 waiting: after every finished request, after `reset()`, after a zero-tick
@@ -266,27 +267,34 @@ before the previous result was consumed are refused (`false`) with
 `begin_step_refusals` / `last_begin_step_refusal` recording the reason, leaving
 current accounting untouched.
 
-**Callback ordering around the deferred pause.** A request needs one extra
-unpaused engine iteration so its final tick's `PhysicsServer3D` step is not
-suppressed by an immediate pause. The coordinator installs a small
-`PROCESS_MODE_ALWAYS` pause-enforcer ordered after itself but before ordinary
-later-in-tree nodes; it performs that pause at the start of the extra iteration,
-so default world nodes receive exactly the requested number of physics
-callbacks. A node ordered *before* the coordinator subtree still sees the one
-extra callback (13 for a 12-tick request) and must gate on the coordinator's
-tick state; the contract ordering test pins both sides.
+**Physics-callback requests (F1).** If `begin_step()` is called from inside a
+physics callback while the tree is paused (a later-ordered motor/bridge node),
+it does not synchronously unpause the current, already-unaccounted iteration.
+It schedules end-of-frame activation (`call_deferred`), making it equivalent to
+an ordinary idle-time call; the next physics iteration pairs the first tick
+with its server step. A warmed counting-body contract test calls
+`begin_step(12)` from a later-ordered `PROCESS_MODE_ALWAYS` node and requires
+exactly 12 counted server steps and `paused == true` immediately after the
+call; synchronous unpausing yields 13 steps and fails the test. Idle-time calls
+keep immediate unpause; zero-budget/terminal/reset/reentrancy paths unchanged.
 
-**Observation freshness.** The result observation is rebuilt inside
-`step_finished` emission, after the final tick's physics-server step, rather
-than at the final `_physics_process` snapshot. `step_accounted` still carries
-the tick-N accounting boundary. A counting-body contract check verifies that
-at `step_finished` the counted server integrations equal the reported ticks.
+**Callback ordering at completion.** Completion pauses in the final tick's own
+callback, so nodes processed after the coordinator do not receive that final
+iteration's `_physics_process` (11 callbacks for a 12-tick request), while nodes
+processed before it see all 12. This is callback delivery, not an unaccounted
+server step: the counted server integrations are exactly 12. The contract
+ordering test pins both sides.
 
-**Real-time pause cost.** The deferral costs one extra engine frame per
-request. `compare_modes.py` records the expected overhead (requests × 1/60 s)
-and the resulting realtime speedup ceiling; the documented 0.5–2.0 acceptance
-band is unchanged. Measured example: 600 ticks/50 requests took 10.835 s realtime
-(0.923×), matching the expected 0.923 ceiling.
+**Observation freshness.** The result observation is refreshed at emission.
+The kinematic probe-car pose is already committed; server-stepped dynamic state
+may flush one iteration later, which remains a documented limitation.
+
+**Engine-frame overhead.** Every idle-origin request costs one additional
+fully paused settling iteration (`signal_pf_delta = n + 1`); physics-callback
+origin costs `n + 1` as well because of end-of-frame activation. No server step
+is added (steps stay exactly `n`). `compare_modes.py` records this honest
+overhead and its realtime ceiling (`sim / (sim + requests/60)`, about 0.923×
+for 50 requests); the documented 0.5–2.0 acceptance band is unchanged.
 
 **Completion-callback safety.** Publication state is armed before any
 completion observer runs, `begin_step()` refuses reentry while a completion
@@ -390,13 +398,28 @@ frozen trailing callback never advanced `tick_count`.
 
 ## Evidence
 
-- `evidence/2026-11-27-apple-m4-max-jolt-cold-control/` — **current**:
+- `evidence/2026-11-27-apple-m4-max-jolt-repeated-boundary/` — **current**:
+  repeated same-world 12+12+1 gate on one warmed body, one-iteration paused
+  settling correction for exact repeated requests, pre/post traces across
+  pacings, settle-removed mutation, refreshed 128-check contract / 76-check N1 /
+  108-check structural evidence, and honest `n+1` frame / ~0.92× realtime cost.
+- `evidence/2026-11-27-apple-m4-max-jolt-f2-f3-gates/` — historical:
+  warmed exact server-step gates, measured signal-time relationship (300/300
+  exact), synchronous final-tick boundary correction, begin-step envelope
+  prevalidation, end-of-frame physics-caller activation, pre/post warm probe,
+  two mutation failures, refreshed contract/N1/structural/compare evidence.
+- `evidence/2026-11-27-apple-m4-max-jolt-f1-physics-callback/` — historical:
+  Opus F1 reproduction (physics-callback `begin_step` gave 13 server steps for
+  12 logical ticks and synchronously unpaused), deferred-unpause fix, warmed
+  physics-caller regression, mutation sensitivity, refreshed suites and hash
+  manifests. Remaining F2–F7 dispositions recorded.
+- `evidence/2026-11-27-apple-m4-max-jolt-cold-control/` — historical:
   intermittent max-pacing strict-N1 reproduction (13/60), causal diagnosis of
   incidental cold-registration flush timing, deterministic warmed control and
   informational cold diagnostic; exact 1/12/24 request gates preserved; 0
   failures over 60 max / 40 fixed / 40 default post-fix runs.
 - `evidence/2026-11-27-apple-m4-max-jolt-callback-ordering/` — historical:
-  F1 callback-ordering measurement and pause-enforcer, F3 observation refresh
+  F1 callback-ordering measurement (superseded by the synchronous F2/F3 correction)
   at emission (accounting vs emission server-step boundaries), F2 measured
   real-time overhead/ceiling, strict N1 runner, flaky poll sampling removed,
   mutation coverage, and hash-bound manifests. Previous evidence preserved.
@@ -505,7 +528,25 @@ control, informational cold diagnostic, added 24-tick first-request gate)
 addresses the coordinator's independent intermittent strict-N1 failure;
 causal evidence shows only the nondeterministic cold control failed while all
 request-step checks stayed exact. Hashes bind that worktree in
-`evidence/2026-11-27-apple-m4-max-jolt-cold-control/manifest.sha256`. Engine:
+`evidence/2026-11-27-apple-m4-max-jolt-cold-control/manifest.sha256`.
+
+The F1 follow-up (deferred unpause for requests made from paused physics
+callbacks, `tests/physics_caller.gd`, hard contract regression) addresses Opus
+finding F1 against candidate `12958922d34f1a7a89675a4e89381f2c298caba4`; Sol’s
+pass review is preserved as input. Hashes bind that worktree in
+`evidence/2026-11-27-apple-m4-max-jolt-f1-physics-callback/manifest.sha256`.
+
+The F2/F3 regression-strength follow-up (synchronous final-tick pause,
+envelope validation before unpause, end-of-frame activation for
+physics-callback requests, deterministic warmed exact gates, fresh-body
+registration bounds) supersedes the deferred-pause boundary and is recorded in
+`evidence/2026-11-27-apple-m4-max-jolt-f2-f3-gates/manifest.sha256`.
+
+The repeated-request boundary follow-up (one fully paused settling iteration
+per idle-origin request; hard same-world 12+12+1 gate; settle-removed
+mutation) closes the coordinator’s independent note that warmed per-request
+cycles did not prove repeated stepping. Hashes bind that worktree in
+`evidence/2026-11-27-apple-m4-max-jolt-repeated-boundary/manifest.sha256`. Engine:
 Godot 4.7.2-stable (official). No third-party assets or network services.
 
 The cold-start evidence manifest records the tested files at commit `8a5615c`.

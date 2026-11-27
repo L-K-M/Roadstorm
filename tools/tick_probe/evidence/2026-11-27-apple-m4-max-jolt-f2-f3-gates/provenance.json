@@ -1,0 +1,193 @@
+{
+  "base_tick_commit": "12958922d34f1a7a89675a4e89381f2c298caba4",
+  "candidate_identity": {
+    "changed_since_base_tick_commit": [
+      "README.md",
+      "compare_modes.py",
+      "src/tick_coordinator.gd",
+      "tests/contract_driver.gd",
+      "tests/run_n1_tests.py",
+      "tests/n1_regression_driver.gd",
+      "tests/callback_observer.gd"
+    ],
+    "new_since_base_tick_commit": [
+      "tests/physics_caller.gd",
+      "tests/warm_step_probe_entry.gd",
+      "tests/warm_step_probe_driver.gd"
+    ]
+  },
+  "engine": "4.7.2.stable.official.ed1daf0bf",
+  "evidence_sha256": {
+    "README.md": "67af2949801a5d03a911fe83a8ac3a3eae277c8b461b7efa1f42a24c782c0178",
+    "compare-modes.txt": "d323d0436254ba011faf0564a30f00d5f0aa41eab8e83e594d6f70d7116ebdc4",
+    "contract-default/contract-tests.json": "b3018516f21de50d0ffb02a1363571a8dd2e277d8c526fc54d56c4b2b9f72259",
+    "contract-default/contract-tests.txt": "aae9c365527fbaf5d4a3d834ac1cae6ef19a0c9a3766c3da6ba74f54d66f69ba",
+    "contract-default/run.txt": "07196c151b7e0d495ec1ebdbcc9d9fe3804a1bcdb35eb6e459eaeb28146f88a5",
+    "contract-fixed/contract-tests.json": "b3018516f21de50d0ffb02a1363571a8dd2e277d8c526fc54d56c4b2b9f72259",
+    "contract-fixed/contract-tests.txt": "aae9c365527fbaf5d4a3d834ac1cae6ef19a0c9a3766c3da6ba74f54d66f69ba",
+    "contract-fixed/run.txt": "cb8956448663cb38f4f9239e2ce9c84fdcdf127a740baf8341ec391ab689e3ee",
+    "contract-max/contract-tests.json": "b3018516f21de50d0ffb02a1363571a8dd2e277d8c526fc54d56c4b2b9f72259",
+    "contract-max/contract-tests.txt": "aae9c365527fbaf5d4a3d834ac1cae6ef19a0c9a3766c3da6ba74f54d66f69ba",
+    "contract-max/run.txt": "ecd478dd2897f791297e84883ea1921b5fb0de77242e0a80ffa7be735baf40c8",
+    "exit-code-selftest.txt": "195c30b6fac70bc6c288044782d98e19843f496615ab2f8bc141c33225e1333e",
+    "mutation-f2.txt": "9960f732a5b6df75001779d0a9449065bd1f3390c9bc8351889524add0502cc3",
+    "mutation-f3.txt": "648a7f90ebec77032671cc751d888418675aaa2814c24cdcce4db8fd7f3d5e04",
+    "n1-default.txt": "726313a5720b74e02ed32f2c3d26f8bcb6d8711f653a0760934ff4ee8fb5fe7a",
+    "n1-fixed.txt": "450af721b82393d167b72c5f3c61349c6cc6a1b22859e849d5cbf83e92668a52",
+    "n1-max.txt": "6f13e0cdba7cfcc31f8b2e055870604c7ebcd72e7ba9ae2271e9f306c18f60cb",
+    "sig-default.txt": "a9be48be46cf125659473621b9537ba22eaeafb2e5c09982b2d9891c1827ee3c",
+    "sig-fixed.txt": "85beecf330f514829d106e4ff4c1bb502961e89aa00a0235d5c444918e1297ac",
+    "sig-max.txt": "2a0d9e8d7b64c714b7cd64c8ea3c4dd4d19c134a44b9e9a4e73dd23e0f0591a0",
+    "signal-time-summary.txt": "d4db8035804692f5bfa2c8edb76ca4940873abf2db310a87897f900cf79a1858",
+    "structural-default.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-default.json": "ec024b23399a26da5e52077abdc5e2a774f803b948cdc5493d91e9a1f36ffcd5",
+    "structural-default.raw.txt": "86e93e81b41d98d46782aece8dbd549571c17b314850c0763273c751ba0fb6fd",
+    "structural-fixed-fps.checks.txt": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "structural-fixed-fps.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "structural-fixed-fps.raw.txt": "108d2d49827bb408e6bb3ab940028e45cd44eb7e15f18eb58d79e13ff9511649",
+    "structural-max.checks.txt": "293e8066647cb1c9eb1e27418b0bc5b209d34e3cdb15fb45b753fe7f280b7da0",
+    "structural-max.json": "0811b1f5b0ab39f9eb83e8b9e805fb9bcdd509920d76131abd1f971ae3684aee",
+    "structural-max.raw.txt": "7f4e13e74c984c5ec615f22a0e154b0c30d7cea3ce74c35f666bb68f2fd69e76",
+    "warm-probe-post.txt": "e1ce98f25f714b7f03d0e65b91e0242b2723c397576d0eafbeb9a6c80f198b1d",
+    "warm-probe-pre.txt": "a5076286c58aa3ffd60b94a1896db1e00c8f0525947e90b2f9e08512c9325890"
+  },
+  "file_sha256": {
+    ".gitignore": "bc564f5ea42d01f3be02e26adfca5b5a3a2f30d2ed74f0973d3282705fb65d03",
+    "README.md": "1db10e435df576e283a611f38299f3a859a7ff394091983ffe76f50748d35a9b",
+    "compare_modes.py": "bfb54529debb1ea00a9e23805bb9a2f965b01e91b35c755f55c9b58f4419abf2",
+    "project.godot": "dc27a9bf0eb91b1053cd4bc876a352abaaf286c599502ee3e1cbd88c5243a95d",
+    "src/probe_driver.gd": "2e7a945e624c01f987c99ddc2803f44a8f4b3d73f7c1ae6b30f7cfd6191cc58c",
+    "src/tick_coordinator.gd": "861768deb95aaa89c0ac1f5e8ba6c7e9386ab9b2adda59196f8e9139375e3275",
+    "src/tick_probe.gd": "ec46864a9fa5a8f08d980cc3b8c3f4f0a9fa4dabda42bdd64e57f0bbc44eb29d",
+    "tests/callback_observer.gd": "7f3901523fa5eaaec0f71e157cce407fe7e59abc59d2e2b0785c671a9551017b",
+    "tests/contract_driver.gd": "e21897668989cc0cad455d33657ab0db5cca95c391e328cda71f80c73ae17e26",
+    "tests/contract_entry.gd": "188632102c4a32ba9aae20b87ba23bcd3c81da66088b68237576823cdd408138",
+    "tests/counting_body.gd": "750239f40462597aa1b709bcd600cc9e3c4f399349293d76d81afd08fb8a917f",
+    "tests/inject_failure_fake_godot.sh": "4e89810081302242278a507f4526015de31798638575039c6bde19928d1c9b23",
+    "tests/n1_regression_driver.gd": "96904b42e83dc294ffe7e401e3b8df59f1570eef303eb891de1ea1c8002bc98a",
+    "tests/n1_regression_entry.gd": "ccabe1fc6396106f2c3f33e75566bc1df349d0d7bc1b96d3b6421ded640fc8fc",
+    "tests/physics_caller.gd": "e6505836bd94519f9df334a502f5697340f2dd0ffb90c8df36f7a9890aa218db",
+    "tests/run_contract_tests.py": "bc4098286b17cba8943732c18ba45c5d9f7d57e3a56946d8ec47396287922117",
+    "tests/run_n1_tests.py": "2b69cf363e99f76331b6bdcc4aad585da14ffaaab83725b5ec8fc1a5b76b505b",
+    "tests/warm_step_probe_driver.gd": "d02153d67b675a03fd12b8646006ab8ad8479f9a97a381f099e901701c9b2f7a",
+    "tests/warm_step_probe_entry.gd": "683f8e524feb47ead34a562c0d563e40bbacbec3aee237c2730d4b34e5897249"
+  },
+  "fixes": [
+    "synchronous final-tick completion pause (no extra boundary iteration)",
+    "begin_step envelope validation before unpause",
+    "end-of-frame activation for physics-callback-origin requests",
+    "deterministic warmed exact gates; fresh-body scenarios bounded [n-1,n]"
+  ],
+  "limits": [
+    "Godot 4.7.2/Jolt one host.",
+    "No M0.8 acceptance claim.",
+    "Server-step semantics measured with counting RigidBody3D; motor/multi-car behaviour not covered."
+  ],
+  "machine": "arm64",
+  "measured_signal_time": {
+    "invariant": "server_steps_delta==requested and signal_pf_delta==requested",
+    "warmed_requests": {
+      "default": "75/75 exact",
+      "fixed": "75/75 exact",
+      "max": "150/150 exact"
+    }
+  },
+  "mutations": {
+    "f2_deferred_activation_removed": "2 failures / 110",
+    "f3_envelope_prevalidation_removed": "1 failure / 110"
+  },
+  "opus_review": "review/implementation/m0-tick-opus-5-5-1295892.md (F2/F3)",
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "prior_uncommitted_f1_fix_present": true,
+  "python": "3.15.2",
+  "remaining_low_issues": [
+    "Immediate back-to-back request boundary variance (informational).",
+    "Strict parsers default expect-checks 0 and do not reconcile checks_failed with failure-list length.",
+    "Cold registration diagnostic informational."
+  ],
+  "run_policy": "private copies; private XDG/TMPDIR on PaseoData; bounded Godot runs; no HOME/shared/installed writes; no Git mutation",
+  "runs": [
+    {
+      "checks_failed": 0,
+      "checks_total": 110,
+      "exit": 0,
+      "name": "contract-fixed"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 110,
+      "exit": 0,
+      "name": "contract-default"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 110,
+      "exit": 0,
+      "name": "contract-max"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 61,
+      "exit": 0,
+      "name": "n1-fixed"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 61,
+      "exit": 0,
+      "name": "n1-default"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 61,
+      "exit": 0,
+      "name": "n1-max"
+    },
+    {
+      "checks_failed": 0,
+      "checks_total": 108,
+      "exit": 0,
+      "name": "structural-fixed/default/max"
+    },
+    {
+      "exit": 0,
+      "name": "compare-modes",
+      "realtime_speedup": 1.0,
+      "result": "COMPARISON PASS"
+    },
+    {
+      "checks_failed": 2,
+      "checks_total": 110,
+      "exit": 1,
+      "name": "mutation-f2"
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 110,
+      "exit": 1,
+      "name": "mutation-f3"
+    },
+    {
+      "checks_failed": 1,
+      "checks_total": 5,
+      "exit": 1,
+      "name": "exit-code-selftest"
+    }
+  ],
+  "schema": "roadstorm.tick_probe.f2f3_evidence.v1",
+  "sol_review": "review/implementation/m0-tick-gpt-6-2-sol-1295892.md (two low findings)",
+  "warm_probe": {
+    "post_fix_checks_failed": 0,
+    "post_fix_metrics": {
+      "motion_bound_steps": 0,
+      "physics_caller_unpaused_observer": 11,
+      "warmed_idle_steps": 12
+    },
+    "pre_fix_checks_failed": 3,
+    "pre_fix_metrics": {
+      "motion_bound_steps": 1,
+      "physics_caller_unpaused_observer": 12,
+      "warmed_idle_steps": 13
+    }
+  }
+}

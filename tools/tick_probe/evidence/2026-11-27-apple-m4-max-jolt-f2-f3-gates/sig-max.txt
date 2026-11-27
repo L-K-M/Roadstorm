@@ -1,0 +1,420 @@
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=11 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=23 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=47 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=47 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=29 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=5 server_steps_delta=2 engine_pf_delta=2
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=195
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=29 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=1 engine_pf_delta=2 first_integ_pf=187
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=189
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=6 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=5 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=1 engine_pf_delta=2 first_integ_pf=192
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=194
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=17 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=17 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=192
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=5 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=13 engine_pf_delta=13
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=1 engine_pf_delta=2 first_integ_pf=188
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=190
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=187
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=19 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=188
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=5 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=12 engine_pf_delta=13 first_integ_pf=188
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=6 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=5 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=1 engine_pf_delta=2 first_integ_pf=191
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=193
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=17 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=190
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=7 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=19 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=43 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=6 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=188
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=187
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=0 signal_pf_delta=1 first_integ_pf=-1 paused=true
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=6 paused=true
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=23 signal_pf_delta=24 first_integ_pf=18 paused=true
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=11 signal_pf_delta=12 first_integ_pf=42 paused=true
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=1 paused=true
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=24 paused=true
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=12 paused=true
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=186

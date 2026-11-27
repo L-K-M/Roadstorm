@@ -8,7 +8,7 @@ fails closed even if the child exits 0.
 
 Usage:
     python3 tools/tick_probe/tests/run_n1_tests.py
-    python3 tools/tick_probe/tests/run_n1_tests.py --pacing max --expect-checks 14
+    python3 tools/tick_probe/tests/run_n1_tests.py --pacing max --expect-checks 61
 
 Exit code 0 means every N1 check passed, 1 otherwise.
 """

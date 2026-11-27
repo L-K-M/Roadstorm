@@ -207,14 +207,15 @@ def main() -> int:
             f"{data['final_z_m']:>20.9f}"
         )
 
-    # F2: the deferred pause costs one extra engine iteration per request.
-    # Record the expected real-time factor ceiling without changing the
-    # documented 0.5-2.0 acceptance band.
-    pause_overhead_s = args.requests * DT
-    realtime_factor_ceiling = realtime["sim_seconds"] / (realtime["sim_seconds"] + pause_overhead_s)
+    # Each idle-origin request spends one fully paused settling iteration so
+    # repeated same-world requests keep exact server-step pairing. Record that
+    # honest engine-frame cost and its realtime ceiling; the documented 0.5-2.0
+    # acceptance band is unchanged.
+    settle_s = args.requests * DT
+    realtime_ceiling = realtime["sim_seconds"] / (realtime["sim_seconds"] + settle_s)
     print(
-        f"INFO: pause overhead expected {args.requests} extra engine frames "
-        f"({pause_overhead_s:.3f}s); realtime speedup ceiling ~{realtime_factor_ceiling:.3f}, "
+        f"INFO: {args.requests} paused settling iterations expected "
+        f"({settle_s:.3f}s); realtime ceiling ~{realtime_ceiling:.3f}, "
         f"observed {realtime['speedup_vs_wall_clock']:.3f}"
     )
 

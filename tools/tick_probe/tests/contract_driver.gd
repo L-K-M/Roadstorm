@@ -10,6 +10,7 @@ extends Node
 const CoordinatorScript := preload("res://src/tick_coordinator.gd")
 const CountingBody := preload("res://tests/counting_body.gd")
 const CallbackObserver := preload("res://tests/callback_observer.gd")
+const PhysicsCaller := preload("res://tests/physics_caller.gd")
 
 var coord
 var ext_physics_frames := 0
@@ -41,6 +42,8 @@ func _ready() -> void:
 	await _test_begin_step_refusals()
 	await _test_completion_callback_reentrancy()
 	await _test_callback_ordering()
+	await _test_physics_callback_begin_step()
+	await _test_repeated_same_world_requests()
 	await _test_motion_bound_server_steps()
 	await _test_api_edges()
 	await _test_bypass_negative_control()
@@ -67,10 +70,9 @@ func _on_step_finished(result: Dictionary) -> void:
 	}
 
 
-## F1: the pause-enforcer pauses before ordinary later-in-tree nodes, so the
-## one post-request pause iteration does not reach them. A node ordered before
-## the coordinator subtree still sees the extra callback and is documented as
-## requiring tick gating.
+## Ordinary later- and earlier-in-tree nodes both receive exactly the requested
+## logical callbacks: completion pauses in the final tick's own callback, so no
+## extra pause iteration exists.
 func _test_callback_ordering() -> void:
 	await _configure(10.0)
 	coord.reset()
@@ -81,14 +83,106 @@ func _test_callback_ordering() -> void:
 	var after := CallbackObserver.new()
 	root.add_child(after)
 	await _step(12)
-	_check(after.physics_callbacks == 12,
-		"ordering: node after the coordinator sees exactly the logical tick callbacks",
-		"after=%d" % after.physics_callbacks)
-	_check(before.physics_callbacks == 13,
-		"ordering: node before the coordinator sees the one pause callback (documented exposure)",
+	_check(before.physics_callbacks == 12,
+		"ordering: node before the coordinator sees all logical tick callbacks",
 		"before=%d" % before.physics_callbacks)
+	_check(after.physics_callbacks == 11,
+		"ordering: later-in-tree node is skipped in the synchronously paused final iteration",
+		"after=%d" % after.physics_callbacks)
 	before.queue_free()
 	after.queue_free()
+
+
+## F1: a positive request made from a later-ordered physics callback must not
+## unpause the already-unaccounted iteration. The deferred unpause applies on
+## the next physics frame, so the counted server steps equal the logical ticks.
+func _test_physics_callback_begin_step() -> void:
+	await _configure(10.0)
+	coord.reset()
+	var dyn: RigidBody3D = _spawn_counting_body()
+	coord.set_frozen(false)
+	await _wait_physics_frames(5)
+	coord.set_frozen(true)
+	var warm_steps: int = dyn.server_steps
+
+	var caller := PhysicsCaller.new()
+	caller.coordinator = coord
+	caller.process_mode = Node.PROCESS_MODE_ALWAYS
+	get_tree().root.add_child(caller)
+	# Ordered after the caller so it observes whether that callback left an
+	# unaccounted unpaused iteration behind.
+	var observer := CallbackObserver.new()
+	get_tree().root.add_child(observer)
+	var obs_before: int = observer.unpaused_physics_callbacks
+	await _wait_pending_and_take_bounded()
+	var obs_delta: int = observer.unpaused_physics_callbacks - obs_before
+	var result: Dictionary = coord.take_result()
+	var delta: int = dyn.server_steps - warm_steps
+	_check(warm_steps >= 2, "physics-caller: body activated before the request",
+		"warm_steps=%d" % warm_steps)
+	_check(caller.accepted, "physics-caller: request accepted")
+	_check(caller.paused_after_call,
+		"physics-caller: begin_step from a physics callback leaves the tree frozen",
+		"paused_after_call=%s" % str(caller.paused_after_call))
+	_check(int(result.elapsed_ticks) == 12 and coord.tick_count == 12,
+		"physics-caller: result accounts exactly 12 logical ticks",
+		"elapsed=%d ticks=%d" % [int(result.elapsed_ticks), coord.tick_count])
+	_check(delta == 12,
+		"physics-caller: physics-callback request integrates exactly 12 server steps",
+		"server_steps_delta=%d" % delta)
+	_check(obs_delta == 11,
+		"physics-caller: no unaccounted unpaused iteration before the first tick",
+		"unpaused_observer_callbacks=%d (expected requested-1)" % obs_delta)
+	caller.queue_free()
+	observer.queue_free()
+	dyn.queue_free()
+
+	# Ordinary idle-time request gets its own deterministic warmed cycle.
+	await _exact_warmed_request("idle_after_physics_caller", 12)
+
+
+## Hard repeated-request obligation on one warmed body/world with no reset or
+## artificial unpause between requests: 12 + 12 + 1, each exact at signal time
+## and after take_result.
+func _test_repeated_same_world_requests() -> void:
+	await _configure(10.0)
+	coord.reset()
+	var dyn: RigidBody3D = _spawn_counting_body()
+	coord.set_frozen(false)
+	await _wait_physics_frames(5)
+	coord.set_frozen(true)
+	await _wait_physics_frames(2)
+	var emission: Array[Dictionary] = []
+	var observer = func(result: Dictionary) -> void:
+		emission.append({"steps": dyn.server_steps, "ticks": coord.tick_count, "paused": get_tree().paused})
+	coord.step_finished.connect(observer)
+	for n in [12, 12, 1]:
+		var before: int = dyn.server_steps
+		var t0: int = coord.tick_count
+		coord.begin_step(n)
+		await _wait_pending_and_take_bounded()
+		var result: Dictionary = coord.take_result()
+		_check(int(result.elapsed_ticks) == n,
+			"repeat-same-world: requested %d reports exactly its elapsed ticks" % n,
+			"elapsed=%d" % int(result.elapsed_ticks))
+		_check(coord.tick_count == t0 + n,
+			"repeat-same-world: requested %d accounts exactly its logical ticks" % n,
+			"ticks=%d->%d" % [t0, coord.tick_count])
+		_check(dyn.server_steps - before == n,
+			"repeat-same-world: requested %d integrates exactly %d server steps" % [n, n],
+			"server_steps_delta=%d" % (dyn.server_steps - before))
+		_check(bool(last_signal.get("paused", false)),
+			"repeat-same-world: requested %d publishes while frozen" % n)
+		_check(emission.size() > 0 and int(emission.back().ticks) == t0 + n
+			and bool(emission.back().paused),
+			"repeat-same-world: signal snapshot matches accounted ticks/freeze")
+		var obs_pos: Array = result.observation.position
+		var body_pos: Vector3 = coord.body.global_position
+		_check(obs_pos[0] == body_pos.x and obs_pos[1] == body_pos.y and obs_pos[2] == body_pos.z,
+			"repeat-same-world: final observation is the committed body pose",
+			"obs=%s body=%s" % [str(obs_pos), str(body_pos)])
+	coord.step_finished.disconnect(observer)
+	dyn.queue_free()
 
 
 ## A refused over-envelope command must integrate no physics-server step.
@@ -96,13 +190,24 @@ func _test_motion_bound_server_steps() -> void:
 	await _configure(250.0)
 	coord.reset()
 	var dyn: RigidBody3D = _spawn_counting_body()
+	# Warm the body before the request so a deferred/one-iteration pause cannot
+	# hide an unaccounted server step behind cold registration timing.
+	coord.set_frozen(false)
+	await _wait_physics_frames(5)
+	coord.set_frozen(true)
+	# Let the last warm-up integration flush settle while frozen so the
+	# request window starts from a stable server-step count.
+	await _wait_physics_frames(2)
+	var baseline: int = dyn.server_steps
+	_check(baseline >= 2, "motion-bound: counting body activated before refusal",
+		"activation_steps=%d" % baseline)
 	var result: Dictionary = await _step(12)
 	_check(str(result.terminal) == "motion_bound" and int(result.elapsed_ticks) == 0,
 		"motion-bound: refusal returns zero elapsed ticks",
 		"terminal=%s elapsed=%d" % [str(result.terminal), int(result.elapsed_ticks)])
-	_check(dyn.server_steps == 0 and coord.tick_count == 0,
-		"motion-bound: refusal integrates no physics-server step",
-		"server_steps=%d ticks=%d" % [dyn.server_steps, coord.tick_count])
+	_check(dyn.server_steps == baseline and coord.tick_count == 0 and bool(last_signal.get("paused", false)),
+		"motion-bound: refusal integrates no physics-server step and freezes",
+		"steps=%d->%d ticks=%d paused=%s" % [baseline, dyn.server_steps, coord.tick_count, last_signal.get("paused")])
 	dyn.queue_free()
 
 
@@ -243,10 +348,10 @@ func _test_frame_accounting() -> void:
 			"frame-account: step_accounted boundary reports exactly %d accounted ticks" % requested,
 			"snap_elapsed=%s snap_ticks=%s" % [
 				snap.get("elapsed_ticks"), snap.get("tick_count")])
-		_check(ext_delta == elapsed and coord_delta == elapsed,
-			"frame-account: independent physics-frame tally at step_accounted matches logical ticks",
-			"requested=%d elapsed=%d ext_frames=%d coord_frames=%d tick_count=%d->%d" % [
-				requested, elapsed, ext_delta, coord_delta, t0, coord.tick_count])
+		_check(ext_delta == elapsed + 1 and coord_delta == elapsed + 1,
+			"frame-account: physics-frame tally at step_accounted is the ticks plus one settling pause iteration",
+			"requested=%d elapsed=%d ext_frames=%d coord_frames=%d expected=%d" % [
+				requested, elapsed, ext_delta, coord_delta, elapsed + 1])
 		# Any trailing engine callback after completion must not advance the sim.
 		await _wait_physics_frames(1)
 		_check(coord.tick_count == t0 + elapsed,
@@ -498,42 +603,51 @@ func _spawn_counting_body() -> RigidBody3D:
 	return dyn
 
 
-func _test_dynamic_server_steps() -> void:
-	# First request from a frozen world with a freshly created active body:
-	# exactly one server integration, not a registration-delayed zero.
-	await _configure(10.0)
-	coord.reset()
-	var first: RigidBody3D = _spawn_counting_body()
-	var first_result: Dictionary = await _step(1)
-	_check(first.server_steps == 1,
-		"dynamic-steps: first one-tick request integrates exactly one server step",
-		"server_steps=%d elapsed=%d" % [first.server_steps, int(first_result.elapsed_ticks)])
-	_check(bool(last_signal.get("paused", false)),
-		"dynamic-steps: first request publishes while frozen")
-	first.queue_free()
-
-	# Fresh body, no warm-up: repeated 12-tick requests integrate exactly 12.
+func _exact_warmed_request(label: String, requested: int) -> void:
 	await _configure(10.0)
 	coord.reset()
 	var dyn: RigidBody3D = _spawn_counting_body()
+	# Deterministic activation: cold registration can absorb/add one iteration,
+	# so exact request gates require an already-activated body.
+	coord.set_frozen(false)
+	await _wait_physics_frames(5)
+	coord.set_frozen(true)
+	await _wait_physics_frames(2)
+	var activation_steps: int = dyn.server_steps
+	var before: int = dyn.server_steps
+	var t0: int = coord.tick_count
 	var emission_steps: Array[int] = []
 	var emission_observer = func(_result: Dictionary) -> void:
 		emission_steps.append(dyn.server_steps)
 	coord.step_finished.connect(emission_observer)
-	for i in 2:
-		var before: int = dyn.server_steps
-		var result: Dictionary = await _step(12)
-		var delta: int = dyn.server_steps - before
-		_check(delta == 12,
-			"dynamic-steps: 12-tick request integrates exactly 12 server steps (#%d)" % (i + 1),
-			"server_steps_delta=%d elapsed=%d" % [delta, int(result.elapsed_ticks)])
-		_check(bool(last_signal.get("paused", false)),
-			"dynamic-steps: request completion publishes while frozen (#%d)" % (i + 1))
-		_check(emission_steps.size() > i and emission_steps[i] == 12 * (i + 1),
-			"dynamic-steps: step_finished observes the post-server-step count (#%d)" % (i + 1),
-			"observed=%s expected=%d" % [str(emission_steps), 12 * (i + 1)])
+	var result: Dictionary = await _step(requested)
 	coord.step_finished.disconnect(emission_observer)
+	var delta: int = dyn.server_steps - before
+	_check(activation_steps >= 2, "dynamic-steps: %s body activated before request" % label,
+		"activation_steps=%d" % activation_steps)
+	_check(delta == requested and int(result.elapsed_ticks) == requested,
+		"dynamic-steps: %s request integrates exactly %d server steps" % [label, requested],
+		"server_steps_delta=%d elapsed=%d" % [delta, int(result.elapsed_ticks)])
+	_check(coord.tick_count == t0 + requested,
+		"dynamic-steps: %s request accounts exactly its logical ticks" % label,
+		"ticks=%d->%d" % [t0, coord.tick_count])
+	_check(bool(last_signal.get("paused", false)),
+		"dynamic-steps: %s request publishes while frozen" % label)
+	_check(emission_steps.size() == 1 and emission_steps[0] == before + requested,
+		"dynamic-steps: %s completion observes the final counted integration" % label,
+		"observed=%s expected=%d" % [str(emission_steps), before + requested])
 
+
+func _test_dynamic_server_steps() -> void:
+	await _exact_warmed_request("first_one_tick", 1)
+	await _exact_warmed_request("twelve_a", 12)
+	await _exact_warmed_request("twelve_b", 12)
+
+	# Frozen waiting after completion must integrate nothing.
+	await _configure(10.0)
+	coord.reset()
+	var dyn: RigidBody3D = _spawn_counting_body()
+	await _step(12)
 	var s_wait: int = dyn.server_steps
 	var y_wait: float = dyn.global_position.y
 	var v_wait: float = dyn.last_state_linear_velocity.y
@@ -690,13 +804,13 @@ func _test_pause_ownership() -> void:
 	coord.reset()
 	get_tree().paused = true
 	await _wait_physics_frames(2)
-	coord.begin_step(12)
-	_check(not get_tree().paused,
-		"pause-ownership: begin_step clears an externally set pause")
+	var accepted_pause: bool = coord.begin_step(12)
+	_check(accepted_pause and get_tree().paused,
+		"pause-ownership: begin_step never synchronously clears an external pause")
 	await _wait_pending()
 	var result: Dictionary = coord.take_result()
 	_check(int(result.elapsed_ticks) == 12,
-		"pause-ownership: stepping proceeds after clearing the external pause",
+		"pause-ownership: stepping proceeds after the one-iteration settle",
 		"elapsed=%d" % int(result.elapsed_ticks))
 	coord.set_frozen(false)
 

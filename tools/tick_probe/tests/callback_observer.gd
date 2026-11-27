@@ -1,7 +1,7 @@
 extends Node
 ## Test-only observer used to measure engine callback delivery around the
-## coordinator's deferred pause. Default process mode/priority; instances can
-## be given an explicit process_priority to probe ordering.
+## coordinator's request boundaries. Default process mode/priority; instances
+## can be given an explicit process_priority to probe ordering.
 
 var physics_callbacks := 0
 var unpaused_physics_callbacks := 0

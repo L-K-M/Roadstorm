@@ -1,0 +1,4 @@
+Signal-time request relationship, final tree (warmed request cycles):
+- fixed: 75 warmed requests, exact server-steps==requested and signal frames==requested in 75/75
+- default: 75 warmed requests, exact server-steps==requested and signal frames==requested in 75/75
+- max: 150 warmed requests, exact server-steps==requested and signal frames==requested in 150/150

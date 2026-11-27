@@ -1,0 +1,6 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+F1_CALLER begin_accepted=true paused_after_call=false engine_pf=7
+F1_RESULT warm_steps=4 elapsed=12 tick_count=12 server_steps_delta=13 engine_pf_delta=14 paused=true
+F1_IDLE elapsed=12 tick_count=24 server_steps_delta=12 engine_pf_delta=13 paused=true
+F1_DONE

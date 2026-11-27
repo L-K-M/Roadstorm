@@ -1,0 +1,12 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+WARM_METRIC warmed_idle requested=12 elapsed=12 server_steps_delta=13 pf_delta=13
+FAIL warm-probe: warmed idle request integrates exactly 12 server steps | delta=13 elapsed=12
+WARM_METRIC immediate_repeat requested=12 elapsed=12 server_steps_delta=12
+WARM_METRIC physics_caller requested=12 elapsed=12 server_steps_delta=12 paused_after_call=true unpaused_observer_delta=12
+PASS warm-probe: physics-callback request stays frozen at the call
+PASS warm-probe: physics-callback request integrates exactly 12 server steps
+FAIL warm-probe: no unaccounted unpaused iteration precedes the first tick | unpaused_observer_delta=12 expected=11
+WARM_METRIC motion_bound requested=12 elapsed=0 terminal=motion_bound server_steps_delta=1
+FAIL warm-probe: warmed over-envelope refusal integrates no server step | delta=1 elapsed=0 terminal=motion_bound
+WARM_RESULT {"checks_failed":3,"checks_total":5,"failures":["FAIL warm-probe: warmed idle request integrates exactly 12 server steps | delta=13 elapsed=12","FAIL warm-probe: no unaccounted unpaused iteration precedes the first tick | unpaused_observer_delta=12 expected=11","FAIL warm-probe: warmed over-envelope refusal integrates no server step | delta=1 elapsed=0 terminal=motion_bound"],"schema":"roadstorm.tick_probe.warm_step.v1"}
