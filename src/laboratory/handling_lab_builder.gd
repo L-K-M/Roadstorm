@@ -375,7 +375,11 @@ static func _split_runs(samples: Array[Dictionary]) -> Array:
 	for smp in samples:
 		var key := "%s|%s" % [String(smp["surface_id"]), String(smp["section_id"])]
 		var brk := bool(smp.get("break_before", false))
-		if brk or (not current.is_empty() and key != last_key):
+		# Only split while a run is open. The first sample can carry
+		# break_before (a bay beginning with a restart strip); appending the
+		# pending empty run would put an empty run at index 0, where build()'s
+		# cap logic reads run[0].
+		if not current.is_empty() and (brk or key != last_key):
 			runs.append(current)
 			current = []
 		current.append(smp)

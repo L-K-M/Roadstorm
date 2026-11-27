@@ -39,7 +39,11 @@ their own station origin. The manifest carries `join_probes`,
 `restart_probes` and a `jump_gap` probe group. The validator casts vertical
 Jolt rays immediately before, 5 mm either side of, and after each internal
 join, checks the surface metadata on each side, and measures the actual
-collision gap across the jump against the authored `gap_m`.
+collision gap across the jump against the authored `gap_m`. A synthetic regression
+feeds a bay whose first cross-section is a restart strip through the builder's
+sampling and run splitting, asserting that every produced run is nonempty and
+that its start and end stations and boundary geometry match the authored
+segments.
 
 ## Run
 

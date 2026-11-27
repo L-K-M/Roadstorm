@@ -48,6 +48,11 @@ const FORBIDDEN_TAG_KEYS: Array[String] = [
 	"triangle_index",
 	"jolt_face_index",
 ]
+const HandlingLabBuilderScript := preload("res://src/laboratory/handling_lab_builder.gd")
+const HandlingLabDataScript := preload("res://src/laboratory/handling_lab_data.gd")
+## Synthetic regression: a bay whose first cross-section carries break_before
+## (a restart strip at the very start) must still produce only nonempty runs.
+const SYNTHETIC_RESTART_RUN_COUNT := 4
 const MIN_BAY_SEPARATION_M := 1.0
 
 var _checks := 0
@@ -127,6 +132,7 @@ func _run_checks() -> void:
 	_check_ray_probes(manifest)
 	_check_boundary_probes(manifest)
 	_check_determinism()
+	_check_first_restart_synthetic()
 
 
 func _check_manifest_identity(manifest: Dictionary) -> void:
@@ -864,6 +870,134 @@ func _finite_transform(transform: Transform3D) -> bool:
 		and _finite_vec(transform.basis.y)
 		and _finite_vec(transform.basis.z)
 	)
+
+
+func _synthetic_first_restart_bay() -> Dictionary:
+	var origin := Vector3.ZERO
+	return {
+		"bay_id": "synthetic_first_restart",
+		"title": "Synthetic bay beginning with a restart strip",
+		"origin": origin,
+		"yaw_deg": 0.0,
+		"fixture_refs": [],
+		"segments": [
+			HandlingLabDataScript.straight(
+				"synthetic.restart_a", 20.0, 12.0, "asphalt",
+				0.0, 0.0, 0.0, 0.0, "synthetic_restart_a", 0.0, "road",
+				"synthetic_regression", true
+			),
+			HandlingLabDataScript.straight(
+				"synthetic.joined_b", 20.0, 12.0, "asphalt",
+				0.0, 0.0, 0.0, 0.0, "synthetic_joined_b", 0.0, "road",
+				"synthetic_regression"
+			),
+			HandlingLabDataScript.straight(
+				"synthetic.restart_c", 20.0, 12.0, "asphalt",
+				0.0, 0.0, 0.0, 0.0, "synthetic_restart_c", 0.0, "road",
+				"synthetic_regression", true
+			),
+			HandlingLabDataScript.straight(
+				"synthetic.joined_d", 20.0, 12.0, "asphalt",
+				0.0, 0.0, 0.0, 0.0, "synthetic_joined_d", 0.0, "road",
+				"synthetic_regression"
+			),
+		],
+		"walls": [],
+	}
+
+
+func _check_first_restart_synthetic() -> void:
+	var bay := _synthetic_first_restart_bay()
+	var origin: Vector3 = bay["origin"]
+	var sampled: Dictionary = HandlingLabBuilderScript._sample_bay(bay)
+	var samples: Array = sampled["samples"]
+	_check(samples.size() > 0, "synthetic.first_restart.samples_present", str(samples.size()))
+	if samples.is_empty():
+		return
+	_check(
+		bool(samples[0].get("break_before", false)),
+		"synthetic.first_restart.first_sample_break_before",
+		str(samples[0].get("break_before", false))
+	)
+	_check(
+		(samples[0]["pos"] as Vector3).is_equal_approx(origin),
+		"synthetic.first_restart.first_sample_at_origin",
+		str(samples[0]["pos"])
+	)
+	_check(
+		absf(float(samples[0]["s"])) <= 1e-6,
+		"synthetic.first_restart.first_sample_station_zero",
+		str(samples[0]["s"])
+	)
+
+	var runs: Array = HandlingLabBuilderScript._split_runs(samples)
+	_check(
+		runs.size() == SYNTHETIC_RESTART_RUN_COUNT,
+		"synthetic.first_restart.run_count",
+		"%d vs %d" % [runs.size(), SYNTHETIC_RESTART_RUN_COUNT]
+	)
+
+	# A restart resets the station to zero; an ordinary join keeps it running.
+	var expected_starts := [0.0, 20.0, 0.0, 20.0]
+	var expected_ends := [20.0, 40.0, 20.0, 40.0]
+	for i in range(runs.size()):
+		var run: Array = runs[i]
+		var label := "synthetic.first_restart.run_%d" % i
+		_check(run.size() > 0, "%s.nonempty" % label, str(run.size()))
+		if run.is_empty():
+			continue
+		# Surface generation needs at least two cross-sections per run.
+		_check(run.size() >= 2, "%s.min_samples" % label, str(run.size()))
+		if i >= expected_starts.size():
+			continue
+		var first: Dictionary = run[0]
+		var last: Dictionary = run[run.size() - 1]
+		_check(
+			absf(float(first["s"]) - expected_starts[i]) <= 1e-6,
+			"%s.start_station" % label,
+			"%.3f vs %.3f" % [float(first["s"]), expected_starts[i]]
+		)
+		_check(
+			absf(float(last["s"]) - expected_ends[i]) <= 1e-6,
+			"%s.end_station" % label,
+			"%.3f vs %.3f" % [float(last["s"]), expected_ends[i]]
+		)
+		_check(
+			_finite_vec(first["pos"]) and _finite_vec(last["pos"]),
+			"%s.finite_positions" % label,
+			"%s..%s" % [str(first["pos"]), str(last["pos"])]
+		)
+		var monotonic := true
+		for j in range(1, run.size()):
+			if float(run[j]["s"]) <= float(run[j - 1]["s"]):
+				monotonic = false
+			break
+		_check(monotonic, "%s.station_monotonic" % label, "stations must increase along a run")
+
+		if i == 0:
+			continue
+		var previous: Array = runs[i - 1]
+		if previous.is_empty():
+			continue
+		var boundary: Dictionary = previous[previous.size() - 1]
+		if bool(first.get("joined_prev", false)):
+			_check(
+				(first["pos"] as Vector3).is_equal_approx(boundary["pos"]),
+				"%s.joined_boundary_position" % label,
+				"%s vs %s" % [str(first["pos"]), str(boundary["pos"])]
+			)
+			_check(
+				absf(float(first["s"]) - float(boundary["s"])) <= 1e-6,
+				"%s.joined_boundary_station" % label,
+				"%.3f vs %.3f" % [float(first["s"]), float(boundary["s"])]
+			)
+		else:
+			_check(
+				(first["pos"] as Vector3).is_equal_approx(origin)
+				and absf(float(first["s"])) <= 1e-6,
+				"%s.break_start_geometry" % label,
+				"%s at s=%.3f" % [str(first["pos"]), float(first["s"])]
+			)
 
 
 func _fingerprint(node: Node) -> Array:
