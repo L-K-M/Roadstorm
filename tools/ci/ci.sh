@@ -32,6 +32,10 @@
 
 CI_TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
 CI_DEFAULT_PROJECT="$(cd "$CI_TOOLS_DIR/../.." && pwd)"
+# Exposed so a bounded test shim can signal the exact ci.sh process; it is
+# informational and never used to infer lock ownership.
+ROADSTORM_CI_PID="$$"
+export ROADSTORM_CI_PID
 
 # shellcheck source=lib/common.sh
 . "$CI_TOOLS_DIR/lib/common.sh"
@@ -1745,18 +1749,23 @@ ci_export_list() {
 	esac
 }
 
-# ci_print_export_failure_log <logfile> : print the whole captured engine log,
-# indented. Godot's export configuration errors are multi-line and indented,
-# so filtering to anchored ERROR lines alone hid the actual reason from hosted
-# run 45921573623. Called only on a failed export; never replaces the exit-code
-# verdict with the log contents.
-ci_print_export_failure_log() {
-	_pfl="$1"
-	[ -f "$_pfl" ] || return 0
-	ci_note "full engine log ($_pfl):"
-	sed 's/^/    /' "$_pfl"
-	return 0
-}
+# ---------------------------------------------------------------------------
+# Export destination locking (Sol recheck 675ec1c finding 1)
+# ---------------------------------------------------------------------------
+# Robust OS advisory locks on persistent lock FILES. `<destination>.ci-lock`
+# is created without truncation when absent; its bytes are never written. The
+# kernel releases the lock automatically when the owning process exits,
+# including on a crash, so a stale lock never blocks a later export. No lock
+# path is ever deleted or unlinked by this tool. Pre-existing regular files at
+# a lock path are preserved byte-for-byte and merely locked; a pre-existing
+# symlink or non-regular path is refused, never followed or removed.
+_CI_LOCK_TOOL=""
+for _cand in flock lockf; do
+	if command -v "$_cand" >/dev/null 2>&1; then
+		_CI_LOCK_TOOL="$_cand"
+		break
+	fi
+done
 
 ci_export_build() {
 	_mode="$1"
@@ -1826,11 +1835,8 @@ ci_export_build() {
 	# ci_init_report ran before dispatch and therefore used the generic command
 	# name. Give the already-written report the same preset-specific name as the
 	# logs so two presets can never share an evidence file.
-	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ]; then
-		_report_file="${CI_REPORT##*/}"
-		_report_stamp="${_report_file#export-}"
-		_report_stamp="${_report_stamp%.txt}"
-		_new_report="$CI_OUT/reports/export-${_slug}-${_report_stamp}.txt"
+	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
+		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
 		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ]; then
 			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
 		fi
@@ -1847,11 +1853,92 @@ ci_export_build() {
 	esac
 	_pck="$_pck_dir/$_pck_base.pck"
 
-	# Refuse to reuse an output path that already holds a file or sidecar
-	# (Opus R2). Without this, a later engine run that silently writes nothing
-	# would be validated against the PREVIOUS package and its inventory would
-	# pass on old bytes. ci.sh never deletes or replaces existing user outputs:
-	# the caller moves/removes them explicitly and re-runs.
+	# Acquire both destination locks before any existence decision. Sorted
+	# acquisition order avoids AB-BA deadlock between overlapping invocations.
+	_wait="${CI_EXPORT_LOCK_WAIT:-900}"
+	case "$_wait" in '' | *[!0-9]*) _wait=900 ;; esac
+	if [ "$_out" = "$_pck" ]; then
+		_lock_list="$_out.ci-lock"
+	else
+		_lock_list="$(printf '%s.ci-lock\n%s.ci-lock\n' "$_out" "$_pck" | LC_ALL=C sort)"
+	fi
+	while IFS= read -r _lp; do
+		[ -n "$_lp" ] || continue
+		if [ -L "$_lp" ]; then
+			ci_fail "export --export: refusing to follow existing symlink lock path: $_lp (remove or replace it manually)"
+			return "$CI_FAIL"
+		fi
+		if [ -e "$_lp" ] && [ ! -f "$_lp" ]; then
+			ci_fail "export --export: refusing to use non-regular lock path: $_lp (remove or replace it manually)"
+			return "$CI_FAIL"
+		fi
+	done <<EOF
+$_lock_list
+EOF
+	if [ -z "$_CI_LOCK_TOOL" ]; then
+		ci_fail "export --export: neither flock(1) nor lockf(1) is available; refusing to export without an exclusive lock"
+		return "$CI_FAIL"
+	fi
+	export ROADSTORM_CI_REPORT="$CI_REPORT" ROADSTORM_CI_ATTEMPT_ID="$CI_ATTEMPT_ID"
+	export CI_STRICT_WARNINGS="${CI_STRICT_WARNINGS:-0}" CI_TIMEOUT_DEFAULT="${CI_TIMEOUT_DEFAULT:-300}"
+	_shq() {
+		printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+	}
+	_source_sha_args=""
+	[ -n "${ROADSTORM_SOURCE_SHA:-}" ] && _source_sha_args="--source-sha $(_shq "$ROADSTORM_SOURCE_SHA")"
+	export ROADSTORM_CI_LOCK_OWNER="$$"
+	_inner_cmd="$(_shq "$0") --project $(_shq "$CI_PROJECT") --godot $(_shq "$GODOT_BIN") --out $(_shq "$CI_OUT") $_source_sha_args __export-inner $(_shq "$_preset") $(_shq "$_mode") $(_shq "$_out")"
+	_lock_opts=""
+	case "$_CI_LOCK_TOOL" in
+		flock) _lock_opts="-x -w $_wait" ;;
+		lockf) _lock_opts="-k -t $_wait" ;;
+	esac
+	if [ "$_out" = "$_pck" ]; then
+		_cmd="$_CI_LOCK_TOOL $_lock_opts $(_shq "$(printf '%s\n' "$_lock_list")") $_inner_cmd"
+	else
+		_lock1="$(printf '%s\n' "$_lock_list" | head -n 1)"
+		_lock2="$(printf '%s\n' "$_lock_list" | tail -n 1)"
+		_cmd="$_CI_LOCK_TOOL $_lock_opts $(_shq "$_lock1") $_CI_LOCK_TOOL $_lock_opts $(_shq "$_lock2") $_inner_cmd"
+	fi
+	eval "$_cmd"
+	return $?
+}
+
+ci_export_build_inner() {
+	_preset="$1"
+	_mode="$2"
+	_out="$3"
+	_cfg="$CI_PROJECT/export_presets.cfg"
+	[ -f "$_cfg" ] || {
+		ci_fail "export --export: no export_presets.cfg at the project root"
+		return "$CI_FAIL"
+	}
+	if ! ci_export_list names | grep -Fqx -- "$_preset"; then
+		ci_fail "export --export: preset '$_preset' is not declared in export_presets.cfg"
+		return "$CI_FAIL"
+	fi
+	_slug="$(ci_preset_slug "$_preset")"
+	[ -n "$_slug" ] || _slug="preset"
+	CI_RUN_NAME="export-$_slug"
+	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
+		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
+		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ]; then
+			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
+		fi
+	fi
+	case "$_out" in
+		*/*) _pck_dir="${_out%/*}"; _pck_base="${_out##*/}" ;;
+		*) _pck_dir="."; _pck_base="$_out" ;;
+	esac
+	case "$_pck_base" in
+		*.*) _pck_base="${_pck_base%.*}" ;;
+	esac
+	_pck="$_pck_dir/$_pck_base.pck"
+	# Under the lock: refuse to reuse an output path that already holds a file
+	# or sidecar (Opus R2). Without this, a later engine run that silently
+	# writes nothing would be validated against the PREVIOUS package and its
+	# inventory would pass on old bytes. ci.sh never deletes or replaces
+	# existing user outputs: the caller moves/removes them explicitly.
 	_stale=""
 	{ [ -e "$_out" ] || [ -L "$_out" ]; } && _stale="$_out"
 	if [ -z "$_stale" ]; then
@@ -1970,17 +2057,24 @@ ci_export_build() {
 	_inv_tag="$_slug"
 	_sha_tag="$(printf '%s' "${ROADSTORM_SOURCE_SHA:-}" | tr -c '[:alnum:]-' '-' | cut -c 1-12)"
 	[ -n "$_sha_tag" ] && _inv_tag="${_inv_tag}-${_sha_tag}"
+	# Same per-attempt token as this invocation's report, so an inventory can
+	# always be associated with the attempt that produced it -- including a
+	# failed attempt (Sol recheck 675ec1c finding 2). Earlier attempts keep
+	# their own distinct files as history; they cannot masquerade as this one.
+	[ -n "$CI_ATTEMPT_ID" ] && _inv_tag="${_inv_tag}-${CI_ATTEMPT_ID}"
 	_inv_report="$CI_OUT/reports/export-package-inventory-${_inv_tag}.txt"
+	_inv_reason_log="$CI_OUT/logs/export-${_slug}-${CI_ATTEMPT_ID}-inventory-failure.log"
 	mkdir -p "$(dirname "$_inv_report")" 2>/dev/null || ci_die "cannot create report directory for $_inv_report"
-	# Remove any report left by an earlier run of this preset first: a failed
-	# inventory run must not leave a stale PASS report behind at the same path.
-	rm -f "$_inv_report" 2>/dev/null
 	_inv_out="$(python3 "$_inv_script" check --platform "$_inv_plat" --main "$_out" --report "$_inv_report" --quiet 2>&1)"
 	_inv_rc=$?
 	if [ "$_inv_rc" -ne 0 ]; then
-		ci_fail "export: package inventory check FAILED for preset '$_preset' ($_inv_plat); report: $_inv_report"
+		# Preserve the checker's own reason text in the uploaded logs even when
+		# it dies before writing --report (Opus F2).
+		: >"$_inv_reason_log" 2>/dev/null
+		printf '%s\n' "$_inv_out" >>"$_inv_reason_log" 2>/dev/null
+		ci_fail "export: package inventory check FAILED for preset '$_preset' ($_inv_plat); report: $_inv_report; reason log: $_inv_reason_log"
 		printf '%s\n' "$_inv_out" | sed 's/^/    /'
-		ci_report "export result=fail preset=$_preset reason=pack-inventory inventory_rc=$_inv_rc"
+		ci_report "export result=fail preset=$_preset reason=pack-inventory inventory_rc=$_inv_rc inventory_report=$_inv_report inventory_log=$_inv_reason_log"
 		return "$CI_FAIL"
 	fi
 
@@ -2025,6 +2119,7 @@ case "$CI_COMMAND" in
 	test) cmd_test "$@" ;;
 	capture) cmd_capture "$@" ;;
 	export) cmd_export "$@" ;;
+	__export-inner) ci_export_build_inner "$@" ;;
 	verify-engine) cmd_verify_engine "$@" ;;
 	verify-templates) cmd_verify_templates "$@" ;;
 	install-templates) cmd_install_templates "$@" ;;
@@ -2044,5 +2139,5 @@ ci_prune_logs
 # The report location is diagnostic metadata, not command output: `pin`,
 # `capture --list` and `export --list-presets` print data on stdout that a
 # caller may pipe, so this goes to stderr.
-[ -n "$CI_REPORT" ] && ci_info "report: $CI_REPORT" >&2
+[ -n "$CI_REPORT" ] && [ -z "${ROADSTORM_CI_REPORT:-}" ] && ci_info "report: $CI_REPORT" >&2
 exit "$_rc"

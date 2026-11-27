@@ -1009,8 +1009,19 @@ ci_probe_video_size() {
 # ---------------------------------------------------------------------------
 CI_RUN_NAME="${CI_RUN_NAME:-run}"
 CI_REPORT=""
+# Unique id for THIS invocation/attempt (<utc>-<random>). The per-run report and
+# the pack-inventory report share it, so a consumer can associate an inventory
+# with the exact attempt that produced it (Sol recheck 675ec1c finding 2).
+CI_ATTEMPT_ID=""
 
 ci_init_report() {
+	# A nested locked worker (ci.sh __export-inner) appends to the outer
+	# invocation's report instead of creating a second one.
+	if [ -n "${ROADSTORM_CI_REPORT:-}" ]; then
+		CI_REPORT="$ROADSTORM_CI_REPORT"
+		[ -n "${ROADSTORM_CI_ATTEMPT_ID:-}" ] && CI_ATTEMPT_ID="$ROADSTORM_CI_ATTEMPT_ID"
+		return 0
+	fi
 	mkdir -p "$CI_OUT/reports" 2>/dev/null
 	_stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%s)"
 	# Opus R1: same-second export-check/list/build processes used to truncate
@@ -1025,7 +1036,8 @@ ci_init_report() {
 		_tmp="$(mktemp "$CI_OUT/reports/.ci-report.XXXXXX" 2>/dev/null)" && {
 			_rand="${_tmp##*/}"
 			_rand="${_rand#.ci-report.}"
-			_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${_stamp}-${_rand}.txt"
+			CI_ATTEMPT_ID="${_stamp}-${_rand}"
+			_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${CI_ATTEMPT_ID}.txt"
 			if mv "$_tmp" "$_new_report" 2>/dev/null; then
 				CI_REPORT="$_new_report"
 				_tmp=""
@@ -1036,15 +1048,11 @@ ci_init_report() {
 		}
 		_try=$((_try + 1))
 	done
-	# Fallback for a host without mktemp: PID + bounded existence probe.
-	if [ -z "$CI_REPORT" ]; then
-		_base="${CI_RUN_NAME:-run}-${_stamp}-$$"
-		CI_REPORT="$CI_OUT/reports/${_base}.txt"
-		_n=1
-		while [ -e "$CI_REPORT" ]; do
-			CI_REPORT="$CI_OUT/reports/${_base}-${_n}.txt"
-			_n=$((_n + 1))
-		done
+	if [ -z "$CI_REPORT" ] || [ -z "$CI_ATTEMPT_ID" ]; then
+		# No PID/existence-probe fallback: it is not atomic and subshells share
+		# $$. A missing unique report must fail loudly rather than risk two
+		# attempts sharing evidence (Opus F4).
+		ci_die "mktemp is unavailable; cannot create a unique per-attempt report safely"
 	fi
 	{
 		printf 'command: %s\n' "${CI_RUN_NAME:-run}"

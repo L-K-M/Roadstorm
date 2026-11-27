@@ -179,7 +179,7 @@ jobs:
       # size, because a capture records the viewport size rather than the
       # window size requested with --resolution.
       - name: Capture readiness (report only)
-        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" capture --check
+        run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" capture --check
 
       - name: Upload CI logs and reports
         if: always()
@@ -330,6 +330,65 @@ jobs:
       - name: Export preparation check (templates and presets)
         run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" export --check
 
+      # The tooling self-test's template-dependent failure-path cases need the
+      # templates this job just installed and verified. Run them here so hosted
+      # CI actually exercises stale-output refusal, corrupted-package rejection,
+      # concurrent-destination serialization and attempt-bound inventory
+      # naming. The step FAILS if any of those required cases would skip.
+      - name: Tooling self-test with verified templates (failure-path coverage)
+        shell: bash
+        env:
+          GODOT_BIN: ${{ steps.godot.outputs.bin }}
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/ci-tooling-selftest.log"
+          if ! sh tools/ci/tests/run_tests.sh >"$log" 2>&1; then
+            cat "$log"
+            echo "::error::tools/ci self-test failed"
+            exit 1
+          fi
+          grep -q '^\[ci-selftest\] PASS' "$log"
+          if grep -qF 'the pinned export templates are not installed on this host' "$log"; then
+            cat "$log"
+            echo "::error::template-dependent export cases were skipped: no pinned templates found"
+            exit 1
+          fi
+          if grep -qF 'no installed Godot matches pin' "$log"; then
+            cat "$log"
+            echo "::error::engine-backed export cases were skipped: editor does not match the pin"
+            exit 1
+          fi
+          for _needle in \
+            "an existing main+sidecar target is refused and left byte-identical -> yes" \
+            "a pre-existing sidecar alone is refused, not treated as the package -> yes" \
+            "a dangling symlink target is refused and never written through -> yes" \
+            "a corrupted package exits nonzero, prints no PASS and names the inventory failure -> yes" \
+            "the rejected export report carries one fail verdict and no pass verdict -> yes" \
+            "the failed attempt owns no PASS inventory; prior PASS history stays separate -> yes" \
+            "the inventory failure reason is preserved in the uploaded logs -> yes" \
+            "the inventory report carries the source SHA and the same attempt id -> yes" \
+            "the overlapping invocation waits instead of claiming the destination -> yes" \
+            "the zero-write attempt fails and the blocked attempt delivers the package -> yes" \
+            "the successful concurrent attempt's report matches the delivered digests -> yes" \
+            "failed attempt leaves no PASS; persistent lock files remain -> yes" \
+            "stale persistent lock files do not block a later export -> yes" \
+            "two nonoverlapping concurrent exports both succeed -> yes" \
+            "a foreign lock FILE is preserved and a live owner blocks others -> yes" \
+            "a symlink lock path is refused and left intact -> yes" \
+            "a non-regular lock path is refused and preserved -> yes" \
+            "foreign bytes appended to a live lock file are preserved -> yes" \
+            "a lock path replaced with a symlink during export is preserved -> yes" \
+            "SIGTERM releases the advisory lock and leaves no package -> yes" \
+            "stale persistent lock files are inert after SIGTERM -> yes"
+          do
+            if ! grep -qF -- "$_needle" "$log"; then
+              echo "::error::required export failure-path case did not pass: $_needle"
+              cat "$log"
+              exit 1
+            fi
+          done
+          tail -n 8 "$log"
+
       # A locally produced package is not a verified release: PLAN.md M9.2 still
       # requires launching each package on its target OS, and M9.3 covers
       # signing/notarization.
@@ -415,8 +474,12 @@ jobs:
           set -euo pipefail
           command -v bash >/dev/null 2>&1 || { echo "::error::bash is unavailable"; exit 1; }
           command -v python3 >/dev/null 2>&1 || { echo "::error::python3 is unavailable"; exit 1; }
-          printf 'bash: %s\n' "$(bash --version | head -n 1)"
-          python3 --version
+          {
+            echo "### Contract suite interpreters"
+            echo ""
+            echo "- bash: $(bash --version | head -n 1)"
+            echo "- python: $(python3 --version 2>&1)"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
       - name: Run contract suites on the exact checkout
         shell: bash

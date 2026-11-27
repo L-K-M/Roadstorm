@@ -114,7 +114,7 @@ path there still fails.
 | `capture --target <res://…> [--frames N] [--fps F] [--resolution WxH] [--name N]` | Deterministic AVI capture of one scene at a requested resolution. | the target does not exist, there is no display, an argument is malformed, the capture fails, or the recorded resolution differs from the requested one. |
 | `export --check` | Export preparation: pin, installed export templates for the three required platforms, and `export_presets.cfg` coverage. | templates are missing, or presets are missing/incomplete. |
 | `export --list-presets [names]` | Lists the declared export presets (`preset.N`, name, platform). | there is no `export_presets.cfg`. |
-| `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. A relative `--out` is resolved against the caller's working directory (not Godot's `--path` scratch copy) before the engine sees it, using filesystem semantics (`..` after a symlink follows the target's parent). An existing main output or sidecar `.pck` at that path is **refused**, never deleted, overwritten or silently reused as evidence for a new run. Each preset gets its own `export-<slug>-N-*.log` names, report and inventory report; report filenames carry a per-process id, so same-second invocations cannot erase each other's evidence. The inventory report name includes the source SHA when `--source-sha` is supplied. `tools/export_smoke/lib/pack_inventory.py check` re-reads the produced package; `PASS`/`export result=pass` are emitted only after the inventory succeeds, so a rejected package has exactly one failing verdict. On failure the full captured engine log is printed, because Godot's configuration-error reasons are multi-line and indented. | presets are missing, the preset is unknown, the output or sidecar already exists, the export fails, no file is produced, the pack-inventory check fails, or python3/the inventory tool is unavailable. |
+| `export --export <preset> --out <file> [--mode release|debug]` | Builds one preset into a local file. A relative `--out` is resolved against the caller's working directory (not Godot's `--path` scratch copy) before the engine sees it, using filesystem semantics (`..` after a symlink follows the target's parent). An existing main output or sidecar `.pck` at that path is **refused**, never deleted, overwritten or silently reused as evidence for a new run. Overlapping main/sidecar destinations are serialized by persistent advisory lock files (`<destination>.ci-lock`) using `flock(1)` on Linux or `lockf(1)` on macOS/BSD. The kernel releases the lock when its owner exits, including after a crash, so a stale lock file does not block a later export. Lock-file bytes are never written, truncated or deleted by this tool; a pre-existing regular file at a lock path is preserved and merely locked. Keep lock files in place while any export may be active: removing or replacing one during a run can let another invocation lock a new inode and enter concurrently. A live owner makes overlapping invocations wait (default 900s, overridable with `CI_EXPORT_LOCK_WAIT`) and then fail closed; a pre-existing symlink or non-regular path at the lock name is refused, never followed or removed. Each preset gets its own `export-<slug>-N-*.log` names; every run has a unique per-attempt id (mktemp-derived) shared by its report and its inventory report, so evidence cannot be confused across attempts. The inventory report name also includes the source SHA when `--source-sha` is supplied. `tools/export_smoke/lib/pack_inventory.py check` re-reads the produced package; `PASS`/`export result=pass` are emitted only after the inventory succeeds, so a rejected package has exactly one failing verdict. On failure the full captured engine log is printed, because Godot's configuration-error reasons are multi-line and indented. | presets are missing, the preset is unknown, the output or sidecar already exists, the destination lock is held (wait timeout), neither `flock(1)` nor `lockf(1)` is available, the lock path is a symlink/non-regular pre-existing path, the export fails, no file is produced, the pack-inventory check fails, or python3/the inventory tool is unavailable. |
 | `verify-engine --archive <file> [--binary <file>]` | Compares a downloaded release archive, and optionally the extracted editor binary, against the pinned publisher digest in `pin/engine.txt`. Resolves no engine, so it also runs on a host with none installed. | a digest does not match, a pinned digest is missing, or the file cannot be read (exit 1, before anything is extracted or executed). |
 | `install-templates --archive <file> --dest <dir> [--mode release\|debug]` | Verifies the export-template archive against the pinned publisher digest BEFORE extraction, locates its payload by `version.txt` (the official `.tpz` packages `templates/*` at the archive root, not a `<version>.stable/` directory), validates that version, checks the staged tree against this project's presets, and only then installs it as `<dir>/<version>.stable`. Refuses to replace an existing target directory rather than deleting an installed template tree; remove it explicitly to reinstall. Resolves no engine. | the digest does not match, `<dir>/<version>.stable` already exists, `version.txt` is missing or names another version, the required template files are absent/empty, or the destination cannot be written. Nothing is placed in or removed from `<dir>` on failure. |
 | `pin [--field <name>]` | Prints the pinned engine facts (tag, version, official URLs, pinned digests) as `key=value` lines. One source of truth for the workflow. | a requested digest field is not recorded. |
@@ -168,15 +168,16 @@ never reported as a pass.
 
    The suite also proves same-second report names stay distinct, an existing
    output/sidecar/dangling symlink is refused byte-for-byte rather than reused,
-   and a rejected package leaves exactly one failing verdict.
+   a rejected package leaves exactly one failing verdict, and overlapping
+   destination invocations serialize instead of claiming each other's bytes.
 
    Hosted coverage: `ci_tooling_selftest` forwards `GODOT_BIN`, so the runner's
-   digest-verified editor is used and the engine-backed `export --check` cases
-   run there. Cases that need real installed templates (sidecar `.pck`,
-   relative-path and symlink traversal exports) only run where those templates
-   exist -- on CI that is the export job after its verified installation.
+   digest-verified editor is used for the engine-backed `export --check` cases.
+   The export job additionally runs the full self-test after its verified
+   template installation and FAILS if the template-dependent sidecar,
+   relative-path, symlink, refusal or corrupted-package cases would skip.
    `actionlint` and `ffmpeg` are not installed on the runner, so the workflow
-   lint case and the positive capture probe skip; both run locally.
+   lint case and the positive capture probe skip there; both run locally.
 5. **Content-contract inventory** (`contracts.list`): reports which planned
    content paths exist. This is an **inventory, not validation** — content
    validation (T09/T15) is not implemented and is not claimed. Entries marked
@@ -430,9 +431,11 @@ generation-service account:
 - **content-contracts** — non-blocking inventory of planned content paths, with
   the strict result written to the run summary. It is not a validation and is
   labelled as such in the job name and output.
-- **export-preparation** — skipped until `export_presets.cfg` exists (there is
-  nothing to prepare without it); when presets land it runs `export --check` and
-  builds each declared preset with a platform-appropriate output extension.
+- **export-preparation** — always runs (there is no job-level condition); if
+  `export_presets.cfg` is absent, `export --check` fails clearly. Otherwise it
+  prepares and verifies templates, runs `export --check`, runs the tooling
+  self-test against the installed templates, and builds each declared preset
+  with a platform-appropriate output extension.
   Logs and per-preset reports/inventories upload under `if: always()`; the
   built-package artifact uploads only when every prior step succeeded, so a
   failed or inventory-rejected build cannot be published as a successful set.
@@ -445,6 +448,11 @@ generation-service account:
   missing suite is an error rather than a skip, and any nonzero suite status
   fails the job (all suites still run, with per-suite PASS/FAIL labels in the
   step summary).
+
+Provenance: `--source-sha` is recorded in every run report and in export
+inventory filenames. In CI it is `github.sha`, which on `pull_request` is
+Actions' synthetic merge commit -- the exact tree that was checked out and
+tested, but not necessarily the PR head SHA.
 
 The pinned engine version is `4.7.2-stable`; the official archive at
 <https://godotengine.org/download/archive/> is the version authority. The URL, the
