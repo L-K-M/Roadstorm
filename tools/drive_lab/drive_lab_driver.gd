@@ -17,6 +17,7 @@ const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
 const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 const HandlingLabBuilderScript := preload("res://src/laboratory/handling_lab_builder.gd")
 const FeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
+const SynthScript := preload("res://src/audio/vehicle_feedback_synth.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -36,6 +37,16 @@ const AUDIO_REFUSAL_HEAD_TICKS := 10
 ## ticks satisfy the design reverse hold; the remainder reverses in a straight
 ## line, where direction-relative tire slip must stay silent.
 const AUDIO_REVERSE_TICKS := 80
+## Brake ticks that engage reverse and build enough backward speed for the
+## latch-clear coast regression; the released-brake ticks then clear the latch
+## while the car is still rolling backwards.
+const AUDIO_LATCH_CLEAR_BRAKE_TICKS := 90
+const AUDIO_LATCH_CLEAR_COAST_TICKS := 15
+## Synthetic oblique backward pose pinned against the committed synth and
+## playback mapping. It is a documented geometry input, not a claim that the
+## laboratory can reach it by driving.
+const AUDIO_OBLIQUE_BACKWARD_SLIP_DEG := 20.0
+const AUDIO_OBLIQUE_BACKWARD_SPEED_M_S := 30.0
 ## Must match the movement_from_rest schedule used as the committed-trace
 ## baseline; the audio case replays it with audio wired.
 const AUDIO_BASELINE_TICKS := 90
@@ -1548,6 +1559,7 @@ func _case_audio_feedback_integration() -> void:
 	await _audio_adapter_refusal_checks()
 	await _audio_apply_refusal_checks()
 	await _audio_reconfigure_and_trace_checks()
+	await _audio_backward_geometry_checks()
 
 
 func _audio_api_available(lab) -> bool:
@@ -1698,8 +1710,7 @@ func _audio_acceleration_mapping_checks() -> void:
 		var expected_pitch := feedback_oracle_pitch(lab.state.speed_m_s(), 1.0)
 		var expected_engine_db := feedback_oracle_engine_db(lab.state.speed_m_s(), 1.0)
 		var expected_tire_db := feedback_oracle_tire_db(
-			lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded,
-			lab.state.reverse_engaged
+			lab.state.velocity_m_s, lab.state.heading_rad, lab.state.grounded
 		)
 		if absf(pitch - expected_pitch) > 1e-6:
 			oracle_mismatches += 1
@@ -1733,8 +1744,7 @@ func _audio_acceleration_mapping_checks() -> void:
 	d.check_close(
 		last_tire_db,
 		feedback_oracle_tire_db(
-			lab.state.slip_deg(), lab.state.speed_m_s(), lab.state.grounded,
-			lab.state.reverse_engaged
+			lab.state.velocity_m_s, lab.state.heading_rad, lab.state.grounded
 		),
 		1e-6, "audio.final_tire_level_oracle"
 	)
@@ -1793,15 +1803,15 @@ func _audio_straight_reverse_checks() -> void:
 	d.check(forward_speed < 0.0, "audio.reverse.travelling_backwards")
 	var raw_slip: float = lab.state.slip_deg()
 	var relative_slip := feedback_oracle_travel_relative_slip_deg(
-		raw_slip, lab.state.reverse_engaged
+		lab.state.velocity_m_s, lab.state.heading_rad
 	)
 	var expected_tire_db := feedback_oracle_tire_db(
-		raw_slip, lab.state.speed_m_s(), lab.state.grounded, lab.state.reverse_engaged
+		lab.state.velocity_m_s, lab.state.heading_rad, lab.state.grounded
 	)
 	# Broken-behavior control: the pre-fix abs(slip) map would have produced an
 	# audible tire level in this straight reversal.
-	var old_formula_db := feedback_oracle_tire_db(
-		raw_slip, lab.state.speed_m_s(), lab.state.grounded, false
+	var old_formula_db := feedback_oracle_tire_db_from_abs_nose_slip(
+		raw_slip, lab.state.speed_m_s(), lab.state.grounded
 	)
 	d.check(
 		old_formula_db > FEEDBACK_SILENCE_DB + 1.0,
@@ -1824,6 +1834,179 @@ func _audio_straight_reverse_checks() -> void:
 	measurements["audio_reverse_travel_relative_slip_deg"] = relative_slip
 	measurements["audio_reverse_measured_tire_db"] = last_tire_db
 	measurements["audio_reverse_old_formula_tire_db"] = old_formula_db
+	await _teardown_lab(lab)
+
+
+## Focused regression for the direction-relative tire oracle in the regime the
+## reverse latch cannot identify: a car still rolling backwards after the latch
+## clears, and an oblique backward travel direction. The first part drives the
+## real motor through a reverse engagement and releases the brake; the second
+## pins a synthetic oblique backward pose against the committed synth and
+## playback mapping. The pose is a documented geometry input, not a claim that
+## this laboratory can reach it by driving.
+func _audio_backward_geometry_checks() -> void:
+	var commands: Array = []
+	for _index in range(AUDIO_LATCH_CLEAR_BRAKE_TICKS):
+		commands.append(d.brake_command(1.0))
+	for _index in range(AUDIO_LATCH_CLEAR_COAST_TICKS):
+		commands.append(d.idle_command())
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	if not _audio_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	await _settle()
+	var player = lab.get_feedback_player()
+	if player == null:
+		d.check(false, "audio.backward_geometry.fixture_ready")
+		await _teardown_lab(lab)
+		return
+	lab.start()
+	var last_tire_db := 0.0
+	for index in range(commands.size()):
+		await get_tree().physics_frame
+		if lab.failed:
+			break
+		if index >= AUDIO_LATCH_CLEAR_BRAKE_TICKS:
+			last_tire_db = float(lab.get_audio_telemetry()["last_tire_volume_db"])
+	d.check(not lab.failed, "audio.backward_geometry.run_not_failed: " + str(lab.failure_reason))
+	d.check(
+		int(lab.ticks_committed) == commands.size(),
+		"audio.backward_geometry.all_ticks_committed"
+	)
+	d.check(lab.state != null, "audio.backward_geometry.final_state_present")
+	if lab.state == null:
+		await _teardown_lab(lab)
+		return
+	var state = lab.state
+	d.check(not state.reverse_engaged, "audio.backward_geometry.reverse_latch_cleared")
+	var forward_speed: float = state.forward_speed_m_s()
+	d.check(forward_speed < 0.0, "audio.backward_geometry.still_travelling_backwards")
+	var raw_slip: float = state.slip_deg()
+	d.check(
+		absf(raw_slip) > 145.0,
+		"audio.backward_geometry.raw_nose_slip_in_divergent_regime (slip=%f)" % raw_slip
+	)
+	var oracle_slip := feedback_oracle_travel_relative_slip_deg(
+		state.velocity_m_s, state.heading_rad
+	)
+	var synth_slip := SynthScript.direction_relative_slip_deg(
+		state.velocity_m_s, state.heading_rad
+	)
+	d.check_close(
+		oracle_slip, synth_slip, 1e-9,
+		"audio.backward_geometry.coast_oracle_matches_synth_geometry"
+	)
+	d.check(
+		oracle_slip < 1.0,
+		"audio.backward_geometry.coast_reads_straight_travel (slip=%f)" % oracle_slip
+	)
+	var command := d.idle_command()
+	var coast_bundle := SynthScript.render_bundle(state, command, 41)
+	d.check(coast_bundle.get("valid") == true, "audio.backward_geometry.coast_bundle_valid")
+	if coast_bundle.get("valid") == true:
+		d.check_close(
+			float(coast_bundle["telemetry"]["tire_slip_deg"]), oracle_slip, 1e-6,
+			"audio.backward_geometry.coast_synth_telemetry_matches_oracle"
+		)
+		var coast_segment = coast_bundle["tire"]
+		d.check(
+			float(coast_segment.metadata["intensity"]) <= 1e-12,
+			"audio.backward_geometry.coast_synth_intensity_zero"
+		)
+		d.check(
+			coast_segment.rms_amplitude <= 1e-12,
+			"audio.backward_geometry.coast_synth_pcm_silent"
+		)
+	var coast_oracle_db := feedback_oracle_tire_db(
+		state.velocity_m_s, state.heading_rad, state.grounded
+	)
+	var old_formula_db := feedback_oracle_tire_db_from_abs_nose_slip(
+		raw_slip, state.speed_m_s(), state.grounded
+	)
+	d.check(
+		last_tire_db <= FEEDBACK_SILENCE_DB + 1e-3,
+		"audio.backward_geometry.coast_player_tires_silent (db=%f)" % last_tire_db
+	)
+	d.check_close(
+		last_tire_db, coast_oracle_db, 1e-6,
+		"audio.backward_geometry.coast_player_matches_oracle"
+	)
+	d.check(
+		old_formula_db > FEEDBACK_SILENCE_DB + 1.0,
+		"audio.backward_geometry.coast_old_formula_predicts_audible_tires (db=%f)" % old_formula_db
+	)
+
+	# Synthetic oblique backward pose: travel 20 deg off the nose line while
+	# moving backwards. The pre-fix latch-gated fold would leave the raw signed
+	# angle near 160 deg and saturate the map.
+	var drift_rad := deg_to_rad(AUDIO_OBLIQUE_BACKWARD_SLIP_DEG)
+	var oblique_velocity := Vector2(
+		sin(drift_rad) * AUDIO_OBLIQUE_BACKWARD_SPEED_M_S,
+		-cos(drift_rad) * AUDIO_OBLIQUE_BACKWARD_SPEED_M_S
+	)
+	var oblique_state = d.make_state(Vector2.ZERO, oblique_velocity, 0.0)
+	oblique_state.reverse_engaged = false
+	var oblique_oracle_slip := feedback_oracle_travel_relative_slip_deg(
+		oblique_state.velocity_m_s, oblique_state.heading_rad
+	)
+	var oblique_synth_slip := SynthScript.direction_relative_slip_deg(
+		oblique_state.velocity_m_s, oblique_state.heading_rad
+	)
+	d.check_close(
+		oblique_oracle_slip, AUDIO_OBLIQUE_BACKWARD_SLIP_DEG, 1e-6,
+		"audio.backward_geometry.oblique_oracle_angle"
+	)
+	d.check_close(
+		oblique_oracle_slip, oblique_synth_slip, 1e-9,
+		"audio.backward_geometry.oblique_oracle_matches_synth_geometry"
+	)
+	var oblique_bundle := SynthScript.render_bundle(oblique_state, command, 41)
+	d.check(oblique_bundle.get("valid") == true, "audio.backward_geometry.oblique_bundle_valid")
+	if oblique_bundle.get("valid") == true:
+		d.check_close(
+			float(oblique_bundle["telemetry"]["tire_slip_deg"]), oblique_oracle_slip, 1e-6,
+			"audio.backward_geometry.oblique_synth_telemetry_matches_oracle"
+		)
+		var oblique_segment = oblique_bundle["tire"]
+		var expected_intensity := feedback_oracle_tire_intensity(
+			oblique_oracle_slip, oblique_state.speed_m_s(), oblique_state.grounded
+		)
+		d.check_close(
+			float(oblique_segment.metadata["intensity"]), expected_intensity, 1e-9,
+			"audio.backward_geometry.oblique_synth_intensity_matches_oracle"
+		)
+		d.check(
+			oblique_segment.rms_amplitude > 0.0,
+			"audio.backward_geometry.oblique_synth_pcm_has_energy"
+	)
+	var applied = player.apply(oblique_state, command)
+	d.check(applied, "audio.backward_geometry.oblique_player_apply_accepted")
+	if applied:
+		var oblique_oracle_db := feedback_oracle_tire_db(
+			oblique_state.velocity_m_s, oblique_state.heading_rad, oblique_state.grounded
+		)
+		d.check_close(
+			player.get_last_tire_volume_db(), oblique_oracle_db, 1e-6,
+			"audio.backward_geometry.oblique_player_matches_oracle"
+		)
+		var oblique_old_db := feedback_oracle_tire_db_from_abs_nose_slip(
+			oblique_state.slip_deg(), oblique_state.speed_m_s(), oblique_state.grounded
+		)
+		d.check(
+			oblique_old_db > oblique_oracle_db,
+			"audio.backward_geometry.oblique_old_formula_overpredicts"
+		)
+		measurements["audio_oblique_backward_oracle_slip_deg"] = oblique_oracle_slip
+		measurements["audio_oblique_backward_oracle_db"] = oblique_oracle_db
+		measurements["audio_oblique_backward_old_formula_db"] = oblique_old_db
+
+	measurements["audio_backward_coast_forward_speed_m_s"] = forward_speed
+	measurements["audio_backward_coast_raw_slip_deg"] = raw_slip
+	measurements["audio_backward_coast_oracle_slip_deg"] = oracle_slip
+	measurements["audio_backward_coast_player_tire_db"] = last_tire_db
+	measurements["audio_backward_coast_old_formula_db"] = old_formula_db
 	await _teardown_lab(lab)
 
 
@@ -2033,13 +2216,19 @@ func _audio_reconfigure_and_trace_checks() -> void:
 ## against these formulas rather than trusting the component under test.
 
 
-## Fold a signed nose-to-travel slip into the direction of travel. Straight
-## forward leaves the angle untouched; straight reverse (+/-180 deg) becomes
-## zero, while genuine lateral slip keeps its magnitude in the travel frame.
-func feedback_oracle_travel_relative_slip_deg(slip_deg: float, reverse_engaged: bool) -> float:
-	if not reverse_engaged:
-		return slip_deg
-	return rad_to_deg(wrapf(deg_to_rad(slip_deg) + PI, -PI, PI))
+## Unsigned angle between the direction of travel and the nose axis line,
+## mirroring `VehicleFeedbackSynth.direction_relative_slip_deg`. Computed from
+## the committed road-plane velocity and heading rather than the reverse latch,
+## so straight forward and straight reverse both give zero and a backward coast
+## after the latch clears is not misread as saturated lateral slip.
+func feedback_oracle_travel_relative_slip_deg(velocity_m_s: Vector2, heading_rad: float) -> float:
+	var forward := Vector2(sin(heading_rad), cos(heading_rad))
+	var right := Vector2(forward.y, -forward.x)
+	var forward_component := velocity_m_s.dot(forward)
+	var lateral_component := velocity_m_s.dot(right)
+	if is_zero_approx(forward_component) and is_zero_approx(lateral_component):
+		return 0.0
+	return rad_to_deg(atan2(absf(lateral_component), absf(forward_component)))
 
 
 func feedback_oracle_pitch(speed_m_s: float, throttle: float) -> float:
@@ -2073,21 +2262,44 @@ func feedback_oracle_engine_db(speed_m_s: float, throttle: float) -> float:
 
 
 func feedback_oracle_tire_db(
-	slip_deg: float, speed_m_s: float, grounded: bool, reverse_engaged: bool = false
+	velocity_m_s: Vector2, heading_rad: float, grounded: bool
+) -> float:
+	var travel_slip := feedback_oracle_travel_relative_slip_deg(velocity_m_s, heading_rad)
+	return feedback_oracle_tire_db_from_intensity(
+		feedback_oracle_tire_intensity(travel_slip, velocity_m_s.length(), grounded)
+	)
+
+
+## Pre-fix broken control: key the tire map directly on `abs(slip_deg())`, the
+## signed nose-relative angle. Straight reverse saturates it even though the
+## component folds by travel geometry. This exists only to prove that the
+## regressions' negative controls separate the old and current behaviour.
+func feedback_oracle_tire_db_from_abs_nose_slip(
+	slip_deg: float, speed_m_s: float, grounded: bool
+) -> float:
+	return feedback_oracle_tire_db_from_intensity(
+		feedback_oracle_tire_intensity(slip_deg, speed_m_s, grounded)
+	)
+
+
+func feedback_oracle_tire_intensity(
+	travel_slip_deg: float, speed_m_s: float, grounded: bool
 ) -> float:
 	if not grounded:
-		return FEEDBACK_SILENCE_DB
+		return 0.0
 	var threshold_norm := clampf(
 		FEEDBACK_TIRE_SLIP_THRESHOLD_DEG / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0
 	)
-	var travel_slip := feedback_oracle_travel_relative_slip_deg(slip_deg, reverse_engaged)
-	var slip_norm := clampf(absf(travel_slip) / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0)
+	var slip_norm := clampf(absf(travel_slip_deg) / FEEDBACK_TIRE_SLIP_FULL_DEG, 0.0, 1.0)
 	var speed_factor := clampf(
 		(speed_m_s - FEEDBACK_TIRE_MIN_SPEED_M_S)
 		/ (FEEDBACK_TIRE_REFERENCE_SPEED_M_S - FEEDBACK_TIRE_MIN_SPEED_M_S),
 		0.0, 1.0
 	)
-	var intensity := smoothstep(threshold_norm, 1.0, slip_norm) * speed_factor
+	return smoothstep(threshold_norm, 1.0, slip_norm) * speed_factor
+
+
+func feedback_oracle_tire_db_from_intensity(intensity: float) -> float:
 	return clampf(
 		linear_to_db(maxf(intensity, 1.0e-4)),
 		FeedbackScript.MIN_VOLUME_DB,
