@@ -46,6 +46,16 @@ const MAX_SEGMENT_FRAMES := 192000
 ## 0.89 leaves roughly 1 dB of headroom before full scale.
 const PEAK_LIMIT := 0.89
 
+## Upper accepted component gains. Synthesis writes through a float32 sample
+## buffer, so finite double magnitudes beyond about 3.4e38 become infinite and
+## poison the DC, peak and RMS calculations. Any gain above `PEAK_LIMIT` is
+## downward-limited anyway, so these ceilings reject only physically
+## meaningless overdrive while leaving legitimate loud configurations free to
+## exercise the limiter; they keep roughly 32 orders of magnitude of margin.
+const MAX_TIRE_TONE_GAIN := 1.0e6
+const MAX_TIRE_NOISE_GAIN := 1.0e6
+const MAX_ENGINE_NOISE_GAIN := 1.0e6
+
 ## One-shot envelope or a caller-intended loop. Both modes use symmetric short
 ## raised-cosine fades so endpoints rest at zero; `LOOP` is advisory intent for
 ## the director, not a claim of phase-perfect periodicity.
@@ -133,10 +143,13 @@ class EngineTuning extends RefCounted:
 			and amplitude_modulation_depth <= 1.0
 			and _is_finite(noise_floor)
 			and noise_floor >= 0.0
+			and noise_floor <= MAX_ENGINE_NOISE_GAIN
 			and _is_finite(throttle_noise_gain)
 			and throttle_noise_gain >= 0.0
+			and throttle_noise_gain <= MAX_ENGINE_NOISE_GAIN
 			and _is_finite(speed_noise_gain)
 			and speed_noise_gain >= 0.0
+			and speed_noise_gain <= MAX_ENGINE_NOISE_GAIN
 			and _is_finite(idle_level)
 			and idle_level >= 0.0
 			and idle_level <= 1.0
@@ -225,8 +238,10 @@ class TireTuning extends RefCounted:
 			and resonance_hz > 0.0
 			and _finite(tone_gain)
 			and tone_gain >= 0.0
+			and tone_gain <= MAX_TIRE_TONE_GAIN
 			and _finite(noise_gain)
 			and noise_gain >= 0.0
+			and noise_gain <= MAX_TIRE_NOISE_GAIN
 			and _finite(min_speed_m_s)
 			and min_speed_m_s >= 0.0
 			and _finite(reference_speed_m_s)
@@ -441,7 +456,8 @@ class SynthSegment extends RefCounted:
 
 
 ## Render one engine-tone segment. Returns `null` when the request or tuning
-## is invalid; a refusal never mutates caller state.
+## is invalid or a nonfinite intermediate would reach the output; a refusal
+## never mutates caller state.
 static func render_engine(
 	params: EngineParams,
 	seed_value: int = 0,
@@ -534,7 +550,7 @@ static func render_engine(
 
 
 ## Render one tire-scrub segment. Returns `null` when the request or tuning is
-## invalid.
+## invalid or a nonfinite intermediate would reach the output.
 static func render_tire(
 	params: TireParams,
 	seed_value: int = 0,
@@ -728,6 +744,13 @@ static func _finalize_segment(
 	metadata: Dictionary
 ) -> SynthSegment:
 	var frames := samples.size()
+	# Refuse any nonfinite sample before DC, peak or PCM math can propagate it
+	# into a returned segment's measurements. Validation already bounds the
+	# gains that reach this buffer, but this keeps the output contract honest for
+	# every parameter path, including frequency extremes.
+	for i in range(frames):
+		if not _is_finite(samples[i]):
+			return null
 	# Fades run first so both endpoints are exactly zero before DC removal;
 	# removing DC afterwards would otherwise shift the loop seam off zero.
 	var fade_s := minf(configured_fade_s, 0.25 * duration_s)

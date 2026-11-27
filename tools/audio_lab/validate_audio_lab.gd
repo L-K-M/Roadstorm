@@ -21,6 +21,11 @@ extends SceneTree
 const Synth = preload("res://src/audio/vehicle_feedback_synth.gd")
 const DriverScript = preload("res://tools/audio_lab/audio_lab_driver.gd")
 
+## Expected upper component-gain ceiling shared by the tuning classes. Kept
+## here rather than read from the synth so this validator can be pointed at a
+## pre-fix revision and still fail on the overflow cases.
+const EXPECTED_MAX_COMPONENT_GAIN := 1.0e6
+
 const CASE_IDS := [
 	"deterministic_replay",
 	"nonfinite_and_invalid_input",
@@ -30,6 +35,7 @@ const CASE_IDS := [
 	"clipping_peak_dc_limits",
 	"loop_endpoints",
 	"car_independence",
+	"extreme_finite_tuning",
 ]
 
 var _checks := 0
@@ -105,6 +111,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_loop_endpoints(driver)
 		"car_independence":
 			_case_car_independence(driver)
+		"extreme_finite_tuning":
+			_case_extreme_finite_tuning(driver)
 	_checks += driver.checks
 	for failure in driver.failures:
 		_failures.append("%s: %s" % [case_id, failure])
@@ -657,6 +665,120 @@ func _case_car_independence(driver) -> void:
 		bundle_b_other_seed.get("valid") == true
 		and engine_b.pcm_i16_le != bundle_b_other_seed["engine"].pcm_i16_le,
 		"a different seed changes car B without cross-car coupling"
+	)
+
+
+func _case_extreme_finite_tuning(driver) -> void:
+	var slip_deg := 35.0
+	var speed_m_s := 30.0
+	# Reported overflow: finite nonnegative gains far beyond the float32 range
+	# used for the sample buffer made DC/peak/RMS NaN and returned a segment.
+	var absurd_tone = driver.default_tire_tuning()
+	absurd_tone.tone_gain = 1.0e100
+	driver.check(not absurd_tone.validate(), "tire tone_gain=1e100 fails validation")
+	driver.check(
+		driver.render_tire(driver.tire_params(slip_deg, speed_m_s), 7, absurd_tone) == null,
+		"tire tone_gain=1e100 render is refused"
+	)
+
+	var absurd_noise = driver.default_tire_tuning()
+	absurd_noise.noise_gain = 1.0e100
+	driver.check(not absurd_noise.validate(), "tire noise_gain=1e100 fails validation")
+	driver.check(
+		driver.render_tire(driver.tire_params(slip_deg, speed_m_s), 7, absurd_noise) == null,
+		"tire noise_gain=1e100 render is refused"
+	)
+
+	# The same induction-noise overflow path was reproduced for engine tuning.
+	for gain_name in ["noise_floor", "throttle_noise_gain", "speed_noise_gain"]:
+		var tuning = driver.default_engine_tuning()
+		tuning.set(gain_name, 1.0e100)
+		driver.check(not tuning.validate(), "engine %s=1e100 fails validation" % gain_name)
+		driver.check(
+			driver.render_engine(driver.engine_params(speed_m_s, 0.6, 0.5), 7, tuning) == null,
+			"engine %s=1e100 render is refused" % gain_name
+		)
+
+	# The accepted ceiling still renders finite PCM and clips safely; the
+	# limiter scales the whole waveform down, so huge-but-safe gains are not
+	# distorted relative to any smaller overdrive.
+	var ceiling = driver.default_tire_tuning()
+	ceiling.tone_gain = EXPECTED_MAX_COMPONENT_GAIN
+	ceiling.noise_gain = EXPECTED_MAX_COMPONENT_GAIN
+	driver.check(ceiling.validate(), "tire gains at the documented ceiling validate")
+	var above_ceiling = driver.default_tire_tuning()
+	above_ceiling.tone_gain = EXPECTED_MAX_COMPONENT_GAIN * 2.0
+	driver.check(
+		not above_ceiling.validate(),
+		"tire tone_gain above the ceiling fails validation"
+	)
+	above_ceiling = driver.default_tire_tuning()
+	above_ceiling.noise_gain = EXPECTED_MAX_COMPONENT_GAIN * 2.0
+	driver.check(
+		not above_ceiling.validate(),
+		"tire noise_gain above the ceiling fails validation"
+	)
+	var ceiling_segment = driver.render_tire(
+		driver.tire_params(slip_deg, speed_m_s), 7, ceiling
+	)
+	driver.check(ceiling_segment != null, "tire ceiling-gain render succeeds")
+	if ceiling_segment != null:
+		var ceiling_samples = driver.decode_segment(ceiling_segment)
+		driver.check(driver.all_finite(ceiling_samples), "tire ceiling-gain decoded samples are finite")
+		driver.check(
+			driver.max_abs(ceiling_samples) <= Synth.PEAK_LIMIT + 1e-6,
+			"tire ceiling-gain samples stay within the peak limit"
+		)
+		driver.check(
+			ceiling_segment.peak_amplitude <= Synth.PEAK_LIMIT + 1e-6,
+			"tire ceiling-gain reported peak stays within the peak limit"
+		)
+		driver.check(driver.measurements_finite(ceiling_segment), "tire ceiling-gain measurements are finite")
+		driver.check(absf(ceiling_segment.dc_offset) <= 1e-5, "tire ceiling-gain DC offset is removed")
+		driver.check(
+			driver.encoded_values_in_range(ceiling_segment),
+			"tire ceiling-gain 16-bit codes stay in range"
+		)
+		driver.check(
+			ceiling_segment.gain_applied < 1.0,
+			"tire ceiling-gain exercises the downward limiter"
+		)
+
+	# A legitimate loud-but-finite configuration still renders and clips.
+	var loud = driver.default_tire_tuning()
+	loud.tone_gain = 4.0
+	loud.noise_gain = 8.0
+	driver.check(loud.validate(), "loud finite tire tuning validates")
+	var loud_segment = driver.render_tire(
+		driver.tire_params(slip_deg, speed_m_s), 7, loud
+	)
+	driver.check(loud_segment != null, "loud finite tire render succeeds")
+	if loud_segment != null:
+		var loud_samples = driver.decode_segment(loud_segment)
+		driver.check(driver.all_finite(loud_samples), "loud finite tire samples are finite")
+		driver.check(
+			driver.max_abs(loud_samples) <= Synth.PEAK_LIMIT + 1e-6,
+			"loud finite tire samples stay within the peak limit"
+		)
+		driver.check(
+			loud_segment.peak_amplitude_before_limit > Synth.PEAK_LIMIT,
+			"loud finite tire pre-limit peak exceeds the limit"
+		)
+		driver.check(loud_segment.gain_applied < 1.0, "loud finite tire is limited downward")
+		driver.check(driver.measurements_finite(loud_segment), "loud finite tire measurements are finite")
+		driver.check(absf(loud_segment.dc_offset) <= 1e-5, "loud finite tire DC offset is removed")
+		driver.check(driver.encoded_values_in_range(loud_segment), "loud finite tire 16-bit codes stay in range")
+		driver.measure("tire_loud_peak", loud_segment.peak_amplitude)
+		driver.measure("tire_loud_gain", loud_segment.gain_applied)
+
+	# Finalization itself refuses nonfinite intermediates even when validation
+	# accepts the source parameters, covering frequency extremes as well.
+	var frequency_extreme = driver.default_tire_tuning()
+	frequency_extreme.resonance_hz = 1.0e308
+	driver.check(frequency_extreme.validate(), "resonance_hz=1e308 still passes validation")
+	driver.check(
+		driver.render_tire(driver.tire_params(slip_deg, speed_m_s), 7, frequency_extreme) == null,
+		"nonfinite resonance intermediate refuses rendering"
 	)
 
 

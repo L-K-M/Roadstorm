@@ -12,7 +12,7 @@ here.
 | --- | --- |
 | `src/audio/vehicle_feedback_synth.gd` | pure `RefCounted` generator: engine/tire requests, provisional tuning, deterministic PCM segments, read-only `CarState`/`DriverCommand` bundle mapping |
 | `tools/audio_lab/audio_lab_driver.gd` | shared builders and numeric measurement helpers; calls the real synth, never re-implements its math |
-| `tools/audio_lab/validate_audio_lab.gd` | headless `SceneTree` validator, eight cases plus deliberate-failure proof |
+| `tools/audio_lab/validate_audio_lab.gd` | headless `SceneTree` validator, nine cases plus deliberate-failure proof |
 | `tools/audio_lab/render_preview.gd` | bounded local 16-bit mono WAV preview writer (diagnostic only) |
 | `tools/audio_lab/run_validation.sh` | isolated-copy wrapper: pin check, staged import, bounded validator and failure proof |
 
@@ -31,6 +31,11 @@ checks.
   Direct field assignment is rechecked at render time.
 - Duration is clamped to `[0.05, 2.0]` s; sample rate is limited to
   `[8000, 48000]` Hz; frame count is independently capped at 192000.
+- Component gains are bounded so finite double magnitudes cannot become
+  infinite in the float32 sample buffer: tire `tone_gain`/`noise_gain` and
+  engine induction-noise gains are each limited to `1e6`. Values above that
+  cannot be represented through the buffer and are rejected by `validate()`;
+  finalization also refuses any nonfinite sample before DC, peak or PCM math.
 - Synthesis applies DC removal, downward-only peak limiting to `PEAK_LIMIT`
   (0.89, about 1 dB headroom), then symmetric raised-cosine fades and exact
   zero endpoint samples for clean looping. Encoded 16-bit codes are clamped to
@@ -96,14 +101,18 @@ godot --headless --fixed-fps 60 --path <isolated-project> \
 
 `deterministic_replay`, `nonfinite_and_invalid_input`, `length_bounds`,
 `engine_speed_throttle_response`, `tire_intensity_vs_slip`,
-`clipping_peak_dc_limits`, `loop_endpoints`, `car_independence`.
+`clipping_peak_dc_limits`, `loop_endpoints`, `car_independence`,
+`extreme_finite_tuning`.
 
 Coverage includes identical-input byte equality, seed sensitivity, NaN/inf and
 range refusal, duration/rate limits and clamping, low/medium/high speed and
 throttle RMS/fundamental response, tire intensity versus slip, zero-slip /
 airborne silence, default full-throttle bounds, a deliberately overdriven
 limiter fixture, peak/DC/16-bit limits, exact zero loop endpoints, and
-one/two-car independence with source-labelled telemetry.
+one/two-car independence with source-labelled telemetry, and rejection of
+finite gains past the float32 sample-buffer range (`tone_gain=1e100`, an
+engine induction-noise extreme) alongside a loud-but-finite configuration
+that renders and clips safely.
 
 ## Local WAV preview
 

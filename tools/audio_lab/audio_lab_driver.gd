@@ -129,6 +129,32 @@ func max_abs(samples: PackedFloat32Array) -> float:
 	return peak
 
 
+## True when every decoded sample is finite (neither NaN nor infinite).
+func all_finite(samples: PackedFloat32Array) -> bool:
+	for value in samples:
+		if is_nan(value) or is_inf(value):
+			return false
+	return true
+
+
+## True when every numeric field a returned segment reports is finite.
+func measurements_finite(segment) -> bool:
+	if segment == null:
+		return false
+	var values := [
+		segment.peak_amplitude_before_limit,
+		segment.gain_applied,
+		segment.peak_amplitude,
+		segment.rms_amplitude,
+		segment.dc_offset_before_removal,
+		segment.dc_offset,
+	]
+	for value in values:
+		if is_nan(float(value)) or is_inf(float(value)):
+			return false
+	return true
+
+
 func mean(samples: PackedFloat32Array) -> float:
 	if samples.is_empty():
 		return 0.0
