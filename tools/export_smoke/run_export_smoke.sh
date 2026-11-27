@@ -7,8 +7,9 @@
 # source candidate and - for macOS only - launches the package.
 #
 # WHAT THIS PROVES AND WHAT IT DOES NOT
-#   * The source candidate is a frozen snapshot: `git archive HEAD` plus ONLY
-#     the owned export_presets.cfg. No concurrent uncommitted file enters it.
+#   * The source candidate is a frozen snapshot: `git archive <one resolved
+#     commit SHA>` plus ONLY the owned export_presets.cfg. No concurrent
+#     uncommitted file enters it, and HEAD is never re-read after resolution.
 #   * A successful cross-export is NOT a platform launch. Windows and Linux
 #     packages are produced but NOT launched (no target host); an untested
 #     platform never becomes verified through a successful export (M0/M9.2).
@@ -131,22 +132,63 @@ if [ "$_ver" != "$PINNED_VERSION_STRING" ]; then
 fi
 log "engine: $GODOT_BIN ($_ver) matches pin"
 
+# --- immutable source -------------------------------------------------------
+# Resolve ONE commit SHA now and use it for the archive, the tree and every
+# later claim. HEAD is never looked up again, so a concurrent commit while the
+# exports run cannot desynchronize the archived bytes from the reported SHA.
+SRC_SHA="$(es_resolve_head "$PROJECT_DIR")" || die 2 "could not resolve an immutable HEAD commit in $PROJECT_DIR"
+SRC_TREE="$(cd "$PROJECT_DIR" && git rev-parse --verify --quiet "$SRC_SHA^{tree}")" || die 2 "could not derive the tree of $SRC_SHA"
+es_is_commit_sha "$SRC_TREE" || die 2 "tree of $SRC_SHA is not a full SHA: '$SRC_TREE'"
+log "candidate source commit: $SRC_SHA"
+log "candidate source tree:   $SRC_TREE"
+
 # --- output dir -------------------------------------------------------------
+# Preserve EVERY existing user path: reserve an entirely fresh output
+# destination with an exclusive mkdir. An existing --out directory (even an
+# empty one) is refused before anything is written, truncated or followed.
 if [ -z "$OUT_DIR" ]; then
 	OUT_DIR="$PROJECT_DIR/work/agents/export-smoke/outputs"
 fi
-mkdir -p "$OUT_DIR" 2>/dev/null || die 2 "cannot create output dir $OUT_DIR"
-OUT_DIR="$(cd "$OUT_DIR" && pwd)"
+while [ "$OUT_DIR" != "/" ] && [ "${OUT_DIR%/}" != "$OUT_DIR" ]; do
+	OUT_DIR="${OUT_DIR%/}"
+done
+_out_parent="$(dirname "$OUT_DIR")"
+_out_base="$(basename "$OUT_DIR")"
+case "$_out_base" in
+"""."|"..") die 2 "invalid output dir: $OUT_DIR" ;;
+esac
+if ! mkdir -p "$_out_parent" 2>/dev/null; then
+	die 2 "cannot create output parent: $_out_parent"
+fi
+if ! _out_parent="$(cd "$_out_parent" && pwd -P)"; then
+	die 2 "cannot resolve output parent: $_out_parent"
+fi
+if ! mkdir "$_out_parent/$_out_base" 2>/dev/null; then
+	die 2 "output destination already exists; refusing to overwrite or truncate any existing path: $OUT_DIR (choose a fresh --out)"
+fi
+OUT_DIR="$_out_parent/$_out_base"
 
 # --- frozen snapshot --------------------------------------------------------
 SNAP="$OUT_DIR/candidate-snapshot"
-log "building frozen snapshot: git archive HEAD + export_presets.cfg only"
-es_make_frozen_snapshot "$PROJECT_DIR" "$SNAP" || die 2 "could not build the frozen snapshot"
-[ -f "$SNAP/project.godot" ] || die 2 "snapshot has no project.godot"
+ARCHIVE_SHA_FILE="$OUT_DIR/.candidate-snapshot.archive-sha256"
+# The snapshot destination and its evidence file are created, never replaced.
+# The whole --out directory was reserved fresh above, so no user path can be
+# truncated. On failure the partial snapshot is left in place for inspection.
+log "building frozen snapshot: git archive $SRC_SHA + export_presets.cfg only"
+es_make_frozen_snapshot "$PROJECT_DIR" "$SNAP" "$ARCHIVE_SHA_FILE" "$SRC_SHA" || die 2 "could not build the frozen snapshot from $PROJECT_DIR (see above)"
+[ -s "$SNAP/project.godot" ] || die 2 "built snapshot has no usable project.godot: $SNAP"
+# The digest comes from the exact archive bytes that were extracted; there is
+# no second, unchecked `git archive` invocation.
+ARCHIVE_SHA="$(cat "$ARCHIVE_SHA_FILE" 2>/dev/null)"
+if ! es_is_hex_sha256 "$ARCHIVE_SHA"; then
+	die 2 "frozen archive SHA-256 is missing or invalid: '$ARCHIVE_SHA'"
+fi
+# Remove the private evidence file only if it still holds exactly the digest
+# this run produced; never delete a path another process may have placed.
+if [ "$(cat "$ARCHIVE_SHA_FILE" 2>/dev/null)" = "$ARCHIVE_SHA" ]; then
+	rm -f "$ARCHIVE_SHA_FILE"
+fi
 
-HEAD_SHA="$(cd "$PROJECT_DIR" && git rev-parse HEAD 2>/dev/null)"
-HEAD_TREE="$(cd "$PROJECT_DIR" && git rev-parse 'HEAD^{tree}' 2>/dev/null)"
-ARCHIVE_SHA="$( cd "$PROJECT_DIR" && git archive HEAD | shasum -a 256 2>/dev/null | awk '{print $1}' )"
 PRESETS_SHA="$(es_sha256 "$PROJECT_DIR/export_presets.cfg")"
 if [ -n "$ARCHIVE_SHA" ]; then
 	CANDIDATE_SHA="$(printf '%s\n%s\n' "$ARCHIVE_SHA" "$PRESETS_SHA" | shasum -a 256 2>/dev/null | awk '{print $1}')"
@@ -154,8 +196,6 @@ else
 	CANDIDATE_SHA="(sha256 utility unavailable)"
 fi
 
-log "candidate HEAD commit: $HEAD_SHA"
-log "candidate HEAD tree:   $HEAD_TREE"
 log "candidate archive sha256: $ARCHIVE_SHA"
 log "candidate presets sha256: $PRESETS_SHA"
 log "candidate digest:         $CANDIDATE_SHA"
@@ -255,8 +295,8 @@ es_check_package() {
 	printf 'engine_bin=%s\n' "$GODOT_BIN"
 	printf 'engine_version=%s\n' "$_ver"
 	printf 'pinned_version=%s\n' "$PINNED_VERSION_STRING"
-	printf 'head_commit=%s\n' "$HEAD_SHA"
-	printf 'head_tree=%s\n' "$HEAD_TREE"
+	printf 'head_commit=%s\n' "$SRC_SHA"
+	printf 'head_tree=%s\n' "$SRC_TREE"
 	printf 'archive_sha256=%s\n' "$ARCHIVE_SHA"
 	printf 'presets_sha256=%s\n' "$PRESETS_SHA"
 	printf 'candidate_digest=%s\n' "$CANDIDATE_SHA"
