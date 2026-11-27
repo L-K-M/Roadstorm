@@ -6,6 +6,7 @@ extends Node
 ## it requests a positive step, exactly like a motor/bridge node would.
 
 var coordinator
+var requested_ticks := 12
 var requested_once := false
 var accepted := false
 var paused_after_call := false
@@ -14,5 +15,5 @@ var paused_after_call := false
 func _physics_process(_delta: float) -> void:
 	if not requested_once and coordinator != null:
 		requested_once = true
-		accepted = coordinator.begin_step(12)
+		accepted = coordinator.begin_step(requested_ticks)
 		paused_after_call = get_tree().paused

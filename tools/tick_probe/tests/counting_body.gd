@@ -11,6 +11,12 @@ var last_state_linear_velocity := Vector3.ZERO
 ## separate body-registration latency from observation/read timing.
 var first_integration_physics_frame := -1
 var last_integration_physics_frame := -1
+## Optional coordinator reference: records which logical tick each counted
+## physics-server integration observed.
+var coord_ref
+var last_integ_tick := -1
+var integ_ticks: Array[int] = []
+var last_state_transform := Transform3D()
 
 
 func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
@@ -19,5 +25,8 @@ func _integrate_forces(state: PhysicsDirectBodyState3D) -> void:
 	if first_integration_physics_frame < 0:
 		first_integration_physics_frame = pf
 	last_integration_physics_frame = pf
+	last_integ_tick = coord_ref.tick_count if coord_ref != null else -1
+	integ_ticks.append(last_integ_tick)
+	last_state_transform = state.transform
 	if state != null:
 		last_state_linear_velocity = state.linear_velocity

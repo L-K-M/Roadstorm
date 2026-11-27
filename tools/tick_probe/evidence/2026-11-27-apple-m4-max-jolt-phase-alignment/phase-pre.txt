@@ -1,0 +1,13 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+PHASE idle req=12 origin=false elapsed=12 ticks=0->12 steps=4->16 pf=8->21 acc_last_integ_pf=21 fin_last_integ_pf=21 fin_state_y=999.587097168 body_y=999.587097168 fin_v=-2.739951372 state_v=-2.739951372 paused=true
+PHASE idle req=12 origin=false elapsed=12 ticks=12->24 steps=16->28 pf=21->34 acc_last_integ_pf=21 fin_last_integ_pf=34 fin_state_y=998.833984375 body_y=998.833984375 fin_v=-4.627785683 state_v=-4.627785683 paused=true
+PHASE idle req=1 origin=false elapsed=1 ticks=24->25 steps=28->29 pf=34->36 acc_last_integ_pf=21 fin_last_integ_pf=36 fin_state_y=998.754272461 body_y=998.754272461 fin_v=-4.783406258 state_v=-4.783406258 paused=true
+PHASE callback req=12 origin=true elapsed=12 ticks=0->12 steps=4->16 pf=43->56 acc_last_integ_pf=56 fin_last_integ_pf=56 fin_state_y=999.587097168 body_y=999.587097168 fin_v=-2.739951372 state_v=-2.739951372 paused=true
+PHASE callback req=12 origin=true elapsed=12 ticks=12->24 steps=16->28 pf=56->69 acc_last_integ_pf=56 fin_last_integ_pf=69 fin_state_y=998.833984375 body_y=998.833984375 fin_v=-4.627785683 state_v=-4.627785683 paused=true
+PHASE callback req=1 origin=true elapsed=12 ticks=24->36 steps=28->40 pf=69->82 acc_last_integ_pf=56 fin_last_integ_pf=82 fin_state_y=997.707336426 body_y=997.707336426 fin_v=-6.478208065 state_v=-6.478208065 paused=true
+PHASE mixed req=12 origin=false elapsed=12 ticks=0->12 steps=4->16 pf=89->102 acc_last_integ_pf=102 fin_last_integ_pf=102 fin_state_y=999.587097168 body_y=999.587097168 fin_v=-2.739951372 state_v=-2.739951372 paused=true
+PHASE mixed req=12 origin=true elapsed=12 ticks=12->24 steps=16->28 pf=102->115 acc_last_integ_pf=102 fin_last_integ_pf=115 fin_state_y=998.833984375 body_y=998.833984375 fin_v=-4.627785683 state_v=-4.627785683 paused=true
+PHASE mixed req=1 origin=false elapsed=1 ticks=24->25 steps=28->29 pf=115->117 acc_last_integ_pf=102 fin_last_integ_pf=117 fin_state_y=998.754272461 body_y=998.754272461 fin_v=-4.783406258 state_v=-4.783406258 paused=true
+PHASE terminal elapsed=1 terminal=terminated steps_delta=1 state_y=999.942993164062 body_y=999.942993164062 state_v=-0.97592574357986 pred_y=999.964638845735 pred_v=-0.48836847464244 dy_err=0.02164568167268 dv_err=0.48755726893743 paused=true
+PHASE_DONE

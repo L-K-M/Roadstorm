@@ -104,13 +104,16 @@ var _step_elapsed := 0
 var _freeze := false
 var _pending_result := false
 var _result := {}
-## True when a physics-callback-origin request has asked for a deferred,
-## end-of-frame activation (equivalent to an ordinary idle-time unpause).
-var _deferred_activation := false
-## Idle-time requests spend one fully paused physics iteration before
-## activation. This mirrors the settling a physics-callback caller gets and
-## keeps repeated same-world requests at exactly one server step per tick.
-var _activate_after_physics := false
+## Request activation is always armed until the coordinator's next ALWAYS
+## physics callback. That callback unpauses and executes tick 1 in the same
+## iteration, so tick 1's physics-server step follows it. No call_deferred or
+## synchronous unpause is used, so there is no pre-tick phantom step.
+var _arming := false
+## Set after the final committed tick of a normal request. The tree stays
+## unpaused through that tick's server step; the next coordinator callback
+## pauses first (suppressing its own server step), rebuilds the observation
+## from the now-integrated state and publishes.
+var _pending_publish := false
 ## >0 while a completion signal is being dispatched. begin_step() refuses
 ## reentry during that window; reset() marks the publication cancelled.
 var _completion_callbacks := 0
@@ -219,8 +222,8 @@ func _reset_state() -> void:
 	_step_elapsed = 0
 	_freeze = false
 	_pending_result = false
-	_deferred_activation = false
-	_activate_after_physics = false
+	_arming = false
+	_pending_publish = false
 	# Reset must not leave a pre-reset step result retrievable through
 	# take_result(); an empty dict is the explicit "no result" value.
 	_result = {}
@@ -257,6 +260,8 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 		return _refuse_begin_step("negative requested_ticks")
 	if _completion_callbacks > 0:
 		return _refuse_begin_step("completion callback in progress")
+	if _pending_publish:
+		return _refuse_begin_step("previous result awaiting publication")
 	if _pending_result:
 		return _refuse_begin_step("previous result not consumed")
 	if episode_terminal != "none":
@@ -300,30 +305,11 @@ func begin_step(requested_ticks: int = DEFAULT_TICKS_PER_STEP) -> bool:
 	_budget = _requested_ticks
 	_step_elapsed = 0
 	_pending_result = false
-	if Engine.is_in_physics_frame() and get_tree().paused:
-		# A request issued from a physics callback must not synchronously
-		# unpause this iteration (the coordinator has already returned for it,
-		# so its server step would run with zero logical ticks). Activate at the
-		# end of the frame, exactly like an idle-time call; the next physics
-		# iteration then pairs the first tick with its server step.
-		_deferred_activation = true
-		call_deferred("_activate_for_request")
-	elif _freeze or get_tree().paused:
-		# Ordinary idle-time request: consume one fully paused physics
-		# iteration, then activate at its end. Measured without this settling
-		# iteration, the first tick after resume could miss its server step on
-		# repeated same-world requests.
-		_activate_after_physics = true
+	# Every origin arms identically. The next coordinator ALWAYS callback
+	# unpauses and executes L1 in that iteration, so L1's server step follows
+	# it; no server step can run before L1 and none is lost after Ln.
+	_arming = true
 	return true
-	return true
-
-
-## End-of-frame activation for a request that originated in a physics
-## callback. Reset/configure cancel it by clearing the budget.
-func _activate_for_request() -> void:
-	_deferred_activation = false
-	if _budget > 0 and _freeze and get_tree().paused and episode_terminal == "none":
-		set_frozen(false)
 
 
 func _refuse_begin_step(reason: String) -> bool:
@@ -382,12 +368,26 @@ func _physics_process(delta: float) -> void:
 	# own server step, publishes the result and refuses further ticks. This
 	# preserves one server step per logical tick even when the engine catches up
 	# with several physics iterations in one frame.
-	if _activate_after_physics:
-		# Consume this fully paused iteration, then activate at its end so the
-		# first tick's server step is paired with it.
-		_activate_after_physics = false
-		call_deferred("_activate_for_request")
+	if _pending_publish:
+		_pending_publish = false
+		get_tree().paused = true
+		# Flush/sync server-owned state, then publish freshly read transforms.
+		# This callback's own server step is suppressed by the pause.
+		var flush_ray := PhysicsRayQueryParameters3D.new()
+		flush_ray.from = body.global_position
+		flush_ray.to = body.global_position + Vector3(0, -1, 0)
+		flush_ray.exclude = [body.get_rid()]
+		body.get_world_3d().direct_space_state.intersect_ray(flush_ray)
+		_result["observation"] = observe()
+		_pending_result = true
+		_emit_finished(_result)
 		return
+	if _arming:
+		_arming = false
+		if _budget > 0 and _freeze and get_tree().paused and episode_terminal == "none":
+			set_frozen(false)
+		else:
+			return
 	# A freeze requested by the previous tick must hold even if the engine
 	# delivers one more callback before SceneTree.paused takes effect.
 	if _freeze or _budget <= 0 or episode_terminal != "none" or tick_count >= max_ticks:
@@ -404,13 +404,13 @@ func _physics_process(delta: float) -> void:
 	if commanded_travel > MAX_TICK_TRAVEL_M + MOTION_BOUND_EPSILON_M:
 		motion_bound_violations += 1
 		last_motion_bound_deficit_m = commanded_travel - MAX_TICK_TRAVEL_M
-		_finish_step("motion_bound")
+		_finish_step("motion_bound", false)
 		return
 	var work_capped := _execute_tick(delta)
 	if work_capped:
-		# The defence-in-depth residual path must fail closed exactly like the
-		# pre-tick envelope check.
-		_finish_step("motion_bound")
+		# Error-class refusal: no tick attempted in this callback, so pausing
+		# here suppresses this iteration's server step (k steps for k elapsed).
+		_finish_step("motion_bound", false)
 		return
 	tick_count += 1
 	_step_elapsed += 1
@@ -559,7 +559,7 @@ func _probe_grounded() -> bool:
 	return not hit.is_empty() and hit.position.y < 0.05
 
 
-func _finish_step(terminal: String) -> void:
+func _finish_step(terminal: String, defer_publish: bool = true) -> void:
 	_budget = 0
 	last_step_terminal = terminal
 	if terminal != "none":
@@ -567,19 +567,22 @@ func _finish_step(terminal: String) -> void:
 		events.append({"tick": tick_count, "kind": terminal})
 	_freeze = true
 	var result := _build_result(_requested_ticks, _step_elapsed, terminal)
-	# Arm publication state BEFORE dispatching observers, then pause in this
-	# same callback. Pausing here stops the *next* iteration's server step;
-	# this iteration's step is the final accounted tick's step. Warm-body
-	# traces confirm one counted integration per requested tick.
 	_result = result
-	_pending_result = true
 	_completion_callbacks += 1
 	step_accounted.emit(result)
 	_completion_callbacks -= 1
 	if _completion_reset:
 		_completion_reset = false
 		return
+	if defer_publish:
+		# Stay unpaused through this callback's server step (integrates the
+		# final tick); the next coordinator callback pauses and publishes.
+		_pending_publish = true
+		return
+	# Error-class refusal attempted no tick in this callback: pausing here
+	# suppresses this iteration's server step (exactly k steps for k elapsed).
 	get_tree().paused = true
+	_pending_result = true
 	_emit_finished(_result)
 
 

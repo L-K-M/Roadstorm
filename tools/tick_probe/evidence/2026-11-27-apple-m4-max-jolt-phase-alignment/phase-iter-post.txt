@@ -1,0 +1,16 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+ITERS mark=7 elapsed=12 integ_ticks=[0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+ITER { "pf": 9, "paused": false, "ticks": 1, "steps": 4, "y": 999.972778320312, "v": -0.65170180797577 }
+ITER { "pf": 10, "paused": false, "ticks": 2, "steps": 5, "y": 999.942993164062, "v": -0.97592574357986 }
+ITER { "pf": 11, "paused": false, "ticks": 3, "steps": 6, "y": 999.924011230469, "v": -1.13763248920441 }
+ITER { "pf": 12, "paused": false, "ticks": 4, "steps": 7, "y": 999.90234375, "v": -1.29906976222992 }
+ITER { "pf": 13, "paused": false, "ticks": 5, "steps": 8, "y": 999.877990722656, "v": -1.46023797988892 }
+ITER { "pf": 14, "paused": false, "ticks": 6, "steps": 9, "y": 999.850952148438, "v": -1.62113749980927 }
+ITER { "pf": 15, "paused": false, "ticks": 7, "steps": 10, "y": 999.821228027344, "v": -1.78176891803741 }
+ITER { "pf": 16, "paused": false, "ticks": 8, "steps": 11, "y": 999.788879394531, "v": -1.94213259220123 }
+ITER { "pf": 17, "paused": false, "ticks": 9, "steps": 12, "y": 999.753845214844, "v": -2.10222911834717 }
+ITER { "pf": 18, "paused": false, "ticks": 10, "steps": 13, "y": 999.716125488281, "v": -2.2620587348938 }
+ITER { "pf": 19, "paused": false, "ticks": 11, "steps": 14, "y": 999.67578125, "v": -2.42162203788757 }
+ITER { "pf": 20, "paused": false, "ticks": 12, "steps": 15, "y": 999.632751464844, "v": -2.58091950416565 }
+ITER { "pf": 21, "paused": true, "ticks": 12, "steps": 16, "y": 999.587097167969, "v": -2.73995137214661 }

@@ -1,0 +1,98 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+N1_METRIC single_1 idx=0 requested=1 elapsed=1 server_steps_delta=1 signal_pf_delta=2 first_integ_pf=5 paused=true
+PASS n1: single_1 request #1 stays within the fresh-body registration bound
+PASS n1: single_1 request #1 reports exactly its requested elapsed ticks
+PASS n1: single_1 request #1 publishes while frozen
+PASS n1: single_1 request #1 spans its ticks plus exactly one settling pause iteration
+PASS n1: single_1 observed velocity matches the last counted integration
+N1_METRIC single_12 idx=0 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=7 paused=true
+PASS n1: single_12 request #1 stays within the fresh-body registration bound
+PASS n1: single_12 request #1 reports exactly its requested elapsed ticks
+PASS n1: single_12 request #1 publishes while frozen
+PASS n1: single_12 request #1 spans its ticks plus exactly one settling pause iteration
+PASS n1: single_12 observed velocity matches the last counted integration
+N1_METRIC single_24 idx=0 requested=24 elapsed=24 server_steps_delta=24 signal_pf_delta=25 first_integ_pf=20 paused=true
+PASS n1: single_24 request #1 stays within the fresh-body registration bound
+PASS n1: single_24 request #1 reports exactly its requested elapsed ticks
+PASS n1: single_24 request #1 publishes while frozen
+PASS n1: single_24 request #1 spans its ticks plus exactly one settling pause iteration
+PASS n1: single_24 observed velocity matches the last counted integration
+N1_METRIC repeated_12 idx=0 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=45 paused=true
+PASS n1: repeated_12 request #1 stays within the fresh-body registration bound
+PASS n1: repeated_12 request #1 reports exactly its requested elapsed ticks
+PASS n1: repeated_12 request #1 publishes while frozen
+PASS n1: repeated_12 request #1 spans its ticks plus exactly one settling pause iteration
+N1_METRIC repeated_12 idx=1 requested=12 elapsed=12 server_steps_delta=12 signal_pf_delta=13 first_integ_pf=45 paused=true
+PASS n1: repeated_12 request #2 stays within the fresh-body registration bound
+PASS n1: repeated_12 request #2 reports exactly its requested elapsed ticks
+PASS n1: repeated_12 request #2 publishes while frozen
+PASS n1: repeated_12 request #2 spans its ticks plus exactly one settling pause iteration
+PASS n1: repeated_12 observed velocity matches the last counted integration
+N1_METRIC warmed_single_1 requested=1 elapsed=1 ticks=0->1 server_steps_delta=1 emission_steps=5 signal_pf_delta=2 paused=true
+PASS n1: warmed_single_1 body activated before request
+PASS n1: warmed_single_1 request integrates exactly 1 server steps
+PASS n1: warmed_single_1 request accounts exactly its logical ticks
+PASS n1: warmed_single_1 request publishes while frozen
+PASS n1: warmed_single_1 completion observes the final counted integration
+PASS n1: warmed_single_1 request spans its ticks plus exactly one settling pause iteration
+N1_METRIC warmed_single_12 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=13 paused=true
+PASS n1: warmed_single_12 body activated before request
+PASS n1: warmed_single_12 request integrates exactly 12 server steps
+PASS n1: warmed_single_12 request accounts exactly its logical ticks
+PASS n1: warmed_single_12 request publishes while frozen
+PASS n1: warmed_single_12 completion observes the final counted integration
+PASS n1: warmed_single_12 request spans its ticks plus exactly one settling pause iteration
+N1_METRIC warmed_single_24 requested=24 elapsed=24 ticks=0->24 server_steps_delta=24 emission_steps=28 signal_pf_delta=25 paused=true
+PASS n1: warmed_single_24 body activated before request
+PASS n1: warmed_single_24 request integrates exactly 24 server steps
+PASS n1: warmed_single_24 request accounts exactly its logical ticks
+PASS n1: warmed_single_24 request publishes while frozen
+PASS n1: warmed_single_24 completion observes the final counted integration
+PASS n1: warmed_single_24 request spans its ticks plus exactly one settling pause iteration
+N1_METRIC warmed_repeat_12_a requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=13 paused=true
+PASS n1: warmed_repeat_12_a body activated before request
+PASS n1: warmed_repeat_12_a request integrates exactly 12 server steps
+PASS n1: warmed_repeat_12_a request accounts exactly its logical ticks
+PASS n1: warmed_repeat_12_a request publishes while frozen
+PASS n1: warmed_repeat_12_a completion observes the final counted integration
+PASS n1: warmed_repeat_12_a request spans its ticks plus exactly one settling pause iteration
+N1_METRIC warmed_repeat_12_b requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 emission_steps=16 signal_pf_delta=13 paused=true
+PASS n1: warmed_repeat_12_b body activated before request
+PASS n1: warmed_repeat_12_b request integrates exactly 12 server steps
+PASS n1: warmed_repeat_12_b request accounts exactly its logical ticks
+PASS n1: warmed_repeat_12_b request publishes while frozen
+PASS n1: warmed_repeat_12_b completion observes the final counted integration
+PASS n1: warmed_repeat_12_b request spans its ticks plus exactly one settling pause iteration
+N1_METRIC same_world_12_12_1 idx=0 requested=12 elapsed=12 ticks=0->12 server_steps_delta=12 signal_pf_delta=13 paused=true
+PASS n1: same_world_12_12_1 request #1 reports exactly its elapsed ticks
+PASS n1: same_world_12_12_1 request #1 accounts exactly its logical ticks
+PASS n1: same_world_12_12_1 request #1 integrates exactly 12 server steps on the same world
+PASS n1: same_world_12_12_1 request #1 publishes while frozen
+PASS n1: same_world_12_12_1 request #1 spans its ticks plus one settling iteration
+N1_METRIC same_world_12_12_1 idx=1 requested=12 elapsed=12 ticks=12->24 server_steps_delta=12 signal_pf_delta=13 paused=true
+PASS n1: same_world_12_12_1 request #2 reports exactly its elapsed ticks
+PASS n1: same_world_12_12_1 request #2 accounts exactly its logical ticks
+PASS n1: same_world_12_12_1 request #2 integrates exactly 12 server steps on the same world
+PASS n1: same_world_12_12_1 request #2 publishes while frozen
+PASS n1: same_world_12_12_1 request #2 spans its ticks plus one settling iteration
+N1_METRIC same_world_12_12_1 idx=2 requested=1 elapsed=1 ticks=24->25 server_steps_delta=1 signal_pf_delta=2 paused=true
+PASS n1: same_world_12_12_1 request #3 reports exactly its elapsed ticks
+PASS n1: same_world_12_12_1 request #3 accounts exactly its logical ticks
+PASS n1: same_world_12_12_1 request #3 integrates exactly 1 server steps on the same world
+PASS n1: same_world_12_12_1 request #3 publishes while frozen
+PASS n1: same_world_12_12_1 request #3 spans its ticks plus one settling iteration
+N1_METRIC warmed_continuous_control k=1 activation_steps=4 server_steps_delta=1 engine_pf_delta=1
+PASS n1: warmed control body was activated before the measured window
+PASS n1: warmed continuous control delivered at least one engine iteration
+PASS n1: warmed continuous control integrates exactly once per delivered engine iteration
+N1_METRIC warmed_continuous_control k=12 activation_steps=4 server_steps_delta=12 engine_pf_delta=12
+PASS n1: warmed control body was activated before the measured window
+PASS n1: warmed continuous control delivered at least one engine iteration
+PASS n1: warmed continuous control integrates exactly once per delivered engine iteration
+N1_METRIC cold_registration_diagnostic k=1 server_steps_delta=0 engine_pf_delta=1 first_integ_pf=-1
+N1_METRIC cold_registration_diagnostic k=12 server_steps_delta=11 engine_pf_delta=12 first_integ_pf=231
+PASS n1: frozen waiting integrates no server step and moves no body
+N1_RESULT {"checks_failed":0,"checks_total":76,"failures":[],"schema":"roadstorm.tick_probe.n1.v1"}
+N1_TOTAL=76 N1_FAILED=0
+PACING=max N1_TESTS_TOTAL=76 N1_TESTS_FAILED=0

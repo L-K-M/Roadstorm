@@ -87,8 +87,8 @@ func _test_callback_ordering() -> void:
 	_check(before.physics_callbacks == 12,
 		"ordering: node before the coordinator sees all logical tick callbacks",
 		"before=%d" % before.physics_callbacks)
-	_check(after.physics_callbacks == 11,
-		"ordering: later-in-tree node is skipped in the synchronously paused final iteration",
+	_check(after.physics_callbacks == 12,
+		"ordering: later-in-tree node receives every logical tick callback",
 		"after=%d" % after.physics_callbacks)
 	before.queue_free()
 	after.queue_free()
@@ -131,9 +131,9 @@ func _test_physics_callback_begin_step() -> void:
 	_check(delta == 12,
 		"physics-caller: physics-callback request integrates exactly 12 server steps",
 		"server_steps_delta=%d" % delta)
-	_check(obs_delta == 11,
-		"physics-caller: no unaccounted unpaused iteration before the first tick",
-		"unpaused_observer_callbacks=%d (expected requested-1)" % obs_delta)
+	_check(obs_delta == 12,
+		"physics-caller: unpaused observer iterations equal the logical ticks (no phantom)",
+		"unpaused_observer_callbacks=%d expected=12" % obs_delta)
 	caller.queue_free()
 	observer.queue_free()
 	dyn.queue_free()
@@ -379,10 +379,10 @@ func _test_frame_accounting() -> void:
 			"frame-account: step_accounted boundary reports exactly %d accounted ticks" % requested,
 			"snap_elapsed=%s snap_ticks=%s" % [
 				snap.get("elapsed_ticks"), snap.get("tick_count")])
-		_check(ext_delta == elapsed + 1 and coord_delta == elapsed + 1,
-			"frame-account: physics-frame tally at step_accounted is the ticks plus one settling pause iteration",
-			"requested=%d elapsed=%d ext_frames=%d coord_frames=%d expected=%d" % [
-				requested, elapsed, ext_delta, coord_delta, elapsed + 1])
+		_check(ext_delta == elapsed and coord_delta == elapsed,
+			"frame-account: step_accounted spans exactly its logical engine frames",
+			"requested=%d elapsed=%d ext_frames=%d coord_frames=%d" % [
+				requested, elapsed, ext_delta, coord_delta])
 		# Any trailing engine callback after completion must not advance the sim.
 		await _wait_physics_frames(1)
 		_check(coord.tick_count == t0 + elapsed,

@@ -207,15 +207,15 @@ def main() -> int:
             f"{data['final_z_m']:>20.9f}"
         )
 
-    # Each idle-origin request spends one fully paused settling iteration so
-    # repeated same-world requests keep exact server-step pairing. Record that
-    # honest engine-frame cost and its realtime ceiling; the documented 0.5-2.0
-    # acceptance band is unchanged.
-    settle_s = args.requests * DT
-    realtime_ceiling = realtime["sim_seconds"] / (realtime["sim_seconds"] + settle_s)
+    # Every request spans n+1 engine frames: n tick iterations plus one
+    # activation/publication boundary iteration that adds no physics-server
+    # step. Record that honest cost and its realtime ceiling; the documented
+    # 0.5-2.0 acceptance band is unchanged.
+    boundary_s = args.requests * DT
+    realtime_ceiling = realtime["sim_seconds"] / (realtime["sim_seconds"] + boundary_s)
     print(
-        f"INFO: {args.requests} paused settling iterations expected "
-        f"({settle_s:.3f}s); realtime ceiling ~{realtime_ceiling:.3f}, "
+        f"INFO: {args.requests} activation/publication boundary iterations expected "
+        f"({boundary_s:.3f}s, zero server steps); realtime ceiling ~{realtime_ceiling:.3f}, "
         f"observed {realtime['speedup_vs_wall_clock']:.3f}"
     )
 
