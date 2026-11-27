@@ -24,7 +24,9 @@ extends RefCounted
 ## several mature on the same tick the design-table order decides (steering
 ## unwind before low speed). A zero hold time matures immediately, but only
 ## while its own condition is true: a reset timer never counts as matured.
-## Grounded-state hysteresis belongs to the future
+## Promoting ENTRY to SUSTAINED preserves both exit-condition timers, so a
+## condition that spans the promotion keeps its continuous age. Grounded-state
+## hysteresis belongs to the future
 ## adhesion layer: this model follows the committed `grounded` flag immediately
 ## and deliberately does not debounce it.
 ##
@@ -394,7 +396,10 @@ static func propose(
 				_begin_phase(proposed, Phase.RECOVERY, outgoing_blend)
 				event = Event.LOW_SPEED_RECOVERY
 			elif proposed.phase_time_s >= tuning.entry_blend_time_s - TIMER_EPSILON_S:
-				_begin_phase(proposed, Phase.SUSTAINED)
+				# Preserve the exit-condition holds across promotion so an unwind
+				# or low-speed condition that began during ENTRY matures on its own
+				# continuous schedule instead of restarting after the promotion.
+				_begin_phase(proposed, Phase.SUSTAINED, 0.0, true)
 				event = Event.DRIFT_SUSTAINED
 		Phase.SUSTAINED:
 			_advance_holds(proposed, drift_state, unwind, low_speed, dt)
@@ -466,12 +471,20 @@ static func propose(
 
 ## Reset `state` to `phase` and clear phase-scoped accumulators. When entering
 ## recovery or airborne, `carry_blend` preserves the outgoing influence so
-## neither transition snaps.
-static func _begin_phase(state: State, phase: Phase, carry_blend := 0.0) -> void:
+## neither transition snaps. `preserve_holds` keeps the exit-condition timers
+## so a condition that spans a phase promotion matures at its true continuous
+## age (ENTRY -> SUSTAINED is the only caller that uses it).
+static func _begin_phase(
+	state: State,
+	phase: Phase,
+	carry_blend := 0.0,
+	preserve_holds := false
+) -> void:
 	state.phase = phase
 	state.phase_time_s = 0.0
-	state.unwind_hold_s = 0.0
-	state.low_speed_hold_s = 0.0
+	if not preserve_holds:
+		state.unwind_hold_s = 0.0
+		state.low_speed_hold_s = 0.0
 	state.airborne_time_s = 0.0
 	state.recovery_start_blend = 0.0
 	state.airborne_start_blend = 0.0

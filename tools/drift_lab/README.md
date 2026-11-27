@@ -41,7 +41,10 @@ Helper scripts live only under `tools/drift_lab/`; nothing here is placed in
   independently, so alternating inputs cannot mask a mature exit; if several
   mature on one tick the design-table order decides (steering unwind before low
   speed). A hold time of zero transitions immediately, but only while that
-  condition itself is true. Brief clears reset only their own timer.
+  condition itself is true. Brief clears reset only their own timer. ENTRY to
+  SUSTAINED promotion preserves both timers (phase time still restarts), so an
+  unwind or low-speed condition spanning the boundary matures at its continuous
+  age.
 - The low-speed exit compares road-plane ground-speed magnitude, not the
   forward projection: a fast high-slip drift whose forward component is small
   does not exit at 8 m/s while its ground speed is 16 m/s. Entry still requires

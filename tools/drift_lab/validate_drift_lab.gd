@@ -30,6 +30,7 @@ const CASE_IDS := [
 	"low_speed_recovery",
 	"high_slip_ground_speed",
 	"zero_hold_guards",
+	"entry_promotion_hold_continuity",
 	"airborne_transition_and_landing",
 	"stability_assist_factor",
 	"tuning_validation",
@@ -114,6 +115,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_high_slip_ground_speed(driver)
 		"zero_hold_guards":
 			_case_zero_hold_guards(driver)
+		"entry_promotion_hold_continuity":
+			_case_entry_promotion_hold_continuity(driver)
 		"airborne_transition_and_landing":
 			_case_airborne_transition_and_landing(driver)
 		"stability_assist_factor":
@@ -873,6 +876,128 @@ func _case_zero_hold_guards(driver) -> void:
 	driver.check_eq(
 		int(both_now.event), int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
 		"SUSTAINED simultaneous zero-hold maturity reports unwind first"
+	)
+
+
+func _case_entry_promotion_hold_continuity(driver) -> void:
+	var tuning = driver.default_tuning()
+	var fast_car = driver.make_car(20.0)
+	var slow_car = driver.make_car(5.0)
+
+	# Unwind begins at ENTRY tick 5. It must mature on its 9th consecutive tick
+	# (tick 13), even though ENTRY promotes to SUSTAINED at tick 12.
+	var unwind_proposals: Array = []
+	var unwind_state = driver.advance(
+		fast_car, driver.command(0.8, 0.0, 0.0, 1.0),
+		driver.fresh_drift_state(), tuning
+	)
+	unwind_proposals.append(unwind_state)
+	var unwind_recovery_index := -1
+	for tick in range(1, 30):
+		var steer := 0.0 if tick >= 5 else 0.8
+		unwind_state = driver.advance(
+			fast_car, driver.command(steer, 0.0, 0.0, 0.0), unwind_state.state, tuning
+		)
+		unwind_proposals.append(unwind_state)
+		if unwind_state.event == DriftModel.Event.STEERING_UNWIND_RECOVERY:
+			unwind_recovery_index = tick
+			break
+	driver.check_eq(
+		unwind_recovery_index, 13,
+		"mid-ENTRY unwind matures on its 9th consecutive tick"
+	)
+	driver.check_eq(
+		int(unwind_proposals[13].event), int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
+		"unwind across promotion reports steering unwind"
+	)
+	driver.check_eq(
+		int(unwind_proposals[12].phase), int(DriftModel.Phase.SUSTAINED),
+		"entry still promotes at tick 12"
+	)
+	driver.check_close(
+		unwind_proposals[12].state.unwind_hold_s, 8.0 * DriftModel.DT, 1e-9,
+		"promotion preserves the partial unwind hold"
+	)
+
+	# Low speed beginning during a short ENTRY keeps its continuous age across
+	# the promotion and matures on its 12th consecutive low-speed tick.
+	var low_tuning = driver.default_tuning()
+	low_tuning.entry_blend_time_s = 0.1
+	var low_proposals: Array = []
+	var low_state = driver.advance(
+		fast_car, driver.command(0.8, 0.0, 0.0, 1.0),
+		driver.fresh_drift_state(), low_tuning
+	)
+	low_proposals.append(low_state)
+	var low_recovery_index := -1
+	for tick in range(1, 25):
+		low_state = driver.advance(
+			slow_car, driver.command(0.8, 0.0, 0.0, 0.0), low_state.state, low_tuning
+		)
+		low_proposals.append(low_state)
+		if low_state.event == DriftModel.Event.LOW_SPEED_RECOVERY:
+			low_recovery_index = tick
+			break
+	driver.check_eq(
+		low_recovery_index, 12, "low speed matures across promotion on its 12th tick"
+	)
+	driver.check_eq(
+		int(low_proposals[12].event), int(DriftModel.Event.LOW_SPEED_RECOVERY),
+		"low-speed continuity reports low speed"
+	)
+	driver.check_eq(
+		int(low_proposals[6].phase), int(DriftModel.Phase.SUSTAINED),
+		"short entry blend promotes at tick 6"
+	)
+	driver.check_close(
+		low_proposals[6].state.low_speed_hold_s, 6.0 * DriftModel.DT, 1e-9,
+		"promotion preserves the partial low-speed hold"
+	)
+
+	# When both conditions begin before promotion and mature together after it,
+	# deterministic precedence is still steering unwind first.
+	var both_tuning = driver.default_tuning()
+	both_tuning.unwind_hold_s = 0.2
+	both_tuning.low_speed_hold_s = 0.2
+	var both_proposals: Array = []
+	var both_state = driver.advance(
+		fast_car, driver.command(0.8, 0.0, 0.0, 1.0),
+		driver.fresh_drift_state(), both_tuning
+	)
+	both_proposals.append(both_state)
+	var both_recovery_index := -1
+	for tick in range(1, 30):
+		var steer := 0.0 if tick >= 6 else 0.8
+		var car = slow_car if tick >= 6 else fast_car
+		both_state = driver.advance(
+			car, driver.command(steer, 0.0, 0.0, 0.0), both_state.state, both_tuning
+		)
+		both_proposals.append(both_state)
+		if (
+			both_state.event == DriftModel.Event.STEERING_UNWIND_RECOVERY
+			or both_state.event == DriftModel.Event.LOW_SPEED_RECOVERY
+		):
+			both_recovery_index = tick
+			break
+	driver.check_eq(
+		both_recovery_index, 17,
+		"both conditions mature together across promotion"
+	)
+	driver.check_eq(
+		int(both_proposals[17].event), int(DriftModel.Event.STEERING_UNWIND_RECOVERY),
+		"precedence stays steering unwind first"
+	)
+	driver.check_eq(
+		int(both_proposals[12].phase), int(DriftModel.Phase.SUSTAINED),
+		"default promotion still occurs"
+	)
+	driver.check_close(
+		both_proposals[12].state.unwind_hold_s, 7.0 * DriftModel.DT, 1e-9,
+		"unwind hold preserved across promotion"
+	)
+	driver.check_close(
+		both_proposals[12].state.low_speed_hold_s, 7.0 * DriftModel.DT, 1e-9,
+		"low-speed hold preserved across promotion"
 	)
 
 
