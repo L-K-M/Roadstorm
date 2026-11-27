@@ -1,0 +1,72 @@
+# Roadstorm Racer! - Windows-host evidence for the asset manifest validator.
+#
+# PLAN.md M0 provenance manifest tooling. The POSIX guarded reads use flags that
+# do not exist on Windows, so the Windows branch needs its own host to prove
+# the native guarded-open tests actually run: on any other platform those tests
+# are skipped, which says nothing about Windows.
+#
+# This job deliberately does NOT go through tools/ci/ci.sh (owned elsewhere):
+# ci.sh is the Linux/CI-owner path, while this file exists only to execute the
+# small runner under tools/asset_manifest/tests, which enforces that no native
+# guarded-open test was skipped or omitted before reporting acceptance. The
+# runner runs the complete asset manifest unittest suite and the shipped empty
+# registry with --check-hashes.
+
+name: manifest-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/manifest-windows.yml"
+      - "tools/asset_manifest/**"
+      - "assets/manifest.json"
+      - "provenance/PROVIDER_TERMS.md"
+      - "provenance/provider_terms/**"
+  pull_request:
+    paths:
+      - ".github/workflows/manifest-windows.yml"
+      - "tools/asset_manifest/**"
+      - "assets/manifest.json"
+      - "provenance/PROVIDER_TERMS.md"
+      - "provenance/provider_terms/**"
+
+concurrency:
+  group: manifest-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows-manifest:
+    name: asset manifest on Windows (Python 3.12)
+    runs-on: windows-latest
+    # Bounded by design: the suite takes seconds; a stalled download or hang
+    # fails the job instead of holding a hosted runner.
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Show the host interpreter
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version
+          python -c "import sys, platform; print(sys.executable); print(platform.platform())"
+
+      - name: Asset manifest suite and empty-registry hash check
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fails unless every WindowsNativeGuardTestCase test ran and passed,
+          # including the regular output/hash control and the junction-parent
+          # refusal, and unless the shipped manifest --check-hashes passes.
+          python tools/asset_manifest/tests/run_windows_manifest_ci.py
