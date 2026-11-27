@@ -360,20 +360,31 @@ jobs:
           fi
           for _needle in \
             "an existing main+sidecar target is refused and left byte-identical -> yes" \
+            "a forced same-second report-token collision cannot overwrite prior evidence -> yes" \
+            "a dangling symlink at the report path is refused and preserved -> yes" \
+            "a failed preset rename keeps one visible report path for parent and worker -> yes" \
             "a pre-existing sidecar alone is refused, not treated as the package -> yes" \
             "a dangling symlink target is refused and never written through -> yes" \
             "a corrupted package exits nonzero, prints no PASS and names the inventory failure -> yes" \
             "the rejected export report carries one fail verdict and no pass verdict -> yes" \
             "the failed attempt owns no PASS inventory; prior PASS history stays separate -> yes" \
-            "the inventory failure reason is preserved in the uploaded logs -> yes" \
+            "the inventory failure reason is preserved in an exclusive FAIL record -> yes" \
             "the inventory report carries the source SHA and the same attempt id -> yes" \
+            "a destination inside the .ci-lock namespace is rejected before the engine -> yes" \
+            "a held normal export proceeds while the namespace destination stays unused -> yes" \
+            "concurrent exports sharing CI_OUT keep independent copies and logs -> yes" \
             "the overlapping invocation waits instead of claiming the destination -> yes" \
             "the zero-write attempt fails and the blocked attempt delivers the package -> yes" \
             "the successful concurrent attempt's report matches the delivered digests -> yes" \
             "failed attempt leaves no PASS; persistent lock files remain -> yes" \
             "stale persistent lock files do not block a later export -> yes" \
             "two nonoverlapping concurrent exports both succeed -> yes" \
-            "a foreign lock FILE is preserved and a live owner blocks others -> yes" \
+            "a foreign lock FILE is preserved, a live owner blocks others, and ci.sh emits its structured lock-timeout verdict -> yes" \
+            "a live writer descendant keeps the destination locked after the exporter exits -> yes" \
+            "after the writer descendant exits the lock becomes acquirable -> yes" \
+            "a watchdog-like child that closed the lock fds does not prolong the lock -> yes" \
+            "the printer emits the indented second-line engine diagnostic -> yes" \
+            "the printer emits the indented gate-failure diagnostic -> yes" \
             "a symlink lock path is refused and left intact -> yes" \
             "a non-regular lock path is refused and preserved -> yes" \
             "foreign bytes appended to a live lock file are preserved -> yes" \

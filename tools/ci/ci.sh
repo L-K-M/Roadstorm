@@ -1760,6 +1760,7 @@ ci_export_list() {
 # a lock path are preserved byte-for-byte and merely locked; a pre-existing
 # symlink or non-regular path is refused, never followed or removed.
 _CI_LOCK_TOOL=""
+_CI_LOCK_HELD=""
 for _cand in flock lockf; do
 	if command -v "$_cand" >/dev/null 2>&1; then
 		_CI_LOCK_TOOL="$_cand"
@@ -1837,7 +1838,7 @@ ci_export_build() {
 	# logs so two presets can never share an evidence file.
 	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
 		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ]; then
+		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ] && [ ! -L "$_new_report" ]; then
 			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
 		fi
 	fi
@@ -1853,8 +1854,29 @@ ci_export_build() {
 	esac
 	_pck="$_pck_dir/$_pck_base.pck"
 
-	# Acquire both destination locks before any existence decision. Sorted
-	# acquisition order avoids AB-BA deadlock between overlapping invocations.
+	# Reject destinations inside the reserved ".ci-lock" namespace. Lock files
+	# are "<destination>.ci-lock"; an output ending in .ci-lock would itself be
+	# another invocation's lock file, letting two cooperating exports enter the
+	# engine and one overwrite the other's empty lock with package bytes.
+	_out_lower="$(printf '%s' "$_out" | tr '[:upper:]' '[:lower:]')"
+	_pck_lower="$(printf '%s' "$_pck" | tr '[:upper:]' '[:lower:]')"
+	case "$_out_lower" in
+		*.ci-lock)
+			ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out (choose another output name)"
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+			return "$CI_FAIL"
+		;;
+	esac
+	case "$_pck_lower" in
+		*.ci-lock)
+			ci_fail "export --export: sidecar destination is inside the reserved .ci-lock lock namespace: $_pck (choose another output name)"
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+			return "$CI_FAIL"
+		;;
+	esac
+
+	# Validate the lock namespace and lock paths here for a fast, structured
+	# failure. The worker re-checks under its own process and acquires the fds.
 	_wait="${CI_EXPORT_LOCK_WAIT:-900}"
 	case "$_wait" in '' | *[!0-9]*) _wait=900 ;; esac
 	if [ "$_out" = "$_pck" ]; then
@@ -1864,44 +1886,92 @@ ci_export_build() {
 	fi
 	while IFS= read -r _lp; do
 		[ -n "$_lp" ] || continue
-		if [ -L "$_lp" ]; then
-			ci_fail "export --export: refusing to follow existing symlink lock path: $_lp (remove or replace it manually)"
+		_ci_lock_precheck "$_lp" || {
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-path-invalid lock=$_lp"
 			return "$CI_FAIL"
-		fi
-		if [ -e "$_lp" ] && [ ! -f "$_lp" ]; then
-			ci_fail "export --export: refusing to use non-regular lock path: $_lp (remove or replace it manually)"
-			return "$CI_FAIL"
-		fi
+		}
 	done <<EOF
 $_lock_list
 EOF
 	if [ -z "$_CI_LOCK_TOOL" ]; then
 		ci_fail "export --export: neither flock(1) nor lockf(1) is available; refusing to export without an exclusive lock"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-tool-missing"
 		return "$CI_FAIL"
 	fi
+	_saved_report_env="${ROADSTORM_CI_REPORT:-}"
 	export ROADSTORM_CI_REPORT="$CI_REPORT" ROADSTORM_CI_ATTEMPT_ID="$CI_ATTEMPT_ID"
+	_attempt_slug="${_slug}-${CI_ATTEMPT_ID}"
+	export ROADSTORM_CI_LOG_BASE="$CI_OUT/logs/export-${_attempt_slug}"
+	export ROADSTORM_CI_COPY_BASE="$CI_OUT/attempts/export-${_attempt_slug}/project-copy"
 	export CI_STRICT_WARNINGS="${CI_STRICT_WARNINGS:-0}" CI_TIMEOUT_DEFAULT="${CI_TIMEOUT_DEFAULT:-300}"
 	_shq() {
 		printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 	}
 	_source_sha_args=""
 	[ -n "${ROADSTORM_SOURCE_SHA:-}" ] && _source_sha_args="--source-sha $(_shq "$ROADSTORM_SOURCE_SHA")"
-	export ROADSTORM_CI_LOCK_OWNER="$$"
-	_inner_cmd="$(_shq "$0") --project $(_shq "$CI_PROJECT") --godot $(_shq "$GODOT_BIN") --out $(_shq "$CI_OUT") $_source_sha_args __export-inner $(_shq "$_preset") $(_shq "$_mode") $(_shq "$_out")"
-	_lock_opts=""
-	case "$_CI_LOCK_TOOL" in
-		flock) _lock_opts="-x -w $_wait" ;;
-		lockf) _lock_opts="-k -t $_wait" ;;
-	esac
-	if [ "$_out" = "$_pck" ]; then
-		_cmd="$_CI_LOCK_TOOL $_lock_opts $(_shq "$(printf '%s\n' "$_lock_list")") $_inner_cmd"
+	_inner_cmd="$(_shq "$CI_TOOLS_DIR/ci.sh") --project $(_shq "$CI_PROJECT") --godot $(_shq "$GODOT_BIN") --out $(_shq "$CI_OUT") $_source_sha_args __export-inner $(_shq "$_preset") $(_shq "$_mode") $(_shq "$_out")"
+	# Restore the caller-visible report pointer after the worker handoff:
+	# leaving ROADSTORM_CI_REPORT exported would suppress this process's own
+	# final `report:` line even though it did not create that file.
+	eval "$_inner_cmd"
+	_inner_rc=$?
+	if [ -n "$_saved_report_env" ]; then
+		export ROADSTORM_CI_REPORT="$_saved_report_env"
 	else
-		_lock1="$(printf '%s\n' "$_lock_list" | head -n 1)"
-		_lock2="$(printf '%s\n' "$_lock_list" | tail -n 1)"
-		_cmd="$_CI_LOCK_TOOL $_lock_opts $(_shq "$_lock1") $_CI_LOCK_TOOL $_lock_opts $(_shq "$_lock2") $_inner_cmd"
+		unset ROADSTORM_CI_REPORT
 	fi
-	eval "$_cmd"
-	return $?
+	return "$_inner_rc"
+}
+
+# _ci_lock_precheck <path> : refuse symlinks/non-regular pre-existing lock paths.
+_ci_lock_precheck() {
+	_lpc="$1"
+	if [ -L "$_lpc" ]; then
+		ci_fail "export --export: refusing to follow existing symlink lock path: $_lpc (remove or replace it manually)"
+		return "$CI_FAIL"
+	fi
+	if [ -e "$_lpc" ] && [ ! -f "$_lpc" ]; then
+		ci_fail "export --export: refusing to use non-regular lock path: $_lpc (remove or replace it manually)"
+		return "$CI_FAIL"
+	fi
+	return "$CI_OK"
+}
+
+# _ci_lock_acquire_fd <fd> <path> <timeout> : acquire an in-process advisory
+# lock on an already-open descriptor. Keeping the fd in this shell means the
+# kernel releases the lock when the exporting process exits, is signalled or
+# crashes; no external locker process or inherited watchdog holds it alive.
+_ci_lock_acquire_fd() {
+	_af_fd="$1"; _af_file="$2"; _af_wait="$3"
+	_af_err="$CI_LOG_DIR/export-lock-error.log"
+	: >"$_af_err" 2>/dev/null
+	case "$_CI_LOCK_TOOL" in
+		flock) flock -x -w "$_af_wait" "$_af_fd" 2>"$_af_err" ;;
+		lockf) lockf -s -t "$_af_wait" "$_af_fd" 2>"$_af_err" ;;
+		*) ci_die "unknown lock tool: $_CI_LOCK_TOOL" ;;
+	esac
+	_af_rc=$?
+	if [ "$_af_rc" -ne 0 ]; then
+		_af_msg="$(cat "$_af_err" 2>/dev/null)"
+		ci_fail "export --export: timed out after ${_af_wait}s waiting for lock $_af_file (tool $_CI_LOCK_TOOL rc $_af_rc); another export is still active or the lock path is not writable"
+		[ -n "$_af_msg" ] && printf '%s\n' "$_af_msg" | sed 's/^/    /'
+		ci_report "export result=fail reason=lock-timeout lock=$_af_file wait=$_af_wait tool=$_CI_LOCK_TOOL rc=$_af_rc"
+		return "$CI_FAIL"
+	fi
+	_CI_LOCK_HELD="$_CI_LOCK_HELD $_af_fd"
+	return "$CI_OK"
+}
+
+# ci_print_export_failure_log <logfile> : print the whole captured engine log,
+# indented. Godot's export configuration errors are multi-line and indented;
+# filtering to anchored ERROR lines alone hid the reason in hosted run
+# 45921573623. Called only on a failed export; never replaces the verdict.
+ci_print_export_failure_log() {
+	_pfl="$1"
+	[ -f "$_pfl" ] || return 0
+	ci_note "full engine log ($_pfl):"
+	sed 's/^/    /' "$_pfl"
+	return 0
 }
 
 ci_export_build_inner() {
@@ -1922,7 +1992,7 @@ ci_export_build_inner() {
 	CI_RUN_NAME="export-$_slug"
 	if [ -n "$CI_REPORT" ] && [ -f "$CI_REPORT" ] && [ -n "$CI_ATTEMPT_ID" ]; then
 		_new_report="$CI_OUT/reports/export-${_slug}-${CI_ATTEMPT_ID}.txt"
-		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ]; then
+		if [ "$_new_report" != "$CI_REPORT" ] && [ ! -e "$_new_report" ] && [ ! -L "$_new_report" ]; then
 			mv "$CI_REPORT" "$_new_report" 2>/dev/null && CI_REPORT="$_new_report"
 		fi
 	fi
@@ -1934,6 +2004,70 @@ ci_export_build_inner() {
 		*.*) _pck_base="${_pck_base%.*}" ;;
 	esac
 	_pck="$_pck_dir/$_pck_base.pck"
+
+	# Reserved lock namespace must be rejected even for a direct worker call.
+	_out_lower="$(printf '%s' "$_out" | tr '[:upper:]' '[:lower:]')"
+	_pck_lower="$(printf '%s' "$_pck" | tr '[:upper:]' '[:lower:]')"
+	case "$_out_lower$_pck_lower" in
+		*.ci-lock)
+			ci_fail "export --export: destination is inside the reserved .ci-lock lock namespace: $_out$_pck (choose another output name)"
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-namespace output=$_out"
+			return "$CI_FAIL"
+		;;
+	esac
+
+	# Acquire both destination locks IN THIS PROCESS before the stale-output
+	# check. fd-form flock/lockf associate the advisory lock with the open file
+	# description held by this shell, so the kernel releases it when the actual
+	# export process exits, is signalled or crashes -- including cases where an
+	# engine watchdog child would otherwise inherit an external locker's fd.
+	_wait="${CI_EXPORT_LOCK_WAIT:-900}"
+	case "$_wait" in '' | *[!0-9]*) _wait=900 ;; esac
+	if [ "$_out" = "$_pck" ]; then
+		_lock_list="$_out.ci-lock"
+	else
+		_lock_list="$(printf '%s.ci-lock\n%s.ci-lock\n' "$_out" "$_pck" | LC_ALL=C sort)"
+	fi
+	while IFS= read -r _lp; do
+		[ -n "$_lp" ] || continue
+		_ci_lock_precheck "$_lp" || {
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-path-invalid lock=$_lp"
+			return "$CI_FAIL"
+		}
+	done <<EOF
+$_lock_list
+EOF
+	if [ -z "$_CI_LOCK_TOOL" ]; then
+		ci_fail "export --export: neither flock(1) nor lockf(1) is available; refusing to export without an exclusive lock"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-tool-missing"
+		return "$CI_FAIL"
+	fi
+	_lock1="$(printf '%s\n' "$_lock_list" | head -n 1)"
+	if ! exec 9>>"$_lock1"; then
+		ci_fail "export --export: cannot open lock file $_lock1"
+		ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-open-failed lock=$_lock1"
+		return "$CI_FAIL"
+	fi
+	if ! _ci_lock_acquire_fd 9 "$_lock1" "$_wait"; then
+		exec 9>&-
+		return "$CI_FAIL"
+	fi
+	if [ "$_out" != "$_pck" ]; then
+		_lock2="$(printf '%s\n' "$_lock_list" | tail -n 1)"
+		if ! exec 8>>"$_lock2"; then
+			ci_fail "export --export: cannot open lock file $_lock2"
+			_ci_close_lock_fds
+			ci_report "export result=fail preset=$_preset mode=$_mode reason=lock-open-failed lock=$_lock2"
+			return "$CI_FAIL"
+		fi
+		if ! _ci_lock_acquire_fd 8 "$_lock2" "$_wait"; then
+			_ci_close_lock_fds
+			return "$CI_FAIL"
+		fi
+	fi
+	trap '_ci_close_lock_fds' EXIT
+	trap '_ci_close_lock_fds; exit 130' INT TERM HUP
+
 	# Under the lock: refuse to reuse an output path that already holds a file
 	# or sidecar (Opus R2). Without this, a later engine run that silently
 	# writes nothing would be validated against the PREVIOUS package and its
@@ -2063,20 +2197,79 @@ ci_export_build_inner() {
 	# their own distinct files as history; they cannot masquerade as this one.
 	[ -n "$CI_ATTEMPT_ID" ] && _inv_tag="${_inv_tag}-${CI_ATTEMPT_ID}"
 	_inv_report="$CI_OUT/reports/export-package-inventory-${_inv_tag}.txt"
-	_inv_reason_log="$CI_OUT/logs/export-${_slug}-${CI_ATTEMPT_ID}-inventory-failure.log"
 	mkdir -p "$(dirname "$_inv_report")" 2>/dev/null || ci_die "cannot create report directory for $_inv_report"
+	# Do NOT pre-create, pre-check or reserve this pathname: the smoke owner's
+	# CLI creates --report with O_CREAT|O_EXCL and refuses any existing regular
+	# file, directory or symlink. Pre-creating it here would make every export
+	# fail after the handoff. The checker therefore owns the success identity;
+	# ci.sh only validates what it produced and writes failure evidence under a
+	# separate, exclusively created name.
 	_inv_out="$(python3 "$_inv_script" check --platform "$_inv_plat" --main "$_out" --report "$_inv_report" --quiet 2>&1)"
 	_inv_rc=$?
 	if [ "$_inv_rc" -ne 0 ]; then
-		# Preserve the checker's own reason text in the uploaded logs even when
-		# it dies before writing --report (Opus F2).
-		: >"$_inv_reason_log" 2>/dev/null
-		printf '%s\n' "$_inv_out" >>"$_inv_reason_log" 2>/dev/null
-		ci_fail "export: package inventory check FAILED for preset '$_preset' ($_inv_plat); report: $_inv_report; reason log: $_inv_reason_log"
+		_fr="$(ci_new_evidence_file "$CI_OUT/reports")" || {
+			ci_fail "export: package inventory check failed and no exclusive failure evidence path could be reserved"
+			ci_report "export result=fail preset=$_preset reason=pack-inventory-no-evidence"
+			return "$CI_FAIL"
+		}
+		{
+			printf 'verdict=FAIL\n'
+			printf 'reason=checker-failed\n'
+			printf 'attempt_id=%s\n' "$CI_ATTEMPT_ID"
+			printf 'source_sha=%s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
+			printf 'preset=%s\n' "$_preset"
+			printf 'platform=%s\n' "$_inv_plat"
+			printf 'checker_exit=%s\n' "$_inv_rc"
+			printf 'inventory_report_path=%s\n' "$_inv_report"
+			printf 'checker_output_start:\n%s\nchecker_output_end:\n' "$_inv_out"
+		} >"$_fr" 2>/dev/null
+		ci_fail "export: package inventory check FAILED for preset '$_preset' ($_inv_plat); distinct FAIL evidence: $_fr"
 		printf '%s\n' "$_inv_out" | sed 's/^/    /'
-		ci_report "export result=fail preset=$_preset reason=pack-inventory inventory_rc=$_inv_rc inventory_report=$_inv_report inventory_log=$_inv_reason_log"
+		ci_report "export result=fail preset=$_preset reason=pack-inventory inventory_report=none inventory_failure_record=$_fr"
 		return "$CI_FAIL"
 	fi
+	# Exit 0 alone is insufficient: require a regular non-symlink report created
+	# by THIS checker invocation (the exclusive-create contract), carrying the
+	# expected platform/main identity and an explicit PASS verdict. Never read,
+	# append to or stamp a prior PASS file by pathname.
+	if [ -L "$_inv_report" ] || [ ! -f "$_inv_report" ] || [ ! -s "$_inv_report" ] ||
+		! grep -q "^platform=$_inv_plat$" "$_inv_report" 2>/dev/null ||
+		! grep -q "^main=$(basename "$_out")$" "$_inv_report" 2>/dev/null ||
+		! grep -q '^verdict=PASS$' "$_inv_report" 2>/dev/null; then
+		_fr="$(ci_new_evidence_file "$CI_OUT/reports")" || {
+			ci_fail "export: inventory checker exited 0 without attributable PASS evidence and no failure evidence path could be reserved"
+			ci_report "export result=fail preset=$_preset reason=inventory-no-evidence"
+			return "$CI_FAIL"
+		}
+		{
+			printf 'verdict=FAIL\n'
+			printf 'reason=missing-or-invalid-checker-report\n'
+			printf 'attempt_id=%s\n' "$CI_ATTEMPT_ID"
+			printf 'source_sha=%s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
+			printf 'preset=%s\n' "$_preset"
+			printf 'platform=%s\n' "$_inv_plat"
+			printf 'checker_exit=0\n'
+			printf 'inventory_report_path=%s\n' "$_inv_report"
+		} >"$_fr" 2>/dev/null
+		ci_fail "export: inventory checker exited 0 but left no current-attempt PASS report; FAIL evidence: $_fr"
+		ci_report "export result=fail preset=$_preset reason=invalid-inventory-report inventory_report=$_inv_report inventory_failure_record=$_fr"
+		return "$CI_FAIL"
+	fi
+	# Separate, exclusively created identity/evidence companion for the success
+	# report (the checker owns that file and does not append arbitrary fields).
+	_inv_meta="$(ci_new_evidence_file "$CI_OUT/reports")" || {
+		ci_fail "export: cannot reserve inventory identity evidence"
+		ci_report "export result=fail preset=$_preset reason=inventory-evidence-unavailable"
+		return "$CI_FAIL"
+	}
+	{
+		printf 'verdict=PASS\n'
+		printf 'attempt_id=%s\n' "$CI_ATTEMPT_ID"
+		printf 'source_sha=%s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
+		printf 'preset=%s\n' "$_preset"
+		printf 'platform=%s\n' "$_inv_plat"
+		printf 'inventory_report=%s\n' "$_inv_report"
+	} >"$_inv_meta" 2>/dev/null
 
 	# Emit PASS only AFTER the package itself and its inventory have both
 	# succeeded. Printing or recording a passing verdict first let a rejected

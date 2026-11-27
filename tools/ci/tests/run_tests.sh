@@ -953,6 +953,7 @@ else
 fi
 log "case $CASES_RUN: a repeated report init never truncates the first report -> $_ok"
 
+
 # ---------------------------------------------------------------------------
 # 10. The export-preset platform mapping and coverage.
 #     `ci.sh export --check` requires a preset for every native target in
@@ -2198,8 +2199,9 @@ if [ "$_e2e" = "yes" ]; then
 		# F1: per-preset engine logs must survive, not be overwritten by the
 		# next invocation's identical export-2-export.log name.
 		_rp_slug="$(ci_preset_slug "$_rp_name")"
+		_rp_log="$(ls -1t "$SPROJ/tools/ci/out/logs/"*/export-${_rp_slug}-2-export.log 2>/dev/null | head -n 1)"
 		CASES_RUN=$((CASES_RUN + 1))
-		if [ -s "$SPROJ/tools/ci/out/logs/export-${_rp_slug}-2-export.log" ]; then
+		if [ -n "$_rp_log" ] && [ -s "$_rp_log" ]; then
 			_ok=yes
 			CASES_OK=$((CASES_OK + 1))
 		else
@@ -2371,7 +2373,7 @@ EOF
 	# this suite's private directory; installed templates are only read), so
 	# independent attempts never share an engine user-data path.
 	_conc_tdir="$(HOME="$REALHOME"; export HOME; ci_templates_engine_dir)/$TVER"
-	for _conc_h in a b c na nb ia ib ic is; do
+	for _conc_h in a b c na nb sa sb la lb ia ib ic is; do
 		_conc_home="$CONC/home-$_conc_h"
 		mkdir -p "$_conc_home"
 		_conc_dir="$(HOME="$_conc_home"; export HOME; ci_templates_engine_dir)"
@@ -2525,6 +2527,139 @@ EOF
 		sed 's/^/  | NB: /' "$CONC/nb.log" >&2
 	}
 
+	# Sol 482069e finding 1: a destination may not live inside the reserved
+	# .ci-lock namespace. Wrapper proves engine entry if the guard fails.
+	NS_GODOT="$CONC/godot-ns-check"
+	cat >"$NS_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*) touch "$CONC/ns-ready"; exit 0 ;;
+esac
+"\$_real" "\$@"
+exit "\$?"
+EOF
+	chmod +x "$NS_GODOT"
+	rm -f "$CONC/ns-ready"
+	NS_CWD="$CONC/ns-a"
+	mkdir -p "$NS_CWD"
+	( export TMPDIR="$CONC/tmp-ns-a"; ci_rel_at_home "$NS_CWD" "$CONC/home-na" "$SPROJ" --godot "$NS_GODOT" \
+		--out "$CONC/out-ns-a" export --export "Linux x86-64" --out "$NS_CWD/namespace.exe.ci-lock" ) >"$CONC/ns.log" 2>&1
+	_ns_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_ns_rc" -ne 0 ] && grep -q 'reserved .ci-lock' "$CONC/ns.log" &&
+		[ ! -e "$CONC/ns-ready" ] && [ ! -e "$NS_CWD/namespace.exe.ci-lock" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a destination inside the .ci-lock namespace is rejected before the engine -> $_ok"
+
+	# Cooperating held-engine control: while another normal export holds its
+	# engine seam, the rejected namespace destination must still not be used.
+	NS_HOLD="$CONC/godot-ns-hold"
+	cat >"$NS_HOLD" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*)
+		"\$_real" "\$@"
+		_rc=\$?
+		[ "\$_rc" -eq 0 ] || exit "\$_rc"
+		touch "$CONC/ns-hold-ready"
+		while [ ! -e "$CONC/ns-hold-done" ]; do sleep 0.2 2>/dev/null || sleep 1; done
+		exit 0
+		;;
+esac
+	"\$_real" "\$@"
+	exit "\$?"
+EOF
+	chmod +x "$NS_HOLD"
+	rm -f "$CONC/ns-hold-ready" "$CONC/ns-hold-done"
+	NS_HOLD_CWD="$CONC/ns-hold"
+	mkdir -p "$NS_HOLD_CWD"
+	( export TMPDIR="$CONC/tmp-ns-hold"; ci_rel_at_home "$NS_HOLD_CWD" "$CONC/home-nb" "$SPROJ" --godot "$NS_HOLD" \
+		--out "$CONC/out-ns-hold" export --export "Linux x86-64" --out "$NS_HOLD_CWD/package" ) >"$CONC/ns-hold.log" 2>&1 &
+	_ns_hold_pid=$!
+	_n=0
+	while [ ! -e "$CONC/ns-hold-ready" ]; do
+		kill -0 "$_ns_hold_pid" 2>/dev/null || break
+		_n=$((_n + 1)); [ "$_n" -ge 300 ] && break
+		sleep 0.2 2>/dev/null || sleep 1
+	done
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ -e "$CONC/ns-hold-ready" ] && [ ! -e "$NS_CWD/namespace.exe.ci-lock" ] &&
+		[ -s "$NS_HOLD_CWD/package" ] && [ -s "$NS_HOLD_CWD/package.pck" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a held normal export proceeds while the namespace destination stays unused -> $_ok"
+	: >"$CONC/ns-hold-done"
+	wait "$_ns_hold_pid" 2>/dev/null
+
+	# Sol 482069e finding 2: two exports sharing one CI_OUT must not share a
+	# mutable project copy or engine-log files. A holds its engine seam while B
+	# runs against the SAME CI_OUT; A's copy/log must survive unchanged.
+	HA_GODOT="$CONC/godot-hold-after"
+	cat >"$HA_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*)
+		"\$_real" "\$@"
+		_rc=\$?
+		[ "\$_rc" -eq 0 ] || exit "\$_rc"
+		touch "$CONC/ha-ready"
+		while [ ! -e "$CONC/ha-done" ]; do sleep 0.2 2>/dev/null || sleep 1; done
+		exit 0
+		;;
+esac
+	"\$_real" "\$@"
+	exit "\$?"
+EOF
+	chmod +x "$HA_GODOT"
+	SHARED_OUT="$CONC/shared-out"
+	rm -rf "$SHARED_OUT" "$CONC/ha-ready" "$CONC/ha-done"
+	mkdir -p "$CONC/ha-a" "$CONC/ha-b"
+	( export TMPDIR="$CONC/tmp-ha-a"; ci_rel_at_home "$CONC/ha-a" "$CONC/home-sa" "$SPROJ" --godot "$HA_GODOT" \
+		--out "$SHARED_OUT" export --export "Linux x86-64" --out "$CONC/ha-a/package-one" ) >"$CONC/ha-a.log" 2>&1 &
+	_ha_pid=$!
+	_n=0
+	while [ ! -e "$CONC/ha-ready" ]; do
+		kill -0 "$_ha_pid" 2>/dev/null || break
+		_n=$((_n + 1)); [ "$_n" -ge 300 ] && break
+		sleep 0.2 2>/dev/null || sleep 1
+	done
+	_A_COPY="$(ls -1dt "$SHARED_OUT/attempts/"*/project-copy 2>/dev/null | head -n 1)"
+	_A_LOG="$(find "$SHARED_OUT/logs" -name 'export-linux-x86-64-2-export.log' 2>/dev/null | head -n 1)"
+	_A_COPY_OK=no; _A_LOG_SHA_BEFORE=""
+	if [ -n "$_A_COPY" ] && [ -f "$_A_COPY/project.godot" ]; then _A_COPY_OK=yes; fi
+	if [ -n "$_A_LOG" ] && [ -s "$_A_LOG" ]; then _A_LOG_SHA_BEFORE="$(ci_sha256 "$_A_LOG")"; fi
+	( export TMPDIR="$CONC/tmp-ha-b"; ci_rel_at_home "$CONC/ha-b" "$CONC/home-sb" "$SPROJ" --godot "$_e2e_bin" \
+		--out "$SHARED_OUT" export --export "Linux x86-64" --out "$CONC/ha-b/package-two" ) >"$CONC/ha-b.log" 2>&1
+	_ha_b_rc=$?
+	_B_COPY="$(ls -1dt "$SHARED_OUT/attempts/"*/project-copy 2>/dev/null | head -n 1)"
+	_COPY_STAMPS="$(find "$SHARED_OUT/attempts" -maxdepth 3 -name '.ci-tools-fingerprint' 2>/dev/null | wc -l | tr -d ' ')"
+	_A_LOG_SHA_AFTER=""
+	[ -n "$_A_LOG" ] && _A_LOG_SHA_AFTER="$(ci_sha256 "$_A_LOG")"
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_ha_b_rc" -eq 0 ] && [ "$_A_COPY_OK" = "yes" ] && [ -f "$_A_COPY/project.godot" ] &&
+		[ -n "$_A_LOG_SHA_BEFORE" ] && [ "$_A_LOG_SHA_BEFORE" = "$_A_LOG_SHA_AFTER" ] &&
+		[ "$_A_COPY" != "$_B_COPY" ] && [ -f "$_B_COPY/project.godot" ] &&
+		[ "$_COPY_STAMPS" = "2" ] && [ -f "$_A_COPY/.ci-tools-fingerprint" ] && [ -f "$_B_COPY/.ci-tools-fingerprint" ] &&
+		[ -s "$CONC/ha-a/package-one" ] && [ -s "$CONC/ha-b/package-two" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: concurrent exports sharing CI_OUT keep independent copies and logs -> $_ok"
+	: >"$CONC/ha-done"
+	wait "$_ha_pid" 2>/dev/null
+
 	# --- Persistent OS-lock controls (Sol 675ec1c finding 1) ---------------
 	# The lock object is <destination>.ci-lock, a persistent regular file that
 	# advisory-locks (flock/lockf) across processes. It is never deleted or
@@ -2579,7 +2714,7 @@ EOF
 	wait "$_hold_pid" 2>/dev/null
 	CASES_RUN=$((CASES_RUN + 1))
 	if [ "$_lock_second_rc" -ne 0 ] &&
-		{ grep -q 'held by another process' "$CONC/lock-second.log" || grep -q 'already locked' "$CONC/lock-second.log"; } &&
+		{ grep -q 'held by another process' "$CONC/lock-second.log" || grep -q 'already locked' "$CONC/lock-second.log" || grep -q 'timed out after .* waiting for lock' "$CONC/lock-second.log"; } &&
 		[ "$(cat "$LOCK_FOREIGN_DEST.ci-lock")" = "$_lock_sentinel_before" ] &&
 		[ ! -e "$LOCK_FOREIGN_DEST" ]; then
 		_ok=yes
@@ -2587,8 +2722,102 @@ EOF
 	else
 		_ok=no
 	fi
-	log "case $CASES_RUN: a foreign lock FILE is preserved and a live owner blocks others -> $_ok"
+	log "case $CASES_RUN: a foreign lock FILE is preserved, a live owner blocks others, and ci.sh emits its structured lock-timeout verdict -> $_ok"
 	[ "$_ok" = "yes" ] || { echo "  rc=$_lock_second_rc" >&2; sed 's/^/  | /' "$CONC/lock-second.log" >&2; }
+
+	CONC="$WORK_DIR/concurrent"
+	# Deterministic reservation controls: a fixed token/suffix pair makes the
+	# reservation collision reproducible without weakening production randomness.
+	SHIM_FIXED="$CONC/shim-fixed"
+	rm -rf "$SHIM_FIXED"; mkdir -p "$SHIM_FIXED"
+	_real_mktemp="$(command -v mktemp)"
+	_real_date="$(command -v date)"
+	cat >"$SHIM_FIXED/mktemp" <<EOF
+#!/bin/sh
+for _a in "\$@"; do
+	case "\$_a" in
+		*XXXXXX*) _t="\${_a%XXXXXX}C01152"; rm -f "\$_t"; : >"\$_t"; printf '%s\n' "\$_t"; exit 0 ;;
+	esac
+done
+exec "$_real_mktemp" "\$@"
+EOF
+	cat >"$SHIM_FIXED/date" <<EOF
+#!/bin/sh
+if [ "\$1" = "-u" ] || [ "\$1" = "-u+" ]; then
+	printf '20260101T000000Z\n'
+	exit 0
+fi
+exec "$_real_date" "\$@"
+EOF
+	chmod +x "$SHIM_FIXED/mktemp" "$SHIM_FIXED/date"
+
+	RC_OUT="$CONC/report-collide"
+	rm -rf "$RC_OUT"; mkdir -p "$RC_OUT/reports"
+	RC_LOG1="$CONC/rc1.log"; RC_LOG2="$CONC/rc2.log"
+	( export PATH="$SHIM_FIXED:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$RC_OUT" pin ) >"$RC_LOG1" 2>&1
+	_rc1=$?
+	_RC_FILE="$RC_OUT/reports/pin-20260101T000000Z-C01152.txt"
+	_rc_before="$(cat "$_RC_FILE" 2>/dev/null)"
+	( export PATH="$SHIM_FIXED:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$RC_OUT" pin ) >"$RC_LOG2" 2>&1
+	_rc2=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_rc1" -eq 0 ] && [ "$_rc2" -ne 0 ] &&
+		grep -q 'could not exclusively reserve' "$RC_LOG2" &&
+		[ "$(cat "$_RC_FILE" 2>/dev/null)" = "$_rc_before" ] && [ -n "$_rc_before" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a forced same-second report-token collision cannot overwrite prior evidence -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  rc1=$_rc1 rc2=$_rc2 file=$_RC_FILE" >&2; cat "$RC_LOG2" >&2 | sed 's/^/  | /' >&2; }
+
+	rm -rf "$RC_OUT"; mkdir -p "$RC_OUT/reports"
+	ln -s "$CONC/does-not-exist-report" "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt"
+	( export PATH="$SHIM_FIXED:$PATH"; sh "$CI_SH" --project "$SPROJ" --out "$RC_OUT" pin ) >"$RC_LOG2" 2>&1
+	_rc2=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_rc2" -ne 0 ] && [ -L "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt" ] &&
+		[ ! -e "$RC_OUT/reports/pin-20260101T000000Z-C01152.txt" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a dangling symlink at the report path is refused and preserved -> $_ok"
+
+	DIV_OUT="$CONC/report-divergence"
+	rm -rf "$DIV_OUT" "$CONC/divcwd"; mkdir -p "$DIV_OUT/reports" "$CONC/divcwd"
+	_GENERIC="$DIV_OUT/reports/export-20260101T000000Z-C01152.txt"
+	_RENAMED="$DIV_OUT/reports/export-linux-x86-64-20260101T000000Z-C01152.txt"
+	ln -s "$CONC/does-not-renamed" "$_RENAMED"
+	DIV_GODOT="$CONC/godot-div-zero"
+	cat >"$DIV_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --version "*) printf '4.7.2.stable.official.ed1daf0bf\n'; exit 0 ;;
+	*" --export-"*) exit 0 ;;
+esac
+"\$_real" "\$@"
+exit "\$?"
+EOF
+	chmod +x "$DIV_GODOT"
+	( export PATH="$SHIM_FIXED:$PATH" TMPDIR="$CONC/tmp-div"; ci_rel_at_home "$CONC/divcwd" "$CONC/home-ia" "$SPROJ" \
+		--godot "$DIV_GODOT" --out "$DIV_OUT" export --export "Linux x86-64" --out "$CONC/divcwd/package" ) >"$CONC/div.log" 2>&1
+	_div_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_div_rc" -ne 0 ] && [ -L "$_RENAMED" ] && [ ! -e "$_RENAMED" ] &&
+		[ -s "$_GENERIC" ] && grep -q 'attempt-id: 20260101T000000Z-C01152' "$_GENERIC" &&
+		grep -q '^export result=fail .*reason=no-output' "$_GENERIC" &&
+		grep -q "^\[ci\] report: $_GENERIC$" "$CONC/div.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a failed preset rename keeps one visible report path for parent and worker -> $_ok"
+	[ "$_ok" = "yes" ] || { echo "  div_rc=$_div_rc islink=$([ -L "$_RENAMED" ] && echo y || echo n) generic=$_GENERIC" >&2; grep -n "report:" "$CONC/div.log" | sed 's/^/  | /' >&2; }
 
 	# A pre-existing symlink at the lock path is refused and never followed.
 	LOCK_SYM_CWD="$CONC/lock-symlink"
@@ -2655,7 +2884,7 @@ case " \$* " in
 		case "\$LOCK_INJECT_MODE" in
 			signal)
 				touch "$CONC/inject-ready"
-				kill -TERM "\${ROADSTORM_CI_LOCK_OWNER:-}" 2>/dev/null
+				kill -TERM "\${ROADSTORM_CI_PID:-}" 2>/dev/null
 				sleep 1
 				exit 0
 				;;
@@ -2716,7 +2945,7 @@ EOF
 	[ "$_ok" = "yes" ] || { echo "  rc=$_mc_rc" >&2; ls -la "$MC_APPEND" 2>&1 | sed 's/^/  | /' >&2; sed 's/^/  | /' "$CONC/mutate-append.log" >&2; }
 
 	MC_LINK="$CONC/mutate-link"
-	mutate_case locklink "$MC_LINK" "$MC_LINK/package" "$CONC/home-ib" "$CONC/mutate-link.log" "$CONC/mutate-link-out"
+	mutate_case locklink "$MC_LINK" "$MC_LINK/package" "$REALHOME" "$CONC/mutate-link.log" "$CONC/mutate-link-out"
 	_mc_rc=$?
 	CASES_RUN=$((CASES_RUN + 1))
 	if [ "$_mc_rc" -eq 0 ] && [ -L "$MC_LINK/package.ci-lock" ] && [ -L "$MC_LINK/package.pck.ci-lock" ] &&
@@ -2759,10 +2988,240 @@ EOF
 	fi
 	log "case $CASES_RUN: stale persistent lock files are inert after SIGTERM -> $_ok"
 
+	# Direction (a): the actual writer process inherits the export lock fds
+	# on purpose. If the exporter shell dies, a writer-spawned descendant keeps
+	# the destination locked until it exits -- a second export must not enter.
+	RETAIN_GODOT="$CONC/godot-retain-child"
+	cat >"$RETAIN_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*)
+		( sleep 6 ) &
+		exit 0
+		;;
+esac
+"\$_real" "\$@"
+exit "\$?"
+EOF
+	chmod +x "$RETAIN_GODOT"
+	RETAIN_CWD="$CONC/retain-a"
+	rm -rf "$RETAIN_CWD" "$CONC/retain-b" "$CONC/retain-c" "$CONC/out-retain"
+	mkdir -p "$RETAIN_CWD" "$CONC/retain-b" "$CONC/retain-c"
+	( export TMPDIR="$CONC/tmp-retain-a"; ci_rel_at_home "$RETAIN_CWD" "$CONC/home-la" "$SPROJ" --godot "$RETAIN_GODOT" \
+		--out "$CONC/out-retain" export --export "Linux x86-64" --out "$RETAIN_CWD/package" ) >"$CONC/retain-a.log" 2>&1
+	( export TMPDIR="$CONC/tmp-retain-b" CI_EXPORT_LOCK_WAIT=1; ci_rel_at_home "$CONC/retain-b" "$CONC/home-lb" "$SPROJ" --godot "$_e2e_bin" \
+		--out "$CONC/out-retain" export --export "Linux x86-64" --out "$RETAIN_CWD/package" ) >"$CONC/retain-b.log" 2>&1
+	_retain_b_rc=$?
+	unset CI_EXPORT_LOCK_WAIT
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_retain_b_rc" -ne 0 ] && grep -q 'timed out after 1s waiting for lock' "$CONC/retain-b.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a live writer descendant keeps the destination locked after the exporter exits -> $_ok"
+
+	# Once the writer descendant is gone, the retained lock must be acquirable.
+	sleep 7
+	( export TMPDIR="$CONC/tmp-retain-c"; ci_rel_at_home "$CONC/retain-c" "$CONC/home-la" "$SPROJ" --godot "$_e2e_bin" \
+		--out "$CONC/out-retain" export --export "Linux x86-64" --out "$RETAIN_CWD/package" ) >"$CONC/retain-c.log" 2>&1
+	_retain_c_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_retain_c_rc" -eq 0 ] && [ -s "$RETAIN_CWD/package" ] && [ -s "$RETAIN_CWD/package.pck" ]; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: after the writer descendant exits the lock becomes acquirable -> $_ok"
+
+	# Direction (b): the timeout watchdog closes its inherited lock fds before
+	# living on as a harmless background child. That child must NOT prolong the
+	# lock after the writer/exporter has exited.
+	CLOSE_GODOT="$CONC/godot-close-child"
+	cat >"$CLOSE_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*)
+		exec 9>&- 8>&-
+		( sleep 6 ) &
+		exit 0
+		;;
+esac
+"\$_real" "\$@"
+exit "\$?"
+EOF
+	chmod +x "$CLOSE_GODOT"
+	CLOSE_CWD="$CONC/close-a"
+	rm -rf "$CLOSE_CWD" "$CONC/close-b" "$CONC/out-close"
+	mkdir -p "$CLOSE_CWD" "$CONC/close-b"
+	( export TMPDIR="$CONC/tmp-close-a"; ci_rel_at_home "$CLOSE_CWD" "$CONC/home-lb" "$SPROJ" --godot "$CLOSE_GODOT" \
+		--out "$CONC/out-close" export --export "Linux x86-64" --out "$CLOSE_CWD/package" ) >"$CONC/close-a.log" 2>&1
+	( export TMPDIR="$CONC/tmp-close-b" CI_EXPORT_LOCK_WAIT=1; ci_rel_at_home "$CONC/close-b" "$CONC/home-la" "$SPROJ" --godot "$_e2e_bin" \
+		--out "$CONC/out-close" export --export "Linux x86-64" --out "$CLOSE_CWD/package" ) >"$CONC/close-b.log" 2>&1
+	_close_b_rc=$?
+	unset CI_EXPORT_LOCK_WAIT
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_close_b_rc" -eq 0 ] && [ -s "$CLOSE_CWD/package" ] && ! grep -q 'timed out after' "$CONC/close-b.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a watchdog-like child that closed the lock fds does not prolong the lock -> $_ok"
+
+	# Export-failure transcript: the whole indented engine log survives on both
+	# a nonzero engine exit and an engine-errors gate failure. The helper must
+	# exist; a missing definition must fail this case instead of passing quietly.
+	FAIL9_GODOT="$CONC/godot-fail9"
+	cat >"$FAIL9_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*)
+		printf 'ERROR: first-line-diagnostic\n    indented-second-line-PRINTER-MARKER\n' >&2
+		exit 9
+		;;
+esac
+"\$_real" "\$@"
+exit "\$?"
+EOF
+	chmod +x "$FAIL9_GODOT"
+	rm -rf "$CONC/fail9" "$CONC/out-fail9"; mkdir -p "$CONC/fail9"
+	( export TMPDIR="$CONC/tmp-fail9"; ci_rel_at_home "$CONC/fail9" "$CONC/home-ia" "$SPROJ" --godot "$FAIL9_GODOT" \
+		--out "$CONC/out-fail9" export --export "Linux x86-64" --out "$CONC/fail9/package" ) >"$CONC/fail9.log" 2>&1
+	_fail9_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_fail9_rc" -ne 0 ] && grep -q 'indented-second-line-PRINTER-MARKER' "$CONC/fail9.log" &&
+		! grep -q 'ci_print_export_failure_log: not found\|command not found' "$CONC/fail9.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: the printer emits the indented second-line engine diagnostic -> $_ok"
+
+	FAIL0_GODOT="$CONC/godot-fail0"
+	cat >"$FAIL0_GODOT" <<EOF
+#!/bin/sh
+_real="$_e2e_bin"
+case " \$* " in
+	*" --export-"*)
+		"\$_real" "\$@"
+		_rc=\$?
+		[ "\$_rc" -eq 0 ] || exit "\$_rc"
+		printf 'ERROR: injected-gate-error\n    indented-second-line-GATE-MARKER\n' >&2
+		exit 0
+		;;
+esac
+"\$_real" "\$@"
+exit "\$?"
+EOF
+	chmod +x "$FAIL0_GODOT"
+	rm -rf "$CONC/fail0" "$CONC/out-fail0"; mkdir -p "$CONC/fail0"
+	( export TMPDIR="$CONC/tmp-fail0"; ci_rel_at_home "$CONC/fail0" "$CONC/home-ib" "$SPROJ" --godot "$FAIL0_GODOT" \
+		--out "$CONC/out-fail0" export --export "Linux x86-64" --out "$CONC/fail0/package" ) >"$CONC/fail0.log" 2>&1
+	_fail0_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_fail0_rc" -ne 0 ] && grep -q 'indented-second-line-GATE-MARKER' "$CONC/fail0.log" &&
+		! grep -q 'ci_print_export_failure_log: not found\|command not found' "$CONC/fail0.log"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: the printer emits the indented gate-failure diagnostic -> $_ok"
+
+	# Forced same-token integration controls using the ACTUAL final
+	# pack_inventory.py create-only interface. A pre-seeded regular file or
+	# dangling symlink must be preserved byte/link-exact and fail closed.
+	_force_token="fixturetoken"
+	_sha_tag="deadbeefcafe"
+	_pre_out="$CONC/out-preseed"
+	_pre_inv="$_pre_out/reports/export-package-inventory-linux-x86-64-${_sha_tag}-${_force_token}.txt"
+	run_forced_export() { # <cwd> <out-file> <log>
+		( export TMPDIR="$CONC/tmp-preseed" ROADSTORM_CI_ATTEMPT_ID="$_force_token";
+			ci_rel_at_home "$1" "$REALHOME" "$SPROJ" --godot "$_e2e_bin" \
+			--out "$_pre_out" --source-sha deadbeefcafe1234 \
+			export --export "Linux x86-64" --out "$2" ) >"$3" 2>&1
+	}
+	rm -rf "$_pre_out" "$CONC/preseed-a" "$CONC/preseed-b"; mkdir -p "$_pre_out/reports" "$CONC/preseed-a" "$CONC/preseed-b"
+	printf 'PRIOR PASS BYTES\n' >"$_pre_inv"
+	_pre_before="$(cat "$_pre_inv")"
+	run_forced_export "$CONC/preseed-a" "$CONC/preseed-a/pkg" "$CONC/preseed-a.log"
+	_pre_rc=$?
+	_pre_ev="$(ls -1t "$_pre_out/reports/"ci-evidence.* 2>/dev/null | head -n 1)"
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pre_rc" -ne 0 ] && [ "$(cat "$_pre_inv")" = "$_pre_before" ] && [ ! -L "$_pre_inv" ] &&
+		[ -n "$_pre_ev" ] && grep -q '^verdict=FAIL$' "$_pre_ev" &&
+		grep -q "^inventory_report_path=$_pre_inv$" "$_pre_ev"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a pre-existing regular inventory report is preserved and fails closed -> $_ok"
+
+	rm -f "$_pre_inv"
+	ln -s "$CONC/does-not-exist-inv" "$_pre_inv"
+	run_forced_export "$CONC/preseed-b" "$CONC/preseed-b/pkg" "$CONC/preseed-b.log"
+	_pre_rc=$?
+	CASES_RUN=$((CASES_RUN + 1))
+	if [ "$_pre_rc" -ne 0 ] && [ -L "$_pre_inv" ] && [ ! -e "$_pre_inv" ] &&
+		grep -q "^inventory_report_path=$_pre_inv$" "$(ls -1t "$_pre_out/reports/"ci-evidence.* 2>/dev/null | head -n 1)"; then
+		_ok=yes
+		CASES_OK=$((CASES_OK + 1))
+	else
+		_ok=no
+	fi
+	log "case $CASES_RUN: a dangling-symlink inventory report is preserved and fails closed -> $_ok"
+
+	# Same inventory identity is claimed exclusively by the ACTUAL final CLI:
+	# first checker creates it, a second checker on the occupied path fails and
+	# the original PASS bytes are unchanged. This also covers concurrent attempts
+	# at the namespace level without racing two full exports.
+	_dup_out="$CONC/out-inv-dup/reports"
+	rm -rf "$CONC/out-inv-dup"; mkdir -p "$_dup_out"
+	_dup_rep="$_dup_out/duplicate-check.txt"
+	_dup_script="$PROJECT_DIR/tools/export_smoke/lib/pack_inventory.py"
+	if [ -s "$PKG/linux" ]; then
+		( export TMPDIR="$CONC/tmp-dup"; python3 "$_dup_script" check --platform Linux --main "$PKG/linux" --report "$_dup_rep" --quiet >/dev/null 2>&1 )
+		_dup1=$?
+		_dup_before="$(cat "$_dup_rep" 2>/dev/null)"
+		( export TMPDIR="$CONC/tmp-dup"; python3 "$_dup_script" check --platform Linux --main "$PKG/linux" --report "$_dup_rep" --quiet >/dev/null 2>&1 )
+		_dup2=$?
+		CASES_RUN=$((CASES_RUN + 1))
+		if [ "$_dup1" -eq 0 ] && [ "$_dup2" -ne 0 ] &&
+			[ "$(cat "$_dup_rep" 2>/dev/null)" = "$_dup_before" ] &&
+			printf '%s\n' "$_dup_before" | grep -q '^verdict=PASS$'; then
+			_ok=yes
+			CASES_OK=$((CASES_OK + 1))
+		else
+			_ok=no
+		fi
+		log "case $CASES_RUN: same-token inventory checks cannot borrow an occupied PASS report -> $_ok"
+	else
+		log "note: no Linux package available for the inventory identity control; skipped"
+	fi
+
 	# All three presets ran in separate processes; their export logs must all
 	# still exist with distinct names.
 	CASES_RUN=$((CASES_RUN + 1))
-	if [ "$(ls -1 "$SPROJ/tools/ci/out/logs/"export-*-2-export.log 2>/dev/null | wc -l | tr -d ' ')" = "3" ]; then
+	_distinct=yes
+	_log_dirs=""
+	for _dl in macos-apple-silicon windows-x86-64 linux-x86-64; do
+		_dl_log="$(ls -1t "$SPROJ/tools/ci/out/logs/"*/export-${_dl}-2-export.log 2>/dev/null | head -n 1)"
+		if [ -z "$_dl_log" ] || [ ! -s "$_dl_log" ]; then
+			_distinct=no
+		else
+			_dl_dir="${_dl_log%/*}"
+			case "|$_log_dirs|" in *"|$_dl_dir|"*) _distinct=no ;; *) _log_dirs="$_log_dirs|$_dl_dir" ;; esac
+		fi
+	done
+	if [ "$_distinct" = "yes" ]; then
 		_ok=yes
 		CASES_OK=$((CASES_OK + 1))
 	else
@@ -2803,6 +3262,7 @@ EOF
 	mkdir -p "$CORRUPT_CWD"
 	CORRUPT_LOG="$WORK_DIR/corrupt-export.log"
 	ci_rel_at_home "$CORRUPT_CWD" "$REALHOME" "$SPROJ" --godot "$CORRUPT_GODOT" \
+		--source-sha deadbeefcafe1234 \
 		export --export "Linux x86-64" --out "build/corrupt-package" \
 		>"$CORRUPT_LOG" 2>&1
 	_corrupt_rc=$?
@@ -2858,18 +3318,25 @@ EOF
 	fi
 	log "case $CASES_RUN: the failed attempt owns no PASS inventory; prior PASS history stays separate -> $_ok"
 
-	# The checker's reason text must survive in the uploaded logs even when
-	# the failure path writes no separate inventory summary.
-	_corrupt_reason_log="$SPROJ/tools/ci/out/logs/export-linux-x86-64-${_corrupt_attempt}-inventory-failure.log"
+	# The checker's reason/exit must survive in an exclusively created FAIL
+	# evidence record even when no inventory report is written.
+	_corrupt_ev=""
+	for _e in $(ls -1t "$SPROJ/tools/ci/out/reports/"ci-evidence.* 2>/dev/null); do
+		if grep -q "^attempt_id=$_corrupt_attempt$" "$_e" 2>/dev/null; then
+			_corrupt_ev="$_e"
+			break
+		fi
+	done
 	CASES_RUN=$((CASES_RUN + 1))
-	if [ -s "$_corrupt_reason_log" ] &&
-		grep -q 'pack-inventory FAIL' "$_corrupt_reason_log"; then
+	if [ -n "$_corrupt_ev" ] && [ -s "$_corrupt_ev" ] &&
+		grep -q '^verdict=FAIL$' "$_corrupt_ev" && grep -q '^reason=checker-failed$' "$_corrupt_ev" &&
+		grep -q '^checker_exit=1$' "$_corrupt_ev" && grep -q '^source_sha=deadbeefcafe1234$' "$_corrupt_ev"; then
 		_ok=yes
 		CASES_OK=$((CASES_OK + 1))
 	else
 		_ok=no
 	fi
-	log "case $CASES_RUN: the inventory failure reason is preserved in the uploaded logs -> $_ok"
+	log "case $CASES_RUN: the inventory failure reason is preserved in an exclusive FAIL record -> $_ok"
 	else
 		log "note: the pinned export templates are not installed on this host; the sidecar .pck export case was skipped"
 	fi

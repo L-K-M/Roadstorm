@@ -70,9 +70,25 @@ ci_die() {
 # ---------------------------------------------------------------------------
 CI_LOG_DIR=""
 CI_LOG_SEQ=0
+# Open advisory-lock descriptors held by the current export process (space
+# separated). Children must close them before exec so an orphaned watchdog or
+# engine process cannot keep the destination lock alive after the exporter is
+# gone. The kernel also releases these on process exit/signals/crash.
+_CI_LOCK_HELD=""
+
+_ci_close_lock_fds() {
+	[ -n "$_CI_LOCK_HELD" ] || return 0
+	for _clf in $_CI_LOCK_HELD; do
+		eval "exec $_clf>&-"
+	done
+	_CI_LOCK_HELD=""
+	return 0
+}
 
 ci_init_logs() {
-	CI_LOG_DIR="$CI_OUT/logs"
+	# Export attempts may override the log root so two invocations sharing one
+	# CI_OUT get independent engine-log state (a per-attempt subdirectory).
+	CI_LOG_DIR="${ROADSTORM_CI_LOG_BASE:-$CI_OUT/logs}"
 	mkdir -p "$CI_LOG_DIR" || ci_die "cannot create log directory: $CI_LOG_DIR"
 }
 
@@ -84,9 +100,10 @@ ci_init_logs() {
 ci_run_bounded() {
 	_limit="$1"
 	shift
-	( "$@" ) &
+	( _ci_close_lock_fds; "$@" ) &
 	_pid=$!
 	(
+		_ci_close_lock_fds
 		sleep "$_limit" 2>/dev/null
 		kill -TERM "$_pid" 2>/dev/null
 		sleep 2 2>/dev/null
@@ -124,11 +141,17 @@ ci_run_godot() {
 	# stock macOS install, so supervise the child ourselves. Both background
 	# processes must not inherit this script's stdout, or a caller piping our
 	# output would wait for them before seeing end-of-file.
+	# The actual engine/writer child INTENTIONALLY keeps the export lock
+	# descriptors open: if this shell crashes or is signalled while Godot is
+	# still writing, the writer itself keeps the destination locked until it
+	# exits, so a second export cannot slip in beside a live writer. Only the
+	# timeout watchdog closes them (it must never prolong a finished export).
 	(
 		"$GODOT_BIN" "$@"
 	) >"$CI_LAST_LOG" 2>&1 &
 	_pid=$!
 	(
+		_ci_close_lock_fds
 		sleep "$_timeout" 2>/dev/null
 		kill -TERM "$_pid" 2>/dev/null
 		sleep 3 2>/dev/null
@@ -666,8 +689,10 @@ ci_tools_fingerprint() {
 
 # ci_prepare_copy : creates a fresh scratch copy and imports it once.
 ci_prepare_copy() {
-	CI_PROJECT_COPY="$CI_OUT/project-copy"
-	_stamp="$CI_OUT/project-copy/.ci-tools-fingerprint"
+	# Per-attempt scratch copy root: concurrent exports that share a CI_OUT must
+	# never recursively delete/rebuild one another's active project copy.
+	CI_PROJECT_COPY="${ROADSTORM_CI_COPY_BASE:-$CI_OUT/project-copy}"
+	_stamp="$CI_PROJECT_COPY/.ci-tools-fingerprint"
 	_fingerprint="$(ci_tools_fingerprint)"
 	if [ "${CI_REUSE_COPY:-0}" -eq 1 ] && [ -f "$CI_PROJECT_COPY/project.godot" ] &&
 		[ -f "$_stamp" ] && [ "$(cat "$_stamp" 2>/dev/null)" = "$_fingerprint" ]; then
@@ -1022,51 +1047,66 @@ ci_init_report() {
 		[ -n "${ROADSTORM_CI_ATTEMPT_ID:-}" ] && CI_ATTEMPT_ID="$ROADSTORM_CI_ATTEMPT_ID"
 		return 0
 	fi
+	if [ -n "${ROADSTORM_CI_ATTEMPT_ID:-}" ]; then
+		case "$ROADSTORM_CI_ATTEMPT_ID" in
+			'' | *[!A-Za-z0-9._-]*) ci_die "ROADSTORM_CI_ATTEMPT_ID contains unsupported characters" ;;
+		esac
+		_fixed_attempt=yes
+	fi
 	mkdir -p "$CI_OUT/reports" 2>/dev/null
 	_stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%s)"
-	# Opus R1: same-second export-check/list/build processes used to truncate
-	# each other's report (and the preset rename then moved the shared file).
-	# mktemp creates a unique file atomically, so same-second processes -- and
-	# background subshells that share $$ -- can never claim the same report path.
-	# The final name keeps the readable <command>-<utc>-<random>.txt form.
+	# Reserve the FINAL evidence path exclusively and atomically: build the
+	# header in a uniquely created temporary file, then hard-link it into place.
+	# ln fails if the final name already exists, including a dangling symlink,
+	# so a forced same-second token collision can never overwrite prior evidence
+	# or replace a user path. There is deliberately no non-atomic mv fallback.
 	CI_REPORT=""
-	_tmp=""
 	_try=0
 	while [ "$_try" -le 100 ]; do
-		_tmp="$(mktemp "$CI_OUT/reports/.ci-report.XXXXXX" 2>/dev/null)" && {
-			_rand="${_tmp##*/}"
-			_rand="${_rand#.ci-report.}"
+		_body="$(mktemp "$CI_OUT/reports/.ci-report-body.XXXXXX" 2>/dev/null)" || break
+		_rand="${_body##*/}"
+		_rand="${_rand#.ci-report-body.}"
+		if [ "${_fixed_attempt:-no}" = "yes" ]; then
+			CI_ATTEMPT_ID="$ROADSTORM_CI_ATTEMPT_ID"
+		else
 			CI_ATTEMPT_ID="${_stamp}-${_rand}"
-			_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${CI_ATTEMPT_ID}.txt"
-			if mv "$_tmp" "$_new_report" 2>/dev/null; then
-				CI_REPORT="$_new_report"
-				_tmp=""
-				break
-			fi
-			rm -f "$_tmp" 2>/dev/null
-			_tmp=""
-		}
+		fi
+		_new_report="$CI_OUT/reports/${CI_RUN_NAME:-run}-${CI_ATTEMPT_ID}.txt"
+		{
+			printf 'attempt-id: %s\n' "$CI_ATTEMPT_ID"
+			printf 'command: %s\n' "${CI_RUN_NAME:-run}"
+			printf 'utc: %s\n' "$_stamp"
+			printf 'project: %s\n' "${CI_PROJECT:-not set}"
+			printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}"
+			printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
+			printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
+		} >"$_body" 2>/dev/null
+		if ln "$_body" "$_new_report" 2>/dev/null; then
+			rm -f "$_body" 2>/dev/null
+			CI_REPORT="$_new_report"
+			break
+		fi
+		rm -f "$_body" 2>/dev/null
 		_try=$((_try + 1))
 	done
 	if [ -z "$CI_REPORT" ] || [ -z "$CI_ATTEMPT_ID" ]; then
-		# No PID/existence-probe fallback: it is not atomic and subshells share
-		# $$. A missing unique report must fail loudly rather than risk two
-		# attempts sharing evidence (Opus F4).
-		ci_die "mktemp is unavailable; cannot create a unique per-attempt report safely"
+		ci_die "could not exclusively reserve a per-attempt report in $CI_OUT/reports (mktemp/ln unavailable or all 100 candidate names occupied)"
 	fi
-	{
-		printf 'command: %s\n' "${CI_RUN_NAME:-run}"
-		printf 'utc: %s\n' "$_stamp"
-		printf 'project: %s\n' "${CI_PROJECT:-not set}"
-		printf 'godot: %s (%s)\n' "${GODOT_VERSION_FULL:-not resolved}" "${GODOT_BIN:-not resolved}"
-		printf 'os: %s %s\n' "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)"
-		printf 'source-sha: %s\n' "${ROADSTORM_SOURCE_SHA:-not recorded}"
-	} >"$CI_REPORT" 2>/dev/null
 }
+
 
 ci_report() {
 	[ -n "$CI_REPORT" ] || return 0
 	printf '%s\n' "$*" >>"$CI_REPORT" 2>/dev/null
+}
+
+# ci_new_evidence_file <dir> : create-only evidence file. mktemp guarantees a
+# name that did not exist and is unique among concurrent attempts; the caller
+# owns the resulting inode and may write it directly. Never overwrites.
+ci_new_evidence_file() {
+	_nef_dir="$1"
+	mkdir -p "$_nef_dir" 2>/dev/null || return 1
+	mktemp "$_nef_dir/ci-evidence.XXXXXX" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
