@@ -30,6 +30,12 @@ const ANALYTIC_INVERSE_PANELS := 4096
 ## per-span tolerance, compared against an independent fine reference rather
 ## than the sampler's own Richardson estimate.
 const REVIEW_COUNTEREXAMPLE_TOLERANCE_M := 0.001
+## Reachable global-station advance guard fixture: a 2^29 m prefix span whose
+## reported-error floor stays below the default tolerance, followed by a
+## positive 2^-26 m span whose local length is below one float64 ulp of the
+## chained station.
+const GLOBAL_STATION_ADVANCE_PREFIX_M := 536870912.0
+const GLOBAL_STATION_ADVANCE_SECOND_SPAN_M := 1.4901161193847656e-8
 
 
 class Case extends RefCounted:
@@ -144,6 +150,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_malformed_and_derived_refusals"),
 		Callable(self, "_case_budget_controls"),
 		Callable(self, "_case_conservative_bracket_regressions"),
+		Callable(self, "_case_global_station_advance_guard"),
 		Callable(self, "_case_translated_float64_regressions"),
 		Callable(self, "_case_tightened_tolerance_precision_contract"),
 	]:
@@ -907,6 +914,13 @@ func _case_conservative_bracket_regressions() -> Dictionary:
 	return c.result()
 
 
+func _case_global_station_advance_guard() -> Dictionary:
+	var c := Case.new()
+	c.name = "global_station_advance_guard"
+	_check_global_station_advance_guard_regression(c)
+	return c.result()
+
+
 func _check_sol_quadratic_regression(c: Case) -> void:
 	var source := make_single_span_source(
 		"lab.sampling.control.sol_quadratic",
@@ -1053,8 +1067,9 @@ func _check_global_station_collapse_regression(c: Case) -> void:
 	# its mandatory reported-error floor is about 9e3 m. At the default 1 mm
 	# tolerance that span is refused as precision_unreachable before any local
 	# integration, so this fixture no longer reaches the global-station advance
-	# guard retained in build_uniform_table. A request above the floor could
-	# still expose that guard, but the guard is deliberately not claimed here.
+	# guard retained in build_uniform_table. Public options refuse tolerances
+	# above the 1 mm default, so this fixture cannot expose that guard; the
+	# separate global_station_advance_guard case covers it at default options.
 	var loaded := load_fixture(OPEN_STRAIGHT_PATH)
 	c.check(bool(loaded["ok"]), "global-station prefix fixture loads: " + str(loaded["error"]))
 	if not bool(loaded["ok"]):
@@ -1082,6 +1097,82 @@ func _check_global_station_collapse_regression(c: Case) -> void:
 		"positive span after a 2^53 m prefix is refused below its reported-error precision floor",
 		"roundoff-implied precision floor"
 	)
+
+
+func _check_global_station_advance_guard_regression(c: Case) -> void:
+	# Reachable at the public default options. The first span's endpoint chord
+	# is 2^29 m, so its reported-error floor of about 5.4e-4 m stays below the
+	# 1 mm tolerance and the span integrates normally. The second span displaces
+	# 2^-26 m in z at x=2^29; its positive local length is below one float64
+	# ulp of the chained station, so adding it rounds back to the same total and
+	# build_uniform_table must refuse table_inconsistent.
+	var loaded := load_fixture(OPEN_STRAIGHT_PATH)
+	c.check(bool(loaded["ok"]), "global-station advance fixture loads: " + str(loaded["error"]))
+	if not bool(loaded["ok"]):
+		return
+	var doc: Dictionary = loaded["doc"]
+	var knots: Array = doc["knots"]
+	var prefix := GLOBAL_STATION_ADVANCE_PREFIX_M
+	var second := GLOBAL_STATION_ADVANCE_SECOND_SPAN_M
+	knots[0]["handle_out"] = [prefix / 4.0, 0.0, 0.0]
+	knots[1]["handle_in"] = [prefix / 2.0, 0.0, 0.0]
+	knots[1]["anchor"] = [prefix, 0.0, 0.0]
+	knots[1]["handle_out"] = [prefix, 0.0, second / 3.0]
+	knots[2]["handle_in"] = [prefix, 0.0, 2.0 * second / 3.0]
+	knots[2]["anchor"] = [prefix, 0.0, second]
+	var parsed := RoadSourceDocument.parse_document(doc)
+	c.check(
+		bool(parsed["ok"]),
+		"global-station advance source parses: " + str(parsed["error"])
+	)
+	if not bool(parsed["ok"]):
+		return
+
+	var result := RoadArcSampler.build_uniform_table(parsed["document"], 15.0)
+	var diagnostic: Dictionary = {}
+	if typeof(result.get("diagnostic", null)) == TYPE_DICTIONARY:
+		diagnostic = result["diagnostic"]
+	if bool(result.get("ok", false)):
+		c.check(false, "positive second span below one station ulp should be refused")
+		return
+	c.refuses(
+		result,
+		RoadArcSampler.Refusal.TABLE_INCONSISTENT,
+		"positive second span below one station ulp is refused",
+		"does not advance the global station"
+	)
+	c.equal(
+		str(result.get("code_name", "")),
+		"table_inconsistent",
+		"advance refusal code name"
+	)
+	c.equal(int(diagnostic.get("span_index", -1)), 1, "advance refusal names the second span")
+	c.equal(
+		str(diagnostic.get("section_id", "")),
+		"lab.sampling.straight.b",
+		"advance refusal names the following section"
+	)
+	c.equal(
+		float(diagnostic.get("span_start_s", NAN)),
+		prefix,
+		"advance refusal starts at the 2^29 m prefix station"
+	)
+	c.equal(
+		float(diagnostic.get("span_end_s", NAN)),
+		prefix,
+		"advance refusal end station did not move"
+	)
+	var local_length := float(diagnostic.get("length_m", NAN))
+	c.check(local_length > 0.0, "advance refusal reports a positive local span length")
+	c.close(
+		local_length,
+		second,
+		second * 1.0e-4,
+		"advance refusal local length matches the authored second span"
+	)
+	c.measurements["global_station_advance_prefix_m"] = prefix
+	c.measurements["global_station_advance_second_span_m"] = second
+	c.measurements["global_station_advance_local_length_m"] = local_length
 
 
 # --- Float64 translated-geometry regressions --------------------------------

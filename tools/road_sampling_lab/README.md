@@ -135,10 +135,10 @@ relative roundoff allowance; acceptance compares that padded estimate, not
 the bare bracket distance, and the per-span error sums accepted leaf bounds.
 Because every leaf allowance is relative to a bracket enclosing its subarc,
 the summed reported error cannot fall below `ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF`
-times the span endpoint chord; a request below that precision floor is refused
-as `precision_unreachable` rather than accepted above the budget. The floor
-bounds the conservative reported estimate, not a proven forward error. A cap
-reached before this check passes is a structured refusal. Arc-length
+times that span's endpoint chord; a request below that precision floor is
+refused as `precision_unreachable` rather than accepted above the budget.
+The floor bounds the conservative reported estimate, not a proven forward
+error. A cap reached before this check passes is a structured refusal. Arc-length
 inversion brackets the target from the adaptive table, then uses bounded
 Newton steps with bisection fallback and fixed Richardson-refined composite
 Simpson quadrature.
@@ -149,7 +149,7 @@ Defaults and caps:
 
 | Option | Default | Tightening range |
 | --- | --- | --- |
-| `arc_length_tolerance_m` | `0.001` m | `(0, 0.001]` |
+| `arc_length_tolerance_m` (per span) | `0.001` m per span | `(0, 0.001]` |
 | `max_subdivision_depth` | `20` | integer `0..20` |
 | `max_table_nodes_per_span` | `4097` | integer `2..4097` |
 | `max_output_samples` | `20000` | integer `2..20000` |
@@ -157,6 +157,13 @@ Defaults and caps:
 Options may only tighten the defaults. Unknown keys, non-numeric values,
 non-integer caps, looser tolerances and loosened caps are refused with
 `bad_options`.
+
+`arc_length_tolerance_m` is a per-span budget: each span's reported error
+estimate is compared against it independently. `Table.length_error_estimate_m`
+sums those per-span estimates, so a multi-span course can report more than the
+requested value, bounded by `span_count` times the per-span tolerance plus
+summation rounding. The precision floor likewise applies per span, to that
+span's own endpoint chord.
 
 Inversion uses 8 coarse and 16 fine panels, at most 16 iterations, and stops
 when the residual is within `0.05` of the inversion tolerance. The inversion
@@ -170,11 +177,14 @@ Stable refusal codes: `bad_document`, `bad_spacing`, `bad_options`,
 `subdivision_cap_exceeded`, `table_node_cap_exceeded`, `sample_cap_exceeded`,
 `inversion_failed`, `precision_unreachable`, `table_inconsistent`. Hitting a
 budget cap or an unconverged inversion is a structured refusal, not a silent
-approximation or partial table.
+approximation or partial table. A request above a span's chord-derived
+precision floor but below what its leaf-level roundoff allowance requires can
+therefore surface as `subdivision_cap_exceeded` or `table_node_cap_exceeded`
+rather than `precision_unreachable`.
 
 ## Validation coverage
 
-The validator runs 10 cases and 631 checks in one pinned-engine cohort:
+The validator runs 11 cases and 646 checks in one pinned-engine cohort:
 
 - `open_straight_uniform_table`: analytic 60 m straight length, exact stations,
   endpoint positions and roles, interior knot boundary ownership, linear
@@ -203,9 +213,14 @@ The validator runs 10 cases and 631 checks in one pinned-engine cohort:
   independent length references, and refusal of a positive span after a 2^53 m
   prefix. That prefix makes the first span's endpoint chord huge, so at the
   default tolerance the span is refused as `precision_unreachable`; this
-  fixture no longer reaches the later global-station advance guard retained in
-  source, which is a change of test reachability rather than removal of the
-  guard;
+  fixture remains the precision-floor refusal control and no longer reaches
+  the later global-station advance guard retained in source;
+- `global_station_advance_guard`: the still-reachable advance guard at public
+  default options, using the open-straight fixture with a 2^29 m prefix span
+  and a positive 2^-26 m second span in z at x=2^29; the refusal must be
+  `table_inconsistent` with span 1 and section `lab.sampling.straight.b`, a
+  positive local length near 2^-26 m, and identical 2^29 m start and end
+  stations;
 - `translated_float64_regressions`: Sol's exact 24,576 m diagonal straight
   (actual error must fit both the 1 mm tolerance and the reported estimate),
   two non-dyadic straight lines, the road1/road2/hook review spans translated
