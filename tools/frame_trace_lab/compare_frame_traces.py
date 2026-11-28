@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Compare one bounded Roadstorm frame trace across 30/60/120 nominal FPS.
+
+The comparator validates the harness result contract independently of the
+producer, requires three coherent full 1200-tick traces, compares exact
+per-tick discrete state and counts, then applies the M1 numerical endpoint and
+gate tolerances from docs/BENCHMARKS.md:
+
+* position <= 0.10 m
+* speed <= 0.10 m/s
+* heading <= 1 degree
+* gate time <= one 60 Hz physics tick
+
+Exit 0 means every check passed. Exit 1 means an input is missing/corrupt or
+incoherent, or a comparison failed. Exit 2 is command-line usage failure.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from pathlib import Path
+from typing import Any
+
+SCHEMA = "roadstorm.frame_trace.result.v1"
+EXPECTED_TICKS = 1200
+THROTTLE_TICKS = 420
+COAST_TICKS = 120
+EXPECTED_FPS = {30, 60, 120}
+
+POSITION_TOLERANCE_M = 0.10
+SPEED_TOLERANCE_M_S = 0.10
+HEADING_TOLERANCE_DEG = 1.0
+GATE_TOLERANCE_TICKS = 1
+
+COUNT_KEYS = (
+    "gear_shift_events",
+    "gear_shift_events_dropped",
+    "gearbox_refusals",
+    "contact_ticks",
+    "wall_contact_ticks",
+    "wall_events_published",
+    "wall_events_coalesced",
+    "wall_events_refused",
+    "wall_event_missed_witnesses",
+    "lateral_slip_ticks_proxy",
+    "max_substeps",
+)
+
+TRACE_DISCRETE_KEYS = (
+    "expected_phase",
+    "command",
+    "status",
+    "gear_index",
+    "reverse_engaged",
+    "grounded",
+    "contact",
+    "wall_contact",
+    "substeps",
+)
+
+ENDPOINT_DISCRETE_KEYS = (
+    "gear_index",
+    "reverse_engaged",
+    "grounded",
+    "surface_id",
+    "drift_active",
+)
+
+
+class InputError(Exception):
+    pass
+
+
+def is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
+def is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def load_result(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise InputError(f"missing input file: {path}")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = json.load(
+                handle,
+                parse_constant=lambda value: (_ for _ in ()).throw(ValueError(f"nonfinite JSON constant {value}")),
+            )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise InputError(f"corrupt input file {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise InputError(f"corrupt input file {path}: top-level JSON value is not an object")
+    return data
+
+
+def expected_command(tick: int) -> dict[str, Any]:
+    throttle = 1.0 if tick <= THROTTLE_TICKS else 0.0
+    brake = 1.0 if tick > THROTTLE_TICKS + COAST_TICKS else 0.0
+    return {
+        "steer": 0.0,
+        "throttle": throttle,
+        "brake": brake,
+        "handbrake": 0.0,
+        "reset_requested": False,
+        "reset_held": False,
+    }
+
+
+def expected_phase(tick: int) -> str:
+    if tick <= THROTTLE_TICKS:
+        return "full_throttle"
+    if tick <= THROTTLE_TICKS + COAST_TICKS:
+        return "coast"
+    return "brake_then_reverse"
+
+
+def validate_result(data: dict[str, Any], path: Path) -> list[str]:
+    errors: list[str] = []
+
+    def err(message: str) -> None:
+        if len(errors) < 80:
+            errors.append(message)
+
+    if data.get("schema") != SCHEMA:
+        err(f"{path}: schema is {data.get('schema')!r}, expected {SCHEMA!r}")
+    for section in ("mode", "engine", "schedule", "run", "endpoint", "counts", "gate", "harness"):
+        if not isinstance(data.get(section), dict):
+            err(f"{path}: missing or non-object section {section!r}")
+    if not isinstance(data.get("tick_trace"), list):
+        err(f"{path}: missing or non-array tick_trace")
+    if errors:
+        return errors
+
+    mode = data["mode"]
+    engine = data["engine"]
+    schedule = data["schedule"]
+    run = data["run"]
+    endpoint = data["endpoint"]
+    counts = data["counts"]
+    gate = data["gate"]
+    harness = data["harness"]
+    trace = data["tick_trace"]
+
+    nominal_fps = mode.get("nominal_fixed_fps")
+    if nominal_fps not in EXPECTED_FPS:
+        err(f"{path}: nominal_fixed_fps is {nominal_fps!r}, expected one of {sorted(EXPECTED_FPS)}")
+    if mode.get("variant") != "full":
+        err(f"{path}: variant is {mode.get('variant')!r}, expected 'full'")
+    if mode.get("control") is not False:
+        err(f"{path}: control is {mode.get('control')!r}, expected false")
+    if engine.get("fixed_fps_argument") != nominal_fps:
+        err(f"{path}: fixed_fps_argument does not match the nominal FPS label")
+    for key in ("physics_ticks_per_second_pinned", "physics_ticks_per_second_observed"):
+        if engine.get(key) != 60:
+            err(f"{path}: {key} is {engine.get(key)!r}, expected 60")
+
+    if schedule.get("logical_ticks") != EXPECTED_TICKS:
+        err(f"{path}: logical_ticks is {schedule.get('logical_ticks')!r}, expected {EXPECTED_TICKS}")
+    if schedule.get("expected_committed_ticks") != EXPECTED_TICKS:
+        err(f"{path}: expected_committed_ticks is not {EXPECTED_TICKS}")
+    if schedule.get("commands_scheduled") != EXPECTED_TICKS:
+        err(f"{path}: commands_scheduled is not {EXPECTED_TICKS}")
+    if schedule.get("one_command_per_committed_tick") is not True:
+        err(f"{path}: schedule does not assert one command per committed tick")
+    if schedule.get("traffic_free") is not True:
+        err(f"{path}: schedule is not marked traffic-free")
+
+    for key in ("steps_called", "ticks_committed", "commands_consumed", "tick_log_entries", "tick_log_dropped"):
+        if not is_int(run.get(key)):
+            err(f"{path}: run.{key} is not an integer")
+    if is_int(run.get("steps_called")) and run["steps_called"] != EXPECTED_TICKS:
+        err(f"{path}: steps_called is {run['steps_called']}, expected {EXPECTED_TICKS}")
+    if is_int(run.get("ticks_committed")) and run["ticks_committed"] != EXPECTED_TICKS:
+        err(f"{path}: ticks_committed is {run['ticks_committed']}, expected {EXPECTED_TICKS}")
+    if is_int(run.get("commands_consumed")) and run["commands_consumed"] != EXPECTED_TICKS:
+        err(f"{path}: commands_consumed is {run['commands_consumed']}, expected {EXPECTED_TICKS}")
+    if is_int(run.get("tick_log_entries")) and run["tick_log_entries"] != EXPECTED_TICKS:
+        err(f"{path}: tick_log_entries is {run['tick_log_entries']}, expected {EXPECTED_TICKS}")
+    if is_int(run.get("tick_log_dropped")) and run["tick_log_dropped"] != 0:
+        err(f"{path}: tick_log_dropped is {run['tick_log_dropped']}, expected 0")
+    if run.get("completed") is not True:
+        err(f"{path}: run did not complete")
+    if run.get("failed") is not False:
+        err(f"{path}: run is marked failed: {run.get('failure_reason')!r}")
+    if run.get("halt_reason") != "script complete":
+        err(f"{path}: halt_reason is {run.get('halt_reason')!r}, expected 'script complete'")
+    if run.get("tick_indices_consecutive") is not True:
+        err(f"{path}: tick indices are not consecutive")
+    if run.get("callback_indices_consecutive") is not True:
+        err(f"{path}: callback indices are not consecutive")
+    if run.get("heading_constant_rad") is not True:
+        err(f"{path}: heading did not remain constant on the zero-steer straight")
+    if run.get("within_straight_boundaries") is not True:
+        err(f"{path}: trajectory left the straight-course boundaries")
+
+    if harness.get("coherent") is not True:
+        err(f"{path}: harness reports coherent != true")
+    checks = harness.get("checks")
+    if not isinstance(checks, dict):
+        err(f"{path}: harness.checks is missing or not an object")
+    else:
+        for key, value in sorted(checks.items()):
+            if value is not True:
+                err(f"{path}: harness check {key!r} is {value!r}, expected true")
+
+    for key in COUNT_KEYS:
+        if not is_int(counts.get(key)) or counts.get(key, -1) < 0:
+            err(f"{path}: counts.{key} is not a nonnegative integer")
+
+    if endpoint.get("absent") is True:
+        err(f"{path}: endpoint is absent")
+    position = endpoint.get("position_m")
+    velocity = endpoint.get("velocity_m_s")
+    if not (isinstance(position, list) and len(position) == 2 and all(is_number(v) for v in position)):
+        err(f"{path}: endpoint.position_m is not a finite two-component array")
+    if not (isinstance(velocity, list) and len(velocity) == 2 and all(is_number(v) for v in velocity)):
+        err(f"{path}: endpoint.velocity_m_s is not a finite two-component array")
+    for key in ("speed_m_s", "forward_speed_m_s", "heading_rad", "heading_deg", "road_station_m", "trace_station_m", "station_cross_check_delta_m"):
+        if not is_number(endpoint.get(key)):
+            err(f"{path}: endpoint.{key} is not finite")
+    if is_number(endpoint.get("station_cross_check_delta_m")) and endpoint["station_cross_check_delta_m"] > 1e-6:
+        err(f"{path}: endpoint station disagrees with the final trace station")
+    for key in ENDPOINT_DISCRETE_KEYS:
+        if key not in endpoint:
+            err(f"{path}: endpoint.{key} is missing")
+
+    gate_tick = gate.get("first_committed_tick")
+    if not is_int(gate_tick) or not 1 <= gate_tick <= EXPECTED_TICKS:
+        err(f"{path}: gate.first_committed_tick is not an integer in [1, {EXPECTED_TICKS}]")
+    if gate.get("station_m") != 100.0:
+        err(f"{path}: gate.station_m is {gate.get('station_m')!r}, expected 100.0")
+
+    if len(trace) != EXPECTED_TICKS:
+        err(f"{path}: tick_trace length is {len(trace)}, expected {EXPECTED_TICKS}")
+        return errors
+
+    previous_callback = 0
+    for index, entry in enumerate(trace, start=1):
+        prefix = f"{path}: tick {index}"
+        if not isinstance(entry, dict):
+            err(f"{prefix}: trace entry is not an object")
+            continue
+        if entry.get("tick") != index:
+            err(f"{prefix}: tick field is {entry.get('tick')!r}")
+        if entry.get("command_index") != index - 1:
+            err(f"{prefix}: command_index is {entry.get('command_index')!r}")
+        if entry.get("expected_phase") != expected_phase(index):
+            err(f"{prefix}: expected_phase is {entry.get('expected_phase')!r}")
+        if entry.get("command") != expected_command(index):
+            err(f"{prefix}: command does not match the fixed full schedule")
+        if entry.get("status") != 0:
+            err(f"{prefix}: adapter status is {entry.get('status')!r}, expected COMMITTED(0)")
+        callback = entry.get("callback_index")
+        if not is_int(callback):
+            err(f"{prefix}: callback_index is not an integer")
+        elif callback <= previous_callback:
+            err(f"{prefix}: callback_index is not strictly increasing")
+            previous_callback = callback if is_int(callback) else previous_callback
+        else:
+            previous_callback = callback
+        for key in ("road_station_m", "speed_m_s", "forward_speed_m_s", "lateral_speed_m_s", "heading_rad"):
+            if not is_number(entry.get(key)):
+                err(f"{prefix}: {key} is not finite")
+        for key in ("gear_index", "substeps"):
+            if not is_int(entry.get(key)):
+                err(f"{prefix}: {key} is not an integer")
+        for key in ("reverse_engaged", "grounded", "contact", "wall_contact"):
+            if not isinstance(entry.get(key), bool):
+                err(f"{prefix}: {key} is not a boolean")
+
+    return errors
+
+
+def angle_difference_deg(a: float, b: float) -> float:
+    return abs((a - b + 180.0) % 360.0 - 180.0)
+
+
+def compare_valid_results(results: dict[int, dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
+    failures: list[str] = []
+    metrics: dict[str, Any] = {
+        "pairs": {},
+        "max_position_delta_m": 0.0,
+        "max_speed_delta_m_s": 0.0,
+        "max_heading_delta_deg": 0.0,
+        "max_gate_delta_ticks": 0,
+    }
+    pairs = ((30, 60), (30, 120), (60, 120))
+
+    for left, right in pairs:
+        a = results[left]
+        b = results[right]
+        label = f"{left}/{right}"
+        pair_metrics: dict[str, Any] = {}
+
+        pos_a = a["endpoint"]["position_m"]
+        pos_b = b["endpoint"]["position_m"]
+        position_delta = math.hypot(float(pos_a[0]) - float(pos_b[0]), float(pos_a[1]) - float(pos_b[1]))
+        speed_delta = abs(float(a["endpoint"]["speed_m_s"]) - float(b["endpoint"]["speed_m_s"]))
+        heading_delta = angle_difference_deg(float(a["endpoint"]["heading_deg"]), float(b["endpoint"]["heading_deg"]))
+        gate_delta = abs(int(a["gate"]["first_committed_tick"]) - int(b["gate"]["first_committed_tick"]))
+
+        pair_metrics["position_delta_m"] = position_delta
+        pair_metrics["speed_delta_m_s"] = speed_delta
+        pair_metrics["heading_delta_deg"] = heading_delta
+        pair_metrics["gate_delta_ticks"] = gate_delta
+        metrics["pairs"][label] = pair_metrics
+        metrics["max_position_delta_m"] = max(metrics["max_position_delta_m"], position_delta)
+        metrics["max_speed_delta_m_s"] = max(metrics["max_speed_delta_m_s"], speed_delta)
+        metrics["max_heading_delta_deg"] = max(metrics["max_heading_delta_deg"], heading_delta)
+        metrics["max_gate_delta_ticks"] = max(metrics["max_gate_delta_ticks"], gate_delta)
+
+        if position_delta > POSITION_TOLERANCE_M:
+            failures.append(f"{label}: endpoint position differs by {position_delta:.9g} m")
+        if speed_delta > SPEED_TOLERANCE_M_S:
+            failures.append(f"{label}: endpoint speed differs by {speed_delta:.9g} m/s")
+        if heading_delta > HEADING_TOLERANCE_DEG:
+            failures.append(f"{label}: endpoint heading differs by {heading_delta:.9g} deg")
+        if gate_delta > GATE_TOLERANCE_TICKS:
+            failures.append(f"{label}: gate tick differs by {gate_delta}")
+
+        for key in COUNT_KEYS:
+            if a["counts"][key] != b["counts"][key]:
+                failures.append(f"{label}: discrete count {key} differs ({a['counts'][key]!r} vs {b['counts'][key]!r})")
+        for key in ENDPOINT_DISCRETE_KEYS:
+            if a["endpoint"][key] != b["endpoint"][key]:
+                failures.append(f"{label}: endpoint discrete state {key} differs ({a['endpoint'][key]!r} vs {b['endpoint'][key]!r})")
+
+        trace_a = a["tick_trace"]
+        trace_b = b["tick_trace"]
+        for key in TRACE_DISCRETE_KEYS:
+            values_a = [entry[key] for entry in trace_a]
+            values_b = [entry[key] for entry in trace_b]
+            if values_a != values_b:
+                first = next((i for i, (va, vb) in enumerate(zip(values_a, values_b), start=1) if va != vb), None)
+                failures.append(f"{label}: per-tick discrete sequence {key} first differs at tick {first}")
+
+    return failures, metrics
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="compare three frame-trace result JSON files")
+    parser.add_argument("inputs", nargs=3, type=Path, metavar="RESULT_JSON")
+    args = parser.parse_args()
+
+    loaded: list[tuple[Path, dict[str, Any] | None]] = []
+    input_errors: list[str] = []
+    for path in args.inputs:
+        try:
+            data = load_result(path)
+        except InputError as exc:
+            input_errors.append(str(exc))
+            loaded.append((path, None))
+            continue
+        errors = validate_result(data, path)
+        if errors:
+            input_errors.extend(errors)
+            loaded.append((path, None))
+        else:
+            loaded.append((path, data))
+
+    failures = list(input_errors)
+    metrics: dict[str, Any] = {}
+    results: dict[int, dict[str, Any]] = {}
+    if not input_errors:
+        for path, data in loaded:
+            assert data is not None
+            fps = int(data["mode"]["nominal_fixed_fps"])
+            if fps in results:
+                failures.append(f"duplicate nominal fixed-fps input {fps}: {path}")
+            results[fps] = data
+        missing_fps = sorted(EXPECTED_FPS - set(results))
+        if missing_fps:
+            failures.append(f"missing nominal fixed-fps inputs: {missing_fps}")
+        if not failures:
+            failures, metrics = compare_valid_results(results)
+
+    if not input_errors and not failures:
+        for fps in sorted(results):
+            data = results[fps]
+            print(
+                "INPUT "
+                f"fps={fps} ticks={data['run']['ticks_committed']} "
+                f"gear_shifts={data['counts']['gear_shift_events']} "
+                f"contacts={data['counts']['contact_ticks']} "
+                f"wall_contacts={data['counts']['wall_contact_ticks']} "
+                f"gate_tick={data['gate']['first_committed_tick']} "
+                f"speed={data['endpoint']['speed_m_s']:.9g}"
+            )
+
+    def emit(condition: bool, message: str) -> None:
+        print(("PASS " if condition else "FAIL ") + message)
+
+    coherent = not input_errors
+    emit(coherent, "input presence, JSON structure, schema, coherence and fixed-schedule validation")
+    comparison_failures = [failure for failure in failures if failure not in input_errors]
+    emit(not comparison_failures, "exact tick count, discrete counts, commands and per-tick discrete state")
+    if metrics:
+        emit(
+            metrics["max_position_delta_m"] <= POSITION_TOLERANCE_M,
+            f"endpoint position max delta {metrics['max_position_delta_m']:.9g} m <= {POSITION_TOLERANCE_M:g} m",
+        )
+        emit(
+            metrics["max_speed_delta_m_s"] <= SPEED_TOLERANCE_M_S,
+            f"endpoint speed max delta {metrics['max_speed_delta_m_s']:.9g} m/s <= {SPEED_TOLERANCE_M_S:g} m/s",
+        )
+        emit(
+            metrics["max_heading_delta_deg"] <= HEADING_TOLERANCE_DEG,
+            f"endpoint heading max delta {metrics['max_heading_delta_deg']:.9g} deg <= {HEADING_TOLERANCE_DEG:g} deg",
+        )
+        emit(
+            metrics["max_gate_delta_ticks"] <= GATE_TOLERANCE_TICKS,
+            f"gate-time max delta {metrics['max_gate_delta_ticks']} tick(s) <= {GATE_TOLERANCE_TICKS} tick",
+        )
+
+    if failures:
+        print("FAILURES_BEGIN")
+        for failure in failures[:80]:
+            print(f"FAILURE {failure}")
+        if len(failures) > 80:
+            print(f"FAILURE ... {len(failures) - 80} additional failure(s) omitted")
+        print("FAILURES_END")
+
+    payload = {
+        "pass": not failures,
+        "failure_count": len(failures),
+        "tolerances": {
+            "position_m": POSITION_TOLERANCE_M,
+            "speed_m_s": SPEED_TOLERANCE_M_S,
+            "heading_deg": HEADING_TOLERANCE_DEG,
+            "gate_ticks": GATE_TOLERANCE_TICKS,
+        },
+        "metrics": metrics,
+    }
+    print("COMPARISON_RESULT " + json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    print("COMPARISON " + ("PASS" if not failures else "FAIL"))
+    return 0 if not failures else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        raise SystemExit(1)
