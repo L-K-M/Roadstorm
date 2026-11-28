@@ -95,25 +95,39 @@ or:
 
 `RoadSourceDocument.parse_json(text)` is the JSON-text convenience wrapper. It
 first runs an iterative lexical/structural preflight for the strict JSON text
-grammar: only the four JSON whitespace bytes, strict number forms whose
-decimal exponent stays within the supported range [-308, +308] and uses at
-most four digits, lowercase literals, properly closed objects and arrays
-without trailing commas, and valid quoted strings with valid escapes. The scanner is not a regex stripper;
-it tracks nested object/array state while treating commas, braces and brackets
-inside strings as content. Object member names are canonicalized after escape
-decoding, including `\uXXXX` sequences and surrogate pairs, and duplicate
-member names are refused in every object before Godot's permissive JSON reader
-constructs a `Dictionary`. As additional contract constraints, unpaired
-surrogate escapes are refused rather than being interpreted as
-implementation-defined text, and NUL escapes are refused because the pinned
-engine decoder lossily replaces them. The exponent limit exists because the
-pinned engine's JSON reader wraps an oversized exponent into a plausible
-finite value (`12e4294967296` decodes as `12.0`); such tokens are refused as
-malformed JSON text before decoding. The limit is lexical and does not by
-itself guarantee a finite decoded double, so decoded-value finiteness is still
-enforced downstream. Only after those checks does the wrapper decode the text
-and apply `parse_document`, using the same structured refusal contract.
-Malformed JSON and non-finite literals are rejected rather than accepted.
+grammar: only the four JSON whitespace bytes, strict number forms, lowercase
+literals, properly closed objects and arrays without trailing commas, and
+valid quoted strings with valid escapes. Numbers carry two deliberate
+source-contract limits beyond RFC 8259: the decimal exponent must stay within
+[-308, +308] and use at most four digits, and the significand must use at most
+18 digit characters, counting the integer part's leading zero and fractional
+leading zeros but excluding sign and decimal point. The exponent limit exists
+because the pinned engine's JSON reader wraps an oversized exponent into a
+plausible finite value (`12e4294967296` decodes as `12.0`). The significand
+limit exists because the pinned decoder retains only the first 18 mantissa
+digit characters and then applies the exponent, so a longer spelling drops
+significant digits while still decoding to a plausible value
+(`0.000000000000000025e17`, true value 2.5, decodes as `2.0`). Both tokens are
+valid JSON; they are unsupported spellings under this contract, refused with
+`INVALID_JSON_TEXT` and a byte offset rather than described as malformed
+grammar. The limits are lexical and do not by themselves guarantee a finite
+decoded double, so decoded-value finiteness is still enforced downstream.
+The scanner is not a regex stripper; it tracks nested object/array state while
+treating commas, braces and brackets inside strings as content. Object member
+names are canonicalized after escape decoding, including `\uXXXX` sequences
+and surrogate pairs, and duplicate member names are refused in every object
+before Godot's permissive JSON reader constructs a `Dictionary`. As additional
+contract constraints, unpaired surrogate escapes are refused rather than being
+interpreted as implementation-defined text, and NUL escapes are refused because
+the pinned engine decoder lossily replaces them. Only after those checks does
+the wrapper decode the text and apply `parse_document`, using the same
+structured refusal contract. Malformed JSON, unsupported numeric spellings and
+non-finite literals are rejected rather than accepted.
+
+`RoadSourceDocument.parse_document(value)` reads numbers as already-decoded
+Variants. It cannot inspect or re-derive their source spelling, so the lexical
+limits above protect the `parse_json` text path only; a caller that decodes JSON
+itself owns the correctness of that decode.
 
 A successful document exposes read-only `schema`, `course_id`, `revision`,
 `closed`, `knot_count`, `section_count`, `span_count`, `knots`, `sections` and
@@ -201,6 +215,11 @@ The laboratory currently covers:
 - numeric-exponent decoder bounds: the exact Sol giant-exponent width, bank
   and vector payloads, ordinary signed e+2/e-2 spellings, +/-308 boundary
   controls and excessive leading-zero exponent spellings;
+- significand-window bounds: the exact Opus mantissa-window width, bank and
+  vector payloads, nested schema-unknown positions, a 22-digit nonzero-led
+  refusal, positive controls `0.25e1`, `0.00000000025e10`, an exact 18-digit
+  boundary spelling, `0.30000000000000004`, signed and uppercase exponent
+  forms, and the direct-parse_document spelling-blindness control;
 - degenerate adjacent anchors and degenerate span-participating tangent
   handles, with explicit coverage of the two unused open-endpoint handles;
 - canonical round-trip, repeated parsing, accessor copies and read-only public
@@ -216,3 +235,9 @@ grid space, safe anchors, recovery legality, render/collision meshes, scenery,
 AI lines, minimaps, performance, gameplay feel or release readiness. It runs
 one pinned local engine in one headless process cohort and makes no
 cross-version, cross-host, rendered or milestone acceptance claim.
+
+The accepted JSON number spellings are deliberately narrower than RFC 8259:
+exponents outside [-308, +308] or longer than four digits, significands longer
+than 18 digit characters, unpaired surrogates and NUL escapes are refused even
+though several of these are valid JSON. `parse_document` callers that decode
+text with another reader bypass these lexical limits and own that decode.

@@ -130,6 +130,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_numeric_and_geometry_refusals"),
 		Callable(self, "_case_strict_json_text_preflight"),
 		Callable(self, "_case_exponent_decoder_bounds"),
+		Callable(self, "_case_mantissa_window_bounds"),
 		Callable(self, "_case_mutation_controls"),
 		Callable(self, "_case_span_semantics"),
 	]:
@@ -1246,6 +1247,203 @@ func _case_exponent_decoder_bounds() -> Dictionary:
 			"excessive exponent digit spelling %s refused" % token,
 			"number exponent"
 		)
+	return c.result()
+
+
+func _case_mantissa_window_bounds() -> Dictionary:
+	var c := Case.new()
+	c.name = "mantissa_window_bounds"
+
+	var open_text := read_fixture_text(OPEN_FIXTURE_PATH)
+	var closed_text := read_fixture_text(CLOSED_FIXTURE_PATH)
+
+	# Opus Finding 1: the pinned decoder retains only the first 18 mantissa
+	# digit characters, counting the integer part's leading zero and fractional
+	# leading zeros, then applies the exponent. These exact valid-JSON tokens
+	# place significant digits beyond that window and previously decoded to
+	# plausible wrong values inside the authored bands. The lexical preflight
+	# must refuse them in width, bank, vector and schema-unknown positions.
+	for token in [
+		"0.000000000000000025e17",
+		"-0.0000000000000000014e19",
+		"0.00000000000000000050e20",
+		"0.0000000000000000012e19",
+		"0.000000000000001234e15",
+	]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"long width significand %s refused before engine decode" % token,
+			"significand"
+		)
+	for token in ["-0.0000000000000000014e19", "0.000000000000001234e15"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"long bank significand %s refused before engine decode" % token,
+			"significand"
+		)
+	for vector_case in [
+		["\"anchor\": [0.0, 0.0, -40.0]", "\"anchor\": [0.00000000000000000050e20, 0.0, -40.0]"],
+		["\"handle_out\": [0.0, 0.0, -12.0]", "\"handle_out\": [0.0, 0.0000000000000000012e19, -12.0]"],
+		["\"handle_in\": [0.0, 0.0, -28.0]", "\"handle_in\": [0.0, 0.0, 0.000000000000001234e15]"],
+	]:
+		c.refuses(
+			RoadSourceDocument.parse_json(replace_once(open_text, vector_case[0], vector_case[1])),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"long vector significand refused before engine decode",
+			"significand"
+		)
+	for token in ["0.000000000000000025e17", "0.000000000000001234e15"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				"{\"unused\": {\"nested\": [1, {\"value\": " + token + "}]}}"
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"long nested schema-unknown significand %s refused" % token,
+			"significand"
+		)
+	c.refuses(
+		RoadSourceDocument.parse_json("[0.000000000000000025e17]"),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"long significand refused as a root array element",
+		"significand"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json("0.000000000000000025e17"),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"long significand refused as a bare root number",
+		"significand"
+	)
+
+	# A nonzero-led 22-digit significand is refused under the documented
+	# 18-digit contract. Its truncated value would stay close to the authored
+	# value, but the simple rule keeps every refusal fail-closed and bounded.
+	c.refuses(
+		RoadSourceDocument.parse_json(
+			replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": 1234567890123456789012e-20")
+		),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"22-digit nonzero-led significand refused by the 18-digit contract",
+		"significand"
+	)
+
+	# Every numeric-contract refusal carries a byte offset for the offending
+	# significand, not just an error code.
+	var offset_result := RoadSourceDocument.parse_json(
+		replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": 0.000000000000000025e17")
+	)
+	c.check(
+		not bool(offset_result["ok"]) and str(offset_result["error"]).contains("at byte"),
+		"significand refusal reports a byte offset"
+	)
+
+	# Prior giant-exponent refusals remain in force alongside the mantissa rule.
+	for token in ["12e4294967296", "1e4294967296"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"giant width exponent %s still refused" % token,
+			"supported range"
+		)
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"giant bank exponent %s still refused" % token,
+			"supported range"
+		)
+	c.refuses(
+		RoadSourceDocument.parse_json("{\"unused\": [12e4294967296]}"),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"giant exponent in a nested schema-unknown position still refused",
+		"supported range"
+	)
+
+	# Positive controls: short-significand spellings decode exactly. The
+	# 18-digit boundary is exercised on both sides by the acceptance below and
+	# the 19-digit refusal above.
+	var positive_width_cases := [
+		["0.25e1", 2.5],
+		["0.00000000025e10", 2.5],
+		["0.00000000000000025e16", 2.5],
+		["120e-2", 1.2],
+	]
+	for case_pair in positive_width_cases:
+		var document := c.accepts(
+			RoadSourceDocument.parse_json(
+				replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": " + str(case_pair[0]))
+			),
+			"short width significand %s accepted" % str(case_pair[0])
+		)
+		if document != null:
+			c.close(
+				document.knot(0).width_m,
+				float(case_pair[1]),
+				1e-12,
+				"short width significand %s decodes exactly" % str(case_pair[0])
+			)
+	var canonical_bank := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": 0.30000000000000004")
+		),
+		"canonical double-precision bank spelling accepted"
+	)
+	if canonical_bank != null:
+		c.equal(
+			canonical_bank.knot(2).bank_deg,
+			0.30000000000000004,
+			"canonical double-precision bank spelling decodes exactly"
+		)
+	var upper_width := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": 0.25E1")
+		),
+		"uppercase width exponent accepted"
+	)
+	if upper_width != null:
+		c.close(upper_width.knot(0).width_m, 2.5, 1e-12, "uppercase exponent decodes to 2.5")
+
+	var signed_bank := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": -1.2E+1")
+		),
+		"signed uppercase bank exponent accepted"
+	)
+	if signed_bank != null:
+		c.close(signed_bank.knot(2).bank_deg, -12.0, 1e-12, "signed uppercase exponent decodes to -12")
+	var vector_spellings := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(
+				open_text,
+				"\"handle_in\": [0.0, 0.0, 12.0]",
+				"\"handle_in\": [0E+2, -0.12E+2, 1.2e+1]"
+			)
+		),
+		"mixed-case signed vector exponents accepted"
+	)
+	if vector_spellings != null:
+		c.vector_equal(
+			vector_spellings.knot(0).handle_in,
+			Vector3(0.0, -12.0, 12.0),
+			"signed and uppercase vector exponents decode exactly"
+		)
+
+	# parse_document receives already-decoded Variants and cannot recover the
+	# source spelling; the lexical guard protects the parse_json text path only.
+	var decoded_width := fixture_copy(OPEN_FIXTURE_PATH)
+	decoded_width["knots"][0]["width_m"] = 2.0
+	c.accepts(
+		RoadSourceDocument.parse_document(decoded_width),
+		"direct parse_document accepts an already-decoded width and cannot see its spelling"
+	)
 	return c.result()
 
 

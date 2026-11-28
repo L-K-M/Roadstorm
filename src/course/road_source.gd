@@ -413,11 +413,17 @@ class Span extends RefCounted:
 ## including Unicode surrogate pairs, and duplicates are refused in every
 ## object. Unpaired surrogate escapes are also refused as a contract constraint
 ## rather than interpreted as implementation-defined text. NUL escapes are
-## refused because the pinned engine decoder lossily replaces them. Numeric
-## exponents are additionally bounded lexically before decoding, because the
-## pinned engine wraps an oversized exponent into a plausible finite value (for
-## example `12e4294967296` decodes as `12.0`). The scanner validates only;
-## Godot performs the final value decode.
+## refused because the pinned engine decoder lossily replaces them. Two numeric
+## spelling limits are enforced before decoding because the pinned engine
+## silently loses information: an exponent outside [-308, +308] wraps into a
+## plausible finite value (for example `12e4294967296` decodes as `12.0`), and
+## a significand longer than 18 digit characters drops significant digits once
+## a compensating exponent is applied (for example `0.000000000000000025e17`,
+## whose true value is 2.5, decodes as `2.0`). Both refusals are deliberate
+## narrowings of valid JSON spellings under this source contract, like the
+## surrogate and NUL limits; they are not claims that the tokens are malformed
+## RFC 8259 grammar. The scanner validates only; Godot performs the final
+## value decode.
 class _StrictJsonPreflight extends RefCounted:
 	const KIND_ROOT := 0
 	const KIND_OBJECT := 1
@@ -473,6 +479,17 @@ class _StrictJsonPreflight extends RefCounted:
 	## value is small. Long leading-zero forms stress the engine decoder's
 	## digit handling, and no ordinary authored value needs this many digits.
 	const SUPPORTED_EXPONENT_DIGIT_MAX := 4
+	## Maximum mantissa digit characters accepted before decoding, matching the
+	## pinned decoder's window. The engine keeps only the first 18 mantissa
+	## digit characters, counting the integer part's leading zero and
+	## fractional leading zeros, then applies the exponent. A longer significand
+	## therefore truncates significant digits while still producing a plausible
+	## finite value (for example `0.000000000000000025e17` has 19 digit
+	## characters and decodes as 2.0 instead of 2.5). Refusing the longer
+	## spelling narrows the accepted JSON forms deliberately, like the exponent
+	## and Unicode escape limits; the token is valid JSON, not malformed
+	## grammar.
+	const SUPPORTED_MANTISSA_DIGIT_MAX := 18
 
 	var _bytes := PackedByteArray()
 	var _position := 0
@@ -706,14 +723,18 @@ class _StrictJsonPreflight extends RefCounted:
 			_position += 1
 		if _at_end():
 			return _set_error("unterminated number")
+		var mantissa_start := _position
+		var mantissa_digits := 0
 		var byte := _peek()
 		if byte == BYTE_ZERO:
 			_position += 1
+			mantissa_digits += 1
 			if not _at_end() and _is_digit(_peek()):
 				return _set_error("leading zeroes are not valid JSON numbers")
 		elif byte > BYTE_ZERO and byte <= BYTE_NINE:
 			while not _at_end() and _is_digit(_peek()):
 				_position += 1
+				mantissa_digits += 1
 		else:
 			return _set_error("a number needs a digit after any minus sign")
 
@@ -723,6 +744,7 @@ class _StrictJsonPreflight extends RefCounted:
 				return _set_error("a fractional number needs at least one digit")
 			while not _at_end() and _is_digit(_peek()):
 				_position += 1
+				mantissa_digits += 1
 
 		if not _at_end() and (_peek() == BYTE_LOWER_E or _peek() == BYTE_UPPER_E):
 			var exponent_start := _position
@@ -759,6 +781,12 @@ class _StrictJsonPreflight extends RefCounted:
 						% SUPPORTED_EXPONENT_DIGIT_MAX,
 					exponent_start
 				)
+		if mantissa_digits > SUPPORTED_MANTISSA_DIGIT_MAX:
+			return _set_error(
+				"number significand has more than %d digit characters"
+					% SUPPORTED_MANTISSA_DIGIT_MAX,
+				mantissa_start
+			)
 		return true
 
 
@@ -1174,8 +1202,9 @@ static func parse_document(p_source: Variant) -> Dictionary:
 
 
 ## JSON text convenience wrapper around `parse_document`. A strict lexical and
-## structural preflight rejects malformed grammar and duplicate member names
-## before Godot's permissive JSON reader constructs a Dictionary.
+## structural preflight rejects malformed grammar, duplicate member names and
+## unsupported numeric spellings before Godot's permissive JSON reader
+## constructs a Dictionary.
 static func parse_json(p_text: Variant) -> Dictionary:
 	if typeof(p_text) != TYPE_STRING:
 		return _refuse(Refusal.INVALID_JSON_TEXT, "JSON text must be a string")
@@ -1184,7 +1213,8 @@ static func parse_json(p_text: Variant) -> Dictionary:
 	if not bool(preflight["ok"]):
 		return _refuse(
 			Refusal.INVALID_JSON_TEXT,
-			"text is not valid strict JSON: %s" % str(preflight["error"])
+			"text does not satisfy the road-source strict JSON text contract: %s"
+				% str(preflight["error"])
 		)
 	var json := JSON.new()
 	if json.parse(text) != OK:
