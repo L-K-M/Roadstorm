@@ -219,7 +219,8 @@ entry. The producer can still build an exact-zero record independently.
   `drive_lab.wall.<scope generation>.<episode sequence>.<event sequence>`
   under the stable primary car ID `drive_lab.primary_car`. They cannot be
   reused after ledger pruning or scope retirement. An exact same-tick retry
-  coalesces an already published record without advancing policy counters;
+  coalesces a saved copy of the accepted record without reading the mutable
+  live adapter configuration or advancing policy counters;
   the retry-ID map is cleared on each new accepted tick;
 * adapter refusal, a stale-pose block and a post-commit gearbox failure emit
   no event; a direct call with an adapter-only or retired witness is also
@@ -249,6 +250,12 @@ independent frozen run, the same bad-config control and the deliberate
 failure. Its added case checks a real Jolt onset, producer-derived policy
 inputs, an unchanged policy state on exact retry, a no-witness tick and a
 suppressed pressed-contact tick with no allocated ID.
+The accepted-record retry repair passed 17 cases and 5,428 checks in a frozen
+pinned-Jolt run, plus the 99-check bad-config control and deliberate failure.
+The new case changes the live hull to both invalid and valid-but-different
+sizes after publication; each exact retry coalesces the original payload.
+A conflicting ledger payload is refused without a second publication, and a
+retired scope refuses a retry.
 
 This is a bounded policy and publication seam, not full M1.8 acceptance:
 presentation, sound, cosmetic damage consumption, car-car production and a

@@ -288,6 +288,7 @@ var wall_policy_refusals := 0
 ## published. A direct caller cannot publish an adapter-only or stale result.
 var _wall_event_accepted_result: MotorBodyAdapter.Result = null
 var _wall_event_accepted_tick := -1
+var _wall_event_accepted_record: ImpactEvent = null
 ## True after a state-only drive restore or a post-commit gearbox failure.
 ## Cleared only by a future body-pose reconciliation operation, which this
 ## slice deliberately does not implement.
@@ -844,6 +845,7 @@ func retire_wall_event_scope() -> void:
 	_wall_event_ids_by_fingerprint = {}
 	_wall_event_accepted_result = null
 	_wall_event_accepted_tick = -1
+	_wall_event_accepted_record = null
 	_wall_event_accepted_fingerprint = ""
 	_wall_event_accepted_snapshot = {}
 	_retire_wall_policy(_wall_event_scope_generation)
@@ -992,10 +994,11 @@ func get_wall_event_content_digest() -> String:
 ## counter can change. A tick the policy suppressed, a tick without a publishable
 ## witness and a tick whose publication failed have nothing to coalesce, so an
 ## exact retry of them returns false and changes nothing. An exact retry of a
-## published event rebuilds the same record under the same policy event ID and
-## lets the real ledger coalesce it; the policy is never evaluated again, so no
-## counter advances and no second ID is issued. Returns true only when the
-## record is represented in the ledger. Every refusal is recorded as a
+## published event replays a copy of the saved accepted record under the same
+## policy event ID and lets the real ledger coalesce it; the policy is never
+## evaluated again, no producer re-runs, no second ID is issued, no new record
+## is created, and a coalesced retry increments wall_events_coalesced. Returns
+## true only when the record is represented in the ledger. Every refusal is recorded as a
 ## diagnostic and leaves motor state, body pose, RNG, progress and presentation
 ## untouched.
 func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
@@ -1036,7 +1039,22 @@ func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 		# The committed-tick publication did not succeed. A retry never
 		# publishes; the recorded failure diagnostic stands.
 		return false
-	return _publish_wall_event_id(result, event_id, ticks_committed)
+	var saved_record := _wall_event_accepted_record
+	if saved_record == null or saved_record.event_id != event_id:
+		return false
+	var published := wall_event_ledger.publish(saved_record.copy())
+	if published.is_coalesced():
+		wall_events_coalesced += 1
+		last_wall_event = published.event.copy()
+		wall_event_diagnostic = ""
+		return true
+	wall_events_refused += 1
+	wall_event_diagnostic = "tick %d ledger refused wall event %s: %s" % [
+		ticks_committed,
+		event_id,
+		published.reason,
+	]
+	return false
 
 
 ## Advances the pure wall-contact policy exactly once for the accepted
@@ -1168,6 +1186,7 @@ func _publish_wall_event_id(
 	if published.is_published():
 		wall_events_published += 1
 		last_wall_event = published.event.copy()
+		_wall_event_accepted_record = published.event.copy()
 		wall_event_diagnostic = ""
 		return true
 	if published.is_coalesced():
@@ -1385,6 +1404,7 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		_wall_event_accepted_fingerprint = _wall_witness_fingerprint(
 			_wall_event_accepted_snapshot
 		)
+		_wall_event_accepted_record = null
 		# The physical tick and the mirrored canonical pair are both published
 		# now. Only this committed path advances the wall-contact policy and may
 		# publish a wall event; every earlier refusal, stale-pose block and

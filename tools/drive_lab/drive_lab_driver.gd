@@ -132,6 +132,12 @@ const WALL_POLICY_REVERSE_MAX_TICKS := 300
 ## Independent oracle ID for a test-side `WallImpactProducer.produce()` call;
 ## never published.
 const WALL_POLICY_ORACLE_EVENT_ID := "drive_lab.test.oracle"
+## Length multiplier of a different valid live hull for the retry
+## config-independence regression. The authored frontal hit lands on a hull
+## vertex, so a hull ten times longer classifies the same collision-time local
+## point as a side contact: a retry that rebuilt its record from live config
+## would produce a conflicting payload instead of coalescing.
+const WALL_CONFIG_RETRY_HULL_LENGTH_SCALE := 10.0
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
@@ -3704,6 +3710,7 @@ func _gearbox_mirror_refusal_checks() -> void:
 
 func _case_wall_impact_integration() -> void:
 	await _wall_hit_publication_and_retry_checks()
+	await _wall_retry_ignores_live_config_checks()
 	await _wall_clear_tick_wall_contact_fabrication_checks()
 	await _wall_refusal_paths_emit_no_event_checks()
 	await _wall_postcommit_gearbox_failure_withholds_witness_checks()
@@ -4147,6 +4154,272 @@ func _wall_hit_publication_and_retry_checks() -> void:
 	)
 	d.check(lab.get_wall_event_count() == 0, "wall.retry.retired_scope_stays_empty")
 	await _teardown_lab(lab)
+
+
+## Proves the same-tick retry depends on nothing but the accepted Result, the
+## accepted tick and the retained accepted record. `adapter_config` is a public
+## object assigned by reference, so after a real pinned-Jolt onset the case
+## mutates the live hull to an invalid zero and then to a different valid hull
+## under which the same contact point classifies as a side hit. Each exact retry
+## must still coalesce the same retained ID and payload with an unchanged
+## content digest and no second adapter step. A ledger whose record under the
+## accepted ID disagrees with the accepted payload must be refused as a
+## conflict that adds nothing, and a retired scope must refuse the retry. The
+## live config is restored right after every mutation.
+func _wall_retry_ignores_live_config_checks() -> void:
+	var lab = _make_wall_hit_lab([])
+	if lab == null:
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	_place_wall_lab_at_spawn(lab)
+	await _settle()
+	var witness = null
+	for index in range(WALL_MAX_TICKS):
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null:
+			d.check(
+				false,
+				"wall.config.run_tick_%d_returned_null: %s" % [index, lab.failure_reason]
+			)
+			break
+		if result.has_wall_response_witness and result.has_wall_contact_point:
+			witness = result
+			break
+	if witness == null:
+		d.check(false, "wall.config.committed_wall_witness_occurred")
+		await _teardown_lab(lab)
+		return
+	var event := lab.get_last_wall_event()
+	var onset: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		event != null
+			and int(onset["published"]) == 1
+			and int(onset["coalesced"]) == 0
+			and int(onset["refused"]) == 0
+			and lab.get_wall_event_count() == 1
+			and str(onset["diagnostic"]) == "",
+		"wall.config.onset_published_once_before_any_mutation"
+	)
+	if event == null:
+		await _teardown_lab(lab)
+		return
+	var original_hull: Vector3 = lab.adapter_config.hull_size_m
+	var retained := lab.find_wall_event(event.event_id)
+	d.check(
+		retained != null and retained.same_payload(event),
+		"wall.config.retained_record_matches_last_event"
+	)
+	# Independent oracle: the same witness under a different valid hull is a
+	# valid record with another region, so a retry that rebuilt its record from
+	# live config would conflict with the retained payload instead of
+	# coalescing. The precondition is asserted so the case cannot pass vacuously.
+	var changed := MotorBodyAdapter.Config.new()
+	changed.hull_size_m = Vector3(
+		original_hull.x, original_hull.y,
+		original_hull.z * WALL_CONFIG_RETRY_HULL_LENGTH_SCALE
+	)
+	d.check(changed.is_valid(), "wall.config.changed_hull_is_a_valid_config")
+	var changed_oracle := WallImpactProducerScript.produce(
+		witness, changed, DriveLabScript.WALL_EVENT_PRIMARY_CAR_ID,
+		WALL_POLICY_ORACLE_EVENT_ID, "", int(lab.ticks_committed)
+	)
+	d.check(
+		not changed_oracle.is_refused() and changed_oracle.event.region != event.region,
+		"wall.config.changed_hull_oracle_classifies_another_region"
+	)
+	if changed_oracle.is_refused():
+		await _teardown_lab(lab)
+		return
+	var baseline := _wall_retry_baseline(lab, event, onset)
+	# Control: the untouched config coalesces once before any mutation.
+	_check_wall_retry_under_config(lab, witness, baseline, 1, "untouched")
+	# The reported defect: an invalid live hull used to reach the producer.
+	lab.adapter_config.hull_size_m = Vector3.ZERO
+	d.check(
+		not lab.adapter_config.is_valid(),
+		"wall.config.zero_hull_is_an_invalid_live_config"
+	)
+	_check_wall_retry_under_config(lab, witness, baseline, 2, "zero_hull")
+	lab.adapter_config.hull_size_m = original_hull
+	d.check(
+		lab.adapter_config.hull_size_m == original_hull and lab.adapter_config.is_valid(),
+		"wall.config.zero_hull_restored"
+	)
+	# A valid live hull under which the record would be built differently.
+	lab.adapter_config.hull_size_m = changed.hull_size_m
+	d.check(
+		lab.adapter_config.is_valid(),
+		"wall.config.changed_hull_is_a_valid_live_config"
+	)
+	_check_wall_retry_under_config(lab, witness, baseline, 3, "changed_hull")
+	lab.adapter_config.hull_size_m = original_hull
+	d.check(
+		lab.adapter_config.hull_size_m == original_hull and lab.adapter_config.is_valid(),
+		"wall.config.changed_hull_restored"
+	)
+	_check_wall_retry_under_config(lab, witness, baseline, 4, "restored")
+	# A ledger whose record under the accepted ID disagrees with the accepted
+	# payload is a conflict: the retry must refuse, record the ledger's reason,
+	# keep the accepted record as the last event and add nothing to either
+	# ledger.
+	var conflicting: ImpactEvent = changed_oracle.event.copy()
+	conflicting.event_id = event.event_id
+	var tampered := ImpactEventScript.Ledger.new()
+	d.check(
+		tampered.publish(conflicting).is_published(),
+		"wall.conflict.tampered_ledger_holds_a_conflicting_record"
+	)
+	var real_ledger = lab.wall_event_ledger
+	var real_digest := lab.get_wall_event_content_digest()
+	var tampered_digest := tampered.content_digest()
+	var before_conflict: Dictionary = lab.get_wall_event_telemetry()
+	lab.wall_event_ledger = tampered
+	var conflict_retry: bool = lab.publish_wall_event(witness)
+	var after_conflict: Dictionary = lab.get_wall_event_telemetry()
+	var after_conflict_last := lab.get_last_wall_event()
+	lab.wall_event_ledger = real_ledger
+	d.check(not conflict_retry, "wall.conflict.retry_refused")
+	d.check(
+		int(after_conflict["refused"]) == int(before_conflict["refused"]) + 1,
+		"wall.conflict.counts_one_refusal"
+	)
+	d.check(
+		int(after_conflict["coalesced"]) == int(before_conflict["coalesced"])
+			and int(after_conflict["published"]) == int(before_conflict["published"]),
+		"wall.conflict.no_coalesce_and_no_publication"
+	)
+	d.check(
+		str(after_conflict["diagnostic"]).contains("conflicting payload")
+			and str(after_conflict["diagnostic"]).contains(event.event_id),
+		"wall.conflict.diagnostic_names_the_conflict"
+	)
+	d.check(
+		tampered.event_count() == 1 and tampered.content_digest() == tampered_digest
+			and tampered.conflict_total() == 1,
+		"wall.conflict.nothing_fabricated_into_tampered_ledger"
+	)
+	d.check(
+		after_conflict_last != null and after_conflict_last.same_payload(event),
+		"wall.conflict.last_event_is_still_the_accepted_record"
+	)
+	d.check(
+		lab.get_wall_event_content_digest() == real_digest
+			and lab.get_wall_event_count() == 1,
+		"wall.conflict.real_ledger_untouched"
+	)
+	d.check(
+		int(lab.steps_called) == int(baseline["steps"])
+			and int(lab.ticks_committed) == int(baseline["ticks"])
+			and d.snapshot_state(lab.state) == baseline["state"]
+			and lab.body.global_transform == baseline["body"],
+		"wall.conflict.no_physics_or_pose_change"
+	)
+	# With the real ledger back, the same exact retry coalesces again.
+	_check_wall_retry_under_config(lab, witness, baseline, 5, "after_conflict")
+	measurements["config_retry_event_id"] = event.event_id
+	measurements["config_retry_region"] = event.region_name()
+	measurements["config_retry_changed_hull_region"] = changed_oracle.event.region_name()
+	measurements["config_retry_coalesced"] = int(lab.get_wall_event_telemetry()["coalesced"])
+	lab.retire_wall_event_scope()
+	d.check(
+		not lab.publish_wall_event(witness),
+		"wall.config.retired_scope_refuses_the_retry"
+	)
+	d.check(
+		lab.get_wall_event_count() == 0
+			and int(lab.get_wall_event_telemetry()["identity_tick_slots"]) == 0,
+		"wall.config.retired_scope_is_empty"
+	)
+	await _teardown_lab(lab)
+
+
+## By-value baseline captured after the onset and before any live-config
+## mutation: everything an exact retry must leave unchanged, plus the published
+## record every coalesce must still match.
+func _wall_retry_baseline(lab, event: ImpactEvent, onset: Dictionary) -> Dictionary:
+	return {
+		"event": event,
+		"digest": lab.get_wall_event_content_digest(),
+		"policy_state": onset["policy_state"],
+		"policy_counters": onset["policy_counters"],
+		"steps": int(lab.steps_called),
+		"ticks": int(lab.ticks_committed),
+		"state": d.snapshot_state(lab.state),
+		"body": lab.body.global_transform,
+		"published": int(onset["published"]),
+		"refused": int(onset["refused"]),
+		"coalesced": int(onset["coalesced"]),
+	}
+
+
+## Runs one exact retry under the current live config and requires it to
+## coalesce the same retained record: same ID and payload, unchanged content
+## digest, exactly `attempt` more coalesces than the baseline, no publication,
+## no refusal, no diagnostic, no policy advance, no adapter step, no committed
+## tick and no car or body change.
+func _check_wall_retry_under_config(
+	lab, witness, baseline: Dictionary, attempt: int, label: String
+) -> void:
+	var prefix := "wall.config.%s" % label
+	var accepted: ImpactEvent = baseline["event"]
+	var refused_before_retry: int = int(lab.get_wall_event_telemetry()["refused"])
+	var retry: bool = lab.publish_wall_event(witness)
+	d.check(retry, prefix + ".exact_retry_coalesces")
+	var telemetry: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(telemetry["coalesced"]) == int(baseline["coalesced"]) + attempt,
+		prefix + ".coalesce_counter_advances_once"
+	)
+	d.check(
+		int(telemetry["published"]) == int(baseline["published"]),
+		prefix + ".no_new_publication"
+	)
+	d.check(
+		int(telemetry["refused"]) == refused_before_retry,
+		prefix + ".no_refusal"
+	)
+	d.check(str(telemetry["diagnostic"]) == "", prefix + ".no_diagnostic")
+	d.check(
+		telemetry["policy_state"] == baseline["policy_state"]
+			and telemetry["policy_counters"] == baseline["policy_counters"],
+		prefix + ".policy_unchanged"
+	)
+	d.check(
+		str(telemetry["last_event_id"]) == accepted.event_id
+			and int(telemetry["identity_tick_slots"]) <= 1,
+		prefix + ".same_event_id_and_bounded_id_map"
+	)
+	d.check(lab.get_wall_event_count() == 1, prefix + ".ledger_still_one_event")
+	d.check(
+		lab.get_wall_event_content_digest() == str(baseline["digest"]),
+		prefix + ".content_digest_unchanged"
+	)
+	var last: ImpactEvent = lab.get_last_wall_event()
+	d.check(
+		last != null and last.same_payload(accepted),
+		prefix + ".last_event_is_the_same_payload"
+	)
+	if last != null:
+		var retained: ImpactEvent = lab.find_wall_event(last.event_id)
+		d.check(
+			retained != null and retained.same_payload(accepted),
+			prefix + ".retained_record_unchanged"
+		)
+	d.check(
+		int(lab.steps_called) == int(baseline["steps"]),
+		prefix + ".no_second_adapter_step"
+	)
+	d.check(
+		int(lab.ticks_committed) == int(baseline["ticks"]),
+		prefix + ".no_committed_tick"
+	)
+	d.check(
+		d.snapshot_state(lab.state) == baseline["state"]
+			and lab.body.global_transform == baseline["body"],
+		prefix + ".car_state_and_body_pose_unchanged"
+	)
+	d.check(not lab.failed and not lab.halted, prefix + ".lab_remains_operational")
 
 
 # A clear accepted tick carries no wall witnesses, so the gate must not let a
