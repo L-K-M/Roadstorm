@@ -511,10 +511,10 @@ def _locked_command(lock_path: Path, timeout: int) -> list[str]:
     BSD ``lockf`` (macOS) and util-linux ``flock`` (Linux) both implement
     flock(2)-style advisory locks, so they interoperate on the same inode.
     ``lockf -k -w -t N`` keeps the lock file, opens it writable (required on
-    some network filesystems) and bounds the wait. ``flock -x -w N --verbose``
-    is exclusive, wait-bounded, and reports contention instead of failing
-    silently. If neither tool exists the engine is refused rather than run
-    unlocked.
+    some network filesystems) and bounds the wait. ``flock -x -w N`` is
+    exclusive and wait-bounded. Keep routine wrapper output disabled because
+    the engine pin check parses the wrapped invocation's output. If neither
+    tool exists the engine is refused rather than run unlocked.
     """
     candidates = ("lockf", "flock") if sys.platform == "darwin" else ("flock", "lockf")
     for tool in candidates:
@@ -523,7 +523,7 @@ def _locked_command(lock_path: Path, timeout: int) -> list[str]:
             continue
         if tool == "lockf":
             return [binary, "-k", "-w", "-t", str(timeout), str(lock_path)]
-        return [binary, "-x", "-w", str(timeout), "--verbose", str(lock_path)]
+        return [binary, "-x", "-w", str(timeout), str(lock_path)]
     raise BakeError(
         "no exclusive lock utility found (need BSD lockf or util-linux flock); "
         "refusing to run the pinned engine unlocked"
