@@ -41,6 +41,29 @@ const HANDLING_LAB_SCENE_PATH := "res://scenes/laboratory/handling_lab.tscn"
 ## speed is 12 m/s; roughly 300 ticks are needed to reach the arc, so 420 leaves
 ## margin while staying far below the 1200-tick bound.
 const BRIDGE_TICKS := 420
+## Separate full-arc-exit witness. The authored arc ends at
+## `ARC_ENTRY_STATION_M + EXPECTED_ARC_LENGTH_M` (~238.4956 m); reaching
+## `FULL_ARC_EXIT_STATION_M` means at least 6.5 m into the authored 50 m exit.
+## This mode is opt-in so the default validator keeps its existing 420-tick
+## arc-entry case separate.
+const FULL_ARC_EXIT_TICKS := 1800
+const FULL_ARC_EXIT_STATION_M := 245.0
+const FULL_ARC_EXIT_TRACE_SCHEMA := "roadstorm.calibration_sweeper_lab.exit_trace.v1"
+## Every JSON-facing numeric field recorded in a physical trace. Repeat runs
+## must agree on all of them within REPEAT_TOLERANCE.
+const TRACE_NUMERIC_REPEAT_FIELDS := [
+	"station_before_m", "station_after_m", "station_delta_m",
+	"lateral_error_before_m", "lateral_error_after_m", "nearest_distance_m",
+	"position_x_m", "position_y_m", "world_x_m", "world_y_m", "world_z_m",
+	"speed_m_s", "forward_speed_m_s", "heading_rad", "steer", "throttle",
+	"brake", "lookahead_m", "target_s_m", "target_speed_m_s", "remainder_m",
+	"drive_lab_straight_projection_m",
+]
+## Every nonnumeric trace field. Repeat runs must agree on these exactly.
+const TRACE_EXACT_REPEAT_FIELDS := [
+	"tick", "gear_index", "result_status", "grounded", "reverse_engaged",
+	"contact", "wall_contact", "substeps",
+]
 const SETTLE_FRAMES := 10
 const CLEANUP_FRAMES := 8
 const ARC_ENTRY_STATION_M := 50.0
@@ -66,7 +89,19 @@ func _ready() -> void:
 	_holder = Node3D.new()
 	_holder.name = "CalibrationSweeperLabHolder"
 	add_child(_holder)
-	_run()
+	if _full_arc_exit_requested():
+		_run_full_arc_exit()
+	else:
+		_run()
+
+
+## The separate full-arc-exit witness is opt-in: the default invocation keeps
+## the original three cases and the bounded 420-tick arc-entry budget.
+func _full_arc_exit_requested() -> bool:
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--full-arc-exit":
+			return true
+	return false
 
 
 func _run() -> void:
@@ -359,19 +394,18 @@ func _case_physical_bridge_repeat(c) -> void:
 	if first_trace.size() != second_trace.size():
 		return
 
-	var compared_fields: Array = [
-		"station_before_m", "station_after_m", "lateral_error_before_m",
-		"lateral_error_after_m", "nearest_distance_m", "position_x_m",
-		"position_y_m", "world_x_m", "world_z_m", "speed_m_s",
-		"forward_speed_m_s", "heading_rad", "steer", "throttle", "brake",
-		"lookahead_m", "target_s_m", "target_speed_m_s",
-	]
+	var compared_fields: Array = TRACE_NUMERIC_REPEAT_FIELDS
 	var max_diffs := {}
 	for field in compared_fields:
 		max_diffs[field] = 0.0
 	var gear_mismatches := 0
 	var status_mismatches := 0
 	var contact_mismatches := 0
+	var tick_mismatches := 0
+	var grounded_mismatches := 0
+	var reverse_mismatches := 0
+	var wall_contact_mismatches := 0
+	var substep_mismatches := 0
 	for index in range(first_trace.size()):
 		var a: Dictionary = first_trace[index]
 		var b: Dictionary = second_trace[index]
@@ -384,6 +418,16 @@ func _case_physical_bridge_repeat(c) -> void:
 			status_mismatches += 1
 		if bool(a["contact"]) != bool(b["contact"]):
 			contact_mismatches += 1
+		if int(a["tick"]) != int(b["tick"]):
+			tick_mismatches += 1
+		if bool(a["grounded"]) != bool(b["grounded"]):
+			grounded_mismatches += 1
+		if bool(a["reverse_engaged"]) != bool(b["reverse_engaged"]):
+			reverse_mismatches += 1
+		if bool(a["wall_contact"]) != bool(b["wall_contact"]):
+			wall_contact_mismatches += 1
+		if int(a["substeps"]) != int(b["substeps"]):
+			substep_mismatches += 1
 
 	var worst := 0.0
 	var worst_field := ""
@@ -400,24 +444,45 @@ func _case_physical_bridge_repeat(c) -> void:
 	c.equal(gear_mismatches, 0, "bridge.repeat_gear_indications_identical")
 	c.equal(status_mismatches, 0, "bridge.repeat_physical_statuses_identical")
 	c.equal(contact_mismatches, 0, "bridge.repeat_contact_flags_identical")
+	c.equal(tick_mismatches, 0, "bridge.repeat_ticks_identical")
+	c.equal(grounded_mismatches, 0, "bridge.repeat_grounded_flags_identical")
+	c.equal(reverse_mismatches, 0, "bridge.repeat_reverse_flags_identical")
+	c.equal(wall_contact_mismatches, 0, "bridge.repeat_wall_contact_flags_identical")
+	c.equal(substep_mismatches, 0, "bridge.repeat_substep_counts_identical")
 
 	c.measurements["repeat_compared_fields"] = compared_fields.duplicate()
+	c.measurements["repeat_exact_fields"] = TRACE_EXACT_REPEAT_FIELDS.duplicate()
 	c.measurements["repeat_max_diffs"] = max_diffs.duplicate()
 	c.measurements["repeat_worst_field"] = worst_field
 	c.measurements["repeat_worst_diff"] = worst
 	c.measurements["repeat_tolerance"] = REPEAT_TOLERANCE
+	c.measurements["repeat_exact_mismatches"] = {
+		"tick": tick_mismatches,
+		"gear_index": gear_mismatches,
+		"result_status": status_mismatches,
+		"grounded": grounded_mismatches,
+		"reverse_engaged": reverse_mismatches,
+		"contact": contact_mismatches,
+		"wall_contact": wall_contact_mismatches,
+		"substeps": substep_mismatches,
+	}
 	c.measurements["first_final"] = first.get("final", {})
 	c.measurements["second_final"] = second.get("final", {})
 	c.measurements["first_selected_samples"] = _selected_samples(first_trace)
 	c.measurements["second_selected_samples"] = _selected_samples(second_trace)
 
 
-func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
+func _run_physical_bridge(
+	c, label: String, path, tuning, expect_input_refusal := false
+) -> Dictionary:
 	var out := {
 		"label": label,
 		"completed": false,
 		"trace": [],
 		"final": {},
+		"input_refusal": {},
+		"steps_called": 0,
+		"ticks_committed": 0,
 	}
 	var lab = _make_lab(c, label)
 	if lab == null:
@@ -433,6 +498,37 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 		await _teardown_lab(lab)
 		return out
 
+	# Validate the bridge inputs at the run entry point, before placement or any
+	# motor step. The refusal case uses the same path as a genuine control rather
+	# than inferring no-step behavior only from component-level API calls.
+	var control_position: Vector2 = lab.state.position_m
+	var control_velocity: Vector2 = lab.state.velocity_m_s
+	var control_heading: float = lab.state.heading_rad
+	var input_refusal := _bridge_input_refusal(path, tuning)
+	out["input_refusal"] = input_refusal.duplicate()
+	if expect_input_refusal:
+		c.check(
+			bool(input_refusal["refused"]),
+			label + ".invalid_input_refused_before_motor_step"
+		)
+		c.equal(
+			String(input_refusal["code"]),
+			"invalid_path",
+			label + ".invalid_input_refusal_code"
+		)
+	else:
+		c.check(not bool(input_refusal["refused"]), label + ".bridge_input_accepted")
+	if bool(input_refusal["refused"]) or expect_input_refusal:
+		c.equal(int(lab.steps_called), 0, label + ".input_control_no_adapter_step")
+		c.equal(int(lab.ticks_committed), 0, label + ".input_control_no_commit")
+		c.check(lab.state.position_m == control_position, label + ".input_control_position_unchanged")
+		c.check(lab.state.velocity_m_s == control_velocity, label + ".input_control_velocity_unchanged")
+		c.check(lab.state.heading_rad == control_heading, label + ".input_control_heading_unchanged")
+		out["steps_called"] = int(lab.steps_called)
+		out["ticks_committed"] = int(lab.ticks_committed)
+		await _teardown_lab(lab)
+		return out
+
 	if not _place_at_sweeper_start(lab, c, label):
 		await _teardown_lab(lab)
 		return out
@@ -445,6 +541,9 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 	var exclusivity_violations := 0
 	var normalization_violations := 0
 	var step_count_mismatches := 0
+	var grounded_ticks := 0
+	var contact_ticks := 0
+	var wall_contact_ticks := 0
 	var max_abs_lateral_error := 0.0
 	var max_nearest_distance := 0.0
 	var max_speed := 0.0
@@ -529,6 +628,12 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 		if first_arc_entry_tick < 0 and post_station >= ARC_ENTRY_STATION_M:
 			first_arc_entry_tick = tick
 			first_arc_entry_station = post_station
+		if post_state.grounded:
+			grounded_ticks += 1
+		if result.contact:
+			contact_ticks += 1
+		if result.wall_contact:
+			wall_contact_ticks += 1
 
 		var world: Vector3 = lab.body.global_transform.origin
 		trace.append({
@@ -574,6 +679,9 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 	c.equal(step_count_mismatches, 0, label + ".exactly_one_adapter_step_and_commit_per_tick")
 	c.equal(int(lab.steps_called), BRIDGE_TICKS, label + ".adapter_steps_exact")
 	c.equal(int(lab.ticks_committed), BRIDGE_TICKS, label + ".committed_ticks_exact")
+	c.equal(grounded_ticks, BRIDGE_TICKS, label + ".grounded_on_every_tick")
+	c.equal(contact_ticks, 0, label + ".no_contacts")
+	c.equal(wall_contact_ticks, 0, label + ".no_wall_contacts")
 	c.check(
 		max_abs_lateral_error <= LATERAL_ERROR_BOUND_M,
 		label + ".lateral_error_within_road_half_width"
@@ -605,6 +713,9 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 		and exclusivity_violations == 0
 		and normalization_violations == 0
 		and step_count_mismatches == 0
+		and grounded_ticks == BRIDGE_TICKS
+		and contact_ticks == 0
+		and wall_contact_ticks == 0
 		and max_abs_lateral_error <= LATERAL_ERROR_BOUND_M
 		and first_arc_entry_tick >= 0
 		and final_station >= ARC_ENTRY_STATION_M
@@ -632,12 +743,17 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 		"logical_drive_time_s": float(BRIDGE_TICKS) / 60.0,
 		"wall_drive_time_s": float(end_ms - start_ms) / 1000.0,
 		"gear_shift_events": int(lab.gear_shift_events.size()),
+		"grounded_ticks": grounded_ticks,
+		"contact_ticks": contact_ticks,
+		"wall_contact_ticks": wall_contact_ticks,
 		"steps_called": int(lab.steps_called),
 		"ticks_committed": int(lab.ticks_committed),
 	}
 	out["completed"] = completed
 	out["trace"] = trace
 	out["final"] = final
+	out["steps_called"] = int(lab.steps_called)
+	out["ticks_committed"] = int(lab.ticks_committed)
 	print(
 		"CALIBRATION_SWEEPER_TRACE ",
 		JSON.stringify({
@@ -656,6 +772,622 @@ func _run_physical_bridge(c, label: String, path, tuning) -> Dictionary:
 	c.measurements[label + "_steps_called"] = int(lab.steps_called)
 	c.measurements[label + "_ticks_committed"] = int(lab.ticks_committed)
 	await _teardown_lab(lab)
+	return out
+
+
+func _bridge_input_refusal(path, tuning) -> Dictionary:
+	if path == null:
+		return {
+			"refused": true,
+			"code": "missing_path",
+			"detail": "bridge input path is null",
+		}
+	if not path.is_valid():
+		return {
+			"refused": true,
+			"code": "invalid_path",
+			"detail": path.validation_error(),
+		}
+	if tuning == null or not tuning.is_valid():
+		return {
+			"refused": true,
+			"code": "invalid_tuning",
+			"detail": "bridge input tuning is missing or invalid",
+		}
+	return {"refused": false, "code": "", "detail": ""}
+
+
+# --- Separate case: full arc exit ------------------------------------------
+
+## Opt-in full-arc-exit witness. Same authored start, same ordinary DriveLab
+## motor/gearbox/MotorBodyAdapter path and same committed CalibrationDriver
+## decisions as the 420-tick bridge, but a hard 1800-tick budget and an exit
+## threshold 6.5 m past the authored arc end. A run that cannot reach the
+## threshold records every tick it did commit and fails honestly; a failing
+## trace is never truncated or hidden.
+func _run_full_arc_exit() -> void:
+	var exit_case := ChecksScript.Case.new()
+	exit_case.name = "full_arc_exit_physical_repeat"
+	await _case_full_arc_exit(exit_case)
+	var result: Dictionary = exit_case.result()
+	_total_checks += int(result["checks"])
+	_total_failures += int(result["checks_failed"])
+	print(
+		"CALIBRATION_SWEEPER_EXIT_CASE ",
+		JSON.stringify({
+			"case": result["case"],
+			"checks": result["checks"],
+			"checks_failed": result["checks_failed"],
+			"pass": result["pass"],
+		})
+	)
+	var summary := {
+		"schema": "roadstorm.calibration_sweeper_lab.exit_summary.v1",
+		"status": "provisional_physical_evidence_not_acceptance",
+		"scope": (
+			"separate full-arc-exit physical witness at the provisional 12 m/s "
+			+ "profile; not grip/drift parity, a lap or M1.7 acceptance"
+		),
+		"profile_status": "provisional_not_tuned_not_benchmark_not_reference",
+		"backend": str(ProjectSettings.get_setting("physics/3d/physics_engine")),
+		"engine_version": Engine.get_version_info(),
+		"tick_budget": FULL_ARC_EXIT_TICKS,
+		"exit_station_m": FULL_ARC_EXIT_STATION_M,
+		"arc_end_station_m": ARC_ENTRY_STATION_M + float(SourceScript.EXPECTED_ARC_LENGTH_M),
+		"repeat_tolerance": REPEAT_TOLERANCE,
+		"cases": 1,
+		"cases_passed": 1 if result["pass"] else 0,
+		"checks": _total_checks,
+		"checks_failed": _total_failures,
+		"pass": bool(result["pass"]),
+		"case_results": [result],
+	}
+	print("CALIBRATION_SWEEPER_EXIT_SUMMARY ", JSON.stringify(summary))
+	print("CHECKS_TOTAL=", _total_checks, " CHECKS_FAILED=", _total_failures)
+	_write_exit_summary_if_requested(summary)
+	get_tree().quit(0 if result["pass"] else 1)
+
+
+func _write_exit_summary_if_requested(summary: Dictionary) -> void:
+	var out_path := ""
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--summary-out="):
+			out_path = arg.substr("--summary-out=".length())
+			break
+	if out_path.is_empty():
+		return
+	var file := FileAccess.open(out_path, FileAccess.WRITE)
+	if file == null:
+		push_error("cannot write calibration sweeper exit summary to %s" % out_path)
+		return
+	file.store_string(JSON.stringify(summary, "  ", false, true))
+	file.close()
+	print("CALIBRATION_SWEEPER_EXIT_SUMMARY_WRITTEN ", out_path)
+
+
+func _case_full_arc_exit(c) -> void:
+	var built := SourceScript.build()
+	if not bool(built["ok"]):
+		c.check(false, "exit.committed_source_build_succeeds: " + String(built["error"]))
+		return
+	var path: DriverScript.CalibrationPath = built["path"]
+	c.check(path.is_valid(), "exit.path_valid: " + path.validation_error())
+	var source_summary: Dictionary = built["summary"]
+	c.equal(String(source_summary["bay_id"]), "sweeper", "exit.source_bay_id")
+	c.equal(
+		String(source_summary["fixture_id"]),
+		SourceScript.EXPECTED_FIXTURE_ID,
+		"exit.source_fixture_id"
+	)
+	c.close(
+		float(source_summary["target_speed_m_s"]),
+		SourceScript.PROVISIONAL_TARGET_SPEED_M_S,
+		0.0,
+		"exit.provisional_target_speed_unchanged"
+	)
+	c.check(
+		String(source_summary["target_speed_provenance"]).contains("not_measured_or_tuned"),
+		"exit.target_speed_provisional"
+	)
+	var tuning := DriverScript.Tuning.make()
+	c.check(tuning != null and tuning.is_valid(), "exit.driver_tuning_valid")
+
+	var arc_end_limit := ARC_ENTRY_STATION_M + float(SourceScript.EXPECTED_ARC_LENGTH_M)
+	c.close(arc_end_limit, 238.495559215388, 1e-6, "exit.authored_arc_end_station")
+	c.check(
+		FULL_ARC_EXIT_STATION_M > arc_end_limit
+		and FULL_ARC_EXIT_STATION_M < float(SourceScript.EXPECTED_TOTAL_LENGTH_M),
+		"exit.threshold_lies_inside_authored_exit_segment"
+	)
+
+	var first: Dictionary = await _run_full_arc_exit_bridge(c, "first", path, tuning)
+	var second: Dictionary = await _run_full_arc_exit_bridge(c, "second", path, tuning)
+
+	var repeat := _compare_exit_runs(c, first, second)
+	c.check(bool(first.get("completed", false)), "exit.first_run_completed")
+	c.check(bool(second.get("completed", false)), "exit.second_run_completed")
+	c.check(
+		bool(first.get("reached_exit_threshold", false)),
+		"exit.first_reached_245m_within_budget"
+	)
+	c.check(
+		bool(second.get("reached_exit_threshold", false)),
+		"exit.second_reached_245m_within_budget"
+	)
+
+	var first_final: Dictionary = first.get("final", {})
+	var second_final: Dictionary = second.get("final", {})
+	c.measurements["exit_tick_budget"] = FULL_ARC_EXIT_TICKS
+	c.measurements["exit_station_threshold_m"] = FULL_ARC_EXIT_STATION_M
+	c.measurements["arc_end_station_m"] = arc_end_limit
+	c.measurements["first_final"] = first_final.duplicate(true)
+	c.measurements["second_final"] = second_final.duplicate(true)
+	c.measurements["repeat"] = repeat
+	c.measurements["first_trace_ticks"] = first.get("trace", []).size()
+	c.measurements["second_trace_ticks"] = second.get("trace", []).size()
+
+
+func _run_full_arc_exit_bridge(c, label: String, path, tuning) -> Dictionary:
+	var out := {
+		"label": label,
+		"completed": false,
+		"reached_exit_threshold": false,
+		"trace": [],
+		"final": {},
+	}
+	var lab = _make_lab(c, label)
+	if lab == null:
+		return out
+	await _settle()
+	lab.set_auto_tick(false)
+	c.check(not lab.is_auto_tick(), label + ".auto_tick_disabled")
+	c.check(not lab.failed, label + ".laboratory_not_failed_after_settle")
+	c.check(not lab.halted, label + ".laboratory_not_halted_after_settle")
+	c.equal(int(lab.steps_called), 0, label + ".settle_made_no_adapter_calls")
+	if lab.failed or lab.halted or lab.state == null or not lab.state.is_finite():
+		c.check(false, label + ".initial_committed_state_finite")
+		await _teardown_lab(lab)
+		return out
+	var input_refusal := _bridge_input_refusal(path, tuning)
+	c.check(not bool(input_refusal["refused"]), label + ".bridge_input_accepted")
+	if bool(input_refusal["refused"]):
+		await _teardown_lab(lab)
+		return out
+	if not _place_at_sweeper_start(lab, c, label):
+		await _teardown_lab(lab)
+		return out
+
+	var trace: Array = []
+	var accepted_decisions := 0
+	var refused_decisions := 0
+	var physical_commits := 0
+	var finite_states := 0
+	var validated_stations := 0
+	var exclusivity_violations := 0
+	var normalization_violations := 0
+	var step_count_mismatches := 0
+	var max_abs_lateral_error := 0.0
+	var max_nearest_distance := 0.0
+	var min_speed := INF
+	var max_speed := 0.0
+	var min_station_delta := INF
+	var final_station := 0.0
+	var final_state = lab.state
+	var first_arc_entry_tick := -1
+	var first_arc_entry_station := 0.0
+	var arc_end_tick := -1
+	var arc_end_station := 0.0
+	var threshold_tick := -1
+	var threshold_station := 0.0
+	var grounded_ticks := 0
+	var contact_ticks := 0
+	var wall_contact_ticks := 0
+	var gear_indices: Array = []
+	var stop_reason := "budget_exhausted"
+	var reached := false
+	var start_ms := Time.get_ticks_msec()
+	var end_ms := start_ms
+	var arc_end_limit := ARC_ENTRY_STATION_M + float(SourceScript.EXPECTED_ARC_LENGTH_M)
+
+	for tick in range(FULL_ARC_EXIT_TICKS):
+		end_ms = Time.get_ticks_msec()
+		if lab.failed or lab.halted:
+			c.check(false, label + ".laboratory_alive_at_tick_%d" % tick)
+			stop_reason = "laboratory_stopped"
+			break
+		var committed_state = lab.state
+		if committed_state == null or not committed_state.is_finite():
+			c.check(false, label + ".finite_committed_input_state_tick_%d" % tick)
+			stop_reason = "nonfinite_input_state"
+			break
+
+		var before_fix := _nearest_station(path, committed_state.position_m)
+		var station := float(before_fix["station_m"])
+		var lateral_before := float(before_fix["lateral_error_m"])
+		var distance_before := float(before_fix["distance_m"])
+		var station_valid := (
+			is_finite(station)
+			and is_finite(lateral_before)
+			and is_finite(distance_before)
+			and distance_before <= ROAD_HALF_WIDTH_M + PATH_PROBE_TOLERANCE_M
+		)
+		if not station_valid:
+			c.check(false, label + ".validated_sweeper_station_tick_%d" % tick)
+			stop_reason = "nearest_projection_left_road_envelope"
+			break
+		validated_stations += 1
+
+		var decision: DriverScript.Decision = DriverScript.decide(
+			committed_state, path, station, tuning
+		)
+		if not decision.accepted or decision.command == null:
+			c.check(false, label + ".decision_accepted_tick_%d" % tick)
+			refused_decisions += 1
+			stop_reason = "driver_decision_refused"
+			break
+		accepted_decisions += 1
+		var command = decision.command
+		if not command.is_normalized():
+			normalization_violations += 1
+		if command.throttle > 0.0 and command.brake > 0.0:
+			exclusivity_violations += 1
+
+		var steps_before := int(lab.steps_called)
+		var commits_before := int(lab.ticks_committed)
+		var result: AdapterScript.Result = lab.step_once(command)
+		if result == null:
+			c.check(false, label + ".physical_result_present_tick_%d" % tick)
+			stop_reason = "missing_physical_result"
+			break
+		if int(result.status) != int(AdapterScript.Status.COMMITTED):
+			c.check(false, label + ".physical_commit_tick_%d" % tick)
+			stop_reason = "physical_refusal"
+			break
+		physical_commits += 1
+		if int(lab.steps_called) != steps_before + 1:
+			step_count_mismatches += 1
+		if int(lab.ticks_committed) != commits_before + 1:
+			step_count_mismatches += 1
+
+		var post_state = lab.state
+		if post_state == null or not post_state.is_finite():
+			c.check(false, label + ".finite_committed_output_state_tick_%d" % tick)
+			stop_reason = "nonfinite_output_state"
+			break
+		finite_states += 1
+		final_state = post_state
+		var after_fix := _nearest_station(path, post_state.position_m)
+		var post_station := float(after_fix["station_m"])
+		var lateral_after := float(after_fix["lateral_error_m"])
+		var distance_after := float(after_fix["distance_m"])
+		final_station = post_station
+		min_station_delta = minf(min_station_delta, post_station - station)
+		max_abs_lateral_error = maxf(max_abs_lateral_error, absf(lateral_after))
+		max_nearest_distance = maxf(max_nearest_distance, distance_after)
+		min_speed = minf(min_speed, post_state.speed_m_s())
+		max_speed = maxf(max_speed, post_state.speed_m_s())
+		if first_arc_entry_tick < 0 and post_station >= ARC_ENTRY_STATION_M:
+			first_arc_entry_tick = tick
+			first_arc_entry_station = post_station
+		if arc_end_tick < 0 and post_station >= arc_end_limit:
+			arc_end_tick = tick
+			arc_end_station = post_station
+		if threshold_tick < 0 and post_station >= FULL_ARC_EXIT_STATION_M:
+			threshold_tick = tick
+			threshold_station = post_station
+		if post_state.grounded:
+			grounded_ticks += 1
+		if result.contact:
+			contact_ticks += 1
+		if result.wall_contact:
+			wall_contact_ticks += 1
+		var gear := int(post_state.gear_index)
+		if not gear_indices.has(gear):
+			gear_indices.append(gear)
+
+		var world: Vector3 = lab.body.global_transform.origin
+		trace.append({
+			"tick": tick,
+			"station_before_m": station,
+			"station_after_m": post_station,
+			"station_delta_m": post_station - station,
+			"lateral_error_before_m": lateral_before,
+			"lateral_error_after_m": lateral_after,
+			"nearest_distance_m": distance_after,
+			"position_x_m": post_state.position_m.x,
+			"position_y_m": post_state.position_m.y,
+			"world_x_m": world.x,
+			"world_z_m": world.z,
+			"world_y_m": world.y,
+			"speed_m_s": post_state.speed_m_s(),
+			"forward_speed_m_s": post_state.forward_speed_m_s(),
+			"heading_rad": post_state.heading_rad,
+			"steer": command.steer,
+			"throttle": command.throttle,
+			"brake": command.brake,
+			"lookahead_m": decision.telemetry.lookahead_m,
+			"target_s_m": decision.telemetry.target_s_m,
+			"target_speed_m_s": decision.telemetry.target_speed_m_s,
+			"gear_index": int(post_state.gear_index),
+			"result_status": int(result.status),
+			"grounded": post_state.grounded,
+			"reverse_engaged": post_state.reverse_engaged,
+			"contact": result.contact,
+			"wall_contact": result.wall_contact,
+			"substeps": result.substeps,
+			"remainder_m": result.remainder_m,
+			"drive_lab_straight_projection_m": lab.get_road_station_m(),
+		})
+		await get_tree().physics_frame
+		if post_station >= FULL_ARC_EXIT_STATION_M:
+			reached = true
+			stop_reason = "exit_threshold_reached"
+			break
+
+	gear_indices.sort()
+	c.equal(
+		accepted_decisions,
+		trace.size(),
+		label + ".every_recorded_tick_had_one_accepted_decision"
+	)
+	c.equal(
+		physical_commits,
+		trace.size(),
+		label + ".every_recorded_tick_physically_committed"
+	)
+	c.equal(finite_states, trace.size(), label + ".all_committed_states_finite")
+	c.equal(
+		validated_stations,
+		trace.size(),
+		label + ".all_stations_externally_validated"
+	)
+	c.equal(refused_decisions, 0, label + ".no_refused_driver_decisions")
+	c.equal(exclusivity_violations, 0, label + ".throttle_brake_mutually_exclusive")
+	c.equal(normalization_violations, 0, label + ".commands_normalized")
+	c.equal(
+		step_count_mismatches,
+		0,
+		label + ".exactly_one_adapter_step_and_commit_per_tick"
+	)
+	c.equal(
+		int(lab.steps_called),
+		trace.size(),
+		label + ".adapter_steps_equal_recorded_ticks"
+	)
+	c.equal(
+		int(lab.ticks_committed),
+		trace.size(),
+		label + ".committed_ticks_equal_recorded_ticks"
+	)
+	c.check(trace.size() <= FULL_ARC_EXIT_TICKS, label + ".within_hard_tick_budget")
+	c.check(
+		max_abs_lateral_error <= LATERAL_ERROR_BOUND_M,
+		label + ".lateral_error_within_road_half_width"
+	)
+	c.check(
+		max_nearest_distance <= ROAD_HALF_WIDTH_M + PATH_PROBE_TOLERANCE_M,
+		label + ".nearest_distance_within_road"
+	)
+	c.check(
+		min_station_delta >= -STATION_MONOTONIC_TOLERANCE_M,
+		label + ".external_station_monotonic"
+	)
+	c.equal(grounded_ticks, trace.size(), label + ".grounded_on_every_recorded_tick")
+	c.equal(contact_ticks, 0, label + ".no_contacts")
+	c.equal(wall_contact_ticks, 0, label + ".no_wall_contacts")
+	c.check(arc_end_tick >= 0, label + ".authored_arc_end_observed")
+	c.check(reached, label + ".reached_station_245m_within_budget")
+	c.check(not lab.failed, label + ".laboratory_not_failed_after_run")
+	c.check(not lab.halted, label + ".laboratory_not_halted_after_run")
+
+	var completed: bool = (
+		accepted_decisions == trace.size()
+		and physical_commits == trace.size()
+		and finite_states == trace.size()
+		and validated_stations == trace.size()
+		and refused_decisions == 0
+		and exclusivity_violations == 0
+		and normalization_violations == 0
+		and step_count_mismatches == 0
+		and max_abs_lateral_error <= LATERAL_ERROR_BOUND_M
+		and max_nearest_distance <= ROAD_HALF_WIDTH_M + PATH_PROBE_TOLERANCE_M
+		and min_station_delta >= -STATION_MONOTONIC_TOLERANCE_M
+		and grounded_ticks == trace.size()
+		and contact_ticks == 0
+		and wall_contact_ticks == 0
+		and arc_end_tick >= 0
+		and reached
+		and not lab.failed
+		and not lab.halted
+	)
+	var final := {
+		"label": label,
+		"committed_ticks": trace.size(),
+		"reached_exit_threshold": reached,
+		"stop_reason": stop_reason,
+		"station_m": final_station,
+		"arc_entry_tick": first_arc_entry_tick,
+		"arc_entry_station_m": first_arc_entry_station,
+		"arc_end_tick": arc_end_tick,
+		"arc_end_station_m": arc_end_station,
+		"threshold_tick": threshold_tick,
+		"threshold_station_m": threshold_station,
+		"max_abs_lateral_error_m": max_abs_lateral_error,
+		"max_nearest_distance_m": max_nearest_distance,
+		"min_station_delta_m": 0.0 if min_station_delta == INF else min_station_delta,
+		"min_speed_m_s": 0.0 if min_speed == INF else min_speed,
+		"max_speed_m_s": max_speed,
+		"final_speed_m_s": final_state.speed_m_s(),
+		"final_forward_speed_m_s": final_state.forward_speed_m_s(),
+		"final_position_x_m": final_state.position_m.x,
+		"final_position_y_m": final_state.position_m.y,
+		"final_world_x_m": lab.body.global_transform.origin.x,
+		"final_world_z_m": lab.body.global_transform.origin.z,
+		"final_heading_rad": final_state.heading_rad,
+		"gear_indices_seen": gear_indices.duplicate(),
+		"gear_shift_events": int(lab.gear_shift_events.size()),
+		"grounded_ticks": grounded_ticks,
+		"contact_ticks": contact_ticks,
+		"wall_contact_ticks": wall_contact_ticks,
+		"steps_called": int(lab.steps_called),
+		"ticks_committed": int(lab.ticks_committed),
+		"road_half_width_breach": (
+			max_abs_lateral_error > LATERAL_ERROR_BOUND_M
+			or max_nearest_distance > ROAD_HALF_WIDTH_M + PATH_PROBE_TOLERANCE_M
+		),
+		"logical_drive_time_s": float(trace.size()) / 60.0,
+		"wall_drive_time_s": float(end_ms - start_ms) / 1000.0,
+	}
+	out["completed"] = completed
+	out["reached_exit_threshold"] = reached
+	out["trace"] = trace
+	out["final"] = final
+	print(
+		"CALIBRATION_SWEEPER_EXIT_TRACE ",
+		JSON.stringify({
+			"schema": FULL_ARC_EXIT_TRACE_SCHEMA,
+			"run": label,
+			"profile_status": "provisional_not_tuned_not_benchmark_not_reference",
+			"ticks": trace.size(),
+			"reached_exit_threshold": reached,
+			"stop_reason": stop_reason,
+			"arc_entry_tick": first_arc_entry_tick,
+			"arc_end_tick": arc_end_tick,
+			"threshold_tick": threshold_tick,
+			"selected_samples": _select_exit_samples(trace),
+		})
+	)
+	c.measurements[label + "_final"] = final.duplicate(true)
+	c.measurements[label + "_trace_ticks"] = trace.size()
+	c.measurements[label + "_selected_samples"] = _select_exit_samples(trace)
+	c.measurements[label + "_steps_called"] = int(lab.steps_called)
+	c.measurements[label + "_ticks_committed"] = int(lab.ticks_committed)
+	await _teardown_lab(lab)
+	return out
+
+
+func _compare_exit_runs(c, first: Dictionary, second: Dictionary) -> Dictionary:
+	var a: Array = first.get("trace", [])
+	var b: Array = second.get("trace", [])
+	c.equal(a.size(), b.size(), "exit.repeat_trace_lengths_match")
+	var common := mini(a.size(), b.size())
+	var max_diffs := {}
+	for field in TRACE_NUMERIC_REPEAT_FIELDS:
+		max_diffs[field] = 0.0
+	var gear_mismatches := 0
+	var status_mismatches := 0
+	var contact_mismatches := 0
+	var grounded_mismatches := 0
+	var reverse_mismatches := 0
+	var wall_mismatches := 0
+	var substep_mismatches := 0
+	var tick_mismatches := 0
+	for index in range(common):
+		var ra: Dictionary = a[index]
+		var rb: Dictionary = b[index]
+		for field in TRACE_NUMERIC_REPEAT_FIELDS:
+			var diff := absf(float(ra[field]) - float(rb[field]))
+			max_diffs[field] = maxf(float(max_diffs[field]), diff)
+		if int(ra["tick"]) != int(rb["tick"]):
+			tick_mismatches += 1
+		if int(ra["gear_index"]) != int(rb["gear_index"]):
+			gear_mismatches += 1
+		if int(ra["result_status"]) != int(rb["result_status"]):
+			status_mismatches += 1
+		if bool(ra["contact"]) != bool(rb["contact"]):
+			contact_mismatches += 1
+		if bool(ra["grounded"]) != bool(rb["grounded"]):
+			grounded_mismatches += 1
+		if bool(ra["reverse_engaged"]) != bool(rb["reverse_engaged"]):
+			reverse_mismatches += 1
+		if bool(ra["wall_contact"]) != bool(rb["wall_contact"]):
+			wall_mismatches += 1
+		if int(ra["substeps"]) != int(rb["substeps"]):
+			substep_mismatches += 1
+	var worst := 0.0
+	var worst_field := ""
+	for field in TRACE_NUMERIC_REPEAT_FIELDS:
+		var value := float(max_diffs[field])
+		if value > worst:
+			worst = value
+			worst_field = String(field)
+	var first_final: Dictionary = first.get("final", {})
+	var second_final: Dictionary = second.get("final", {})
+	for metric in [
+		"station_m", "arc_entry_station_m", "arc_end_station_m",
+		"threshold_station_m", "max_abs_lateral_error_m", "max_nearest_distance_m",
+		"min_station_delta_m", "min_speed_m_s", "max_speed_m_s",
+	]:
+		var value_a := float(first_final.get(metric, NAN))
+		var value_b := float(second_final.get(metric, NAN))
+		c.check(
+			is_finite(value_a) and is_finite(value_b) and absf(value_a - value_b) <= REPEAT_TOLERANCE,
+			"exit.repeat_metric_%s_within_tolerance" % metric
+		)
+	c.equal(
+		int(first_final.get("committed_ticks", -1)),
+		int(second_final.get("committed_ticks", -2)),
+		"exit.repeat_committed_tick_count_identical"
+	)
+	c.equal(
+		int(first_final.get("arc_end_tick", -1)),
+		int(second_final.get("arc_end_tick", -2)),
+		"exit.repeat_arc_end_tick_identical"
+	)
+	c.equal(
+		int(first_final.get("threshold_tick", -1)),
+		int(second_final.get("threshold_tick", -2)),
+		"exit.repeat_threshold_tick_identical"
+	)
+	c.equal(
+		int(first_final.get("grounded_ticks", -1)),
+		int(second_final.get("grounded_ticks", -2)),
+		"exit.repeat_grounded_tick_count_identical"
+	)
+	c.check(
+		worst <= REPEAT_TOLERANCE,
+		"exit.same_host_repeat_within_tolerance (worst %s=%s tol=%s)"
+			% [worst_field, str(worst), str(REPEAT_TOLERANCE)]
+	)
+	c.equal(gear_mismatches, 0, "exit.repeat_gear_indications_identical")
+	c.equal(status_mismatches, 0, "exit.repeat_physical_statuses_identical")
+	c.equal(contact_mismatches, 0, "exit.repeat_contact_flags_identical")
+	c.equal(grounded_mismatches, 0, "exit.repeat_grounded_flags_identical")
+	c.equal(reverse_mismatches, 0, "exit.repeat_reverse_flags_identical")
+	c.equal(wall_mismatches, 0, "exit.repeat_wall_contact_flags_identical")
+	c.equal(substep_mismatches, 0, "exit.repeat_substep_counts_identical")
+	c.equal(tick_mismatches, 0, "exit.repeat_ticks_identical")
+	return {
+		"compared_fields": TRACE_NUMERIC_REPEAT_FIELDS.duplicate(),
+		"exact_fields": TRACE_EXACT_REPEAT_FIELDS.duplicate(),
+		"max_diffs": max_diffs.duplicate(),
+		"worst_field": worst_field,
+		"worst_diff": worst,
+		"repeat_tolerance": REPEAT_TOLERANCE,
+		"common_ticks_compared": common,
+		"gear_mismatches": gear_mismatches,
+		"status_mismatches": status_mismatches,
+		"contact_mismatches": contact_mismatches,
+		"grounded_mismatches": grounded_mismatches,
+		"reverse_mismatches": reverse_mismatches,
+		"wall_contact_mismatches": wall_mismatches,
+		"substep_mismatches": substep_mismatches,
+		"tick_mismatches": tick_mismatches,
+	}
+
+
+func _select_exit_samples(trace: Array) -> Array:
+	var wanted := [0, 150, 300, 450, 600, 750, 900, 1050, 1200, 1350, 1500, 1650, 1799]
+	var out: Array = []
+	var seen := {}
+	for index in wanted:
+		if index >= 0 and index < trace.size() and not seen.has(index):
+			seen[index] = true
+			out.append(trace[index])
+	if trace.size() > 0:
+		var last_index := trace.size() - 1
+		if not seen.has(last_index):
+			out.append(trace[last_index])
 	return out
 
 
@@ -717,6 +1449,41 @@ func _case_invalid_source_refusal(c) -> void:
 	)
 	c.equal(decision.refusal_label, "invalid_path", "refusal.refusal_label")
 	c.check(not decision.refusal_detail.is_empty(), "refusal.refusal_detail_present")
+
+	# Bridge-path control: pass the invalid produced path through the same
+	# physical bridge entry point used by the genuine runs. It must be refused
+	# before placement or the first adapter step. Missing/changed authored-source
+	# cases above remain component-refusal tests of the conversion API.
+	var bridge_control: Dictionary = await _run_physical_bridge(
+		c, "refusal_bridge_control", invalid_path, tuning, true
+	)
+	var control_refusal: Dictionary = bridge_control.get("input_refusal", {}) as Dictionary
+	var control_trace: Array = bridge_control.get("trace", []) as Array
+	c.check(
+		bool(control_refusal.get("refused", false)),
+		"refusal.bridge_entry_refused_invalid_path"
+	)
+	c.equal(
+		String(control_refusal.get("code", "")),
+		"invalid_path",
+		"refusal.bridge_entry_refusal_code"
+	)
+	c.equal(control_trace.size(), 0, "refusal.bridge_entry_recorded_no_ticks")
+	c.equal(
+		int(bridge_control.get("steps_called", -1)),
+		0,
+		"refusal.bridge_entry_no_adapter_step"
+	)
+	c.equal(
+		int(bridge_control.get("ticks_committed", -1)),
+		0,
+		"refusal.bridge_entry_no_commit"
+	)
+	c.check(
+		not bool(bridge_control.get("completed", true)),
+		"refusal.bridge_entry_did_not_complete"
+	)
+	c.measurements["bridge_control_refusal"] = control_refusal.duplicate()
 
 	# No motor step may accompany a refused or unusable source.
 	c.equal(int(lab.steps_called), steps_before, "refusal.no_additional_adapter_step")

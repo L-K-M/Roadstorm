@@ -4,7 +4,8 @@
 # Usage:
 #   run_validation.sh [--project DIR] [--godot BIN] [--lock FILE]
 #       [--timeout SECONDS] [--outer-timeout SECONDS] [--log FILE]
-#       [--summary-out FILE] [--keep-scratch]
+#       [--summary-out FILE] [--full-arc-exit] [--exit-log FILE]
+#       [--exit-summary-out FILE] [--keep-scratch]
 #
 # Stages a private copy of the project and a private Godot cache/config/data
 # directory into a temporary directory (never the live checkout), imports it,
@@ -29,17 +30,23 @@ TIMEOUT_S=${ROADSTORM_TEST_TIMEOUT:-120}
 OUTER_TIMEOUT_S=${ROADSTORM_OUTER_TIMEOUT:-600}
 LOG_FILE=""
 SUMMARY_OUT=""
+FULL_ARC_EXIT=0
+EXIT_LOG_FILE=""
+EXIT_SUMMARY_OUT=""
 KEEP_SCRATCH=0
+CLEANUP_DONE=0
 
 usage() {
 	cat <<'EOF'
 Usage: run_validation.sh [--project DIR] [--godot BIN] [--lock FILE]
        [--timeout SECONDS] [--outer-timeout SECONDS] [--log FILE]
-       [--summary-out FILE] [--keep-scratch]
+       [--summary-out FILE] [--full-arc-exit] [--exit-log FILE]
+       [--exit-summary-out FILE] [--keep-scratch]
 
 Stages a private project/cache/tmp copy, imports it, then runs the physical
 CalibrationDriver/DriveLab bridge validator and deliberate failure probe under
-pinned Godot.
+pinned Godot. With --full-arc-exit it additionally runs the separate bounded
+full-arc-exit witness (hard 1800 committed ticks, station >=245 m threshold).
 EOF
 }
 
@@ -86,6 +93,18 @@ while [ $# -gt 0 ]; do
 		SUMMARY_OUT=$2; shift 2 ;;
 	--summary-out=*)
 		SUMMARY_OUT=${1#*=}; shift ;;
+	--full-arc-exit)
+		FULL_ARC_EXIT=1; shift ;;
+	--exit-log)
+		[ $# -ge 2 ] || die_usage "--exit-log needs a value"
+		EXIT_LOG_FILE=$2; shift 2 ;;
+	--exit-log=*)
+		EXIT_LOG_FILE=${1#*=}; shift ;;
+	--exit-summary-out)
+		[ $# -ge 2 ] || die_usage "--exit-summary-out needs a value"
+		EXIT_SUMMARY_OUT=$2; shift 2 ;;
+	--exit-summary-out=*)
+		EXIT_SUMMARY_OUT=${1#*=}; shift ;;
 	--keep-scratch)
 		KEEP_SCRATCH=1; shift ;;
 	-h | --help)
@@ -133,6 +152,21 @@ touch "$LOCK_FILE" 2>/dev/null || {
 	exit 2
 }
 
+if [ "$FULL_ARC_EXIT" -eq 1 ]; then
+	if [ -z "$EXIT_LOG_FILE" ] && [ -n "$LOG_FILE" ]; then
+		case "$LOG_FILE" in
+		*.log) EXIT_LOG_FILE=${LOG_FILE%.log}.exit.log ;;
+		*) EXIT_LOG_FILE=$LOG_FILE.exit ;;
+		esac
+	fi
+	if [ -z "$EXIT_SUMMARY_OUT" ] && [ -n "$SUMMARY_OUT" ]; then
+		case "$SUMMARY_OUT" in
+		*.json) EXIT_SUMMARY_OUT=${SUMMARY_OUT%.json}.exit.json ;;
+		*) EXIT_SUMMARY_OUT=$SUMMARY_OUT.exit ;;
+		esac
+	fi
+fi
+
 PINNED="4.7.2.stable.official.ed1daf0bf"
 if [ -r "$PROJECT/tools/toolchain/pin/engine.txt" ]; then
 	PINNED_FROM_FILE=$(sed -n 's/^version_string=//p' "$PROJECT/tools/toolchain/pin/engine.txt" | head -n 1)
@@ -151,6 +185,57 @@ stop_exact_child() {
 		kill -KILL "$_child" 2>/dev/null || true
 		echo "[run-calibration-sweeper] stopped stranded exact Godot child $_child" >&2
 	fi
+}
+
+# The scratch root is created fresh by this runner. These helpers never accept
+# a user-supplied cleanup path, never follow symlinks during permission repair,
+# and remove only the exact mktemp child named calibration-sweeper-lab-stage.*.
+stage_is_safe_scratch() {
+	[ -n "${stage:-}" ] || return 1
+	[ -d "$stage" ] || return 1
+	[ ! -L "$stage" ] || return 1
+	case "$stage" in
+	*/calibration-sweeper-lab-stage.*) return 0 ;;
+	esac
+	return 1
+}
+
+make_scratch_writable() {
+	stage_is_safe_scratch || return 1
+	_chmod_output=$(find "$stage" \( -type d -o -type f \) -exec chmod u+rwX {} + 2>&1)
+	_chmod_rc=$?
+	if [ "$_chmod_rc" -ne 0 ]; then
+		echo "run_validation: cannot make private scratch copy writable: $stage" >&2
+		if [ -n "$_chmod_output" ]; then
+			printf '%s\n' "$_chmod_output" | sed -n '1,20p' >&2
+		fi
+		return 1
+	fi
+	return 0
+}
+
+cleanup_scratch() {
+	[ "$KEEP_SCRATCH" -eq 0 ] || return 0
+	[ -n "${stage:-}" ] || return 0
+	if [ ! -e "$stage" ] && [ ! -L "$stage" ]; then
+		return 0
+	fi
+	if ! stage_is_safe_scratch; then
+		echo "run_validation: refusing unsafe scratch cleanup path: $stage" >&2
+		return 1
+	fi
+	make_scratch_writable
+	_chmod_rc=$?
+	_rm_output=$(rm -rf -- "$stage" 2>&1)
+	_rm_rc=$?
+	if [ "$_chmod_rc" -ne 0 ] || [ "$_rm_rc" -ne 0 ] || [ -e "$stage" ] || [ -L "$stage" ]; then
+		echo "run_validation: scratch cleanup failed for $stage" >&2
+		if [ -n "$_rm_output" ]; then
+			printf '%s\n' "$_rm_output" | sed -n '1,20p' >&2
+		fi
+		return 1
+	fi
+	return 0
 }
 
 # run_godot <logfile> <command...>: one serialized, outer-bounded engine call.
@@ -192,8 +277,9 @@ stage=$(CDPATH= cd -- "$stage" 2>/dev/null && pwd) || {
 }
 cleanup() {
 	stop_exact_child
-	if [ "$KEEP_SCRATCH" -eq 0 ] && [ -n "$stage" ] && [ -d "$stage" ]; then
-		rm -rf "$stage"
+	if [ "$CLEANUP_DONE" -eq 0 ]; then
+		CLEANUP_DONE=1
+		cleanup_scratch || true
 	fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -209,6 +295,10 @@ mkdir -p "$stage/tools" || exit 2
 cp -R "$PROJECT/tools/calibration_path_lab" "$stage/tools/calibration_path_lab" || exit 2
 cp -R "$PROJECT/tools/calibration_sweeper_lab" "$stage/tools/calibration_sweeper_lab" || exit 2
 find "$stage" -type d -name .godot -prune -exec rm -rf {} + 2>/dev/null
+if ! make_scratch_writable; then
+	echo "run_validation: unsafe or unwritable private scratch copy" >&2
+	exit 2
+fi
 mkdir -p "$stage/cache" "$stage/config" "$stage/data" "$stage/home" "$stage/tmp" || exit 2
 export TMPDIR="$stage/tmp"
 export HOME="$stage/home"
@@ -325,6 +415,61 @@ else
 	echo "[run-calibration-sweeper] skipping deliberate failure probe: validator did not pass" >&2
 fi
 
+# Separate opt-in full-arc-exit witness. It runs only after the original
+# validator passed, so a broken primary path cannot hide behind this extra
+# case. The primary validation and its deliberate probe are still required.
+if [ "$FULL_ARC_EXIT" -eq 1 ]; then
+	if [ "$probe_allowed" -eq 1 ]; then
+		exit_log="$stage/exit_validator.log"
+		: >"$exit_log"
+		echo "[run-calibration-sweeper] running separate full-arc-exit physical witness (hard 1800-tick budget)"
+		run_godot "$exit_log" "$GODOT_BIN" --headless --fixed-fps 60 \
+			--path "$stage" --script res://tools/calibration_sweeper_lab/validate_calibration_sweeper_lab.gd \
+			-- --full-arc-exit --summary-out="$stage/exit_summary.json"
+		exit_rc=$?
+		if grep -nE "$error_re" "$exit_log"; then
+			echo "run_validation: exit validator log reported engine errors" >&2
+			status=1
+		fi
+		exit_summary=$(grep '^CALIBRATION_SWEEPER_EXIT_SUMMARY ' "$exit_log" | tail -n 1)
+		if [ -z "$exit_summary" ]; then
+			echo "run_validation: exit validator produced no CALIBRATION_SWEEPER_EXIT_SUMMARY" >&2
+			status=1
+		fi
+		case "$exit_summary" in
+		*'"pass":true'*) ;;
+		*)
+			echo "run_validation: exit validator did not report pass=true" >&2
+			status=1
+			;;
+		esac
+		exit_total=$(sed -n 's/.*CHECKS_TOTAL=//p' "$exit_log" | tail -n 1)
+		exit_failed=$(sed -n 's/.*CHECKS_FAILED=//p' "$exit_log" | tail -n 1)
+		echo "[run-calibration-sweeper] exit validator rc=$exit_rc checks_total=${exit_total:-?} checks_failed=${exit_failed:-?}"
+		# Bounded console view: compact per-run selected-sample lines stay in
+		# the log; the console shows only the surrounding evidence.
+		grep -v '^CALIBRATION_SWEEPER_EXIT_TRACE ' "$exit_log" | tail -n 40
+		if [ "$exit_rc" -ne 0 ]; then
+			status=1
+		fi
+		if [ -n "$EXIT_LOG_FILE" ]; then
+			tail -c 2097152 "$exit_log" >"$EXIT_LOG_FILE" || status=1
+			echo "[run-calibration-sweeper] exit validator log copied to $EXIT_LOG_FILE (bounded to 2 MiB)"
+		fi
+		if [ -n "$EXIT_SUMMARY_OUT" ]; then
+			if [ -r "$stage/exit_summary.json" ]; then
+				tail -c 4194304 "$stage/exit_summary.json" >"$EXIT_SUMMARY_OUT" || status=1
+				echo "[run-calibration-sweeper] structured exit summary written to $EXIT_SUMMARY_OUT"
+			else
+				echo "run_validation: exit validator wrote no structured summary" >&2
+				status=1
+			fi
+		fi
+	else
+		echo "[run-calibration-sweeper] skipping full-arc-exit witness: primary validator did not pass" >&2
+	fi
+fi
+
 if [ -n "$LOG_FILE" ]; then
 	tail -c 2097152 "$validator_log" >"$LOG_FILE" || status=1
 	echo "[run-calibration-sweeper] validator log copied to $LOG_FILE (bounded to 2 MiB)"
@@ -342,6 +487,14 @@ fi
 
 if [ "$KEEP_SCRATCH" -eq 1 ]; then
 	echo "[run-calibration-sweeper] logs kept in $stage"
+fi
+
+# Verify removal of this runner's own scratch before reporting success. A
+# read-only archived source must not leave a false PASS behind a failed rm.
+if [ "$CLEANUP_DONE" -eq 0 ]; then
+	CLEANUP_DONE=1
+	stop_exact_child
+	cleanup_scratch || status=1
 fi
 
 if [ "$status" -eq 0 ]; then
