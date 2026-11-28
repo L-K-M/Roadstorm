@@ -20,9 +20,11 @@ extends RefCounted
 ##   * the committed state, the selected wall point, the selected raw normal
 ##     and the collision-time frame must be finite, and the frame must be
 ##     non-degenerate, so an affine-inverse local point can be computed;
-##   * the witness post velocity must agree with the committed state's planar
-##     velocity mapped back to world axes, because the committed state is the
-##     authority for the post-response velocity;
+##   * the witness post velocity must equal the committed state's planar
+##     velocity mapped back to world axes exactly, because the committed state
+##     is the authority for the post-response velocity; the adapter samples the
+##     witness and the committed planar velocity from the same world vector, so
+##     their round trip is bit-exact and no tolerance is admitted here;
 ##   * the published normal is the normalized road-plane projection of the
 ##     adapter's selected `wall_contact_normal`, never the raw possibly tilted
 ##     normal and never the generic first-contact `contact_normal`;
@@ -37,8 +39,14 @@ extends RefCounted
 ## post-yaw pose; the record describes the contact, and a consumer that needs
 ## the final pose must transform again. Region is classified from that local
 ## point against half the validated `Config.hull_size_m` extents (local -Z
-## forward, +X right), with a deterministic tie: an exact corner tie resolves
-## to FRONT/REAR.
+## forward, +X right). A box-wall contact lands on a hull vertex, so its two
+## normalized distances differ by solver noise rather than exactly zero; when
+## they are within `REGION_TIE_MARGIN` the collision-time response normal,
+## transformed by the same frame's inverse basis, identifies the struck face.
+## A normal whose X and Z components are too close to call identifies nothing
+## and classification falls back to the exact-point comparison, whose
+## deterministic corner tie resolves to FRONT/REAR. Unambiguous contacts
+## outside the margin stay point-classified.
 ##
 ## On this adapter path the wall response alters velocity after the sweep and
 ## performs no further body movement, so `imparted_motion_m` is exactly
@@ -52,11 +60,17 @@ extends RefCounted
 ## cosmetic damage remain later integration work; this module makes no M1
 ## acceptance claim.
 
-## Largest allowed distance between the witness post velocity and the
-## committed state's mapped planar velocity, m/s. The adapter samples post
-## immediately before storing the committed planar velocity, so a planar
-## witness agrees to rounding; a real disagreement is far larger.
-const POST_STATE_AGREEMENT_TOLERANCE_M_S := 1e-6
+## Normalized half-extent margin within which a local contact point counts as
+## a corner near-tie. Pinned Godot 4.7.2/Jolt box-wall contacts land on a hull
+## vertex and their normalized lateral/longitudinal distances differed by up to
+## about 4.1e-3 across the steering corner probes; a face-centre contact
+## differs by orders of magnitude more. This band therefore admits the solver
+## noise while leaving clearly on-face contacts point-classified.
+const REGION_TIE_MARGIN := 1e-2
+## Minimum difference between the absolute X and Z components of the local
+## response normal for it to identify a face. A normal closer to diagonal than
+## this cannot break a near-tie and the exact-point comparison is used.
+const REGION_NORMAL_AXIS_MARGIN := 1e-3
 ## Smallest usable road-plane projection length of the selected wall normal.
 ## Mirrors the adapter's degenerate-normal guard (`1e-12` squared) so a
 ## producer cannot promote a contact the adapter itself would treat as
@@ -131,7 +145,7 @@ static func produce(
 	)
 	if not _finite_vector(committed_world):
 		return _refuse(outcome, "nonfinite committed planar velocity")
-	if committed_world.distance_to(post_velocity) > POST_STATE_AGREEMENT_TOLERANCE_M_S:
+	if post_velocity != committed_world:
 		return _refuse(
 			outcome, "post-response velocity disagrees with committed state"
 		)
@@ -156,8 +170,16 @@ static func produce(
 	var local_point := contact_frame.affine_inverse() * world_point
 	if not _finite_vector(local_point):
 		return _refuse(outcome, "nonfinite local contact point")
+	# The same collision-time inverse rotation expresses the selected response
+	# normal in the frame the point is classified in. The origin is irrelevant
+	# to a direction, so only the basis inverse is applied.
+	var local_normal := contact_frame.basis.inverse() * contact_normal
+	if not _finite_vector(local_normal):
+		return _refuse(
+			outcome, "nonfinite collision-time local response normal"
+		)
 
-	var severity := ImpactEvent.stable_norm(pre_velocity - post_velocity)
+	var severity := ImpactEvent.stable_norm(pre_velocity - committed_world)
 	if not is_finite(severity):
 		return _refuse(outcome, "nonfinite severity")
 
@@ -171,11 +193,13 @@ static func produce(
 	builder.contact_point_local_m = local_point
 	builder.contact_normal_world_m = contact_normal
 	builder.severity_m_s = severity
-	builder.post_contact_velocity_world_m_s = post_velocity
+	builder.post_contact_velocity_world_m_s = committed_world
 	# The wall response changes velocity after the sweep; the sweep's accepted
 	# travel is not contact-induced motion. Explicitly zero, never derived.
 	builder.imparted_motion_m = Vector3.ZERO
-	builder.region = _classify_region(local_point, config.hull_size_m)
+	builder.region = _classify_region(
+		local_point, config.hull_size_m, local_normal
+	)
 	builder.normal_mode = ImpactEvent.NormalMode.PRESERVE
 	builder.source_committed = true
 	var event := builder.build()
@@ -223,14 +247,38 @@ static func _normalized_road_plane_normal(normal: Vector3) -> Vector3:
 
 ## FRONT/REAR/LEFT/RIGHT from a local contact point against half the hull
 ## extents. Local -Z is forward and +X is right. Coordinates are normalized by
-## their own half extent, so an exact corner tie compares equal and resolves
-## deterministically to FRONT/REAR.
+## their own half extent. When the point is a solver-near-tie corner contact
+## (`REGION_TIE_MARGIN`), the collision-time response normal in the same local
+## frame names the struck face: nose-facing normals (|local Z| dominant, +Z
+## pushing rearward) give FRONT, the opposite give REAR; side-facing normals
+## (+X pushing rightward from the left face) give LEFT, the opposite give RIGHT.
+## A normal too close to diagonal (`REGION_NORMAL_AXIS_MARGIN`) cannot name a
+## face, so the exact-point comparison below is the deterministic fallback and
+## resolves an exact corner tie to FRONT/REAR.
 static func _classify_region(
-	local_point: Vector3, hull_size_m: Vector3
+	local_point: Vector3,
+	hull_size_m: Vector3,
+	local_normal: Vector3
 ) -> ImpactEvent.ContactRegion:
 	var half_extents := hull_size_m * 0.5
 	var lateral := absf(local_point.x) / half_extents.x
 	var longitudinal := absf(local_point.z) / half_extents.z
+	if absf(lateral - longitudinal) <= REGION_TIE_MARGIN:
+		var lateral_normal := absf(local_normal.x)
+		var longitudinal_normal := absf(local_normal.z)
+		if absf(lateral_normal - longitudinal_normal) \
+				> REGION_NORMAL_AXIS_MARGIN:
+			if longitudinal_normal > lateral_normal:
+				return (
+					ImpactEvent.ContactRegion.FRONT
+					if local_normal.z > 0.0
+					else ImpactEvent.ContactRegion.REAR
+				)
+			return (
+				ImpactEvent.ContactRegion.LEFT
+				if local_normal.x > 0.0
+				else ImpactEvent.ContactRegion.RIGHT
+			)
 	if longitudinal >= lateral:
 		return (
 			ImpactEvent.ContactRegion.FRONT
@@ -242,7 +290,6 @@ static func _classify_region(
 		if local_point.x > 0.0
 		else ImpactEvent.ContactRegion.LEFT
 	)
-
 
 ## True when the transform has a finite origin and a finite basis whose
 ## determinant is safely away from zero, so `affine_inverse()` cannot produce a

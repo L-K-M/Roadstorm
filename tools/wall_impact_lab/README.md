@@ -11,7 +11,8 @@ ledger:
 
 - a committed wall witness produces a valid event with caller-assigned IDs;
 - all four regions classify from the collision-time local point against
-  normalized hull half-extents, with deterministic corner ties;
+  normalized hull half-extents; a solver-near-tie corner uses the response
+  normal in that same frame to identify the struck face;
 - severity is only the stable norm of the witness pre/post velocity difference,
   for head-on and oblique contacts, including a large finite value;
 - a tilted raw normal publishes only its normalized road-plane projection, and
@@ -20,22 +21,28 @@ ledger:
   nonzero;
 - every refused, incomplete or nonfinite witness fails closed with a reason,
   no event and no ledger mutation; the post velocity must agree with the
-  committed state's mapped planar velocity;
+  committed state's mapped planar velocity exactly, including one-bit and
+  small finite disagreements;
+- a collision-time frame distinct from the final yaw frame controls the
+  published local point and region;
 - publication, identical-retry coalescing, conflicting-payload refusal,
   duplicate-perspective refusal and capacity behave through the real ledger;
 - producing twice mutates neither the synthetic result nor the config.
 
-The last case drives one real pinned-Jolt head-on wall hit through
-`tools/body_lab/body_lab_world.gd` and feeds the committed adapter result to
-the producer.
+The physical cases drive a pinned-Jolt head-on hit and mirrored steering
+contacts through `tools/body_lab/body_lab_world.gd`. In both steering directions,
+the old point-only rule labels 28 continuing front-corner witnesses as a side;
+the response-normal rule labels all 29 witnesses FRONT. The frozen local run
+passed 13 cases/906 checks and the deliberate failure exited 3.
 
 ## Authority label
 
 The Result fixtures are synthetic. They prove the producer's publication
 contract; they are not proof that a witness came from a real committed physics
-response. The single pinned-Jolt case adds one real witness path but still does
+response. The pinned-Jolt cases add real witness paths but still do
 not establish general physical authority, full M1.8 or M1 acceptance. Car-car
-production, presentation wiring and cosmetic damage remain later work.
+production, sustained-contact policy, presentation wiring and cosmetic damage
+remain later work.
 
 ## Files
 

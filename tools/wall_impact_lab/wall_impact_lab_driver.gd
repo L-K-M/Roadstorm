@@ -27,9 +27,13 @@ const CASE_IDS: Array[String] = [
 	"ledger_publication_duplicate_conflict",
 	"input_and_result_nonmutation",
 	"producer_source_contract",
+	"corner_near_tie_response_normal",
+	"post_velocity_canonical_agreement",
+	"collision_time_frame_discrimination",
 ]
 
 const JOLT_CASE_ID := "real_jolt_wall_integration"
+const STEERING_JOLT_CASE_ID := "real_jolt_steering_corner"
 
 ## Frames allowed for static colliders to reach the physics server.
 const SETTLE_FRAMES := 8
@@ -40,6 +44,15 @@ const WALL_WIDTH_M := 20.0
 const STRAIGHT_WALL_Z := -20.0
 ## Enough ticks for the laboratory car to reach the wall at 30 m/s.
 const JOLT_MAX_TICKS := 80
+## Ticks for the steering-corner scenarios. Contact begins on tick 2 of the
+## pinned probe scenario and persists through the end of the run.
+const STEERING_CORNER_TICKS := 30
+## Wide wall so a steering car cannot leave the wall footprint mid-scenario.
+const STEERING_WALL_WIDTH_M := 60.0
+## Near-tie thresholds mirrored from the producer's published contract. Kept
+## as explicit literals so a silent threshold change is visible here.
+const LAB_REGION_TIE_MARGIN := 1e-2
+const LAB_REGION_NORMAL_AXIS_MARGIN := 1e-3
 
 var d := ChecksScript.new()
 var measurements: Dictionary = {}
@@ -70,20 +83,23 @@ func _run() -> void:
 	for case_id in CASE_IDS:
 		_results.append(_run_case(case_id))
 	_results.append(await _case_real_jolt_wall_integration())
+	_results.append(await _case_real_jolt_steering_corner())
 	for case_result in _results:
 		print("WALL_IMPACT_LAB_RESULT ", JSON.stringify(case_result))
 
 	var total_checks := 0
 	var total_failures := 0
 	var failed_cases := 0
-	var jolt_pass := false
+	var jolt_cases_passed := 0
 	for result in _results:
 		total_checks += int(result["checks"])
 		total_failures += int(result["checks_failed"])
 		if not bool(result["pass"]):
 			failed_cases += 1
-		if String(result["case"]) == JOLT_CASE_ID and bool(result["pass"]):
-			jolt_pass = true
+		var case_name := String(result["case"])
+		if (case_name == JOLT_CASE_ID or case_name == STEERING_JOLT_CASE_ID) \
+				and bool(result["pass"]):
+			jolt_cases_passed += 1
 	var summary := {
 		"schema": "roadstorm.wall_impact_lab.summary.v1",
 		"cases": _results.size(),
@@ -91,9 +107,10 @@ func _run() -> void:
 		"checks_failed": total_failures,
 		"failed_cases": failed_cases,
 		"pass": failed_cases == 0,
-		# Synthetic witnesses prove the producer contract. The single pinned-Jolt
-		# case proves one real witness path, not general physical authority.
-		"witness_sources": ["synthetic", "pinned_jolt"] if jolt_pass else ["synthetic"],
+		# Synthetic witnesses prove the producer contract. The pinned-Jolt
+		# cases prove real witness paths, not general physical authority.
+		"witness_sources": ["synthetic", "pinned_jolt"] \
+			if jolt_cases_passed > 0 else ["synthetic"],
 		"physical_authority_verified": false,
 		"full_m1_8_acceptance": false,
 		"m1_acceptance": false,
@@ -123,6 +140,12 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_input_and_result_nonmutation()
 		"producer_source_contract":
 			_case_producer_source_contract()
+		"corner_near_tie_response_normal":
+			_case_corner_near_tie_response_normal()
+		"post_velocity_canonical_agreement":
+			_case_post_velocity_canonical_agreement()
+		"collision_time_frame_discrimination":
+			_case_collision_time_frame_discrimination()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	return {
@@ -212,29 +235,41 @@ func _case_four_regions_and_corner_ties() -> void:
 			)
 
 	# Exact corner ties are deterministic: normalized lateral equals normalized
-	# longitudinal, and the rule resolves ties to FRONT/REAR.
+	# longitudinal. Each fixture supplies the response normal that faces that
+	# hull region, so the tie resolves by the physical response direction.
 	var corner_cases := {
 		"front_right": {
 			"point": Vector3(half.x, 0.0, -half.z),
 			"region": ImpactEvent.ContactRegion.FRONT,
+			"normal": Vector3(0.0, 0.0, 1.0),
+			"pre": Vector3(0.0, 0.0, -20.0),
 		},
 		"front_left": {
 			"point": Vector3(-half.x, 0.0, -half.z),
 			"region": ImpactEvent.ContactRegion.FRONT,
+			"normal": Vector3(0.0, 0.0, 1.0),
+			"pre": Vector3(0.0, 0.0, -20.0),
 		},
 		"rear_right": {
 			"point": Vector3(half.x, 0.0, half.z),
 			"region": ImpactEvent.ContactRegion.REAR,
+			"normal": Vector3(0.0, 0.0, -1.0),
+			"pre": Vector3(0.0, 0.0, 20.0),
 		},
 		"rear_left": {
 			"point": Vector3(-half.x, 0.0, half.z),
 			"region": ImpactEvent.ContactRegion.REAR,
+			"normal": Vector3(0.0, 0.0, -1.0),
+			"pre": Vector3(0.0, 0.0, 20.0),
 		},
 	}
 	for label in corner_cases:
 		var point: Vector3 = corner_cases[label]["point"]
-		var first := _produce(d.make_result(point), config)
-		var second := _produce(d.make_result(point), config)
+		var normal: Vector3 = corner_cases[label]["normal"]
+		var pre: Vector3 = corner_cases[label]["pre"]
+		var witness := d.make_witness(point, pre, Vector3.ZERO, normal)
+		var first := _produce(witness, config)
+		var second := _produce(d.make_witness(point, pre, Vector3.ZERO, normal), config)
 		d.check(first.is_ok() and second.is_ok(), "corner.%s.published_twice" % label)
 		if first.is_ok() and second.is_ok():
 			d.check(
@@ -829,6 +864,398 @@ func _case_producer_source_contract() -> void:
 	)
 
 
+func _case_corner_near_tie_response_normal() -> void:
+	# Pinned probe geometry: a hull-vertex contact whose normalized lateral
+	# distance exceeds the longitudinal one by 1.75e-3, inside the documented
+	# near-tie band but on the side-face side of the point-only comparison.
+	var config := d.make_config()
+	var half := WallImpactLabChecks.HALF_EXTENTS_M
+	var corner_point := Vector3(-0.897592, 0.0, -1.891584)
+	var nose_normal := Vector3(0.298703, 0.0, 0.954346)
+	var rear_normal := Vector3(nose_normal.x, 0.0, -nose_normal.z)
+
+	var front_cases := {
+		"front_left": {"point": corner_point, "normal": nose_normal},
+		"front_right": {
+			"point": Vector3(-corner_point.x, corner_point.y, corner_point.z),
+			"normal": Vector3(-nose_normal.x, nose_normal.y, nose_normal.z),
+		},
+	}
+	for label in front_cases:
+		var point: Vector3 = front_cases[label]["point"]
+		var normal: Vector3 = front_cases[label]["normal"]
+		var result := d.make_witness(
+			point, -normal * 20.0, Vector3.ZERO, normal
+		)
+		var outcome := _produce(result, config)
+		d.check(outcome.is_ok(), "near_tie.%s.published" % label)
+		if not outcome.is_ok():
+			continue
+		var baseline_region := _baseline_point_only_region(
+			point, config.hull_size_m
+		)
+		d.check(
+			baseline_region == ImpactEvent.ContactRegion.LEFT
+				or baseline_region == ImpactEvent.ContactRegion.RIGHT,
+			"near_tie.%s.baseline_rule_names_side" % label
+		)
+		d.check(
+			outcome.event.region == ImpactEvent.ContactRegion.FRONT,
+			"near_tie.%s.response_normal_resolves_front" % label
+		)
+		var local_normal := _local_response_normal(result)
+		d.check(
+			absf(local_normal.z) > absf(local_normal.x),
+			"near_tie.%s.local_normal_is_nose_facing" % label
+		)
+		d.check_vector_close(
+			outcome.event.contact_point_local_m, point,
+			WallImpactLabChecks.VECTOR_TOLERANCE,
+			"near_tie.%s.local_point_preserved" % label
+		)
+		measurements["near_tie_%s_baseline" % label] = (
+			ImpactEvent.REGION_NAMES[baseline_region]
+		)
+
+	var rear_cases := {
+		"rear_left": {
+			"point": Vector3(corner_point.x, corner_point.y, -corner_point.z),
+			"normal": rear_normal,
+		},
+		"rear_right": {
+			"point": Vector3(-corner_point.x, corner_point.y, -corner_point.z),
+			"normal": Vector3(-rear_normal.x, rear_normal.y, rear_normal.z),
+		},
+	}
+	for label in rear_cases:
+		var point: Vector3 = rear_cases[label]["point"]
+		var normal: Vector3 = rear_cases[label]["normal"]
+		var result := d.make_witness(
+			point, -normal * 20.0, Vector3.ZERO, normal
+		)
+		var outcome := _produce(result, config)
+		d.check(outcome.is_ok(), "near_tie.%s.published" % label)
+		if outcome.is_ok():
+			d.check(
+				_baseline_point_only_region(point, config.hull_size_m)
+					!= ImpactEvent.ContactRegion.REAR,
+				"near_tie.%s.baseline_rule_disagrees" % label
+			)
+			d.check(
+				outcome.event.region == ImpactEvent.ContactRegion.REAR,
+				"near_tie.%s.rearward_normal_resolves_rear" % label
+			)
+
+	# A side-facing response normal names the side face even when the point
+	# sits marginally on the front side of the tie band.
+	var side_normal := Vector3(-0.954346, 0.0, 0.298703)
+	var side_override := d.make_witness(
+		Vector3(0.895, 0.0, -1.899),
+		-side_normal * 20.0, Vector3.ZERO, side_normal
+	)
+	var side_outcome := _produce(side_override, config)
+	d.check(side_outcome.is_ok(), "near_tie.side_override.published")
+	if side_outcome.is_ok():
+		d.check(
+			_baseline_point_only_region(
+				side_override.wall_contact_transform.affine_inverse()
+					* side_override.wall_contact_point,
+				config.hull_size_m
+			) == ImpactEvent.ContactRegion.FRONT,
+			"near_tie.side_override.baseline_says_front"
+		)
+		d.check(
+			side_outcome.event.region == ImpactEvent.ContactRegion.RIGHT,
+			"near_tie.side_override.rightward_normal_resolves_right"
+		)
+
+	# A diagonal normal within the axis margin identifies no face; the
+	# deterministic point fallback applies instead.
+	var diagonal_normal := Vector3(0.7071067811865476, 0.0, 0.7071067811865476)
+	var diagonal := d.make_witness(
+		corner_point, -diagonal_normal * 20.0, Vector3.ZERO, diagonal_normal
+	)
+	var diagonal_outcome := _produce(diagonal, config)
+	d.check(diagonal_outcome.is_ok(), "near_tie.diagonal.published")
+	if diagonal_outcome.is_ok():
+		d.check(
+			diagonal_outcome.event.region == _baseline_point_only_region(
+				corner_point, config.hull_size_m
+			),
+			"near_tie.diagonal.falls_back_to_point_rule"
+		)
+		var diagonal_local := _local_response_normal(diagonal)
+		d.check(
+			absf(absf(diagonal_local.x) - absf(diagonal_local.z))
+				<= LAB_REGION_NORMAL_AXIS_MARGIN,
+			"near_tie.diagonal.normal_is_ambiguous"
+		)
+
+	# Outside the tie band the point alone classifies, whatever the normal.
+	var unambiguous := {
+		"front_face": {
+			"point": Vector3(0.0, 0.0, -half.z),
+			"region": ImpactEvent.ContactRegion.FRONT,
+		},
+		"left_face": {
+			"point": Vector3(-half.x, 0.0, 0.0),
+			"region": ImpactEvent.ContactRegion.LEFT,
+		},
+		"right_face": {
+			"point": Vector3(half.x, 0.0, 0.0),
+			"region": ImpactEvent.ContactRegion.RIGHT,
+		},
+	}
+	for label in unambiguous:
+		var point: Vector3 = unambiguous[label]["point"]
+		var outcome := _produce(
+			d.make_witness(
+				point, Vector3(0.0, 0.0, -20.0), Vector3.ZERO,
+				Vector3(0.0, 0.0, 1.0)
+			),
+			config
+		)
+		d.check(outcome.is_ok(), "near_tie.%s.published" % label)
+		if outcome.is_ok():
+			d.check(
+				outcome.event.region == unambiguous[label]["region"],
+				"near_tie.%s.point_classifies_outside_band" % label
+			)
+
+	# The same near-tie must resolve through a rotated collision-time frame,
+	# proving the normal is transformed by that frame rather than read in
+	# world axes.
+	var heading := 0.3
+	var frame_origin := Vector3(2.0, 0.5, -18.0)
+	var frame := Transform3D(
+		AdapterScript.basis_from_heading(heading), frame_origin
+	)
+	var world_normal := frame.basis * nose_normal
+	var rotated := d.make_witness(
+		corner_point, -world_normal * 20.0, Vector3.ZERO, world_normal
+	)
+	rotated.wall_contact_transform = frame
+	rotated.wall_contact_point = frame * corner_point
+	var rotated_outcome := _produce(rotated, config)
+	d.check(rotated_outcome.is_ok(), "near_tie.rotated_frame.published")
+	if rotated_outcome.is_ok():
+		d.check_vector_close(
+			rotated_outcome.event.contact_point_local_m, corner_point,
+			5e-6, "near_tie.rotated_frame.local_recovered"
+		)
+		d.check(
+			rotated_outcome.event.region == ImpactEvent.ContactRegion.FRONT,
+			"near_tie.rotated_frame.front"
+		)
+		var rotated_local := _local_response_normal(rotated)
+		d.check(
+			absf(rotated_local.z) > absf(rotated_local.x),
+			"near_tie.rotated_frame.local_normal_nose_facing"
+		)
+
+	measurements["near_tie_cases"] = (
+		front_cases.size() + rear_cases.size() + unambiguous.size() + 3
+	)
+
+
+func _case_post_velocity_canonical_agreement() -> void:
+	var config := d.make_config()
+	var point := Vector3(0.0, 0.0, -WallImpactLabChecks.HALF_EXTENTS_M.z)
+	var pre := Vector3(0.0, 0.0, -20.0)
+	var normal := Vector3(0.0, 0.0, 1.0)
+	var snapshots: Array[Dictionary] = []
+
+	# Bit-exact round trip between the witness post velocity and the committed
+	# planar velocity mapping.
+	var samples := [
+		Vector3(0.0, 0.0, 0.0),
+		Vector3(0.0, 0.0, -20.0),
+		Vector3(1.0, 0.0, 0.0),
+		Vector3(-3.5, 0.0, 7.25),
+	]
+	for index in range(samples.size()):
+		var round_trip := AdapterScript.road_vector_to_world(
+			AdapterScript.world_vector_to_road(samples[index])
+		)
+		d.check(
+			round_trip == samples[index],
+			"post_velocity.round_trip_%d.bit_exact" % index
+		)
+
+	# Canonical agreement publishes; the event post is the committed mapped
+	# vector and severity is measured against it.
+	var canonical := d.make_witness(point, pre, Vector3.ZERO, normal)
+	snapshots.append(d.snapshot_result(canonical))
+	var canonical_outcome := _produce(canonical, config)
+	d.check(canonical_outcome.is_ok(), "post_velocity.canonical.published")
+	if canonical_outcome.is_ok():
+		d.check(
+			canonical_outcome.event.post_contact_velocity_world_m_s == Vector3.ZERO,
+			"post_velocity.canonical.post_is_committed_zero"
+		)
+		d.check_exact_float(
+			canonical_outcome.event.severity_m_s, 20.0,
+			"post_velocity.canonical.severity"
+		)
+	d.check(
+		d.snapshot_result(canonical) == snapshots[0],
+		"post_velocity.canonical.input_unmutated"
+	)
+
+	var moving := d.make_witness(point, pre, Vector3(0.0, 0.0, -12.0), normal)
+	snapshots.append(d.snapshot_result(moving))
+	var moving_outcome := _produce(moving, config)
+	d.check(moving_outcome.is_ok(), "post_velocity.moving.published")
+	if moving_outcome.is_ok():
+		d.check(
+			moving_outcome.event.post_contact_velocity_world_m_s
+				== Vector3(0.0, 0.0, -12.0),
+			"post_velocity.moving.post_is_committed_mapped"
+		)
+		d.check_exact_float(
+			moving_outcome.event.severity_m_s, 8.0,
+			"post_velocity.moving.severity_uses_committed_vector"
+		)
+	d.check(
+		d.snapshot_result(moving) == snapshots[1],
+		"post_velocity.moving.input_unmutated"
+	)
+
+	# Every mismatch below is far smaller than a physical disagreement but is
+	# not bit-equal, so it must fail closed. Each refusal also proves the input
+	# is untouched.
+	var mismatches := {
+		"one_ulp_at_1": {
+			"committed": Vector2(1.0, 0.0),
+			"post": Vector3(_next_float32(1.0), 0.0, 0.0),
+		},
+		"one_ulp_at_20": {
+			"committed": Vector2(0.0, 20.0),
+			"post": Vector3(0.0, 0.0, -_next_float32(20.0)),
+		},
+		"small_1e_9": {
+			"committed": Vector2(0.0, 0.0),
+			"post": Vector3(1.0e-9, 0.0, 0.0),
+		},
+		"small_1e_7": {
+			"committed": Vector2(0.0, 0.0),
+			"post": Vector3(1.0e-7, 0.0, 0.0),
+		},
+		"small_1e_6": {
+			"committed": Vector2(0.0, 0.0),
+			"post": Vector3(1.0e-6, 0.0, 0.0),
+		},
+		"vertical_component": {
+			"committed": Vector2(0.0, 0.0),
+			"post": Vector3(0.0, 1.0e-3, 0.0),
+		},
+	}
+	for label in mismatches:
+		var committed: Vector2 = mismatches[label]["committed"]
+		var post: Vector3 = mismatches[label]["post"]
+		var witness := d.make_witness(point, pre, post, normal)
+		witness.committed_state.velocity_m_s = committed
+		var snapshot := d.snapshot_result(witness)
+		var outcome := _produce(witness, config)
+		d.check(outcome.is_refused(), "post_velocity.%s.refused" % label)
+		d.check_reason_contains(
+			outcome.reason, "post-response velocity disagrees",
+			"post_velocity.%s.reason_names_cause" % label
+		)
+		d.check(outcome.event == null, "post_velocity.%s.no_event" % label)
+		d.check(
+			d.snapshot_result(witness) == snapshot,
+		"post_velocity.%s.input_unmutated" % label
+		)
+		measurements["post_mismatch_" + label + "_reason"] = outcome.reason
+
+	measurements["post_velocity_probes"] = 2 + mismatches.size()
+
+
+func _case_collision_time_frame_discrimination() -> void:
+	var config := d.make_config()
+	var half := WallImpactLabChecks.HALF_EXTENTS_M
+	# The collision-time pose and the finalized post-yaw pose differ in both
+	# yaw and origin. The committed transform is the wrong-frame control.
+	var collision_heading := 0.3
+	var collision_origin := Vector3(2.0, 0.5, -18.0)
+	var committed_heading := 0.75
+	var committed_origin := Vector3(3.2, 0.5, -17.0)
+	var collision_frame := Transform3D(
+		AdapterScript.basis_from_heading(collision_heading), collision_origin
+	)
+	var committed_frame := Transform3D(
+		AdapterScript.basis_from_heading(committed_heading), committed_origin
+	)
+	var local_point := Vector3(0.0, 0.0, -half.z)
+	var world_point := collision_frame * local_point
+	var raw_normal := collision_frame.basis * Vector3(0.0, 0.0, 1.0)
+	var pre := -raw_normal.normalized() * 20.0
+	var witness := d.make_witness(local_point, pre, Vector3.ZERO, raw_normal)
+	witness.wall_contact_transform = collision_frame
+	witness.wall_contact_point = world_point
+	witness.committed_transform = committed_frame
+	witness.committed_state.position_m = Vector2(
+		committed_origin.x, -committed_origin.z
+	)
+	witness.committed_state.heading_rad = committed_heading
+	var snapshot := d.snapshot_result(witness)
+	var outcome := _produce(witness, config)
+	d.check(outcome.is_ok(), "frame.published")
+	if outcome.is_ok():
+		var event := outcome.event
+		d.check(
+			event.contact_point_world_m == world_point,
+			"frame.world_point_is_collision_frame_point"
+		)
+		d.check_vector_close(
+			event.contact_point_local_m, local_point,
+			# Engine Vector3 is float32; an affine inverse after an 18 m
+			# translation measured a 2e-6 m round-trip error on the pin.
+			5e-6,
+			"frame.local_point_follows_collision_frame"
+		)
+		d.check(
+			event.region == ImpactEvent.ContactRegion.FRONT,
+			"frame.region_is_front_in_collision_frame"
+		)
+		d.check_vector_close(
+			event.contact_normal_world_m, _road_plane_unit_normal(raw_normal),
+			WallImpactLabChecks.VECTOR_TOLERANCE,
+			"frame.normal_is_road_projection"
+		)
+		d.check(event.is_valid(), "frame.event_valid")
+		var wrong_local: Vector3 = committed_frame.affine_inverse() * world_point
+		d.check(
+			wrong_local.distance_to(local_point) > 0.1,
+			"frame.committed_pose_is_materially_different"
+		)
+		d.check(
+			_baseline_point_only_region(wrong_local, config.hull_size_m)
+				== ImpactEvent.ContactRegion.LEFT,
+			"frame.wrong_frame_control_names_side"
+		)
+		d.check(
+			committed_frame.origin.distance_to(collision_frame.origin) > 0.5
+				and absf(committed_heading - collision_heading) > 0.1,
+			"frame.fixtures_are_distinct"
+		)
+		measurements["frame_wrong_local"] = wrong_local
+		measurements["frame_wrong_local_distance_m"] = (
+			wrong_local.distance_to(local_point)
+		)
+	d.check(
+		d.snapshot_result(witness) == snapshot,
+		"frame.input_unmutated"
+	)
+	measurements["frame_yaw_delta_rad"] = absf(
+		committed_heading - collision_heading
+	)
+	measurements["frame_origin_gap_m"] = committed_origin.distance_to(
+		collision_origin
+	)
+
+
 func _case_real_jolt_wall_integration() -> Dictionary:
 	d = ChecksScript.new()
 	measurements = {}
@@ -950,7 +1377,218 @@ func _case_real_jolt_wall_integration() -> Dictionary:
 	}
 
 
+func _case_real_jolt_steering_corner() -> Dictionary:
+	d = ChecksScript.new()
+	measurements = {}
+	var body_checks := BodyLabChecksScript.new()
+	# Pinned probe scenarios: both steering signs into the same straight wall.
+	# The response normal stays nose-facing while the point-only rule names the
+	# inside side face on the sustained corner contact.
+	var scenarios := [
+		{
+			"label": "near_steer_pos",
+			"steer": 1.0,
+			"side_region": ImpactEvent.ContactRegion.LEFT,
+			"start_position": Vector2(0.0, 17.5),
+			"velocity": Vector2(0.0, 20.0),
+			"heading": 0.0,
+			"command": body_checks.make_steer_command(1.0, 1.0),
+		},
+		{
+			"label": "near_steer_neg",
+			"steer": -1.0,
+			"side_region": ImpactEvent.ContactRegion.RIGHT,
+			"start_position": Vector2(0.0, 17.5),
+			"velocity": Vector2(0.0, 20.0),
+			"heading": 0.0,
+			"command": body_checks.make_steer_command(-1.0, 1.0),
+		},
+	]
+	for scenario in scenarios:
+		var label: String = scenario["label"]
+		var side_region: ImpactEvent.ContactRegion = scenario["side_region"]
+		var report: Dictionary = await _run_steering_scenario(
+			label, scenario["start_position"], scenario["velocity"],
+			scenario["heading"], scenario["command"], STEERING_CORNER_TICKS
+		)
+		var witnesses: Array = report["witnesses"]
+		var config: MotorBodyAdapter.Config = report["config"]
+		var half_extents := config.hull_size_m * 0.5
+		d.check(witnesses.size() >= 2, "%s.witness_stream_observed" % label)
+		var front_count := 0
+		var side_rule_count := 0
+		var first := {}
+		for witness_record in witnesses:
+			var result: MotorBodyAdapter.Result = witness_record["result"]
+			var tick_index: int = witness_record["index"]
+			var event_id := "evt-%s-%d" % [label, tick_index]
+			var outcome := ProducerScript.produce(
+				result, config, "car-steer-" + label, event_id, "", tick_index
+			)
+			d.check(outcome.is_ok(), "%s.tick_%d.produced" % [label, tick_index])
+			if not outcome.is_ok():
+				continue
+			var event := outcome.event
+			var committed_world := AdapterScript.road_vector_to_world(
+				result.committed_state.velocity_m_s
+			)
+			d.check(
+				event.post_contact_velocity_world_m_s == committed_world,
+				"%s.tick_%d.post_is_committed_canonical" % [label, tick_index]
+			)
+			var expected_severity := ImpactEvent.stable_norm(
+				result.wall_pre_response_velocity_world_m_s - committed_world
+			)
+			d.check_close(
+				event.severity_m_s, expected_severity,
+				WallImpactLabChecks.NORM_TOLERANCE,
+				"%s.tick_%d.severity_matches_witness_change" % [label, tick_index]
+			)
+			d.check(
+				is_finite(event.severity_m_s) and event.severity_m_s > 0.0,
+				"%s.tick_%d.severity_positive_finite" % [label, tick_index]
+			)
+			var expected_local: Vector3 = (
+				result.wall_contact_transform.affine_inverse()
+				* result.wall_contact_point
+			)
+			d.check_vector_close(
+				event.contact_point_local_m, expected_local,
+				WallImpactLabChecks.VECTOR_TOLERANCE,
+				"%s.tick_%d.local_point_uses_collision_frame"
+					% [label, tick_index]
+			)
+			d.check(
+				event.contact_point_world_m == result.wall_contact_point,
+				"%s.tick_%d.world_point_is_witness" % [label, tick_index]
+			)
+			var local_normal := _local_response_normal(result)
+			d.check(
+				absf(local_normal.z)
+					> absf(local_normal.x) + LAB_REGION_NORMAL_AXIS_MARGIN,
+				"%s.tick_%d.response_normal_is_nose_facing"
+					% [label, tick_index]
+			)
+			d.check(
+				absf(event.contact_point_local_m.x) <= half_extents.x + 1e-4
+				and absf(event.contact_point_local_m.z) <= half_extents.z + 1e-4,
+				"%s.tick_%d.local_point_on_hull_envelope"
+					% [label, tick_index]
+			)
+			d.check(
+				event.contact_point_local_m.x * float(scenario["steer"]) < 0.0,
+				"%s.tick_%d.struck_corner_follows_steering_sign"
+					% [label, tick_index]
+			)
+			d.check(
+				event.region == ImpactEvent.ContactRegion.FRONT,
+				"%s.tick_%d.region_is_front" % [label, tick_index]
+			)
+			if event.region == ImpactEvent.ContactRegion.FRONT:
+				front_count += 1
+			var baseline_region := _baseline_point_only_region(
+				expected_local, config.hull_size_m
+			)
+			if baseline_region == side_region:
+				side_rule_count += 1
+			if first.is_empty():
+				first = {
+					"tick_index": tick_index,
+					"severity_m_s": event.severity_m_s,
+					"local_point": event.contact_point_local_m,
+					"local_normal": local_normal,
+					"baseline_region": ImpactEvent.REGION_NAMES[baseline_region],
+					"collision_origin": result.wall_contact_transform.origin,
+					"committed_origin": result.committed_transform.origin,
+					"wrong_frame_local": (
+						result.committed_transform.affine_inverse()
+						* result.wall_contact_point
+					),
+				}
+		d.check(
+			front_count == witnesses.size(),
+			"%s.every_witness_is_front" % label
+		)
+		d.check(
+			side_rule_count >= 1,
+			"%s.old_point_rule_misclassified_side" % label
+		)
+		if not first.is_empty():
+			d.check(
+				first["severity_m_s"] > 10.0,
+				"%s.first_hit_is_high_speed" % label
+			)
+			var wrong_local: Vector3 = first["wrong_frame_local"]
+			var wrong_gap := wrong_local.distance_to(first["local_point"])
+			d.check(
+				wrong_gap > 1e-3,
+				"%s.committed_frame_would_differ" % label
+			)
+			measurements[label + "_witnesses"] = witnesses.size()
+			measurements[label + "_front_witnesses"] = front_count
+			measurements[label + "_old_side_rule_witnesses"] = side_rule_count
+			measurements[label + "_first_tick"] = first["tick_index"]
+			measurements[label + "_first_severity_m_s"] = first["severity_m_s"]
+			measurements[label + "_first_local_point"] = first["local_point"]
+			measurements[label + "_first_baseline_region"] = (
+				first["baseline_region"]
+			)
+			measurements[label + "_first_wrong_frame_gap_m"] = wrong_gap
+			measurements[label + "_collision_origin"] = first["collision_origin"]
+			measurements[label + "_committed_origin"] = first["committed_origin"]
+	return {
+		"case": STEERING_JOLT_CASE_ID,
+		"pass": d.failures.is_empty(),
+		"checks": d.checks,
+		"checks_failed": d.failures.size(),
+		"failures": d.failures.duplicate(),
+		"measurements": measurements.duplicate(),
+	}
+
+
 # --- Helpers --------------------------------------------------------------
+
+
+func _run_steering_scenario(
+	label: String,
+	start_position: Vector2,
+	velocity: Vector2,
+	heading: float,
+	command,
+	ticks: int
+) -> Dictionary:
+	var config := d.make_config()
+	var body_checks := BodyLabChecksScript.new()
+	var tuning := body_checks.make_tuning()
+	var wall_spec := {
+		"point": Vector3(0.0, 2.0, STRAIGHT_WALL_Z),
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": STEERING_WALL_WIDTH_M,
+	}
+	var world: BodyLabWorld = WorldScript.build(
+		get_tree().root, config, wall_spec
+	)
+	await _await_frames(SETTLE_FRAMES)
+	var initial = body_checks.make_state(start_position, velocity, heading)
+	world.set_pose(initial, BodyLabChecksScript.BODY_SUPPORT_Y)
+	await _await_frames(POSE_SETTLE_FRAMES)
+	var current = initial
+	var witnesses: Array[Dictionary] = []
+	for index in range(ticks):
+		var result = AdapterScript.step(
+			world.body, world.hull_shape, current, command, tuning, config
+		)
+		if result.committed_state != null:
+			current = result.committed_state
+		if result.status == MotorBodyAdapter.Status.COMMITTED \
+				and result.has_wall_response_witness \
+				and result.has_wall_contact_point:
+			witnesses.append({"index": index, "result": result})
+		await get_tree().physics_frame
+	world.destroy()
+	await _await_frames(6)
+	return {"config": config, "witnesses": witnesses}
 
 
 func _await_frames(count: int) -> void:
@@ -974,3 +1612,45 @@ func _strip_full_line_comments(source: String) -> String:
 			continue
 		kept += line + "\n"
 	return kept
+
+
+## Baseline point-only classifier from the pre-repair producer, used only as
+## a negative control to show the repaired normal rule changes the label.
+func _baseline_point_only_region(
+	local_point: Vector3,
+	hull_size_m: Vector3
+) -> ImpactEvent.ContactRegion:
+	var half_extents := hull_size_m * 0.5
+	var lateral := absf(local_point.x) / half_extents.x
+	var longitudinal := absf(local_point.z) / half_extents.z
+	if longitudinal >= lateral:
+		return (
+			ImpactEvent.ContactRegion.FRONT
+			if local_point.z < 0.0
+			else ImpactEvent.ContactRegion.REAR
+		)
+	return (
+		ImpactEvent.ContactRegion.RIGHT
+		if local_point.x > 0.0
+		else ImpactEvent.ContactRegion.LEFT
+	)
+
+
+func _road_plane_unit_normal(normal: Vector3) -> Vector3:
+	var projected := Vector3(normal.x, 0.0, normal.z)
+	var length := ImpactEvent.stable_norm(projected)
+	if not is_finite(length) or length <= 0.0:
+		return Vector3.ZERO
+	return Vector3(projected.x / length, 0.0, projected.z / length)
+
+
+func _local_response_normal(result: MotorBodyAdapter.Result) -> Vector3:
+	return (
+		result.wall_contact_transform.basis.inverse()
+		* _road_plane_unit_normal(result.wall_contact_normal)
+	)
+
+
+## Next representable engine float32 above `base`, for one-bit mismatch probes.
+func _next_float32(base: float) -> float:
+	return base + absf(base) * 2.0 ** -23
