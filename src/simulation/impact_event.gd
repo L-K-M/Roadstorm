@@ -17,25 +17,41 @@ extends RefCounted
 ##   * `severity_m_s`: magnitude of the contact-induced velocity change,
 ##     measured across the contact response itself (committed velocity
 ##     immediately before the response versus committed velocity immediately
-##     after it). It is never derived from the motor's proposed acceleration
-##     delta, throttle input or a presentation speed. Deriving it correctly is
-##     an integrator obligation that this pure module cannot verify: the
-##     laboratory only proves the record carries whatever value the integrator
-##     supplied, never that the value came from the contact response.
+##     after it). The M1.8 wall producer takes those two samples from
+##     `MotorBodyAdapter.Result.wall_pre_response_velocity_world_m_s` and
+##     `wall_post_response_velocity_world_m_s` and publishes the stable norm of
+##     their difference. It is never derived from the motor's proposed
+##     acceleration delta, throttle input, sweep travel or a presentation
+##     speed. Deriving it correctly is an integrator obligation that this pure
+##     module cannot verify: the laboratory only proves the record carries
+##     whatever value the integrator supplied, never that the value came from
+##     the contact response.
 ##   * `post_contact_velocity_world_m_s`: committed world velocity after the
 ##     contact response, from the same authoritative state that owns the body
 ##     transform.
-##   * `contact_normal_world_m`: unit physical contact normal used by the
-##     contact response.
+##   * `contact_normal_world_m`: unit response normal in world axes. For the
+##     wall path this is the selected physical surface normal projected onto
+##     the road plane and normalized, matching the velocity response.
 ##   * `contact_point_world_m`: authoritative physical contact point of the
 ##     wall or car-car contact that produced this event.
 ##   * `contact_point_local_m`: `contact_point_world_m` expressed in the
-##     primary car's committed local frame (local -Z forward, +X right,
-##     +Y up) at the tick of commitment.
+##     primary car's local frame (local -Z forward, +X right, +Y up). For a
+##     car-car contact this is the primary car's committed frame at the tick
+##     of commitment. On the M1.8 wall path the producer uses the body pose
+##     captured at the collision (`MotorBodyAdapter.Result
+##     .wall_contact_transform`): the tick-start sweep basis at the colliding
+##     substep's committed origin, before the tick's yaw is finalized. That is
+##     deliberately not the final post-yaw pose; a consumer that needs the
+##     final pose must transform again.
 ##   * `imparted_motion_m`: contact-induced displacement of the primary car
-##     during the response, in metres.
-##   * `region`: classification of the local contact point against the
-##     committed hull as front/rear/left/right.
+##     during the response, in metres. On the M1.8 wall-adapter path the wall
+##     response alters velocity after the sweep and performs no further body
+##     movement, so the producer publishes exactly zero. The total accepted
+##     sweep travel is not a contact-induced displacement and must never be
+##     substituted for it.
+##   * `region`: classification of the local contact point against the primary
+##     hull in the same frame used for `contact_point_local_m`, as
+##     front/rear/left/right.
 ##   * `event_id`, `contact_id` and `tick_index`: coordinator/event-bus
 ##     assigned identity and logical tick or sequence index.
 ##
@@ -55,10 +71,13 @@ extends RefCounted
 ## flag. Its generic `contact_point` remains the first reported contact of
 ## the last colliding substep and can be floor-first even when a later wall
 ## contact drove the response, so a truthful `contact_point_world_m` must
-## come from the wall witness. This module is not yet wired to the adapter:
-## the producer that turns a committed adapter result into an impact event
-## is integration work, and this file neither performs that wiring nor
-## claims it exists.
+## come from the wall witness, plus the pre/post response velocities and the
+## collision-time `wall_contact_transform`. `src/simulation/wall_impact_producer.gd`
+## is the bounded producer for this wall path: it consumes one committed
+## result and rebuilds the event from the wall witness. Car-car production and
+## any presentation wiring remain later integration work. This file owns the
+## record, builder and ledger contracts that producer satisfies; it neither
+## builds events nor calls the producer.
 ##
 ## Commitment is a caller assertion, not proof of authority. `committed` and
 ## `Builder.source_committed` are ordinary booleans: any caller can set them
@@ -145,9 +164,11 @@ var other_car_id := ""
 var contact_id := ""
 ## Authoritative physical contact point in world axes, metres.
 var contact_point_world_m := Vector3.ZERO
-## The same contact point in the primary car's committed local frame, metres.
+## The same contact point in the primary car's local frame, metres. See the
+## authority contract above for the collision-time wall frame versus the
+## future car-car committed frame.
 var contact_point_local_m := Vector3.ZERO
-## Unit physical contact normal in world axes.
+## Unit response normal in world axes; see the wall projection rule above.
 var contact_normal_world_m := Vector3.ZERO
 ## Contact-induced velocity-change magnitude in m/s. Never negative.
 var severity_m_s := 0.0
