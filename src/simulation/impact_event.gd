@@ -175,7 +175,16 @@ func has_contact_link() -> bool:
 
 
 ## Whether `other` is the opposite perspective of the same physical contact:
-## a different primary car, the same shared `contact_id` and the same tick.
+## the same shared `contact_id`, the same tick, two different records, and
+## reciprocal participants, meaning this record's primary car is `other`'s
+## other car and this record's other car is `other`'s primary car.
+##
+## Reciprocity is required rather than assumed. `contact_id` is an optional
+## link the producer may set, so two unrelated records that merely carry the
+## same `contact_id` (A->B beside C->D) or two wall records that share a wall
+## contact label must not be mistaken for a pair. Wall and other unpaired
+## records are refused explicitly: a record with no second car has no opposite
+## perspective, whatever its `contact_id` says.
 func is_opposite_perspective(other: ImpactEvent) -> bool:
 	if other == null:
 		return false
@@ -185,7 +194,16 @@ func is_opposite_perspective(other: ImpactEvent) -> bool:
 		return false
 	if tick_index != other.tick_index:
 		return false
-	return event_id != other.event_id and primary_car_id != other.primary_car_id
+	if event_id == other.event_id:
+		return false
+	if not has_other_car() or not other.has_other_car():
+		return false
+	if primary_car_id == other.primary_car_id:
+		return false
+	return (
+		primary_car_id == other.other_car_id
+		and other_car_id == other.primary_car_id
+	)
 
 
 ## Whether this record came from a committed authoritative source.
@@ -349,6 +367,14 @@ static func _finite_vector(value: Vector3) -> bool:
 ##
 ## Public because consumers that need a derived magnitude of an admitted
 ## vector must get the same bounded behaviour as the contract itself.
+##
+## The returned value is a 64-bit script float, so it can exceed the engine's
+## 32-bit float vector range (about 3.4e38) while staying finite: a diagonal
+## vector near that range has a norm about sqrt(2) times larger. Never divide a
+## `Vector3` by this result, because the divisor is converted to a 32-bit float
+## first and an overflowing conversion yields INF and a zero quotient. Divide the
+## scalar components and build the vector from the quotients instead, as
+## `Builder._resolve_normal()` does.
 static func stable_norm(value: Vector3) -> float:
 	var largest := maxf(maxf(absf(value.x), absf(value.y)), absf(value.z))
 	if not is_finite(largest) or largest <= 0.0:
@@ -465,9 +491,26 @@ class Builder extends RefCounted:
 		if normal_mode == NormalMode.NORMALIZE:
 			var length := ImpactEvent.stable_norm(contact_normal_world_m)
 			if is_finite(length) and length >= NORMAL_MIN_LENGTH:
-				return contact_normal_world_m / length
+				return _unit_from_scaled_length(length)
 			return Vector3.ZERO
 		return contact_normal_world_m
+
+	## Unit vector with the direction of `contact_normal_world_m`, scaled by an
+	## already computed `length`.
+	##
+	## The scalar components are divided and the `Vector3` is built from those
+	## quotients. Dividing the vector by `length` instead converts the divisor
+	## to the engine's 32-bit float first: `stable_norm` returns a 64-bit
+	## script float that stays finite above the float32 maximum, and that
+	## conversion turns it into INF, so the quotient collapses to zero and a
+	## legitimate normal is then refused as "zero contact normal". The
+	## quotients lie in [-1, 1], so constructing the vector cannot overflow.
+	func _unit_from_scaled_length(length: float) -> Vector3:
+		return Vector3(
+			contact_normal_world_m.x / length,
+			contact_normal_world_m.y / length,
+			contact_normal_world_m.z / length
+		)
 
 
 ## Bounded per-tick ledger. Stores copies, returns copies and refuses
@@ -487,6 +530,25 @@ class Builder extends RefCounted:
 ##
 ## Duplicate detection runs before the per-tick capacity check, so an
 ## identical retry still coalesces when the tick bucket is already full.
+##
+## Duplicate perspective. Identity is per (physical contact, primary car), so a
+## producer that retries a contact under a NEW `event_id` while keeping the same
+## nonempty (`contact_id`, `primary_car_id`) pair would publish the same
+## perspective twice. Such a record is REFUSED with an explicit reason, the
+## retained record is left unchanged, and the complementary record of the other
+## primary car still publishes. The refusal is counted in `refused_count` only:
+## `conflict_count` stays reserved for a conflicting payload under a retained
+## event ID, so the two refusal classes remain distinguishable. The pair key is
+## bounded by the retained window exactly like the ID set: a prune or a
+## `reset()` forgets it, and after that the same pair may publish again as a
+## fresh record.
+##
+## Producer obligation. One retained perspective per (`contact_id`,
+## `primary_car_id`) pair. A contact the producer reports again on a later tick
+## must either reuse the perspective's `event_id`, so the retry coalesces, or
+## supply a distinct `contact_id` per tick. This component cannot tell a
+## deliberate new contact from a retry of the same one, because it never sees
+## the contact geometry.
 ##
 ## Memory bounds. Per-tick capacity bounds one tick; the retained-tick bound
 ## bounds memory across ticks. Pruning forgets the IDs that leave the window,
@@ -536,6 +598,7 @@ class Ledger extends RefCounted:
 	var _buckets := {}
 	var _bucket_order: Array[int] = []
 	var _seen_ids := {}
+	var _pair_keys := {}
 
 
 	func _init(
@@ -598,6 +661,12 @@ class Ledger extends RefCounted:
 				outcome,
 				"conflicting payload for event id %s" % event.event_id
 			)
+		if event.has_contact_link() and _pair_keys.has(_pair_key(event)):
+			return _refuse(
+				outcome,
+				"duplicate perspective for contact %s and primary car %s"
+					% [event.contact_id, event.primary_car_id]
+			)
 		var capacity := per_tick_capacity()
 		var bucket: Array[ImpactEvent]
 		if _buckets.has(event.tick_index):
@@ -616,6 +685,8 @@ class Ledger extends RefCounted:
 			_bucket_order.append(event.tick_index)
 			_bucket_order.sort()
 		_seen_ids[event.event_id] = true
+		if event.has_contact_link():
+			_pair_keys[_pair_key(event)] = true
 		published_count += 1
 		_prune_locked()
 		outcome.status = PublishOutcome.Status.PUBLISHED
@@ -704,6 +775,7 @@ class Ledger extends RefCounted:
 		_buckets.clear()
 		_bucket_order.clear()
 		_seen_ids.clear()
+		_pair_keys.clear()
 		published_count = 0
 		coalesced_count = 0
 		refused_count = 0
@@ -755,4 +827,28 @@ class Ledger extends RefCounted:
 			var old_bucket: Array[ImpactEvent] = _buckets[oldest]
 			for old_event in old_bucket:
 				_seen_ids.erase(old_event.event_id)
+				if old_event.has_contact_link():
+					_pair_keys.erase(_pair_key(old_event))
 			_buckets.erase(oldest)
+
+
+	## Retention key of one (contact, primary car) perspective. Records without a
+	## contact link never enter this index, so wall and unpaired records cannot
+	## collide with each other.
+	##
+	## The key is length-prefixed, not joined by a separator character.
+	## `contact_id` and `primary_car_id` are arbitrary semantic strings and
+	## `validation_error()` forbids no character in them, so any single
+	## separator is ambiguous: ("a\u001fb", "c") and ("a", "b\u001fc") encode
+	## identically, and the second car's record would be refused as a duplicate
+	## perspective and lost. Prefixing each component with its character count
+	## makes the encoding injective: the first count delimits exactly the first
+	## component and the second count the remainder, so two encodings are equal
+	## only when both components are equal.
+	static func _pair_key(event: ImpactEvent) -> String:
+		return "%d:%s%d:%s" % [
+			event.contact_id.length(),
+			event.contact_id,
+			event.primary_car_id.length(),
+			event.primary_car_id,
+		]

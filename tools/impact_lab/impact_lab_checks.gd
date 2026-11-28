@@ -25,6 +25,42 @@ const CAR_CAR_TICK := 7
 ## Distinct from either record's `event_id`, which is per perspective.
 const CAR_CAR_CONTACT_ID := "contact-car-car-0003"
 
+## Counterexample identities for the pairing rule. `car-gamma`/`car-delta` are a
+## second, unrelated car pair that shares the car-car `contact_id` and tick, so
+## only reciprocal participant IDs can tell it apart from a real pair.
+const UNRELATED_PRIMARY_CAR_ID := "car-gamma"
+const UNRELATED_OTHER_CAR_ID := "car-delta"
+const UNRELATED_PAIR_EVENT_ID := "evt-unrelated-pair-0005"
+const WALL_LINKED_ALPHA_EVENT_ID := "evt-wall-linked-alpha-0006"
+const WALL_LINKED_BETA_EVENT_ID := "evt-wall-linked-beta-0007"
+const NONRECIPROCAL_EVENT_ID := "evt-nonreciprocal-0008"
+const DUPLICATE_PERSPECTIVE_EVENT_ID := "evt-car-car-duplicate-0009"
+
+## The duplicate-perspective retry reuses the retained pair but allocates a new
+## event ID, which is exactly the producer mistake the ledger must refuse.
+const DUPLICATE_PERSPECTIVE_SEVERITY := 4.50
+
+## Ambiguous-separator pair control. The contract forbids no character in a
+## semantic ID, so these two valid perspectives encode identically under any
+## single-separator join of (contact_id, primary_car_id): the first is
+## ("a\u001fb", "c") and the second is ("a", "b\u001fc"). A separator-joined
+## pair key would refuse the second record and lose it; an unambiguous key
+## must publish both.
+const AMBIGUOUS_SEPARATOR := "\u001f"
+const AMBIGUOUS_CONTACT_A := "a" + AMBIGUOUS_SEPARATOR + "b"
+const AMBIGUOUS_CONTACT_B := "a"
+const AMBIGUOUS_PRIMARY_A := "c"
+const AMBIGUOUS_PRIMARY_B := "b" + AMBIGUOUS_SEPARATOR + "c"
+const AMBIGUOUS_OTHER_CAR_ID := "car-epsilon"
+const AMBIGUOUS_FIRST_EVENT_ID := "evt-ambiguous-0001"
+const AMBIGUOUS_SECOND_EVENT_ID := "evt-ambiguous-0002"
+const AMBIGUOUS_COMPLEMENT_EVENT_ID := "evt-ambiguous-0003"
+const AMBIGUOUS_RETRY_EVENT_ID := "evt-ambiguous-retry-0004"
+const AMBIGUOUS_RETRY_B_EVENT_ID := "evt-ambiguous-retry-0005"
+const AMBIGUOUS_TICK := 11
+const AMBIGUOUS_SEVERITY := 5.25
+const AMBIGUOUS_RETRY_SEVERITY := 6.75
+
 ## Expected front-wall fixture values, authored here rather than read back from
 ## the builder so a field mix-up cannot pass both sides.
 const FRONT_WORLD_POINT := Vector3(0.80, 0.60, 1.90)
@@ -100,6 +136,15 @@ func check_vector_close(
 		failures.append(
 			"%s (actual=%s expected=%s tol=%s)" % [message, actual, expected, tolerance]
 		)
+
+
+## Every component finite. `Vector3` has no whole-vector finiteness test, and a
+## component that became INF or NaN is invisible to `distance_to` comparisons
+## against a finite expectation.
+func check_finite_vector(actual: Vector3, message: String) -> void:
+	checks += 1
+	if not (is_finite(actual.x) and is_finite(actual.y) and is_finite(actual.z)):
+		failures.append("%s (actual=%s)" % [message, actual])
 
 
 func check_string(actual: String, expected: String, message: String) -> void:
@@ -184,6 +229,123 @@ func make_ledger(
 	max_retained_ticks: int = ImpactEvent.Ledger.DEFAULT_MAX_RETAINED_TICKS
 ) -> ImpactEvent.Ledger:
 	return ImpactEvent.Ledger.new(per_tick_capacity, max_retained_ticks)
+
+
+## A second, unrelated car pair that happens to share the car-car
+## `contact_id`, tick and link status. Direct negative counterexample: sharing a
+## contact link is not a pair, because the participants are not reciprocal.
+func make_unrelated_pair_builder() -> ImpactEvent.Builder:
+	var builder := make_front_builder()
+	builder.event_id = UNRELATED_PAIR_EVENT_ID
+	builder.tick_index = CAR_CAR_TICK
+	builder.primary_car_id = UNRELATED_PRIMARY_CAR_ID
+	builder.other_car_id = UNRELATED_OTHER_CAR_ID
+	builder.contact_id = CAR_CAR_CONTACT_ID
+	builder.contact_point_world_m = CAR_CAR_WORLD_POINT
+	builder.contact_point_local_m = Vector3(0.90, 0.35, -0.20)
+	builder.contact_normal_world_m = Vector3(-1.0, 0.0, 0.0)
+	builder.severity_m_s = CAR_CAR_OTHER_SEVERITY
+	builder.post_contact_velocity_world_m_s = Vector3(-9.0, 0.0, 4.0)
+	builder.imparted_motion_m = CAR_CAR_OTHER_IMPARTED_MOTION
+	builder.region = ImpactEvent.ContactRegion.RIGHT
+	return builder
+
+
+## A non-reciprocal chain: `car-beta` as primary with a third car as other.
+## It shares the primary of one real perspective and the tick and link, so only
+## the reciprocal-ID rule rejects it.
+func make_nonreciprocal_builder() -> ImpactEvent.Builder:
+	var builder := make_unrelated_pair_builder()
+	builder.event_id = NONRECIPROCAL_EVENT_ID
+	builder.primary_car_id = OTHER_CAR_ID
+	builder.other_car_id = UNRELATED_PRIMARY_CAR_ID
+	builder.region = ImpactEvent.ContactRegion.LEFT
+	return builder
+
+
+## A wall record that carries the shared car-car `contact_id`. A record with no
+## second car has no opposite perspective, whatever its link says; two such
+## records with different primaries are the second mispairing path.
+func make_wall_linked_builder(event_id: String, primary_car_id: String) -> ImpactEvent.Builder:
+	var builder := make_front_builder()
+	builder.event_id = event_id
+	builder.tick_index = CAR_CAR_TICK
+	builder.primary_car_id = primary_car_id
+	builder.other_car_id = ""
+	builder.contact_id = CAR_CAR_CONTACT_ID
+	builder.contact_point_world_m = CAR_CAR_WORLD_POINT
+	builder.contact_normal_world_m = CAR_CAR_OTHER_NORMAL
+	builder.severity_m_s = CAR_CAR_OTHER_SEVERITY
+	builder.post_contact_velocity_world_m_s = Vector3(-9.0, 0.0, 4.0)
+	builder.imparted_motion_m = CAR_CAR_OTHER_IMPARTED_MOTION
+	builder.region = ImpactEvent.ContactRegion.LEFT
+	return builder
+
+
+## The same (contact, primary car) perspective as `make_car_car_builder()`
+## published again under a NEW `event_id`: the duplicate-producer retry the
+## ledger must refuse instead of retaining two records of one perspective.
+func make_duplicate_perspective_builder() -> ImpactEvent.Builder:
+	var builder := make_car_car_builder()
+	builder.event_id = DUPLICATE_PERSPECTIVE_EVENT_ID
+	builder.severity_m_s = DUPLICATE_PERSPECTIVE_SEVERITY
+	return builder
+
+
+## One valid car-car record for the ambiguous-separator pair control. Both the
+## first and second fixture carry full valid geometry; only the identity
+## fields differ, and the (contact_id, primary_car_id) pairs are the classic
+## single-separator collision.
+func make_ambiguous_pair_builder(
+	event_id: String, contact_id: String, primary_car_id: String
+) -> ImpactEvent.Builder:
+	var builder := make_front_builder()
+	builder.event_id = event_id
+	builder.tick_index = AMBIGUOUS_TICK
+	builder.primary_car_id = primary_car_id
+	builder.other_car_id = AMBIGUOUS_OTHER_CAR_ID
+	builder.contact_id = contact_id
+	builder.contact_point_world_m = CAR_CAR_WORLD_POINT
+	builder.contact_point_local_m = Vector3(0.15, 0.35, -0.25)
+	builder.contact_normal_world_m = Vector3(-1.0, 0.0, 0.0)
+	builder.severity_m_s = AMBIGUOUS_SEVERITY
+	builder.post_contact_velocity_world_m_s = Vector3(8.0, 0.0, 3.0)
+	builder.imparted_motion_m = Vector3(0.18, 0.0, 0.12)
+	builder.region = ImpactEvent.ContactRegion.RIGHT
+	return builder
+
+
+## The first ambiguous pair published again under a NEW `event_id` and a
+## different severity: a true same-pair retry the ledger must refuse while
+## leaving the retained content unchanged.
+func make_ambiguous_retry_builder() -> ImpactEvent.Builder:
+	var builder := make_ambiguous_pair_builder(
+		AMBIGUOUS_RETRY_EVENT_ID, AMBIGUOUS_CONTACT_A, AMBIGUOUS_PRIMARY_A
+	)
+	builder.severity_m_s = AMBIGUOUS_RETRY_SEVERITY
+	return builder
+
+
+## The second ambiguous pair published again under a NEW `event_id` and a
+## different severity: the symmetric retry of the other colliding pair.
+func make_ambiguous_retry_b_builder() -> ImpactEvent.Builder:
+	var builder := make_ambiguous_pair_builder(
+		AMBIGUOUS_RETRY_B_EVENT_ID, AMBIGUOUS_CONTACT_B, AMBIGUOUS_PRIMARY_B
+	)
+	builder.severity_m_s = AMBIGUOUS_RETRY_SEVERITY
+	return builder
+
+
+## The complementary perspective of the first ambiguous pair: the other car as
+## primary under the same contact link, so the pair index must still admit it.
+func make_ambiguous_complement_builder() -> ImpactEvent.Builder:
+	var builder := make_ambiguous_pair_builder(
+		AMBIGUOUS_COMPLEMENT_EVENT_ID, AMBIGUOUS_CONTACT_A, AMBIGUOUS_OTHER_CAR_ID
+	)
+	builder.other_car_id = AMBIGUOUS_PRIMARY_A
+	builder.contact_normal_world_m = Vector3(1.0, 0.0, 0.0)
+	builder.region = ImpactEvent.ContactRegion.LEFT
+	return builder
 
 
 ## Minimal valid lab event with an explicit identity and tick, used by the

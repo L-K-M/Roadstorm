@@ -20,8 +20,11 @@ const CASE_IDS: Array[String] = [
 	"valid_front_and_rear",
 	"valid_car_car",
 	"two_perspective_car_car",
+	"opposite_perspective_pairing",
 	"duplicate_event_id_coalesced",
 	"conflicting_duplicate_refused",
+	"duplicate_perspective_pair_refused",
+	"ambiguous_separator_pair_keys",
 	"duplicate_retention_window",
 	"invalid_and_nonfinite_atomic_refusal",
 	"digest_covers_every_field",
@@ -164,10 +167,16 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_valid_car_car()
 		"two_perspective_car_car":
 			_case_two_perspective_car_car()
+		"opposite_perspective_pairing":
+			_case_opposite_perspective_pairing()
 		"duplicate_event_id_coalesced":
 			_case_duplicate_event_id()
 		"conflicting_duplicate_refused":
 			_case_conflicting_duplicate_refused()
+		"duplicate_perspective_pair_refused":
+			_case_duplicate_perspective_pair_refused()
+		"ambiguous_separator_pair_keys":
+			_case_ambiguous_separator_pair_keys()
 		"duplicate_retention_window":
 			_case_duplicate_retention_window()
 		"invalid_and_nonfinite_atomic_refusal":
@@ -347,6 +356,358 @@ func _case_two_perspective_car_car() -> void:
 	d.check(collision_outcome.is_refused(), "two_perspective.reused_id_refused")
 	d.check(ledger.conflict_count == 1, "two_perspective.reused_id_counted")
 	d.check(ledger.event_count() == 2, "two_perspective.reused_id_adds_nothing")
+
+
+func _case_opposite_perspective_pairing() -> void:
+	# Direct counterexamples for the pairing predicate. Each one is a fully
+	# built, valid record handed to `is_opposite_perspective()` itself, so a
+	# regression inside the predicate fails here rather than in a nearby
+	# assertion about publication order or IDs.
+	var alpha := d.make_car_car_builder().build()
+	var beta := d.make_car_car_other_builder().build()
+	d.check(alpha != null and beta != null, "pairing.fixtures_built")
+	if alpha == null or beta == null:
+		return
+	var negative_controls: Array[String] = []
+
+	# Positive path: reciprocal participants under one shared link and tick.
+	d.check(alpha.is_opposite_perspective(beta), "pairing.reciprocal_pair_accepted")
+	d.check(beta.is_opposite_perspective(alpha), "pairing.reciprocal_pair_is_symmetric")
+
+	# A record is never its own opposite, and a missing record is not one.
+	d.check(not alpha.is_opposite_perspective(alpha), "pairing.record_is_not_its_own_opposite")
+	d.check(not alpha.is_opposite_perspective(null), "pairing.null_other_refused")
+
+	# Unrelated pair sharing the link, tick and link status: A->B beside C->D.
+	# Differing primaries alone used to be enough to call this a pair.
+	var unrelated := d.make_unrelated_pair_builder().build()
+	d.check(unrelated != null, "pairing.unrelated_pair_built")
+	if unrelated != null:
+		negative_controls.append("unrelated_pair_sharing_link")
+	if unrelated != null:
+		d.check(
+			unrelated.contact_id == alpha.contact_id and unrelated.tick_index == alpha.tick_index,
+			"pairing.unrelated_pair_shares_link_and_tick"
+		)
+		d.check(
+			unrelated.primary_car_id != alpha.primary_car_id
+				and unrelated.event_id != alpha.event_id,
+			"pairing.unrelated_pair_differs_only_in_identity"
+		)
+		d.check(not alpha.is_opposite_perspective(unrelated), "pairing.unrelated_pair_refused")
+		d.check(not unrelated.is_opposite_perspective(alpha), "pairing.unrelated_pair_refused_reverse")
+		d.check(not beta.is_opposite_perspective(unrelated), "pairing.unrelated_pair_not_a_pair_of_beta")
+
+	# Non-reciprocal chain: one real primary, a third car as other.
+	var nonreciprocal := d.make_nonreciprocal_builder().build()
+	d.check(nonreciprocal != null, "pairing.nonreciprocal_built")
+	if nonreciprocal != null:
+		negative_controls.append("nonreciprocal_participants")
+	if nonreciprocal != null:
+		d.check(
+			not beta.is_opposite_perspective(nonreciprocal),
+			"pairing.nonreciprocal_primary_refused"
+		)
+		d.check(
+			not nonreciprocal.is_opposite_perspective(beta),
+			"pairing.nonreciprocal_other_refused"
+		)
+
+	# Two wall records that share the contact link and tick. Neither has a
+	# second car, so neither has an opposite perspective.
+	var wall_alpha := d.make_wall_linked_builder(
+		ImpactLabChecks.WALL_LINKED_ALPHA_EVENT_ID, ImpactLabChecks.PRIMARY_CAR_ID
+	).build()
+	var wall_beta := d.make_wall_linked_builder(
+		ImpactLabChecks.WALL_LINKED_BETA_EVENT_ID, ImpactLabChecks.OTHER_CAR_ID
+	).build()
+	d.check(wall_alpha != null and wall_beta != null, "pairing.wall_linked_built")
+	if wall_alpha != null and wall_beta != null:
+		negative_controls.append("two_wall_records_sharing_link")
+		d.check(wall_alpha.has_contact_link(), "pairing.wall_record_carries_the_link")
+		d.check(not wall_alpha.has_other_car(), "pairing.wall_record_has_no_other_car")
+		d.check(
+			wall_alpha.contact_id == wall_beta.contact_id
+				and wall_alpha.tick_index == wall_beta.tick_index,
+			"pairing.wall_records_share_link_and_tick"
+		)
+		d.check(
+			not wall_alpha.is_opposite_perspective(wall_beta),
+			"pairing.two_wall_records_refused"
+		)
+		d.check(
+			not wall_beta.is_opposite_perspective(wall_alpha),
+			"pairing.two_wall_records_refused_reverse"
+		)
+		d.check(not alpha.is_opposite_perspective(wall_alpha), "pairing.car_and_wall_refused")
+		d.check(not wall_beta.is_opposite_perspective(alpha), "pairing.wall_and_car_refused")
+
+	# The tick and link rules survive: a true pair at another tick, or without a
+	# shared link, is still refused.
+	var later_beta := beta.copy()
+	later_beta.tick_index = ImpactLabChecks.CAR_CAR_TICK + 1
+	negative_controls.append("different_tick")
+	d.check(not alpha.is_opposite_perspective(later_beta), "pairing.different_tick_refused")
+	var unlinked_beta := beta.copy()
+	unlinked_beta.contact_id = ""
+	negative_controls.append("missing_contact_link")
+	d.check(not alpha.is_opposite_perspective(unlinked_beta), "pairing.missing_link_refused")
+	d.check(not alpha.is_opposite_perspective(unlinked_beta.copy()), "pairing.unlinked_records_refused")
+	var reused_id_beta := beta.copy()
+	reused_id_beta.event_id = alpha.event_id
+	negative_controls.append("shared_event_id")
+	d.check(not alpha.is_opposite_perspective(reused_id_beta), "pairing.same_event_id_refused")
+
+	# A record whose other car is its own primary cannot pair with anything,
+	# including a mirror of itself, even though it is directly constructible.
+	var self_paired := alpha.copy()
+	self_paired.other_car_id = self_paired.primary_car_id
+	negative_controls.append("self_perspective")
+	d.check(not self_paired.is_opposite_perspective(self_paired.copy()), "pairing.self_perspective_refused")
+
+	negative_controls.append("null_other")
+	measurements["pairing_negative_controls"] = negative_controls.size()
+
+
+func _case_duplicate_perspective_pair_refused() -> void:
+	# A producer retry that keeps the (contact_id, primary_car_id) pair but
+	# allocates a new event_id must be refused explicitly, not published twice.
+	var ledger := d.make_ledger()
+	var first := d.make_car_car_builder().build()
+	var retry := d.make_duplicate_perspective_builder().build()
+	d.check(first != null and retry != null, "dup_pair.fixtures_built")
+	if first == null or retry == null:
+		return
+	d.check(retry.event_id != first.event_id, "dup_pair.retry_uses_a_new_event_id")
+	d.check(retry.contact_id == first.contact_id, "dup_pair.retry_shares_the_contact")
+	d.check(retry.primary_car_id == first.primary_car_id, "dup_pair.retry_shares_the_primary")
+	d.check(not retry.same_payload(first), "dup_pair.retry_is_a_distinct_record")
+	d.check(not ledger.has_event_id(retry.event_id), "dup_pair.retry_id_is_unretained")
+
+	d.check(ledger.publish(first).is_published(), "dup_pair.first_published")
+	var base_digest := ledger.content_digest()
+	var before_refused := ledger.refused_count
+	var outcome := ledger.publish(retry)
+	d.check(outcome.is_refused(), "dup_pair.retry_refused")
+	d.check(
+		outcome.reason.begins_with("duplicate perspective for contact"),
+		"dup_pair.reason_names_the_pair"
+	)
+	d.check(outcome.event == null, "dup_pair.refusal_returns_no_record")
+	d.check(ledger.refused_count == before_refused + 1, "dup_pair.refusal_counted")
+	d.check(ledger.conflict_count == 0, "dup_pair.not_counted_as_an_id_conflict")
+	d.check(ledger.published_count == 1, "dup_pair.nothing_new_published")
+	d.check(ledger.coalesced_count == 0, "dup_pair.nothing_coalesced")
+	d.check(ledger.event_count() == 1, "dup_pair.no_second_record")
+	d.check(ledger.content_digest() == base_digest, "dup_pair.retained_content_unchanged")
+	d.check(ledger.has_event_id(first.event_id), "dup_pair.first_id_still_retained")
+	d.check(not ledger.has_event_id(retry.event_id), "dup_pair.refused_id_not_retained")
+	var retained := ledger.find_by_id(first.event_id)
+	d.check(retained != null, "dup_pair.first_record_retained")
+	if retained != null:
+		d.check_string(
+			retained.event_id, first.event_id, "dup_pair.retained_identity_unchanged"
+		)
+		d.check_exact_float(
+			retained.severity_m_s, first.severity_m_s, "dup_pair.retained_payload_unchanged"
+		)
+
+	# The complementary record of the other primary car still publishes: the
+	# rule keys on the pair, not on the contact.
+	var other := d.make_car_car_other_builder().build()
+	d.check(other != null, "dup_pair.complementary_built")
+	if other != null:
+		d.check(ledger.publish(other).is_published(), "dup_pair.complementary_published")
+		d.check(ledger.event_count() == 2, "dup_pair.both_perspectives_retained")
+
+	# An identical retry of the retained ID still coalesces: ID duplicate
+	# detection runs before the pair check, so the safe retry path is unchanged.
+	var identical := d.make_car_car_builder().build()
+	var identical_outcome := ledger.publish(identical)
+	d.check(identical_outcome.is_coalesced(), "dup_pair.identical_retry_still_coalesces")
+	d.check(ledger.event_count() == 2, "dup_pair.coalesce_adds_nothing")
+	d.check(ledger.coalesced_count == 1, "dup_pair.coalesce_counted_once")
+
+	# Records without a contact link never enter the pair index, so two wall
+	# records of the same primary car cannot collide with each other.
+	var wall_first := d.make_front_builder().build()
+	var wall_second := d.make_rear_builder().build()
+	d.check(wall_first != null and wall_second != null, "dup_pair.unlinked_fixtures_built")
+	if wall_first != null and wall_second != null:
+		d.check(ledger.publish(wall_first).is_published(), "dup_pair.unlinked_first_publishes")
+		d.check(ledger.publish(wall_second).is_published(), "dup_pair.unlinked_second_publishes")
+		d.check(ledger.event_count() == 4, "dup_pair.unlinked_records_do_not_collide")
+
+	# The pair key is bounded by the retained window exactly like the ID set.
+	var bounded := d.make_ledger(4, 2)
+	var bounded_first := d.make_car_car_builder().build()
+	d.check(bounded_first != null, "dup_pair.bounded_first_built")
+	if bounded_first != null:
+		d.check(bounded.publish(bounded_first).is_published(), "dup_pair.bounded_first_published")
+		var bounded_retry := d.make_duplicate_perspective_builder().build()
+		d.check(
+			bounded.publish(bounded_retry).is_refused(),
+			"dup_pair.bounded_retry_refused_while_retained"
+		)
+		d.check(bounded.event_count() == 1, "dup_pair.bounded_no_second_record")
+		# Push the contact tick out of the retained window.
+		d.check(bounded.publish(d.make_lab_event("pair-tick8-a", 8)).is_published(), "dup_pair.tick_eight_first")
+		d.check(bounded.publish(d.make_lab_event("pair-tick8-b", 8)).is_published(), "dup_pair.tick_eight_second")
+		d.check(bounded.publish(d.make_lab_event("pair-tick9-a", 9)).is_published(), "dup_pair.tick_nine_published")
+		d.check(bounded.tick_count() == 2, "dup_pair.window_bounded")
+		d.check(not bounded.has_event_id(first.event_id), "dup_pair.pruned_id_forgotten")
+		# The same pair, at the current tick, now publishes as a fresh record.
+		var replayed := d.make_duplicate_perspective_builder().build()
+		if replayed != null:
+			replayed.tick_index = 9
+		var replay_outcome := bounded.publish(replayed)
+		d.check(replay_outcome.is_published(), "dup_pair.pruned_pair_publishes_fresh")
+		d.check(
+			bounded.publish(replayed.copy()).is_coalesced(),
+			"dup_pair.replayed_pair_retained_again"
+		)
+
+	# A reset forgets the pair key as well, so the pair publishes again.
+	bounded.reset()
+	d.check(bounded.event_count() == 0, "dup_pair.reset_clears_records")
+	var after_reset := d.make_duplicate_perspective_builder().build()
+	if after_reset != null:
+		after_reset.tick_index = 9
+	d.check(bounded.publish(after_reset).is_published(), "dup_pair.reset_pair_publishes_fresh")
+
+	measurements["duplicate_perspective_refusals"] = ledger.refused_count
+
+
+func _case_ambiguous_separator_pair_keys() -> void:
+	# Direct negative ledger control for the pair-key encoding. The contract
+	# forbids no character in a semantic ID, so two valid, distinct
+	# perspectives encode identically under any single-separator join of
+	# (contact_id, primary_car_id): ("a\u001fb", "c") and ("a", "b\u001fc").
+	# A separator-joined key refuses the second record as a duplicate
+	# perspective and loses it; an unambiguous key publishes both.
+	var ledger := d.make_ledger()
+	var first := d.make_ambiguous_pair_builder(
+		ImpactLabChecks.AMBIGUOUS_FIRST_EVENT_ID,
+		ImpactLabChecks.AMBIGUOUS_CONTACT_A,
+		ImpactLabChecks.AMBIGUOUS_PRIMARY_A
+	).build()
+	var second := d.make_ambiguous_pair_builder(
+		ImpactLabChecks.AMBIGUOUS_SECOND_EVENT_ID,
+		ImpactLabChecks.AMBIGUOUS_CONTACT_B,
+		ImpactLabChecks.AMBIGUOUS_PRIMARY_B
+	).build()
+	d.check(first != null and second != null, "ambig.fixtures_built")
+	if first == null or second == null:
+		return
+	d.check(first.is_valid(), "ambig.first_valid")
+	d.check(second.is_valid(), "ambig.second_valid")
+	d.check(
+		first.contact_id != second.contact_id
+			or first.primary_car_id != second.primary_car_id,
+		"ambig.pairs_are_distinct"
+	)
+	# The collision a single-separator encoding would have: joining either
+	# pair with one U+001F produces the same string, so the encoding under
+	# test must not be a plain join.
+	d.check(
+		(first.contact_id + "\u001f" + first.primary_car_id)
+			== (second.contact_id + "\u001f" + second.primary_car_id),
+		"ambig.separator_encoding_would_collide"
+	)
+
+	d.check(ledger.publish(first).is_published(), "ambig.first_published")
+	var after_first := ledger.content_digest()
+	d.check(ledger.publish(second).is_published(), "ambig.second_published")
+	d.check(ledger.event_count() == 2, "ambig.both_retained")
+	d.check(ledger.coalesced_count == 0, "ambig.nothing_coalesced")
+	d.check(ledger.conflict_count == 0, "ambig.nothing_conflicted")
+	d.check(
+		ledger.content_digest() != after_first,
+		"ambig.second_record_reaches_the_content_digest"
+	)
+
+	var retained_first := ledger.find_by_id(ImpactLabChecks.AMBIGUOUS_FIRST_EVENT_ID)
+	var retained_second := ledger.find_by_id(ImpactLabChecks.AMBIGUOUS_SECOND_EVENT_ID)
+	d.check(retained_first != null, "ambig.first_retained")
+	d.check(retained_second != null, "ambig.second_retained")
+	if retained_first != null:
+		d.check_string(
+			retained_first.contact_id, ImpactLabChecks.AMBIGUOUS_CONTACT_A,
+			"ambig.retained_first_contact"
+		)
+		d.check_string(
+			retained_first.primary_car_id, ImpactLabChecks.AMBIGUOUS_PRIMARY_A,
+			"ambig.retained_first_primary"
+		)
+	if retained_second != null:
+		d.check_string(
+			retained_second.contact_id, ImpactLabChecks.AMBIGUOUS_CONTACT_B,
+			"ambig.retained_second_contact"
+		)
+		d.check_string(
+			retained_second.primary_car_id, ImpactLabChecks.AMBIGUOUS_PRIMARY_B,
+			"ambig.retained_second_primary"
+		)
+
+	# A true retry of the FIRST pair under a new event ID is still a duplicate
+	# perspective: refused, counted once in refused_count only, and the
+	# retained content digest is unchanged.
+	var retry := d.make_ambiguous_retry_builder().build()
+	d.check(retry != null, "ambig.retry_built")
+	if retry != null:
+		d.check(retry.event_id != first.event_id, "ambig.retry_uses_a_new_event_id")
+		d.check(
+			retry.contact_id == first.contact_id
+				and retry.primary_car_id == first.primary_car_id,
+			"ambig.retry_is_the_same_pair"
+		)
+		var before_digest := ledger.content_digest()
+		var before_refused := ledger.refused_count
+		var retry_outcome := ledger.publish(retry)
+		d.check(retry_outcome.is_refused(), "ambig.retry_refused")
+		d.check(
+			retry_outcome.reason.begins_with("duplicate perspective for contact"),
+			"ambig.retry_reason_names_the_pair"
+		)
+		d.check(
+			ledger.refused_count == before_refused + 1,
+			"ambig.retry_counted_once"
+		)
+		d.check(ledger.conflict_count == 0, "ambig.retry_not_an_id_conflict")
+		d.check(ledger.event_count() == 2, "ambig.retry_adds_nothing")
+		d.check(
+			ledger.content_digest() == before_digest,
+			"ambig.retry_leaves_content_unchanged"
+		)
+		d.check(not ledger.has_event_id(retry.event_id), "ambig.retry_id_not_retained")
+
+	# The symmetric retry of the SECOND pair is refused the same way, so the
+	# unambiguous key refuses neither pair's genuine retry.
+	var retry_b := d.make_ambiguous_retry_b_builder().build()
+	d.check(retry_b != null, "ambig.retry_b_built")
+	if retry_b != null:
+		var before_b_digest := ledger.content_digest()
+		var retry_b_outcome := ledger.publish(retry_b)
+		d.check(retry_b_outcome.is_refused(), "ambig.retry_b_refused")
+		d.check(ledger.event_count() == 2, "ambig.retry_b_adds_nothing")
+		d.check(
+			ledger.content_digest() == before_b_digest,
+			"ambig.retry_b_leaves_content_unchanged"
+		)
+
+	# The complementary perspective of the first pair still publishes: the pair
+	# index distinguishes perspectives, it does not block the second car.
+	var complement := d.make_ambiguous_complement_builder().build()
+	d.check(complement != null, "ambig.complement_built")
+	if complement != null:
+		d.check(
+			complement.is_opposite_perspective(first),
+			"ambig.complement_is_the_opposite_perspective"
+		)
+		d.check(ledger.publish(complement).is_published(), "ambig.complement_published")
+		d.check(ledger.event_count() == 3, "ambig.complement_retained")
+
+	measurements["ambiguous_pairs_retained"] = ledger.event_count()
 
 
 func _case_duplicate_event_id() -> void:
@@ -1124,6 +1485,73 @@ func _case_large_finite_vector_domain() -> void:
 		preserve_builder.rejection_reason, "nonunit contact normal",
 		"domain.huge_normal_preserve_reason_is_nonunit"
 	)
+
+	# Diagonal huge finite values: the edge an axis-aligned control cannot
+	# reach. Every component fits the engine's 32-bit float vector range, but
+	# the norm is about sqrt(2) times larger and stays finite only as a 64-bit
+	# script scalar.
+	var diagonal := Vector3(3e38, 3e38, 0.0)
+	var diagonal_norm := ImpactEvent.stable_norm(diagonal)
+	d.check(is_finite(diagonal_norm), "domain.diagonal_scaled_norm_is_finite")
+	d.check(diagonal_norm > 3.4e38, "domain.diagonal_norm_exceeds_float32_range")
+	d.check_relative_close(
+		diagonal_norm, sqrt(2.0) * 3e38, 1e-6, "domain.diagonal_norm_value"
+	)
+	# Engine control for the hazard being defended against: on the pinned build
+	# the vector division converts that divisor to a 32-bit float first, which
+	# overflows to INF and collapses the quotient to zero. A build whose
+	# Vector3 division keeps the wider scalar would fail this control, and the
+	# control would then need re-deriving rather than deleting.
+	d.check_vector_close(
+		diagonal / diagonal_norm, Vector3.ZERO, 0.0,
+		"domain.vector_division_by_scaled_norm_collapses"
+	)
+
+	var diagonal_builder := d.make_front_builder()
+	diagonal_builder.contact_normal_world_m = diagonal
+	diagonal_builder.normal_mode = ImpactEvent.NormalMode.NORMALIZE
+	var diagonal_event := diagonal_builder.build()
+	d.check(diagonal_event != null, "domain.diagonal_huge_normal_normalizes")
+	if diagonal_event != null:
+		var unit: Vector3 = diagonal_event.contact_normal_world_m
+		d.check_finite_vector(unit, "domain.diagonal_normal_is_finite")
+		d.check_close(unit.length(), 1.0, 1e-6, "domain.diagonal_normal_is_unit_length")
+		d.check_vector_close(
+			unit, Vector3(1.0 / sqrt(2.0), 1.0 / sqrt(2.0), 0.0), 1e-6,
+			"domain.diagonal_normal_direction_preserved"
+		)
+		d.check(diagonal_event.is_valid(), "domain.diagonal_normal_event_valid")
+		d.check_string(
+			diagonal_event.validation_error(), "",
+			"domain.diagonal_normal_has_no_validation_error"
+		)
+
+	# Mixed signs: the direction rule must carry the sign of each component.
+	var signed := Vector3(-3e38, 3e38, 0.0)
+	var signed_builder := d.make_front_builder()
+	signed_builder.contact_normal_world_m = signed
+	signed_builder.normal_mode = ImpactEvent.NormalMode.NORMALIZE
+	var signed_event := signed_builder.build()
+	d.check(signed_event != null, "domain.signed_diagonal_normal_normalizes")
+	if signed_event != null:
+		var signed_unit: Vector3 = signed_event.contact_normal_world_m
+		d.check_finite_vector(signed_unit, "domain.signed_diagonal_normal_is_finite")
+		d.check_vector_close(
+			signed_unit, Vector3(-1.0 / sqrt(2.0), 1.0 / sqrt(2.0), 0.0), 1e-6,
+			"domain.signed_diagonal_normal_direction_preserved"
+		)
+
+	# PRESERVE must still classify the diagonal as nonunit, never as zero.
+	var diagonal_preserve := d.make_front_builder()
+	diagonal_preserve.contact_normal_world_m = diagonal
+	diagonal_preserve.normal_mode = ImpactEvent.NormalMode.PRESERVE
+	var preserved_diagonal := diagonal_preserve.build()
+	d.check(preserved_diagonal == null, "domain.diagonal_normal_preserve_refused")
+	d.check_string(
+		diagonal_preserve.rejection_reason, "nonunit contact normal",
+		"domain.diagonal_normal_preserve_reason_is_nonunit"
+	)
+	measurements["scaled_norm_of_diagonal_3e38"] = diagonal_norm
 	measurements["scaled_norm_of_1e20"] = huge_norm
 
 
