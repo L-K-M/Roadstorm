@@ -26,8 +26,11 @@ const RoadSourceDocument := preload("res://src/course/road_source.gd")
 ##     clamped parameter keeps them continuous and free of overshoot between
 ##     the two authored knot values; it does not make them linear in distance.
 ##
-## Numerical method. Each cubic span's speed |dB/dt| is integrated by adaptive
-## recursive Simpson quadrature in a fixed left-to-right order. Every
+## Numerical method. Each cubic span's speed |dB/dt| is evaluated with scalar
+## float arithmetic from the stored Vector3 control-point components and is
+## integrated by adaptive recursive Simpson quadrature in a fixed left-to-right
+## order. Scalar floats avoid the float32 Vector3 roundoff that a large world
+## translation would otherwise introduce into length calculations. Every
 ## candidate leaf must additionally lie inside an independent geometric
 ## bracket for the same Bezier subsegment: the summed chord lengths lower-bound
 ## the true arc length and the summed subsegment control-polygon lengths
@@ -35,9 +38,10 @@ const RoadSourceDocument := preload("res://src/course/road_source.gd")
 ## lies inside that bracket (within an explicit IEEE-754 roundoff allowance)
 ## and the maximum distance from the value to either bracket bound is within
 ## the local tolerance. The per-span reported error is the sum of those
-## conservative distances, not the Richardson extrapolation; a leaf whose
-## bracket is nonfinite or inverted beyond roundoff is refused, as is a leaf
-## that cannot satisfy both conditions before the depth or node cap.
+## conservative distances and leaf roundoff allowances, not the Richardson
+## extrapolation; a leaf whose bracket is nonfinite or inverted beyond roundoff
+## is refused, as is a leaf that cannot satisfy both conditions before the
+## depth or node cap.
 ## Arc-length inversion uses the adaptive table for a bracket, then bounded
 ## Newton steps with bisection fallback and fixed Richardson-refined composite
 ## Simpson quadrature. Tolerances and caps are explicit. Options may tighten
@@ -63,12 +67,12 @@ const OPTION_KEYS: Array = [
 ]
 
 const ARC_LENGTH_BOUND_PIECES := 8
-## Relative IEEE-754 roundoff allowance used only to compare the geometric
-## bracket with the extrapolated Simpson value. The true subarc length always
-## lies between the summed chord and control-polygon bounds, so a lower bound
-## above the upper bound by more than this allowance is an inconsistent
-## derived state rather than roundoff. The allowance is far below the authored
-## tolerance and never widens an accepted leaf's stored error bound.
+## Relative IEEE-754 roundoff allowance used to compare the geometric bracket
+## with the extrapolated Simpson value. The true subarc length always lies
+## between the summed chord and control-polygon bounds, so a lower bound above
+## the upper bound by more than this allowance is an inconsistent derived state
+## rather than roundoff. The allowance is far below the authored tolerance and
+## is included in each accepted leaf's stored error bound.
 const ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF := 1.0e-12
 const INVERSION_COARSE_PANELS := 8
 const INVERSION_FINE_PANELS := 16
@@ -78,6 +82,7 @@ const INVERSION_CONVERGENCE_FRACTION := 0.05
 const DERIVATIVE_ROOT_PARAMETER_TOLERANCE := 1.0e-12
 const DERIVATIVE_DISCRIMINANT_EPSILON := 1.0e-7
 const DEGENERATE_SPEED_RELATIVE_EPSILON := 1.0e-7
+const VECTOR3_FINITE_COMPONENT_LIMIT := 3.4028234663852886e38
 
 const SECTION_BOUNDARY_POLICY := (
 	"each span owns [start_s,end_s); an exact interior knot station uses the "
@@ -862,9 +867,10 @@ static func _integrate_span_recursive(
 			return
 		if extrapolated >= lower - roundoff_slack and extrapolated <= upper + roundoff_slack:
 			var distance := maxf(extrapolated - lower, upper - extrapolated)
+			var error_estimate := distance + roundoff_slack
 			if distance <= p_tolerance:
 				_accept_integration_leaf(
-					p_state, p_b, extrapolated, distance, p_max_nodes, p_a, p_depth
+					p_state, p_b, extrapolated, error_estimate, p_max_nodes, p_a, p_depth
 				)
 				return
 
@@ -1007,15 +1013,30 @@ static func _bezier_interval_length_bounds(
 		if piece == ARC_LENGTH_BOUND_PIECES - 1:
 			end_t = p_b
 		var width := end_t - start_t
-		var q0 := _bezier_position(p_control_points, start_t)
-		var derivative0 := _bezier_derivative(p_control_points, start_t)
-		var q3 := _bezier_position(p_control_points, end_t)
-		var derivative1 := _bezier_derivative(p_control_points, end_t)
-		var q1 := q0 + derivative0 * (width / 3.0)
-		var q2 := q3 - derivative1 * (width / 3.0)
-		var chord := (q3 - q0).length()
+		var derivative0 := _bezier_derivative_components(p_control_points, start_t)
+		var derivative1 := _bezier_derivative_components(p_control_points, end_t)
+		var displacement := _bezier_displacement_components(p_control_points, start_t, end_t)
+		var derivative_scale := width / 3.0
+		var first_segment := [
+			float(derivative0[0]) * derivative_scale,
+			float(derivative0[1]) * derivative_scale,
+			float(derivative0[2]) * derivative_scale,
+		]
+		var last_segment := [
+			float(derivative1[0]) * derivative_scale,
+			float(derivative1[1]) * derivative_scale,
+			float(derivative1[2]) * derivative_scale,
+		]
+		var middle_segment := [
+			float(displacement[0]) - float(first_segment[0]) - float(last_segment[0]),
+			float(displacement[1]) - float(first_segment[1]) - float(last_segment[1]),
+			float(displacement[2]) - float(first_segment[2]) - float(last_segment[2]),
+		]
+		var chord := _components_length(displacement)
 		var polygon := (
-			(q1 - q0).length() + (q2 - q1).length() + (q3 - q2).length()
+			_components_length(first_segment)
+			+ _components_length(middle_segment)
+			+ _components_length(last_segment)
 		)
 		if not is_finite(chord) or not is_finite(polygon):
 			return {
@@ -1046,7 +1067,7 @@ static func _bezier_interval_length_bounds(
 
 
 static func _arc_length_bound_roundoff_slack(p_lower: float, p_upper: float) -> float:
-	var scale := maxf(1.0, maxf(absf(p_lower), absf(p_upper)))
+	var scale := maxf(absf(p_lower), absf(p_upper))
 	return ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF * scale
 
 
@@ -1236,21 +1257,20 @@ static func _evaluate_sample(
 	p_role: String
 ) -> Dictionary:
 	var t := clampf(p_t, 0.0, 1.0)
-	var position := _bezier_position(p_control_points, t)
+	var position_components := _bezier_position_components(p_control_points, t)
+	var position := Vector3(
+		float(position_components[0]),
+		float(position_components[1]),
+		float(position_components[2])
+	)
 	if not _finite_vector3(position):
 		return _sample_failure(
 			Refusal.NONFINITE_DERIVED_STATE,
 			"sample position became nonfinite",
 			{"t": t, "sample_index": p_sample_index}
 		)
-	var derivative := _bezier_derivative(p_control_points, t)
-	if not _finite_vector3(derivative):
-		return _sample_failure(
-			Refusal.NONFINITE_DERIVED_STATE,
-			"sample derivative became nonfinite",
-			{"t": t, "sample_index": p_sample_index}
-		)
-	var derivative_length := derivative.length()
+	var derivative_components := _bezier_derivative_components(p_control_points, t)
+	var derivative_length := _components_length(derivative_components)
 	if not is_finite(derivative_length):
 		return _sample_failure(
 			Refusal.NONFINITE_DERIVED_STATE,
@@ -1263,7 +1283,11 @@ static func _evaluate_sample(
 			"sample derivative has zero length and no normalized forward tangent",
 			{"t": t, "sample_index": p_sample_index}
 		)
-	var tangent := derivative / derivative_length
+	var tangent := Vector3(
+		float(derivative_components[0]) / derivative_length,
+		float(derivative_components[1]) / derivative_length,
+		float(derivative_components[2]) / derivative_length
+	)
 	if not _finite_vector3(tangent):
 		return _sample_failure(
 			Refusal.NONFINITE_DERIVED_STATE,
@@ -1593,30 +1617,100 @@ static func _span_index_for_station(p_span_records: Array, p_station: float, p_t
 	return low
 
 
-static func _bezier_position(p_control_points: Array[Vector3], p_t: float) -> Vector3:
+static func _bezier_position_components(p_control_points: Array[Vector3], p_t: float) -> Array:
 	var u := 1.0 - p_t
-	return (
-		p_control_points[0] * (u * u * u)
-		+ p_control_points[1] * (3.0 * u * u * p_t)
-		+ p_control_points[2] * (3.0 * u * p_t * p_t)
-		+ p_control_points[3] * (p_t * p_t * p_t)
-	)
+	var weight0 := u * u * u
+	var weight1 := 3.0 * u * u * p_t
+	var weight2 := 3.0 * u * p_t * p_t
+	var weight3 := p_t * p_t * p_t
+	var p0: Vector3 = p_control_points[0]
+	var p1: Vector3 = p_control_points[1]
+	var p2: Vector3 = p_control_points[2]
+	var p3: Vector3 = p_control_points[3]
+	return [
+		weight0 * p0.x + weight1 * p1.x + weight2 * p2.x + weight3 * p3.x,
+		weight0 * p0.y + weight1 * p1.y + weight2 * p2.y + weight3 * p3.y,
+		weight0 * p0.z + weight1 * p1.z + weight2 * p2.z + weight3 * p3.z,
+	]
 
 
-static func _bezier_derivative(p_control_points: Array[Vector3], p_t: float) -> Vector3:
+static func _bezier_derivative_components(p_control_points: Array[Vector3], p_t: float) -> Array:
 	var u := 1.0 - p_t
-	return (
-		(p_control_points[1] - p_control_points[0]) * (3.0 * u * u)
-		+ (p_control_points[2] - p_control_points[1]) * (6.0 * u * p_t)
-		+ (p_control_points[3] - p_control_points[2]) * (3.0 * p_t * p_t)
-	)
+	var weight0 := 3.0 * u * u
+	var weight1 := 6.0 * u * p_t
+	var weight2 := 3.0 * p_t * p_t
+	var p0: Vector3 = p_control_points[0]
+	var p1: Vector3 = p_control_points[1]
+	var p2: Vector3 = p_control_points[2]
+	var p3: Vector3 = p_control_points[3]
+	return [
+		weight0 * (p1.x - p0.x) + weight1 * (p2.x - p1.x) + weight2 * (p3.x - p2.x),
+		weight0 * (p1.y - p0.y) + weight1 * (p2.y - p1.y) + weight2 * (p3.y - p2.y),
+		weight0 * (p1.z - p0.z) + weight1 * (p2.z - p1.z) + weight2 * (p3.z - p2.z),
+	]
+
+
+static func _bezier_displacement_components(
+	p_control_points: Array[Vector3],
+	p_a: float,
+	p_b: float
+) -> Array:
+	var width := p_b - p_a
+	var linear_t := p_b + p_a
+	var quadratic_t := p_b * p_b + p_b * p_a + p_a * p_a
+	var p0: Vector3 = p_control_points[0]
+	var p1: Vector3 = p_control_points[1]
+	var p2: Vector3 = p_control_points[2]
+	var p3: Vector3 = p_control_points[3]
+	var linear := [
+		3.0 * (p1.x - p0.x),
+		3.0 * (p1.y - p0.y),
+		3.0 * (p1.z - p0.z),
+	]
+	var quadratic := [
+		3.0 * (p0.x - 2.0 * p1.x + p2.x),
+		3.0 * (p0.y - 2.0 * p1.y + p2.y),
+		3.0 * (p0.z - 2.0 * p1.z + p2.z),
+	]
+	var cubic := [
+		p3.x - 3.0 * p2.x + 3.0 * p1.x - p0.x,
+		p3.y - 3.0 * p2.y + 3.0 * p1.y - p0.y,
+		p3.z - 3.0 * p2.z + 3.0 * p1.z - p0.z,
+	]
+	return [
+		width * (float(linear[0]) + float(quadratic[0]) * linear_t + float(cubic[0]) * quadratic_t),
+		width * (float(linear[1]) + float(quadratic[1]) * linear_t + float(cubic[1]) * quadratic_t),
+		width * (float(linear[2]) + float(quadratic[2]) * linear_t + float(cubic[2]) * quadratic_t),
+	]
+
+
+static func _components_length(p_components: Array) -> float:
+	var x := float(p_components[0])
+	var y := float(p_components[1])
+	var z := float(p_components[2])
+	var squared := x * x + y * y + z * z
+	if not is_finite(squared):
+		return NAN
+	return sqrt(squared)
 
 
 static func _speed(p_control_points: Array[Vector3], p_t: float) -> float:
-	var derivative := _bezier_derivative(p_control_points, p_t)
-	if not _finite_vector3(derivative):
-		return NAN
-	return derivative.length()
+	var p0: Vector3 = p_control_points[0]
+	var p1: Vector3 = p_control_points[1]
+	var p2: Vector3 = p_control_points[2]
+	var p3: Vector3 = p_control_points[3]
+	for difference in [
+		p1.x - p0.x, p1.y - p0.y, p1.z - p0.z,
+		p2.x - p1.x, p2.y - p1.y, p2.z - p1.z,
+		p3.x - p2.x, p3.y - p2.y, p3.z - p2.z,
+	]:
+		if absf(float(difference)) > VECTOR3_FINITE_COMPONENT_LIMIT:
+			return NAN
+	var components := _bezier_derivative_components(p_control_points, p_t)
+	for component in components:
+		if absf(float(component)) > VECTOR3_FINITE_COMPONENT_LIMIT:
+			return NAN
+	return _components_length(components)
 
 
 static func _speed_error(p_speed: float, p_label: String) -> Dictionary:

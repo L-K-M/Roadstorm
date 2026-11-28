@@ -13,7 +13,15 @@ const OPEN_CURVE_PATH := FIXTURE_DIR + "/road_sampling_open_curve.json"
 const CLOSED_LOOP_PATH := FIXTURE_DIR + "/road_sampling_closed_loop.json"
 
 const INDEPENDENT_LENGTH_PANELS := 65536
+const INDEPENDENT_GAUSS_COARSE_PANELS := 64
+const INDEPENDENT_GAUSS_FINE_PANELS := 256
+## Coarse/fine uncertainty limit for the independent fixed quadrature. It is
+## one picometre, six orders of magnitude below the sampler tolerance.
+const INDEPENDENT_REFERENCE_UNCERTAINTY_LIMIT_M := 1.0e-12
+const SEEDED_ROAD_SPAN_COUNT := 40
 const CURVED_LENGTH_AGREEMENT_TOLERANCE_M := 0.005
+const GAUSS5_X := [-0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640]
+const GAUSS5_W := [0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891]
 ## Exact length of the Sol analytic quadratic B(t)=(t, 5t^2-3.17t, 0).
 const SOL_QUADRATIC_EXACT_LENGTH_M := 3.1086978942948535
 ## Independent midpoint panels used only to invert the analytic quadratic.
@@ -136,6 +144,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_malformed_and_derived_refusals"),
 		Callable(self, "_case_budget_controls"),
 		Callable(self, "_case_conservative_bracket_regressions"),
+		Callable(self, "_case_translated_float64_regressions"),
 	]:
 		var result: Dictionary = call.call()
 		case_results.append(result)
@@ -264,13 +273,19 @@ static func sol_quadratic_inverse_length(p_target_s: float, p_panels: int) -> fl
 	return 0.5 * (low + high)
 
 
-static func independent_bezier_derivative(points: Array[Vector3], t: float) -> Vector3:
+static func independent_bezier_speed(points: Array[Vector3], t: float) -> float:
 	var u := 1.0 - t
-	return (
-		(points[1] - points[0]) * (3.0 * u * u)
-		+ (points[2] - points[1]) * (6.0 * u * t)
-		+ (points[3] - points[2]) * (3.0 * t * t)
-	)
+	var weight0 := 3.0 * u * u
+	var weight1 := 6.0 * u * t
+	var weight2 := 3.0 * t * t
+	var p0: Vector3 = points[0]
+	var p1: Vector3 = points[1]
+	var p2: Vector3 = points[2]
+	var p3: Vector3 = points[3]
+	var dx := weight0 * (p1.x - p0.x) + weight1 * (p2.x - p1.x) + weight2 * (p3.x - p2.x)
+	var dy := weight0 * (p1.y - p0.y) + weight1 * (p2.y - p1.y) + weight2 * (p3.y - p2.y)
+	var dz := weight0 * (p1.z - p0.z) + weight1 * (p2.z - p1.z) + weight2 * (p3.z - p2.z)
+	return sqrt(dx * dx + dy * dy + dz * dz)
 
 
 ## Independent length reference: plain fixed midpoint quadrature, not the
@@ -279,8 +294,35 @@ static func independent_midpoint_length(points: Array[Vector3], panels: int) -> 
 	var sum := 0.0
 	for panel in range(panels):
 		var t := (float(panel) + 0.5) / float(panels)
-		sum += independent_bezier_derivative(points, t).length()
+		sum += independent_bezier_speed(points, t)
 	return sum / float(panels)
+
+
+## Independent fixed Gauss-Legendre reference in scalar float arithmetic. It
+## uses the float32-rounded control points exposed by the parsed document.
+static func independent_gauss_length(points: Array[Vector3], panels: int) -> float:
+	var width := 1.0 / float(panels)
+	var half_width := 0.5 * width
+	var sum := 0.0
+	for panel in range(panels):
+		var center := width * (float(panel) + 0.5)
+		for point in range(GAUSS5_X.size()):
+			sum += float(GAUSS5_W[point]) * independent_bezier_speed(
+				points,
+				center + half_width * float(GAUSS5_X[point])
+			)
+	return sum * half_width
+
+
+static func translated_plan_control_points(p_plan: Array, p_offset: Array) -> Array:
+	var out := []
+	for point in p_plan:
+		out.append([
+			float(point[0]) + float(p_offset[0]),
+			float(p_offset[1]),
+			-float(point[1]) + float(p_offset[2]),
+		])
+	return out
 
 
 static func normalized_variant(value: Variant) -> Variant:
@@ -349,6 +391,54 @@ static func parse_control_source(c: Case, source: Dictionary, label: String) -> 
 	if not bool(parsed["ok"]):
 		return null
 	return parsed["document"]
+
+
+func _build_single_span_table(
+	c: Case,
+	course_id: String,
+	label: String,
+	points: Array,
+	spacing: float
+) -> RoadArcSampler.Table:
+	var source := make_single_span_source(course_id, points[0], points[1], points[2], points[3])
+	var document := parse_control_source(c, source, label)
+	if document == null:
+		return null
+	return build_table(c, document, spacing, label + " builds at default options")
+
+
+func _check_length_error_covered(
+	c: Case,
+	table: RoadArcSampler.Table,
+	control_points: Array[Vector3],
+	label: String
+) -> Dictionary:
+	var coarse_reference := independent_gauss_length(control_points, INDEPENDENT_GAUSS_COARSE_PANELS)
+	var reference := independent_gauss_length(control_points, INDEPENDENT_GAUSS_FINE_PANELS)
+	var reference_uncertainty := absf(reference - coarse_reference)
+	var actual_error := absf(table.total_length_m - reference)
+	var reported := table.length_error_estimate_m
+	var allowed := reported
+	c.check(
+		reference_uncertainty <= INDEPENDENT_REFERENCE_UNCERTAINTY_LIMIT_M,
+		"%s independent reference coarse/fine uncertainty is negligible (%.9f)" % [label, reference_uncertainty]
+	)
+	c.check(
+		actual_error <= allowed,
+		"%s reported error covers independent reference error (actual %.9f reported %.9f uncertainty %.9f)"
+			% [label, actual_error, reported, reference_uncertainty]
+	)
+	c.check(
+		reported <= RoadArcSampler.DEFAULT_ARC_LENGTH_TOLERANCE_M,
+		label + " reported error estimate stays inside the default tolerance"
+	)
+	return {
+		"actual_error": actual_error,
+		"allowed": allowed,
+		"reference": reference,
+		"reference_uncertainty": reference_uncertainty,
+		"reported": reported,
+	}
 
 
 # --- Positive cases ----------------------------------------------------------
@@ -820,6 +910,12 @@ func _check_sol_quadratic_regression(c: Case) -> void:
 	var table := build_table(c, document, 1.0, "Sol analytic quadratic at 1 m spacing")
 	if table == null:
 		return
+	var float32_coverage := _check_length_error_covered(
+		c,
+		table,
+		document.spans[0].control_points(),
+		"Sol analytic quadratic float32 control points"
+	)
 	c.close(
 		table.total_length_m,
 		SOL_QUADRATIC_EXACT_LENGTH_M,
@@ -872,6 +968,8 @@ func _check_sol_quadratic_regression(c: Case) -> void:
 		table.total_length_m - SOL_QUADRATIC_EXACT_LENGTH_M
 	)
 	c.measurements["sol_quadratic_reported_error_m"] = table.length_error_estimate_m
+	c.measurements["sol_quadratic_float32_reference_length_m"] = float(float32_coverage["reference"])
+	c.measurements["sol_quadratic_float32_absolute_difference_m"] = float(float32_coverage["actual_error"])
 
 	var near_table := build_table(c, document, 3.05, "Sol analytic quadratic near-end spacing")
 	if near_table == null:
@@ -917,10 +1015,11 @@ func _check_opus_counterexample_regression(
 	if document == null:
 		return
 	var control_points: Array[Vector3] = document.spans[0].control_points()
-	var reference := independent_midpoint_length(control_points, INDEPENDENT_LENGTH_PANELS)
 	var table := build_table(c, document, p_spacing, p_label + " builds")
 	if table == null:
 		return
+	var coverage := _check_length_error_covered(c, table, control_points, p_label)
+	var reference := float(coverage["reference"])
 	c.close(
 		table.total_length_m,
 		reference,
@@ -965,3 +1064,243 @@ func _check_global_station_collapse_regression(c: Case) -> void:
 		"positive span after a 2^53 m prefix refuses instead of collapsing the global station",
 		"advance the global station"
 	)
+
+
+# --- Float64 translated-geometry regressions --------------------------------
+
+
+func _case_translated_float64_regressions() -> Dictionary:
+	var c := Case.new()
+	c.name = "translated_float64_regressions"
+
+	# Sol's exact diagonal counterexample: the old float32 vector norm path
+	# accepted a 1.571 mm error while reporting only 0.977 mm, despite the
+	# requested 1 mm tolerance. Its dyadic control components make the true
+	# geometric length exactly 24576*sqrt(2) in real arithmetic.
+	var diagonal_points := [
+		[0.0, 0.0, 0.0],
+		[8192.0, 0.0, 8192.0],
+		[16384.0, 0.0, 16384.0],
+		[24576.0, 0.0, 24576.0],
+	]
+	var diagonal_table := _build_single_span_table(
+		c,
+		"lab.sampling.control.sol_diagonal",
+		"Sol exact diagonal straight",
+		diagonal_points,
+		65536.0
+	)
+	if diagonal_table != null:
+		var exact_diagonal_length := 24576.0 * sqrt(2.0)
+		var diagonal_error := absf(diagonal_table.total_length_m - exact_diagonal_length)
+		c.equal(diagonal_table.sample_count, 2, "diagonal uses only endpoint samples")
+		c.check(
+			diagonal_error <= RoadArcSampler.DEFAULT_ARC_LENGTH_TOLERANCE_M,
+			"diagonal actual error stays within the requested 1 mm tolerance"
+		)
+		c.check(
+			diagonal_error <= diagonal_table.length_error_estimate_m,
+			"diagonal reported error covers actual analytic error"
+		)
+		c.measurements["sol_diagonal_exact_length_m"] = exact_diagonal_length
+		c.measurements["sol_diagonal_actual_error_m"] = diagonal_error
+		c.measurements["sol_diagonal_reported_error_m"] = diagonal_table.length_error_estimate_m
+
+	_check_non_dyadic_straight_regression(
+		c,
+		"lab.sampling.control.nondyadic_straight_a",
+		"non-dyadic straight to (100.1,0,-0.3)",
+		[100.1, 0.0, -0.3]
+	)
+	_check_non_dyadic_straight_regression(
+		c,
+		"lab.sampling.control.nondyadic_straight_b",
+		"non-dyadic straight to (37.3,4.1,-61.7)",
+		[37.3, 4.1, -61.7]
+	)
+
+	var road1 := [
+		[0.0, 0.0],
+		[46.68122811764261, -30.631338526912597],
+		[88.92034614456695, -19.57132160513956],
+		[141.37228732321915, 0.0],
+	]
+	var road2 := [
+		[0.0, 0.0],
+		[51.0, 18.45],
+		[95.86, 28.36],
+		[144.71, 0.0],
+	]
+	var hook := [
+		[0.0, 0.0],
+		[-41.51432074598111, -26.793159374705738],
+		[-5.398951534001867, -15.298719443537351],
+		[-12.430606748396634, -10.973956893541455],
+	]
+	_check_translated_plan_span_regression(
+		c,
+		"lab.sampling.control.translated_road1",
+		"road1 translated 1.4 km",
+		road1,
+		[1000.0, 3.7, -1000.0]
+	)
+	_check_translated_plan_span_regression(
+		c,
+		"lab.sampling.control.translated_road2",
+		"road2 translated 2.8 km",
+		road2,
+		[2000.0, 11.1, -2000.0]
+	)
+	_check_translated_plan_span_regression(
+		c,
+		"lab.sampling.control.translated_hook",
+		"hook translated 5 km",
+		hook,
+		[4000.0, 18.5, -3000.0]
+	)
+	_check_seeded_normal_span_regressions(c)
+	return c.result()
+
+
+func _control_points_from_arrays(points: Array) -> Array[Vector3]:
+	var control_points: Array[Vector3] = []
+	for point in points:
+		control_points.append(vector3_from_array(point))
+	return control_points
+
+
+func _record_single_span_measurements(
+	c: Case,
+	key: String,
+	table: RoadArcSampler.Table,
+	coverage: Dictionary
+) -> void:
+	c.measurements[key + "_sampler_length_m"] = table.total_length_m
+	c.measurements[key + "_reference_length_m"] = float(coverage["reference"])
+	c.measurements[key + "_absolute_difference_m"] = float(coverage["actual_error"])
+	c.measurements[key + "_reported_error_m"] = float(coverage["reported"])
+	c.measurements[key + "_reference_uncertainty_m"] = float(coverage["reference_uncertainty"])
+
+
+func _check_non_dyadic_straight_regression(
+	c: Case,
+	course_id: String,
+	label: String,
+	displacement: Array
+) -> void:
+	var start := [0.0, 0.0, 0.0]
+	var points := [
+		start,
+		[float(displacement[0]) / 3.0, float(displacement[1]) / 3.0, float(displacement[2]) / 3.0],
+		[2.0 * float(displacement[0]) / 3.0, 2.0 * float(displacement[1]) / 3.0, 2.0 * float(displacement[2]) / 3.0],
+		displacement,
+	]
+	var table := _build_single_span_table(c, course_id, label, points, 5.0)
+	if table == null:
+		return
+	var coverage := _check_length_error_covered(
+		c,
+		table,
+		_control_points_from_arrays(points),
+		label
+	)
+	_record_single_span_measurements(c, course_id, table, coverage)
+
+
+func _check_translated_plan_span_regression(
+	c: Case,
+	course_id: String,
+	label: String,
+	plan: Array,
+	offset: Array
+) -> void:
+	var points := translated_plan_control_points(plan, offset)
+	var table := _build_single_span_table(c, course_id, label, points, 5.0)
+	if table == null:
+		return
+	var coverage := _check_length_error_covered(
+		c,
+		table,
+		_control_points_from_arrays(points),
+		label
+	)
+	_record_single_span_measurements(c, course_id, table, coverage)
+
+
+func _check_seeded_normal_span_regressions(c: Case) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 20261128
+	var accepted := 0
+	var worst_actual_error := 0.0
+	var worst_reported := 0.0
+	var worst_uncertainty := 0.0
+	var worst_error_minus_reported := -INF
+	var worst_index := -1
+	for index in range(SEEDED_ROAD_SPAN_COUNT):
+		var chord := rng.randf_range(30.0, 200.0)
+		var heading := rng.randf_range(-PI, PI)
+		var out_angle := heading + rng.randf_range(-0.6, 0.6)
+		var in_angle := heading - rng.randf_range(-0.6, 0.6)
+		var out_length := chord * rng.randf_range(0.25, 0.4)
+		var in_length := chord * rng.randf_range(0.25, 0.4)
+		var grade := rng.randf_range(-0.08, 0.08)
+		var start := [
+			2000.0 + rng.randf_range(-30.0, 30.0),
+			rng.randf_range(0.0, 20.0),
+			-2000.0 + rng.randf_range(-30.0, 30.0),
+		]
+		var end := [
+			float(start[0]) + chord * cos(heading),
+			float(start[1]) + chord * grade,
+			float(start[2]) - chord * sin(heading),
+		]
+		var p1 := [
+			float(start[0]) + out_length * cos(out_angle),
+			float(start[1]) + out_length * grade,
+			float(start[2]) - out_length * sin(out_angle),
+		]
+		var p2 := [
+			float(end[0]) - in_length * cos(in_angle),
+			float(end[1]) - in_length * grade,
+			float(end[2]) + in_length * sin(in_angle),
+		]
+		var points := [start, p1, p2, end]
+		var label := "seeded normal road-like span %02d" % index
+		var table := _build_single_span_table(
+			c,
+			"lab.sampling.control.seeded_%02d" % index,
+			label,
+			points,
+			15.0
+		)
+		if table == null:
+			continue
+		accepted += 1
+		var coverage := _check_length_error_covered(
+			c,
+			table,
+			_control_points_from_arrays(points),
+			label
+		)
+		var actual_error := float(coverage["actual_error"])
+		if actual_error > worst_actual_error:
+			worst_actual_error = actual_error
+			worst_index = index
+		worst_reported = maxf(worst_reported, float(coverage["reported"]))
+		worst_uncertainty = maxf(worst_uncertainty, float(coverage["reference_uncertainty"]))
+		worst_error_minus_reported = maxf(
+			worst_error_minus_reported,
+			actual_error - float(coverage["reported"])
+		)
+	c.equal(
+		accepted,
+		SEEDED_ROAD_SPAN_COUNT,
+		"all seeded normal road-like spans are accepted at default options"
+	)
+	c.measurements["seeded_normal_span_count"] = SEEDED_ROAD_SPAN_COUNT
+	c.measurements["seeded_normal_accepted_count"] = accepted
+	c.measurements["seeded_normal_worst_actual_error_m"] = worst_actual_error
+	c.measurements["seeded_normal_worst_reported_error_m"] = worst_reported
+	c.measurements["seeded_normal_worst_reference_uncertainty_m"] = worst_uncertainty
+	c.measurements["seeded_normal_worst_error_minus_reported_m"] = worst_error_minus_reported
+	c.measurements["seeded_normal_worst_error_index"] = worst_index

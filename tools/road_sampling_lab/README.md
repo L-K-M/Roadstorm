@@ -120,14 +120,22 @@ normal is produced here.
 ## Numerical method, budgets and refusals
 
 Each cubic span's speed `|dB/dt|` is integrated by adaptive recursive Simpson
-quadrature in a fixed left-to-right order. A candidate leaf is accepted only
-after an independent eight-piece geometric bracket places its extrapolated
-length between summed chord and control-polygon bounds within an explicit
-roundoff allowance. Its reported error is the conservative maximum distance
-to either bound; the per-span error sums accepted leaf bounds. A cap reached
-before this check passes is a structured refusal. Arc-length inversion brackets
-the target from the adaptive table, then uses bounded Newton steps with
-bisection fallback and fixed Richardson-refined composite Simpson quadrature.
+quadrature in a fixed left-to-right order. The speed and geometric bracket are
+evaluated in scalar float64 arithmetic directly from the stored `Vector3`
+control-point components rather than through intermediate float32 `Vector3`
+operations. Bracket displacements are computed from control-point differences,
+so kilometres of world translation do not enter the subtraction. Local
+derivative differences outside the finite `Vector3` component range remain
+derived-state refusals; output positions and tangents are still `Vector3`
+values. A candidate leaf is accepted only after an independent eight-piece
+geometric bracket places its extrapolated length between summed chord and
+control-polygon bounds within an explicit roundoff allowance. Its reported
+error is the conservative maximum distance to either bound plus that leaf's
+relative roundoff allowance; the per-span error sums accepted leaf bounds. A
+cap reached before this check passes is a structured refusal. Arc-length
+inversion brackets the target from the adaptive table, then uses bounded
+Newton steps with bisection fallback and fixed Richardson-refined composite
+Simpson quadrature.
 The inversion estimate is separate and is not an independently bounded
 geometric error estimate.
 
@@ -160,7 +168,7 @@ partial table.
 
 ## Validation coverage
 
-The validator runs 8 cases and 325 checks in one pinned-engine cohort:
+The validator runs 9 cases and 611 checks in one pinned-engine cohort:
 
 - `open_straight_uniform_table`: analytic 60 m straight length, exact stations,
   endpoint positions and roles, interior knot boundary ownership, linear
@@ -187,7 +195,17 @@ The validator runs 8 cases and 325 checks in one pinned-engine cohort:
 - `conservative_bracket_regressions`: Sol's analytic short quadratic and
   near-end spacing, Opus's road-like and hook counterexamples against
   independent length references, and refusal when a positive span after a
-  large prefix cannot advance its global station.
+  large prefix cannot advance its global station;
+- `translated_float64_regressions`: Sol's exact 24,576 m diagonal straight
+  (actual error must fit both the 1 mm tolerance and the reported estimate),
+  two non-dyadic straight lines, the road1/road2/hook review spans translated
+  by about 1.4, 2.8 and 5 km, and 40
+  seeded gentle road-like spans around 2 km from the origin. Every span must
+  build at default options. Lengths are compared with a fixed scalar
+  Gauss-Legendre reference computed from the parsed float32 control points;
+  the coarse/fine reference uncertainty must be below one picometre and the
+  sampler's reported error estimate must cover the observed length error
+  without an added comparison tolerance.
 
 The deliberate failure probe prints `ROAD_SAMPLING_FAILURE_PROBE` with two
 checks and one intentional failure, then exits 3. A zero exit would mean
@@ -271,6 +289,6 @@ overpasses, gates, grid space, safe anchors, recovery legality, scenery,
 render or collision normals, performance, gameplay feel or release readiness.
 It does not enforce the design's grade, bank, width or road-rhythm targets,
 and it makes no cross-host, cross-version or rendered determinism claim. The
-independent length reference is one fixed-panel midpoint quadrature, not a
-second adaptive integrator or a proof of correctness. The fixtures are
-original lab data, not the Riviera Run route.
+independent length references are fixed-panel midpoint and Gauss-Legendre
+quadrature, not a second adaptive integrator or a proof of correctness. The
+fixtures are original lab data, not the Riviera Run route.
