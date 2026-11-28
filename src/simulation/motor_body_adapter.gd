@@ -41,7 +41,22 @@ extends RefCounted
 ##     `wall_contact_point` through `has_wall_contact_point`, taken from that
 ##     candidate's own `KinematicCollision3D.get_position(index)` rather than
 ##     the generic first-contact telemetry. A degenerate projection or
-##     nonfinite point publishes no witness. Any further contact response
+##     nonfinite point publishes no witness. The same winning candidate also
+##     supplies the wall-response witness behind `has_wall_response_witness`:
+##     the world velocity immediately before the response
+##     (`wall_pre_response_velocity_world_m_s`), the world velocity immediately
+##     after it (`wall_post_response_velocity_world_m_s`) and the body pose at
+##     that collision (`wall_contact_transform`). The pre sample is taken after
+##     any yaw-constraint reprojection and immediately before
+##     `_apply_wall_response()`, the post sample immediately after it, so
+##     `(pre - post).length()` is exactly the contact-induced speed change and
+##     carries no rejected-yaw or motor-proposal contribution. The transform is
+##     the pose the body occupied when that candidate was reported - the sweep
+##     basis at that substep's committed origin, before the tick's yaw is
+##     finalized - not the final tick pose and not the contact point. A
+##     degenerate projection, a nonfinite point or an unavailable/nonfinite
+##     frame publishes zero, a default transform and a false flag. Publishing
+##     `ImpactEvent`s is M1.8 work. Any further contact response
 ##     (deflection shaping, restitution tuning, depenetration, multi-car
 ##     response) is M1.4 work.
 ##   * the translation sweep uses the tick-start basis; before the tick is
@@ -319,6 +334,38 @@ class Result extends RefCounted:
 	## caller can never mistake a zero default or a diagnostic point for an
 	## authoritative contact.
 	var has_wall_contact_point := false
+	## Explicit validity flag for the wall-response witness below. True only on
+	## a committed tick whose winning wall candidate supplied a valid point and
+	## a usable contact-time body pose. False on every refusal, on a tick with
+	## no wall-like contact, and whenever the winning candidate is unusable
+	## (degenerate road-plane normal, nonfinite point, or an unavailable or
+	## nonfinite collision-time transform). A consumer must gate on this flag
+	## and must not read the three witness fields as meaningful without it.
+	var has_wall_response_witness := false
+	## Authoritative world velocity of the car immediately before the wall
+	## response, m/s. Sampled after any yaw-constraint reprojection of the
+	## proposal's longitudinal/lateral scalars into the applied heading and
+	## immediately before `_apply_wall_response()`, so it carries no
+	## rejected-yaw contribution. Zero unless `has_wall_response_witness`.
+	var wall_pre_response_velocity_world_m_s := Vector3.ZERO
+	## Authoritative world velocity of the car immediately after the wall
+	## response, m/s. Equals `road_vector_to_world(committed_state
+	## .velocity_m_s)` for planar velocities, because the committed road-plane
+	## state stores no vertical component. Zero unless
+	## `has_wall_response_witness`.
+	var wall_post_response_velocity_world_m_s := Vector3.ZERO
+	## Body pose at the selected wall collision, world axes. The basis is the
+	## tick-start sweep basis, because the sweep advances the body with the
+	## basis it started the tick with; the origin is the committed origin of
+	## the substep whose collision reported the winning candidate. It is the
+	## pose the body occupied when that contact was reported, before the tick's
+	## yaw is finalized, and it is deliberately neither `committed_transform`
+	## (the final tick pose, carrying the applied heading and the whole tick's
+	## travel) nor `wall_contact_point` (a point on the wall). A future
+	## `ImpactEvent` producer uses it to express the contact point in the car's
+	## contact-time local frame. The identity default unless
+	## `has_wall_response_witness`.
+	var wall_contact_transform := Transform3D()
 	var contact_normal := Vector3.ZERO
 	var contact_point := Vector3.ZERO
 	var substeps := 0
@@ -409,6 +456,14 @@ static func step(
 	## Reported `get_position(index)` of each collected wall candidate, parallel
 	## to `wall_normals` across every collision index and substep.
 	var wall_points: Array = []
+	## Body pose at each collected wall candidate, parallel to `wall_normals`
+	## and `wall_points` across every collision index and substep. It is the
+	## pose the body occupied when that substep's collision was reported: the
+	## sweep basis (the tick-start basis, since the sweep never rotates) at the
+	## substep's committed origin. It is captured before the tick's yaw is
+	## finalized, so it never carries the applied heading and never carries
+	## travel accepted by later substeps.
+	var wall_transforms: Array = []
 	var substeps := 0
 
 	while remaining.length() > MIN_SEGMENT_LENGTH_M and substeps < config.max_substeps:
@@ -432,7 +487,13 @@ static func step(
 		if collision != null:
 			actual = collision.get_travel()
 			hit = true
-			var collected := _collect_collision_contacts(collision, config)
+			# Pose at this collision: the sweep basis at this substep's committed
+			# origin. `simulated.origin` is still the substep start here, and the
+			# sweep has not rotated, so this is the pose the body occupied when
+			# the contact was reported. The tick's yaw is finalized only after the
+			# sweep, so no candidate frame ever carries the applied heading.
+			var collision_transform := Transform3D(simulated.basis, simulated.origin + actual)
+			var collected := _collect_collision_contacts(collision, config, collision_transform)
 			# Generic telemetry intentionally stays the first reported contact of
 			# the last colliding substep. It is diagnostic and is not the wall
 			# response input.
@@ -442,6 +503,7 @@ static func step(
 				wall_hit = true
 				wall_normals.append_array(collected["wall_normals"])
 				wall_points.append_array(collected["wall_points"])
+				wall_transforms.append_array(collected["wall_transforms"])
 
 		var committed_end := simulated.origin + actual
 		worst_prediction_error = maxf(
@@ -564,23 +626,41 @@ static func step(
 	var authoritative_wall_normal := Vector3.ZERO
 	var authoritative_wall_point := Vector3.ZERO
 	var has_authoritative_wall_point := false
+	var witness_pre_velocity := Vector3.ZERO
+	var witness_post_velocity := Vector3.ZERO
+	var witness_transform := Transform3D()
+	var has_wall_response_witness := false
 	if wall_hit:
 		# The witness helper selects through the same index rule as the
 		# response normal, so the published point is exactly the winning
-		# candidate's own reported position; it is never inferred from the
+		# candidate's own reported position and the published frame is exactly
+		# the pose at that candidate's collision; neither is inferred from the
 		# generic first contact or chosen as an independent nearest point.
 		var selected_wall_contact := _select_wall_contact(
-			wall_normals, wall_points, velocity_world
+			wall_normals, wall_points, velocity_world, wall_transforms
 		)
 		authoritative_wall_normal = _select_wall_response_normal(
 			wall_normals, velocity_world
 		)
+		# Pre sample: after the yaw-constraint reprojection above and immediately
+		# before the response, so the only difference the post sample can carry is
+		# the contact response itself.
+		witness_pre_velocity = velocity_world
 		velocity_world = _apply_wall_response(
 			velocity_world, authoritative_wall_normal, config
 		)
+		witness_post_velocity = velocity_world
 		if selected_wall_contact["valid"]:
 			authoritative_wall_point = selected_wall_contact["point"]
 			has_authoritative_wall_point = true
+		# The response witness additionally requires a usable collision-time
+		# frame. A degenerate normal, nonfinite point or unavailable/nonfinite
+		# frame leaves the flag false and every witness field at its default, so
+		# a consumer can never mistake a zero velocity or an identity pose for
+		# an authoritative contact.
+		if selected_wall_contact["valid"] and selected_wall_contact["frame_valid"]:
+			witness_transform = selected_wall_contact["transform"]
+			has_wall_response_witness = true
 	committed.velocity_m_s = world_vector_to_road(velocity_world)
 
 	var committed_transform := Transform3D(
@@ -605,6 +685,11 @@ static func step(
 	result.wall_contact_normal = authoritative_wall_normal
 	result.wall_contact_point = authoritative_wall_point
 	result.has_wall_contact_point = has_authoritative_wall_point
+	result.has_wall_response_witness = has_wall_response_witness
+	if has_wall_response_witness:
+		result.wall_pre_response_velocity_world_m_s = witness_pre_velocity
+		result.wall_post_response_velocity_world_m_s = witness_post_velocity
+		result.wall_contact_transform = witness_transform
 	result.contact_normal = hit_normal
 	result.contact_point = hit_point
 	result.substeps = substeps
@@ -736,6 +821,13 @@ static func _test_move_travel(
 ## fixture exposing the same `get_collision_count()`, `get_normal(index)`
 ## and `get_position(index)` methods.
 ##
+## `collision_transform` is the body pose at this collision, or null when no
+## contact-time frame is available (a caller that does not track one). Every
+## retained wall candidate carries it in `wall_transforms`, parallel to
+## `wall_normals` and `wall_points`; the array stays empty when no frame was
+## supplied, which the witness selection reports as an unavailable frame
+## rather than silently substituting an identity pose.
+##
 ## Generic telemetry stays the first reported contact of this result. Every
 ## reported normal is inspected, so a wall-like contact listed after a
 ## floor-like contact is still returned for the authoritative selection
@@ -745,13 +837,15 @@ static func _test_move_travel(
 @warning_ignore("unsafe_method_access")
 static func _collect_collision_contacts(
 	collision,
-	config: Config
+	config: Config,
+	collision_transform = null
 ) -> Dictionary:
 	var contacts := {
 		"generic_normal": Vector3.ZERO,
 		"generic_point": Vector3.ZERO,
 		"wall_normals": [] as Array,
 		"wall_points": [] as Array,
+		"wall_transforms": [] as Array,
 	}
 	if collision == null:
 		return contacts
@@ -763,6 +857,8 @@ static func _collect_collision_contacts(
 				<= config.wall_normal_max_up_alignment:
 			contacts["wall_normals"].append(normal)
 			contacts["wall_points"].append(collision.get_position(index))
+			if collision_transform != null:
+				contacts["wall_transforms"].append(collision_transform)
 	return contacts
 
 ## Index of the deterministic winner among the wall-like contact normals
@@ -799,22 +895,32 @@ static func _select_wall_response_normal(
 	return normals[index]
 
 ## Authoritative wall contact witness bound to the winning normal selection.
-## Returns `{normal, point, valid}` for the candidate at the same index
-## `_select_wall_response_index` chooses; `point` is that candidate's own
-## reported `get_position(index)`, never the generic first-contact point and
-## never an independently chosen nearest point. `valid` requires at least one
-## candidate, a nonzero road-plane projection and a finite point, so a
-## degenerate normal or nonfinite telemetry cannot claim a wrong authoritative
-## wall witness.
+## Returns `{normal, point, transform, valid, frame_valid}` for the candidate
+## at the same index `_select_wall_response_index` chooses; `point` is that
+## candidate's own reported `get_position(index)`, never the generic
+## first-contact point and never an independently chosen nearest point.
+## `valid` requires at least one candidate, a nonzero road-plane projection
+## and a finite point, so a degenerate normal or nonfinite telemetry cannot
+## claim a wrong authoritative wall witness.
+##
+## `transforms` is the optional parallel array of contact-time body poses.
+## `frame_valid` is true only when a transform exists at the selected index
+## and is finite and non-degenerate; a short or empty array means no frame was
+## collected for that candidate and yields `frame_valid` false with the
+## identity default transform, so an unavailable frame can never be mistaken
+## for a real pose.
 static func _select_wall_contact(
 	normals: Array,
 	points: Array,
-	velocity_world: Vector3
+	velocity_world: Vector3,
+	transforms: Array = []
 ) -> Dictionary:
 	var chosen := {
 		"normal": Vector3.ZERO,
 		"point": Vector3.ZERO,
+		"transform": Transform3D(),
 		"valid": false,
+		"frame_valid": false,
 	}
 	var index := _select_wall_response_index(normals, velocity_world)
 	if index < 0 or index >= points.size():
@@ -828,7 +934,28 @@ static func _select_wall_contact(
 	chosen["normal"] = normal
 	chosen["point"] = point
 	chosen["valid"] = true
+	if index < transforms.size():
+		var candidate_transform: Transform3D = transforms[index]
+		if _finite_transform(candidate_transform):
+			chosen["transform"] = candidate_transform
+			chosen["frame_valid"] = true
 	return chosen
+
+## True when `transform` has a finite origin and a finite, non-degenerate
+## basis. Used to reject an unavailable or corrupted contact-time frame
+## before it can be published as an authoritative body pose.
+static func _finite_transform(transform: Transform3D) -> bool:
+	if not _finite_vector(transform.origin):
+		return false
+	var pose_basis := transform.basis
+	if not _finite_vector(pose_basis.x):
+		return false
+	if not _finite_vector(pose_basis.y):
+		return false
+	if not _finite_vector(pose_basis.z):
+		return false
+	var determinant: float = pose_basis.determinant()
+	return _finite(determinant) and absf(determinant) > 1e-6
 
 ## Normalized road-plane (horizontal) projection of a contact normal. Returns
 ## zero when the projection is too short to define a direction, so callers can

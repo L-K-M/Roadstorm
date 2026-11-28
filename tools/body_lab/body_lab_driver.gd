@@ -46,6 +46,12 @@ const YAW_VELOCITY_LATERAL_SPEED_M_S := -0.5
 const YAW_VELOCITY_STEER_GAIN_GRIP := 9.0
 const YAW_VELOCITY_MAX_YAW_RATE_RAD_S := 20.0
 const YAW_VELOCITY_TICKS := 8
+## Yaw-constrained wall-response witness layout: the same parallel wall and
+## steering as `yaw_constrained_velocity_policy`, but with a lateral component
+## that carries the car into the wall, so one tick has both a constrained yaw
+## and a real wall contact. The 5 cm gap closes in about two ticks.
+const YAW_WITNESS_LATERAL_SPEED_M_S := 0.5
+const YAW_WITNESS_TICKS := 6
 ## Same slab used with its layer excluded from and included in the body mask.
 const MASK_CONSISTENCY_WALL_POINT := Vector3(0.0, 2.0, -10.0)
 const MASK_CONSISTENCY_APPROACH_SPEED_M_S := 20.0
@@ -62,6 +68,10 @@ const PREDICTION_TOLERANCE_M := 1e-4
 ## CharacterBody3D.test_move carries a recovery offset near contacts; this is a
 ## diagnostic bound, not the authoritative prediction gate.
 const TEST_MOVE_DIAGNOSTIC_TOLERANCE_M := 0.02
+## Tolerance for the wall-response witness comparisons, m/s and metres. The
+## laboratory's own contact slop is centimetres; this gate only has to catch a
+## wrong sample, a wrong frame or an inferred displacement.
+const WITNESS_TOLERANCE_MPS := 1e-5
 ## The rotated-hull regression asserts against the laboratory's existing
 ## no-tunnel gate (3 cm); the reduced-box probe boundary sits about 5 mm past
 ## its nominal shrink, well inside that gate.
@@ -84,6 +94,8 @@ const CASE_IDS := [
 	"yaw_constrained_velocity_policy",
 	"envelope_refusal",
 	"work_cap_and_truncation",
+	"wall_response_witness_selection",
+	"wall_response_witness_telemetry",
 	"fixed_60hz_repeatability",
 ]
 
@@ -207,6 +219,10 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_wall_contact_point_selection()
 		"wall_contact_point_telemetry":
 			await _case_wall_contact_point_telemetry()
+		"wall_response_witness_selection":
+			await _case_wall_response_witness_selection()
+		"wall_response_witness_telemetry":
+			await _case_wall_response_witness_telemetry()
 		"rotated_hull_wall_orientation":
 			await _case_rotated_hull_wall_orientation()
 		"gentle_yaw_wall_probe":
@@ -281,7 +297,13 @@ func _drive(world: BodyLabWorld, initial_state, commands: Array, tuning, config)
 		var result = AdapterScript.step(
 			world.body, world.hull_shape, current, commands[index], tuning, config
 		)
-		records.append({"result": result, "pose": world.body.global_transform})
+		# `state_in` is the committed state this tick started from, so a witness
+		# assertion can rebuild the tick-start basis independently of the result.
+		records.append({
+			"result": result,
+			"pose": world.body.global_transform,
+			"state_in": current,
+		})
 		current = result.committed_state
 		await _await_frames(1)
 	return records
@@ -349,6 +371,20 @@ func _assert_hull_within_wall_bounds(
 # ---------------------------------------------------------------------------
 # Cases
 # ---------------------------------------------------------------------------
+
+
+## Assert `value` is parallel (or antiparallel) to `direction` within a tight
+## cosine tolerance. Used to prove a velocity change lies along one axis.
+func _check_parallel(value: Vector3, direction: Vector3, message: String) -> void:
+	var length := value.length()
+	if length <= 1e-9:
+		d.check(false, message + " (zero vector)")
+		return
+	var cosine: float = value.normalized().dot(direction.normalized())
+	d.check(
+		absf(absf(cosine) - 1.0) <= 1e-6,
+		"%s (cosine %.12f)" % [message, cosine]
+	)
 
 
 func _case_config_and_invalid_atomicity() -> void:
@@ -2491,6 +2527,914 @@ func _run_trace(commands: Array) -> Dictionary:
 		trace["body_origin"].append(record["pose"].origin)
 	await _destroy_world(world)
 	return trace
+
+
+func _case_wall_response_witness_selection() -> void:
+	# Focused deterministic regressions for the authoritative wall-response
+	# witness (`has_wall_response_witness`, both world velocities and the
+	# collision-time body transform). Contact ordering, frame availability and
+	# the degenerate guards are driven through the collision-like fixture the
+	# collection seam already supports; the real pinned-Jolt values live in
+	# `wall_response_witness_telemetry`.
+	var config := d.make_config()
+	var adapter := AdapterScript.new()
+	var has_selector: bool = adapter.has_method("_select_wall_contact")
+	d.check(has_selector, "witness: adapter exposes the wall contact selection helper")
+	if not has_selector:
+		return
+
+	# --- Source contract guards for the witness sampling point. ----------
+	var adapter_source := ""
+	if FileAccess.file_exists("res://src/simulation/motor_body_adapter.gd"):
+		var source_file := FileAccess.open(
+			"res://src/simulation/motor_body_adapter.gd", FileAccess.READ
+		)
+		adapter_source = source_file.get_as_text()
+		source_file.close()
+	d.check(not adapter_source.is_empty(), "witness source: adapter source readable")
+	d.check(
+		adapter_source.contains("wall_transforms.append_array(collected[\"wall_transforms\"])"),
+		"witness source: collision-time frames are collected per candidate"
+	)
+	d.check(
+		adapter_source.contains("Transform3D(simulated.basis, simulated.origin + actual)"),
+		"witness source: the collected frame is the committed pose at that collision"
+	)
+	d.check(
+		adapter_source.contains("result.has_wall_response_witness = has_wall_response_witness"),
+		"witness source: the witness flag is published from the selection result"
+	)
+	d.check(
+		adapter_source.contains(
+			"result.wall_pre_response_velocity_world_m_s = witness_pre_velocity"
+		),
+		"witness source: the pre-response velocity is published from its sample"
+	)
+	d.check(
+		adapter_source.contains(
+			"result.wall_post_response_velocity_world_m_s = witness_post_velocity"
+		),
+		"witness source: the post-response velocity is published from its sample"
+	)
+	d.check(
+		adapter_source.contains("result.wall_contact_transform = witness_transform"),
+		"witness source: the contact-time frame is published from the selection"
+	)
+	var pre_sample_at: int = adapter_source.find("witness_pre_velocity = velocity_world")
+	var response_at: int = adapter_source.find("velocity_world = _apply_wall_response(")
+	var post_sample_at: int = adapter_source.find("witness_post_velocity = velocity_world")
+	var reprojection_at: int = adapter_source.find("committed_velocity_road = _reproject_velocity_road(")
+	d.check(
+		pre_sample_at >= 0 and response_at >= 0 and post_sample_at >= 0
+		and pre_sample_at < response_at and response_at < post_sample_at,
+		"witness source: pre is sampled before the response and post after it"
+	)
+	d.check(
+		reprojection_at >= 0 and reprojection_at < pre_sample_at,
+		"witness source: pre is sampled after the yaw-constraint reprojection"
+	)
+	d.check(
+		not adapter_source.contains("result.wall_contact_transform = result.committed_transform"),
+		"witness source: the frame is never the final tick transform"
+	)
+	d.check(
+		not adapter_source.contains("result.wall_contact_transform = start_transform"),
+		"witness source: the frame is never the raw tick-start transform"
+	)
+	d.check(
+		not adapter_source.contains("wall_pre_response_velocity_world_m_s = proposed_motion_m"),
+		"witness source: pre is never the total tick displacement"
+	)
+
+	var head_on_normal := Vector3(0.0, 0.0, 1.0)
+	var oblique_normal := Vector3(0.5, 0.0, 0.8660254)
+	var floor_normal := Vector3(0.0, 1.0, 0.0)
+	var approach_velocity := Vector3(0.0, 0.0, -20.0)
+
+	# --- Head-on: the whole approach speed is the contact change. --------
+	var head_on_point := Vector3(0.9, 0.05, -2.0)
+	var head_on_frame := Transform3D(
+		AdapterScript.basis_from_heading(0.25), Vector3(1.0, 0.55, -18.1)
+	)
+	var head_on := SeamCollision.new([head_on_normal], [head_on_point])
+	var collected_head_on: Dictionary = adapter.call(
+		"_collect_collision_contacts", head_on, config, head_on_frame
+	)
+	d.check(
+		collected_head_on["wall_transforms"].size() == 1,
+		"witness head-on: one frame collected for one candidate"
+	)
+	var chosen_head_on: Dictionary = adapter.call(
+		"_select_wall_contact",
+		collected_head_on["wall_normals"],
+		collected_head_on["wall_points"],
+		approach_velocity,
+		collected_head_on["wall_transforms"]
+	)
+	d.check(chosen_head_on["valid"], "witness head-on: valid witness")
+	d.check(chosen_head_on["frame_valid"], "witness head-on: usable frame")
+	d.check(
+		chosen_head_on["transform"] == head_on_frame,
+		"witness head-on: frame is the collision-time pose"
+	)
+	var pre_head_on := approach_velocity
+	var post_head_on: Vector3 = AdapterScript._apply_wall_response(
+		pre_head_on, chosen_head_on["normal"], config
+	)
+	d.check(
+		post_head_on == Vector3.ZERO,
+		"witness head-on: restitution 0 removes the whole inward approach speed"
+	)
+	var head_on_change: Vector3 = pre_head_on - post_head_on
+	d.check_close(head_on_change.length(), 20.0, 1e-9, "witness head-on: change is the approach speed")
+	d.check(
+		head_on_change.normalized().distance_to(-head_on_normal) <= 1e-6,
+		"witness head-on: the change is along the wall normal only"
+	)
+	d.check(
+		AdapterScript.road_vector_to_world(
+			AdapterScript.world_vector_to_road(post_head_on)
+		) == post_head_on,
+		"witness head-on: the post sample round-trips through the committed road state"
+	)
+
+	# --- Oblique: only the inward component changes, tangent survives. --
+	var oblique_point := Vector3(-3.0, 0.5, 2.0)
+	var oblique_frame := Transform3D(
+		AdapterScript.basis_from_heading(-0.4), Vector3(-0.5, 0.55, -12.0)
+	)
+	var oblique := SeamCollision.new([oblique_normal], [oblique_point])
+	var collected_oblique: Dictionary = adapter.call(
+		"_collect_collision_contacts", oblique, config, oblique_frame
+	)
+	var chosen_oblique: Dictionary = adapter.call(
+		"_select_wall_contact",
+		collected_oblique["wall_normals"],
+		collected_oblique["wall_points"],
+		approach_velocity,
+		collected_oblique["wall_transforms"]
+	)
+	d.check(chosen_oblique["valid"] and chosen_oblique["frame_valid"], "witness oblique: valid witness")
+	var pre_oblique := approach_velocity
+	var post_oblique: Vector3 = AdapterScript._apply_wall_response(
+		pre_oblique, chosen_oblique["normal"], config
+	)
+	var oblique_change: Vector3 = pre_oblique - post_oblique
+	d.check_close(
+		oblique_change.length(),
+		absf(pre_oblique.dot(oblique_normal)),
+		1e-9,
+		"witness oblique: change is the inward normal speed"
+	)
+	d.check(
+		oblique_change.normalized().distance_to(-oblique_normal) <= 1e-6,
+		"witness oblique: the change is along the wall normal only"
+	)
+	d.check_close(
+		post_oblique.dot(oblique_normal), 0.0, WITNESS_TOLERANCE_MPS,
+		"witness oblique: no inward component remains"
+	)
+	var pre_tangent: Vector3 = (
+		pre_oblique - oblique_normal * pre_oblique.dot(oblique_normal)
+	)
+	var post_tangent: Vector3 = (
+		post_oblique - oblique_normal * post_oblique.dot(oblique_normal)
+	)
+	d.check_close(
+		post_tangent.distance_to(pre_tangent), 0.0, WITNESS_TOLERANCE_MPS,
+		"witness oblique: tangential speed is untouched by the contact"
+	)
+	d.check(
+		chosen_oblique["point"] == oblique_point
+		and chosen_oblique["transform"] == oblique_frame,
+		"witness oblique: point and frame come from the same candidate"
+	)
+
+	# --- Floor-first/wall-second: point and frame from one candidate. ----
+	# Two collision results (two substeps), each with its own contact-time
+	# frame. The winner must take both the point and the frame from the
+	# collision that reported it.
+	var frame_a := Transform3D(
+		AdapterScript.basis_from_heading(0.0), Vector3(0.0, 0.55, -3.0)
+	)
+	var frame_b := Transform3D(
+		AdapterScript.basis_from_heading(0.1), Vector3(0.25, 0.55, -2.75)
+	)
+	var floor_point_a := Vector3(0.0, 0.05, -3.0)
+	var wall_point_a := Vector3(0.4, 0.5, -3.0)
+	var wall_point_b := Vector3(-0.2, 0.5, -2.75)
+	var collision_a := SeamCollision.new(
+		[floor_normal, oblique_normal], [floor_point_a, wall_point_a]
+	)
+	var collision_b := SeamCollision.new([head_on_normal], [wall_point_b])
+	var batched_normals: Array = []
+	var batched_points: Array = []
+	var batched_frames: Array = []
+	for pair in [[collision_a, frame_a], [collision_b, frame_b]]:
+		var collected: Dictionary = adapter.call(
+			"_collect_collision_contacts", pair[0], config, pair[1]
+		)
+		batched_normals.append_array(collected["wall_normals"])
+		batched_points.append_array(collected["wall_points"])
+		batched_frames.append_array(collected["wall_transforms"])
+	d.check(batched_normals.size() == 2, "witness batch: two wall candidates across substeps")
+	d.check(batched_frames.size() == 2, "witness batch: one frame per candidate")
+	# Head-on approach: the second substep's head-on wall is most opposed.
+	var chosen_batch: Dictionary = adapter.call(
+		"_select_wall_contact",
+		batched_normals, batched_points, approach_velocity, batched_frames
+	)
+	d.check(
+		chosen_batch["normal"].is_equal_approx(head_on_normal),
+		"witness batch: the most-opposed candidate wins"
+	)
+	d.check(
+		chosen_batch["point"] == wall_point_b,
+		"witness batch: point comes from the winning substep"
+	)
+	d.check(
+		chosen_batch["transform"] == frame_b,
+		"witness batch: frame comes from the winning substep, not the first"
+	)
+	# Lateral approach: the first substep's oblique wall wins, and its own
+	# second contact supplies the point while its own frame supplies the pose.
+	var lateral_velocity := Vector3(-20.0, 0.0, 0.0)
+	var chosen_lateral: Dictionary = adapter.call(
+		"_select_wall_contact",
+		batched_normals, batched_points, lateral_velocity, batched_frames
+	)
+	d.check(
+		chosen_lateral["normal"].is_equal_approx(oblique_normal),
+		"witness batch: the choice follows the approach velocity"
+	)
+	d.check(
+		chosen_lateral["point"] == wall_point_a,
+		"witness batch: point is the winning collision's wall contact, not its floor contact"
+	)
+	d.check(
+		chosen_lateral["point"] != floor_point_a,
+		"witness batch: the floor-first contact does not supply the point"
+	)
+	d.check(
+		chosen_lateral["transform"] == frame_a,
+		"witness batch: frame is the winning collision's pose"
+	)
+
+	# --- Later motion must not move the published frame. ----------------
+	# A wall candidate from an early substep keeps its own frame even when a
+	# later substep reports a different pose; the frame is never the latest
+	# pose in the tick.
+	var early_frame := Transform3D(
+		AdapterScript.basis_from_heading(0.0), Vector3(0.0, 0.55, -5.0)
+	)
+	var late_frame := Transform3D(
+		AdapterScript.basis_from_heading(0.6), Vector3(0.9, 0.55, -4.0)
+	)
+	var early_collision := SeamCollision.new([head_on_normal], [wall_point_a])
+	var late_collision := SeamCollision.new([floor_normal], [floor_point_a])
+	var ordered_normals: Array = []
+	var ordered_points: Array = []
+	var ordered_frames: Array = []
+	for pair in [[early_collision, early_frame], [late_collision, late_frame]]:
+		var collected: Dictionary = adapter.call(
+			"_collect_collision_contacts", pair[0], config, pair[1]
+		)
+		ordered_normals.append_array(collected["wall_normals"])
+		ordered_points.append_array(collected["wall_points"])
+		ordered_frames.append_array(collected["wall_transforms"])
+	var chosen_ordered: Dictionary = adapter.call(
+		"_select_wall_contact",
+		ordered_normals, ordered_points, approach_velocity, ordered_frames
+	)
+	d.check(chosen_ordered["valid"] and chosen_ordered["frame_valid"], "witness ordering: valid witness")
+	d.check(
+		chosen_ordered["transform"] == early_frame,
+		"witness ordering: the frame is the early collision pose, not the later pose"
+	)
+	d.check(
+		chosen_ordered["transform"] != late_frame,
+		"witness ordering: a later substep pose never replaces the contact frame"
+	)
+
+	# --- Exact tie keeps the earliest candidate and its frame. ----------
+	var tie_frame_a := Transform3D(
+		AdapterScript.basis_from_heading(0.2), Vector3(1.0, 0.55, 0.0)
+	)
+	var tie_frame_b := Transform3D(
+		AdapterScript.basis_from_heading(0.9), Vector3(0.0, 0.55, 1.0)
+	)
+	var tie := SeamCollision.new(
+		[Vector3(1.0, 0.0, 0.0), head_on_normal], [wall_point_a, wall_point_b]
+	)
+	var collected_tie: Dictionary = adapter.call(
+		"_collect_collision_contacts", tie, config, tie_frame_a
+	)
+	var chosen_tie: Dictionary = adapter.call(
+		"_select_wall_contact",
+		collected_tie["wall_normals"],
+		collected_tie["wall_points"],
+		Vector3(-10.0, 0.0, -10.0),
+		[tie_frame_a, tie_frame_b]
+	)
+	d.check(
+		chosen_tie["normal"].is_equal_approx(Vector3(1.0, 0.0, 0.0)),
+		"witness tie: earliest normal kept"
+	)
+	d.check(
+		chosen_tie["transform"] == tie_frame_a,
+		"witness tie: frame follows the earliest candidate"
+	)
+
+	# --- Degenerate, nonfinite and unavailable candidates. --------------
+	var vertical_frame := Transform3D(
+		AdapterScript.basis_from_heading(0.0), Vector3(1.0, 2.0, 3.0)
+	)
+	var degenerate: Dictionary = adapter.call(
+		"_select_wall_contact",
+		[Vector3(0.0, 1.0, 0.0)], [Vector3(1.0, 2.0, 3.0)], approach_velocity,
+		[vertical_frame]
+	)
+	d.check(not degenerate["valid"], "witness degenerate: no valid witness")
+	d.check(not degenerate["frame_valid"], "witness degenerate: no usable frame")
+	d.check(
+		degenerate["transform"] == Transform3D(),
+		"witness degenerate: default transform"
+	)
+	var nonfinite_point: Dictionary = adapter.call(
+		"_select_wall_contact",
+		[head_on_normal], [Vector3(NAN, 0.0, 0.0)], approach_velocity, [vertical_frame]
+	)
+	d.check(not nonfinite_point["valid"], "witness nonfinite point: no valid witness")
+	d.check(
+		nonfinite_point["transform"] == Transform3D(),
+		"witness nonfinite point: default transform"
+	)
+	var nonfinite_frame := Transform3D(
+		AdapterScript.basis_from_heading(0.0), Vector3(NAN, 0.55, 0.0)
+	)
+	var nonfinite_frame_result: Dictionary = adapter.call(
+		"_select_wall_contact",
+		[head_on_normal], [head_on_point], approach_velocity, [nonfinite_frame]
+	)
+	d.check(
+		nonfinite_frame_result["valid"],
+		"witness nonfinite frame: the point witness itself is still valid"
+	)
+	d.check(
+		not nonfinite_frame_result["frame_valid"],
+		"witness nonfinite frame: the frame is rejected"
+	)
+	d.check(
+		nonfinite_frame_result["transform"] == Transform3D(),
+		"witness nonfinite frame: default transform"
+	)
+	var unavailable: Dictionary = adapter.call(
+		"_select_wall_contact",
+		[head_on_normal], [head_on_point], approach_velocity
+	)
+	d.check(unavailable["valid"], "witness unavailable frame: point witness unchanged")
+	d.check(
+		not unavailable["frame_valid"],
+		"witness unavailable frame: no frame was collected"
+	)
+	d.check(
+		unavailable["transform"] == Transform3D(),
+		"witness unavailable frame: default transform, never an identity pose claim"
+	)
+	var empty: Dictionary = adapter.call(
+		"_select_wall_contact", [], [], approach_velocity, []
+	)
+	d.check(not empty["valid"], "witness empty: no valid witness")
+	d.check(not empty["frame_valid"], "witness empty: no usable frame")
+
+	# --- A finite transform guard rejects a collapsed basis. ------------
+	var collapsed_basis := Basis()
+	collapsed_basis.x = Vector3.ZERO
+	var collapsed_frame := Transform3D(collapsed_basis, Vector3(0.0, 0.55, 0.0))
+	d.check(
+		not adapter.call("_finite_transform", collapsed_frame),
+		"witness frame guard: a degenerate basis is not a usable pose"
+	)
+	d.check(
+		adapter.call("_finite_transform", head_on_frame),
+		"witness frame guard: a laboratory pose is usable"
+	)
+
+	# --- Yaw-only reprojection never enters the pre sample. -------------
+	# The pre sample is taken after the proposal's scalars are reprojected
+	# into the applied heading. With a shortened yaw the reprojection changes
+	# the world velocity, and that change has a component along the wall
+	# normal, so sampling before the reprojection would publish a velocity
+	# that is not the one the response saw.
+	var proposed_heading := 0.331128
+	var applied_heading := 0.041016
+	var proposal_velocity_road := Vector2(1.123058, 1.728798)
+	var reprojected_road: Vector2 = adapter.call(
+		"_reproject_velocity_road",
+		proposal_velocity_road, proposed_heading, applied_heading
+	)
+	var pre_reprojected: Vector3 = AdapterScript.road_vector_to_world(reprojected_road)
+	var pre_unreprojected: Vector3 = AdapterScript.road_vector_to_world(
+		proposal_velocity_road
+	)
+	var yaw_only_difference: Vector3 = pre_unreprojected - pre_reprojected
+	d.check(
+		yaw_only_difference.length() > 1e-3,
+		"witness yaw: the rejected yaw fraction moves the world velocity (%.6f m/s)"
+		% yaw_only_difference.length()
+	)
+	d.check(
+		absf(yaw_only_difference.dot(head_on_normal)) > 1e-3,
+		"witness yaw: the rejected yaw fraction has a wall-normal component"
+	)
+	var wall_normal_for_yaw := Vector3(-1.0, 0.0, 0.0)
+	var post_reprojected: Vector3 = AdapterScript._apply_wall_response(
+		pre_reprojected, wall_normal_for_yaw, config
+	)
+	var contact_change: Vector3 = pre_reprojected - post_reprojected
+	_check_parallel(contact_change, wall_normal_for_yaw, "witness yaw: the contact change is along the wall normal")
+	var yaw_only_tangent: Vector3 = yaw_only_difference - wall_normal_for_yaw * (
+		yaw_only_difference.dot(wall_normal_for_yaw)
+	)
+	d.check(
+		yaw_only_tangent.length() > 1e-3,
+		"witness yaw control: an unreprojected pre sample would add a non-normal change"
+	)
+	measurements["witness_yaw_only_speed_mps"] = yaw_only_difference.length()
+	measurements["witness_yaw_only_normal_speed_mps"] = yaw_only_difference.dot(
+		wall_normal_for_yaw
+	)
+	measurements["witness_fixture_valid"] = (
+		1
+		if (
+			chosen_head_on["frame_valid"]
+			and chosen_oblique["frame_valid"]
+			and chosen_batch["frame_valid"]
+			and chosen_lateral["frame_valid"]
+			and chosen_ordered["frame_valid"]
+		)
+		else 0
+	)
+
+
+func _case_wall_response_witness_telemetry() -> void:
+	# Real pinned-Jolt Result telemetry for the wall-response witness. Open
+	# ground and refusals publish no witness; a head-on, an oblique and a
+	# yaw-constrained wall hit publish pre/post velocities whose only
+	# difference is the contact response, plus the collision-time body pose.
+	var config := d.make_config()
+	var tuning := d.make_tuning()
+
+	# --- Committed no-wall tick: no witness. -----------------------------
+	var open_world := await _build_world(config, {})
+	var open_state := d.make_state(Vector2.ZERO, Vector2(0.0, 20.0), 0.0)
+	await _place_body(open_world, open_state, d.BODY_SUPPORT_Y)
+	var open_result = AdapterScript.step(
+		open_world.body, open_world.hull_shape, open_state,
+		d.make_idle_command(), tuning, config
+	)
+	d.check(open_result.status == AdapterScript.Status.COMMITTED, "witness open: committed")
+	d.check(not open_result.contact, "witness open: no contact")
+	d.check(
+		not open_result.has_wall_response_witness,
+		"witness open: no response witness flag"
+	)
+	d.check(
+		open_result.wall_pre_response_velocity_world_m_s == Vector3.ZERO,
+		"witness open: zero pre-response velocity"
+	)
+	d.check(
+		open_result.wall_post_response_velocity_world_m_s == Vector3.ZERO,
+		"witness open: zero post-response velocity"
+	)
+	d.check(
+		open_result.wall_contact_transform == Transform3D(),
+		"witness open: default contact transform"
+	)
+	await _destroy_world(open_world)
+
+	# --- Refused ticks must not publish a witness. -----------------------
+	var refuse_world := await _build_world(config, {
+		"point": Vector3(0.0, 2.0, -4.0),
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	})
+	var fast_state := d.make_state(Vector2.ZERO, Vector2(0.0, 300.0), 0.0)
+	await _place_body(refuse_world, fast_state, d.BODY_SUPPORT_Y)
+	var refuse_pose := refuse_world.body.global_transform
+	var refused = AdapterScript.step(
+		refuse_world.body, refuse_world.hull_shape, fast_state,
+		d.make_idle_command(), tuning, config
+	)
+	d.check(
+		refused.status == AdapterScript.Status.REFUSED_MOTION_BOUND,
+		"witness refusal: over-envelope tick refused"
+	)
+	d.check(
+		not refused.has_wall_response_witness,
+		"witness refusal: no response witness flag"
+	)
+	d.check(
+		refused.wall_pre_response_velocity_world_m_s == Vector3.ZERO
+		and refused.wall_post_response_velocity_world_m_s == Vector3.ZERO,
+		"witness refusal: zero velocities"
+	)
+	d.check(
+		refused.wall_contact_transform == Transform3D(),
+		"witness refusal: default contact transform"
+	)
+	d.check(
+		refuse_world.body.global_transform.is_equal_approx(refuse_pose),
+		"witness refusal: body transform unchanged"
+	)
+	# Invalid input is rejected before the body is read at all.
+	var invalid_pose := refuse_world.body.global_transform
+	var nonfinite_state := d.make_state(Vector2.ZERO, Vector2(0.0, 10.0), 0.0)
+	nonfinite_state.position_m = Vector2(NAN, 0.0)
+	var rejected = AdapterScript.step(
+		refuse_world.body, refuse_world.hull_shape, nonfinite_state,
+		d.make_idle_command(), tuning, config
+	)
+	d.check(
+		rejected.status == AdapterScript.Status.REJECTED_INVALID_INPUT,
+		"witness rejection: nonfinite state rejected"
+	)
+	d.check(
+		not rejected.has_wall_response_witness
+		and rejected.wall_pre_response_velocity_world_m_s == Vector3.ZERO
+		and rejected.wall_post_response_velocity_world_m_s == Vector3.ZERO
+		and rejected.wall_contact_transform == Transform3D(),
+		"witness rejection: no witness published"
+	)
+	d.check(
+		refuse_world.body.global_transform.is_equal_approx(invalid_pose),
+		"witness rejection: body transform unchanged"
+	)
+	await _destroy_world(refuse_world)
+
+	# --- Head-on wall: the whole approach speed is the contact change. ---
+	var head_on_world := await _build_world(config, {
+		"point": Vector3(0.0, 2.0, STRAIGHT_WALL_Z),
+		"yaw_deg": 0.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	})
+	var head_on_state := d.make_state(Vector2.ZERO, Vector2(0.0, 30.0), 0.0)
+	await _place_body(head_on_world, head_on_state, d.BODY_SUPPORT_Y)
+	var head_on_commands: Array = []
+	for _index in range(60):
+		head_on_commands.append(d.make_idle_command())
+	var head_on_records := await _drive(
+		head_on_world, head_on_state, head_on_commands, tuning, config
+	)
+	var head_on_contact := _first_contact_index(head_on_records)
+	d.check(head_on_contact > 0, "witness head-on: wall contact occurred")
+	if head_on_contact >= 0:
+		var impact = head_on_records[head_on_contact]["result"]
+		var state_in = head_on_records[head_on_contact]["state_in"]
+		_assert_wall_response_witness(
+			head_on_world, impact, state_in, config, "witness head-on", head_on_contact
+		)
+		var pre: Vector3 = impact.wall_pre_response_velocity_world_m_s
+		var post: Vector3 = impact.wall_post_response_velocity_world_m_s
+		_check_witness_change_along_normal(
+			pre, post, impact.wall_contact_normal, "witness head-on"
+		)
+		# A head-on hit at restitution 0 leaves no forward speed at all.
+		d.check_close(post.length(), 0.0, WITNESS_TOLERANCE_MPS, "witness head-on: no speed survives a head-on hit")
+		d.check_close((pre - post).length(), pre.length(), WITNESS_TOLERANCE_MPS,
+			"witness head-on: the contact change is the approach speed"
+		)
+		# The frame is the body pose at the collision, not the contact point:
+		# the origin sits half a hull length behind the wall plane at the
+		# support height, while the published point lies on the wall plane.
+		var frame: Transform3D = impact.wall_contact_transform
+		var plane_distance: float = (frame.origin - head_on_world.wall_point).dot(
+			head_on_world.wall_normal
+		)
+		d.check_close(plane_distance, head_on_world.hull_shape.size.z * 0.5, 1e-3,
+			"witness head-on: frame origin is the body pose half a hull behind the wall"
+		)
+		d.check_close(frame.origin.y, d.BODY_SUPPORT_Y, WITNESS_TOLERANCE_MPS,
+			"witness head-on: frame origin keeps the support height"
+		)
+		d.check(
+			absf(frame.origin.y - impact.wall_contact_point.y) > 0.1,
+			"witness head-on: the frame is not the contact point"
+		)
+		d.check(
+			frame.basis.is_equal_approx(
+				AdapterScript.basis_from_heading(state_in.heading_rad)
+			),
+			"witness head-on: frame basis is the tick-start sweep basis"
+		)
+		d.check(
+			impact.substeps >= 1,
+			"witness head-on: contact tick used the bounded sweep"
+		)
+		measurements["witness_head_on_plane_distance_m"] = plane_distance
+		measurements["witness_head_on_frame_origin"] = frame.origin
+		measurements["witness_head_on_pre_speed_mps"] = pre.length()
+	await _destroy_world(head_on_world)
+
+	# --- Oblique wall: tangent survives, only the inward part changes. ---
+	var oblique_world := await _build_world(config, {
+		"point": OBLIQUE_WALL_POINT,
+		"yaw_deg": 30.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	})
+	var oblique_state := d.make_state(Vector2.ZERO, Vector2(0.0, 30.0), 0.0)
+	await _place_body(oblique_world, oblique_state, d.BODY_SUPPORT_Y)
+	var oblique_commands: Array = []
+	for _index in range(60):
+		oblique_commands.append(d.make_idle_command())
+	var oblique_records := await _drive(
+		oblique_world, oblique_state, oblique_commands, tuning, config
+	)
+	var oblique_contact := _first_contact_index(oblique_records)
+	d.check(oblique_contact > 0, "witness oblique: wall contact occurred")
+	if oblique_contact >= 0:
+		var impact = oblique_records[oblique_contact]["result"]
+		var state_in = oblique_records[oblique_contact]["state_in"]
+		_assert_wall_response_witness(
+			oblique_world, impact, state_in, config, "witness oblique", oblique_contact
+		)
+		var pre: Vector3 = impact.wall_pre_response_velocity_world_m_s
+		var post: Vector3 = impact.wall_post_response_velocity_world_m_s
+		_check_witness_change_along_normal(
+			pre, post, impact.wall_contact_normal, "witness oblique"
+		)
+		var normal: Vector3 = impact.wall_contact_normal.normalized()
+		var pre_tangent: Vector3 = pre - normal * pre.dot(normal)
+		var post_tangent: Vector3 = post - normal * post.dot(normal)
+		d.check_close(post_tangent.distance_to(pre_tangent), 0.0, WITNESS_TOLERANCE_MPS,
+			"witness oblique: tangential speed survives the contact"
+		)
+		d.check_close(post.dot(normal), 0.0, WITNESS_TOLERANCE_MPS,
+			"witness oblique: no inward component remains"
+		)
+		measurements["witness_oblique_pre_speed_mps"] = pre.length()
+		measurements["witness_oblique_post_speed_mps"] = post.length()
+	await _destroy_world(oblique_world)
+
+	# --- Yaw-constrained wall: pre excludes the yaw-only reprojection. ---
+	# A parallel wall 5 cm from the hull's right side. The lateral component
+	# drives the car into the wall while full opposite lock swings the long
+	# hull's corner into it, so the installed-pose probe constrains the yaw on
+	# the same tick the translation reaches the wall.
+	var yaw_world := await _build_world(config, {
+		"point": YAW_VELOCITY_WALL_POINT,
+		"yaw_deg": -90.0,
+		"thickness_m": WALL_THICKNESS_M,
+		"width_m": WALL_WIDTH_M,
+	})
+	var yaw_tuning := d.make_tuning()
+	yaw_tuning.yaw_gain_grip = YAW_VELOCITY_STEER_GAIN_GRIP
+	yaw_tuning.max_yaw_rate_rad_s = YAW_VELOCITY_MAX_YAW_RATE_RAD_S
+	yaw_tuning.lateral_damping_grip_per_s = 0.0
+	var yaw_state := d.make_state(
+		Vector2.ZERO,
+		Vector2(YAW_WITNESS_LATERAL_SPEED_M_S, YAW_VELOCITY_FORWARD_SPEED_M_S),
+		0.0
+	)
+	await _place_body(yaw_world, yaw_state, d.BODY_SUPPORT_Y)
+	var yaw_commands: Array = []
+	for _index in range(YAW_WITNESS_TICKS):
+		yaw_commands.append(d.make_steer_command(1.0, 0.0))
+	var yaw_records := await _drive(yaw_world, yaw_state, yaw_commands, yaw_tuning, config)
+	d.check(yaw_records.size() == YAW_WITNESS_TICKS, "witness yaw: %d ticks driven" % YAW_WITNESS_TICKS)
+
+	var constrained_wall_tick := -1
+	for index in range(yaw_records.size()):
+		var result = yaw_records[index]["result"]
+		if (
+			result.status == AdapterScript.Status.COMMITTED
+			and result.heading_constrained
+			and result.wall_contact
+			and result.has_wall_response_witness
+		):
+			constrained_wall_tick = index
+			break
+	d.check(
+		constrained_wall_tick >= 0,
+		"witness yaw: a constrained tick also reported a wall-response witness"
+	)
+	var max_yaw_only_speed := 0.0
+	var max_reprojection_error := 0.0
+	var first_contact_frame := Transform3D()
+	for index in range(yaw_records.size()):
+		var result = yaw_records[index]["result"]
+		if not result.wall_contact or not result.has_wall_response_witness:
+			continue
+		var state_in = yaw_records[index]["state_in"]
+		var label := "witness yaw tick %d" % (index + 1)
+		d.check(
+			result.status == AdapterScript.Status.COMMITTED,
+			"%s: committed" % label
+		)
+		_assert_wall_response_witness(
+			yaw_world, result, state_in, config, label, index
+		)
+		var pre: Vector3 = result.wall_pre_response_velocity_world_m_s
+		var post: Vector3 = result.wall_post_response_velocity_world_m_s
+		_check_witness_change_along_normal(
+			pre, post, result.wall_contact_normal, label
+		)
+
+		# The pre sample must be the reprojected velocity, not the raw motor
+		# proposal: the probe refused part of the yaw, and publishing that part
+		# would put a velocity into the witness that the response never saw.
+		var proposed = result.proposed_state
+		var committed = result.committed_state
+		var proposed_heading: float = proposed.heading_rad
+		var applied_heading: float = committed.heading_rad
+		var expected_road: Vector2 = AdapterScript._reproject_velocity_road(
+			proposed.velocity_m_s, proposed_heading, applied_heading
+		)
+		var expected_pre: Vector3 = AdapterScript.road_vector_to_world(expected_road)
+		var reprojection_error: float = expected_pre.distance_to(pre)
+		max_reprojection_error = maxf(max_reprojection_error, reprojection_error)
+		d.check(
+			reprojection_error <= 1e-9,
+			"%s: pre equals the reprojected proposal velocity (error %.12f)"
+			% [label, reprojection_error]
+		)
+		if result.heading_constrained:
+			var raw_pre: Vector3 = AdapterScript.road_vector_to_world(
+				proposed.velocity_m_s
+			)
+			var yaw_only: Vector3 = raw_pre - pre
+			max_yaw_only_speed = maxf(max_yaw_only_speed, yaw_only.length())
+			d.check(
+				yaw_only.length() > 1e-3,
+				"%s: the rejected yaw fraction moved the velocity (%.6f m/s)"
+				% [label, yaw_only.length()]
+			)
+			d.check(
+				absf(yaw_only.dot(result.wall_contact_normal.normalized())) > 1e-3,
+				"%s: the rejected yaw fraction has a wall-normal component" % label
+			)
+
+		# The contact-time frame carries the tick-start basis, so a tick that
+		# rotated the hull still publishes the pose at the collision.
+		var frame: Transform3D = result.wall_contact_transform
+		d.check(
+			frame.basis.is_equal_approx(
+				AdapterScript.basis_from_heading(state_in.heading_rad)
+			),
+			"%s: frame basis is the tick-start sweep basis" % label
+		)
+		if not is_equal_approx(applied_heading, state_in.heading_rad):
+			d.check(
+				not frame.basis.is_equal_approx(result.committed_transform.basis),
+				"%s: the frame is not the finalized tick pose" % label
+			)
+		d.check(
+			frame.basis.is_equal_approx(result.start_transform.basis),
+			"%s: the frame basis is the sweep basis of this tick" % label
+		)
+		d.check_close(frame.origin.y, d.BODY_SUPPORT_Y, WITNESS_TOLERANCE_MPS,
+			"%s: frame origin keeps the support height" % label
+		)
+		if index == constrained_wall_tick:
+			first_contact_frame = frame
+	d.check(
+		constrained_wall_tick < 0 or first_contact_frame != Transform3D(),
+		"witness yaw: the constrained tick published a contact frame"
+	)
+	measurements["witness_yaw_constrained_tick"] = constrained_wall_tick + 1
+	measurements["witness_yaw_max_reprojection_error_mps"] = max_reprojection_error
+	measurements["witness_yaw_max_yaw_only_speed_mps"] = max_yaw_only_speed
+
+	# The witness frame is a contact-time snapshot: later motion and rotation
+	# must not move it.
+	if constrained_wall_tick >= 0:
+		var later_pose: Transform3D = yaw_records[-1]["pose"]
+		d.check(
+			not first_contact_frame.is_equal_approx(later_pose),
+			"witness yaw: the contact frame differs from the pose after later motion"
+		)
+		d.check(
+			not first_contact_frame.origin.is_equal_approx(later_pose.origin),
+			"witness yaw: later translation moves the body away from the contact frame"
+		)
+		measurements["witness_yaw_later_travel_m"] = first_contact_frame.origin.distance_to(
+			later_pose.origin
+		)
+	await _destroy_world(yaw_world)
+
+
+## Shared assertions for one committed wall-contact witness. Verifies the
+## flag, finiteness, the documented pre/post relation against the committed
+## road state, and that the witness is a body pose rather than a wall point.
+func _assert_wall_response_witness(
+	world: BodyLabWorld,
+	impact,
+	state_in,
+	config,
+	label: String,
+	tick_index: int
+) -> void:
+	d.check(
+		impact.status == AdapterScript.Status.COMMITTED,
+		"%s: committed" % label
+	)
+	d.check(impact.wall_contact, "%s: wall contact classified" % label)
+	d.check(impact.has_wall_response_witness, "%s: response witness flag set" % label)
+	var pre: Vector3 = impact.wall_pre_response_velocity_world_m_s
+	var post: Vector3 = impact.wall_post_response_velocity_world_m_s
+	d.check_vector_finite(pre, "%s: finite pre-response velocity" % label)
+	d.check_vector_finite(post, "%s: finite post-response velocity" % label)
+	d.check_vector_finite(
+		impact.wall_contact_transform.origin, "%s: finite contact frame origin" % label
+	)
+
+	# The post sample is the velocity the committed state stores, mapped back
+	# to world axes. The road-plane state keeps no vertical component, so the
+	# comparison is exact for the planar laboratory velocities.
+	var committed_world: Vector3 = AdapterScript.road_vector_to_world(
+		impact.committed_state.velocity_m_s
+	)
+	if absf(post.y) <= 1e-12:
+		d.check(
+			committed_world == post,
+			"%s: post equals the committed state velocity in world axes" % label
+		)
+	else:
+		d.check_close(
+			committed_world.distance_to(post), absf(post.y), 1e-9,
+			"%s: post matches the committed state up to the dropped vertical part" % label
+		)
+
+	# Post is exactly the documented response applied to pre.
+	var expected_post: Vector3 = AdapterScript._apply_wall_response(
+		pre, impact.wall_contact_normal, config
+	)
+	d.check(
+		expected_post.distance_to(post) <= 1e-9,
+		"%s: post is the wall response applied to pre (error %.12f)"
+		% [label, expected_post.distance_to(post)]
+	)
+
+	# Pre is never the motor proposal on a tick whose yaw was constrained, and
+	# it is never derived from the tick's travel.
+	d.check(
+		pre.distance_to(impact.proposed_motion_m) > 1e-6 or pre == Vector3.ZERO,
+		"%s: pre is a velocity, not the tick displacement" % label
+	)
+	if impact.heading_constrained:
+		var raw_pre: Vector3 = AdapterScript.road_vector_to_world(
+			impact.proposed_state.velocity_m_s
+		)
+		d.check(
+			raw_pre.distance_to(pre) > 1e-6,
+			"%s: pre excludes the rejected yaw fraction" % label
+		)
+
+	# The frame is a body pose: its origin sits inside the hull envelope of the
+	# contact point, never on the wall plane itself.
+	var plane_distance: float = (impact.wall_contact_transform.origin - world.wall_point).dot(
+		world.wall_normal
+	)
+	d.check(
+		plane_distance > 0.0,
+		"%s: the contact frame origin is behind the wall plane (%.6f m)" % [label, plane_distance]
+	)
+	d.check(
+		plane_distance < world.hull_shape.size.length(),
+		"%s: the contact frame origin is within one hull diagonal of the wall" % label
+	)
+	d.check(
+		impact.wall_contact_transform.basis.is_equal_approx(
+			impact.start_transform.basis
+		),
+		"%s: the contact frame uses the tick-start sweep basis" % label
+	)
+	measurements["%s_plane_distance_m" % label.replace(" ", "_")] = plane_distance
+
+
+## Assert the pre/post difference is exactly the inward normal component.
+func _check_witness_change_along_normal(
+	pre: Vector3,
+	post: Vector3,
+	normal: Vector3,
+	label: String
+) -> void:
+	var change: Vector3 = pre - post
+	var projected: Vector3 = AdapterScript._road_plane_unit_normal(normal)
+	d.check(
+		projected != Vector3.ZERO,
+		"%s: the response normal has a road-plane projection" % label
+	)
+	_check_parallel(change, projected, "%s: the contact change is along the wall normal" % label)
+	d.check_close(change.length(), absf(pre.dot(projected)), WITNESS_TOLERANCE_MPS,
+		"%s: the contact change is the inward normal speed" % label
+	)
+	d.check_close(post.dot(projected), 0.0, WITNESS_TOLERANCE_MPS,
+		"%s: no inward component remains" % label
+	)
 
 
 func _case_fixed_60hz_repeatability() -> void:

@@ -46,11 +46,19 @@ This proves one 60 Hz integration tick at a time:
 - a real pinned-Jolt single-wall hit publishes a finite witness point on the
   wall plane, while committed no-wall and refused ticks publish zero and
   false;
+- the same selected wall candidate supplies `has_wall_response_witness`, the
+  world velocities immediately before and after its response, and the body's
+  transform at that collision. The pre sample follows any constrained-yaw
+  reprojection. No-wall and refused ticks retain zero velocities and the
+  default transform. Head-on, oblique and constrained-yaw cases are checked
+  against real Jolt contacts; floor-first ordering and frame selection are
+  checked with deterministic collision-like fixtures;
 - repeated fixed-60 Hz callbacks reproduce bit-identical traces.
 
 It does not implement ground adhesion, jumps, drift, reset, surfaces,
 multi-car contacts, controls or full car tuning. It makes no M1 acceptance
-claim.
+claim. The witness does not publish an `ImpactEvent` or infer contact-induced
+displacement from the tick's total accepted motion.
 
 ## Files
 
