@@ -36,12 +36,20 @@ const RoadSourceDocument := preload("res://src/course/road_source.gd")
 ## the true arc length and the summed subsegment control-polygon lengths
 ## upper-bound it. A leaf is accepted only when its extrapolated Simpson value
 ## lies inside that bracket (within an explicit IEEE-754 roundoff allowance)
-## and the maximum distance from the value to either bracket bound is within
-## the local tolerance. The per-span reported error is the sum of those
-## conservative distances and leaf roundoff allowances, not the Richardson
-## extrapolation; a leaf whose bracket is nonfinite or inverted beyond roundoff
-## is refused, as is a leaf that cannot satisfy both conditions before the
-## depth or node cap.
+## and its reported error, the maximum distance from the value to either
+## bracket bound plus the leaf's relative roundoff allowance, is within the
+## local tolerance; that local tolerance halves at each subdivision, so an
+## accepted span's summed reported error stays within the requested per-span
+## tolerance. The per-span reported error is the sum of those padded leaf
+## estimates, not the Richardson extrapolation; a leaf whose bracket is
+## nonfinite or inverted beyond roundoff is refused, as is a leaf that cannot
+## satisfy the padded condition before the depth or node cap. Every leaf
+## allowance is relative to a bracket that encloses its subarc, so the reported
+## span error cannot fall below ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF times the
+## true span length, and therefore not below that fraction of the endpoint
+## chord. A request below that fraction is refused as precision_unreachable
+## instead of being reported as success. This floor bounds the conservative
+## reported estimate, not a proven forward error.
 ## Arc-length inversion uses the adaptive table for a bracket, then bounded
 ## Newton steps with bisection fallback and fixed Richardson-refined composite
 ## Simpson quadrature. Tolerances and caps are explicit. Options may tighten
@@ -108,6 +116,7 @@ enum Refusal {
 	SAMPLE_CAP_EXCEEDED,
 	INVERSION_FAILED,
 	TABLE_INCONSISTENT,
+	PRECISION_UNREACHABLE,
 }
 
 const REFUSAL_NAMES := {
@@ -122,6 +131,7 @@ const REFUSAL_NAMES := {
 	Refusal.SAMPLE_CAP_EXCEEDED: "sample_cap_exceeded",
 	Refusal.INVERSION_FAILED: "inversion_failed",
 	Refusal.TABLE_INCONSISTENT: "table_inconsistent",
+	Refusal.PRECISION_UNREACHABLE: "precision_unreachable",
 }
 
 
@@ -740,6 +750,24 @@ static func _integrate_span(
 	p_max_depth: int,
 	p_max_nodes: int
 ) -> Dictionary:
+	# Each accepted leaf adds a relative roundoff allowance on a bracket that
+	# encloses its subarc, so the summed reported error is at least this fraction
+	# of the true span length, and therefore of the endpoint chord. A tighter
+	# request can never be satisfied by any leaf partition and is refused rather
+	# than silently reported as success.
+	var chord_length := _scalar_control_chord_length(p_control_points)
+	var precision_floor := ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF * chord_length
+	if p_tolerance_m < precision_floor:
+		return _integration_failure({
+			"code": Refusal.PRECISION_UNREACHABLE,
+			"error": "requested arc length tolerance is below the sampler's roundoff-implied precision floor for the reported error",
+			"diagnostic": {
+				"requested_tolerance_m": p_tolerance_m,
+				"precision_floor_m": precision_floor,
+				"endpoint_chord_m": chord_length,
+				"relative_roundoff_allowance": ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF,
+			},
+		})
 	var state := {
 		"failed": false,
 		"code": Refusal.NONE,
@@ -868,7 +896,7 @@ static func _integrate_span_recursive(
 		if extrapolated >= lower - roundoff_slack and extrapolated <= upper + roundoff_slack:
 			var distance := maxf(extrapolated - lower, upper - extrapolated)
 			var error_estimate := distance + roundoff_slack
-			if distance <= p_tolerance:
+			if error_estimate <= p_tolerance:
 				_accept_integration_leaf(
 					p_state, p_b, extrapolated, error_estimate, p_max_nodes, p_a, p_depth
 				)
@@ -891,6 +919,10 @@ static func _integrate_span_recursive(
 			cap_diagnostic["extrapolated_length_m"] = extrapolated
 			cap_diagnostic["bracket_distance_m"] = maxf(
 				extrapolated - cap_lower, cap_upper - extrapolated
+			)
+			cap_diagnostic["bracket_reported_error_m"] = (
+				maxf(extrapolated - cap_lower, cap_upper - extrapolated)
+				+ _arc_length_bound_roundoff_slack(cap_lower, cap_upper)
 			)
 		_set_integration_state_failure(p_state, {
 			"code": Refusal.SUBDIVISION_CAP_EXCEEDED,
@@ -1069,6 +1101,18 @@ static func _bezier_interval_length_bounds(
 static func _arc_length_bound_roundoff_slack(p_lower: float, p_upper: float) -> float:
 	var scale := maxf(absf(p_lower), absf(p_upper))
 	return ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF * scale
+
+
+## Scalar float64 endpoint chord of the stored control points. Used only to
+## derive the reported-error precision floor before integration.
+static func _scalar_control_chord_length(p_control_points: Array[Vector3]) -> float:
+	var first: Vector3 = p_control_points[0]
+	var last: Vector3 = p_control_points[3]
+	return _components_length([
+		last.x - first.x,
+		last.y - first.y,
+		last.z - first.z,
+	])
 
 
 # --- Arc inversion and evaluation -------------------------------------------

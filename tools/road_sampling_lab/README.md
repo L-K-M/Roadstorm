@@ -131,8 +131,14 @@ values. A candidate leaf is accepted only after an independent eight-piece
 geometric bracket places its extrapolated length between summed chord and
 control-polygon bounds within an explicit roundoff allowance. Its reported
 error is the conservative maximum distance to either bound plus that leaf's
-relative roundoff allowance; the per-span error sums accepted leaf bounds. A
-cap reached before this check passes is a structured refusal. Arc-length
+relative roundoff allowance; acceptance compares that padded estimate, not
+the bare bracket distance, and the per-span error sums accepted leaf bounds.
+Because every leaf allowance is relative to a bracket enclosing its subarc,
+the summed reported error cannot fall below `ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF`
+times the span endpoint chord; a request below that precision floor is refused
+as `precision_unreachable` rather than accepted above the budget. The floor
+bounds the conservative reported estimate, not a proven forward error. A cap
+reached before this check passes is a structured refusal. Arc-length
 inversion brackets the target from the adaptive table, then uses bounded
 Newton steps with bisection fallback and fixed Richardson-refined composite
 Simpson quadrature.
@@ -162,13 +168,13 @@ parameter tolerance `1e-12` and discriminant epsilon `1e-7`.
 Stable refusal codes: `bad_document`, `bad_spacing`, `bad_options`,
 `nonfinite_derived_state`, `degenerate_derivative`,
 `subdivision_cap_exceeded`, `table_node_cap_exceeded`, `sample_cap_exceeded`,
-`inversion_failed`, `table_inconsistent`. Hitting a budget cap or an
-unconverged inversion is a structured refusal, not a silent approximation or
-partial table.
+`inversion_failed`, `precision_unreachable`, `table_inconsistent`. Hitting a
+budget cap or an unconverged inversion is a structured refusal, not a silent
+approximation or partial table.
 
 ## Validation coverage
 
-The validator runs 9 cases and 611 checks in one pinned-engine cohort:
+The validator runs 10 cases and 631 checks in one pinned-engine cohort:
 
 - `open_straight_uniform_table`: analytic 60 m straight length, exact stations,
   endpoint positions and roles, interior knot boundary ownership, linear
@@ -194,8 +200,12 @@ The validator runs 9 cases and 611 checks in one pinned-engine cohort:
   non-integer cap, and a loosened cap;
 - `conservative_bracket_regressions`: Sol's analytic short quadratic and
   near-end spacing, Opus's road-like and hook counterexamples against
-  independent length references, and refusal when a positive span after a
-  large prefix cannot advance its global station;
+  independent length references, and refusal of a positive span after a 2^53 m
+  prefix. That prefix makes the first span's endpoint chord huge, so at the
+  default tolerance the span is refused as `precision_unreachable`; this
+  fixture no longer reaches the later global-station advance guard retained in
+  source, which is a change of test reachability rather than removal of the
+  guard;
 - `translated_float64_regressions`: Sol's exact 24,576 m diagonal straight
   (actual error must fit both the 1 mm tolerance and the reported estimate),
   two non-dyadic straight lines, the road1/road2/hook review spans translated
@@ -205,7 +215,12 @@ The validator runs 9 cases and 611 checks in one pinned-engine cohort:
   Gauss-Legendre reference computed from the parsed float32 control points;
   the coarse/fine reference uncertainty must be below one picometre and the
   sampler's reported error estimate must cover the observed length error
-  without an added comparison tolerance.
+  without an added comparison tolerance;
+- `tightened_tolerance_precision_contract`: an analytic dyadic diagonal whose
+  roundoff-implied reported-error floor exceeds a 1e-8 m request refuses as
+  `precision_unreachable` with the derived floor, endpoint chord and request
+  in its diagnostic, while requests just above the floor and at 1e-6 m build
+  and report padded errors within budget.
 
 The deliberate failure probe prints `ROAD_SAMPLING_FAILURE_PROBE` with two
 checks and one intentional failure, then exits 3. A zero exit would mean

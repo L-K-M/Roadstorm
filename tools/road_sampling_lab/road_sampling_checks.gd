@@ -145,6 +145,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_budget_controls"),
 		Callable(self, "_case_conservative_bracket_regressions"),
 		Callable(self, "_case_translated_float64_regressions"),
+		Callable(self, "_case_tightened_tolerance_precision_contract"),
 	]:
 		var result: Dictionary = call.call()
 		case_results.append(result)
@@ -220,6 +221,17 @@ static func build_table(c: Case, document: RoadSourceDocument, spacing: float, l
 
 static func vector3_from_array(value: Array) -> Vector3:
 	return Vector3(float(value[0]), float(value[1]), float(value[2]))
+
+
+## Scalar float64 endpoint chord of stored control points; mirrors the sampler's
+## precision-floor computation without going through float32 Vector3 distance.
+static func scalar_chord_length(points: Array[Vector3]) -> float:
+	var first: Vector3 = points[0]
+	var last: Vector3 = points[3]
+	var dx := float(last.x) - float(first.x)
+	var dy := float(last.y) - float(first.y)
+	var dz := float(last.z) - float(first.z)
+	return sqrt(dx * dx + dy * dy + dz * dz)
 
 
 static func fixture_control_points(source: Dictionary, span_index: int) -> Array[Vector3]:
@@ -1037,8 +1049,14 @@ func _check_opus_counterexample_regression(
 
 
 func _check_global_station_collapse_regression(c: Case) -> void:
+	# The 2^53 m prefix puts the first span's endpoint chord near 9e15 m, so
+	# its mandatory reported-error floor is about 9e3 m. At the default 1 mm
+	# tolerance that span is refused as precision_unreachable before any local
+	# integration, so this fixture no longer reaches the global-station advance
+	# guard retained in build_uniform_table. A request above the floor could
+	# still expose that guard, but the guard is deliberately not claimed here.
 	var loaded := load_fixture(OPEN_STRAIGHT_PATH)
-	c.check(bool(loaded["ok"]), "global-station collapse fixture loads: " + str(loaded["error"]))
+	c.check(bool(loaded["ok"]), "global-station prefix fixture loads: " + str(loaded["error"]))
 	if not bool(loaded["ok"]):
 		return
 	var doc: Dictionary = loaded["doc"]
@@ -1060,9 +1078,9 @@ func _check_global_station_collapse_regression(c: Case) -> void:
 		return
 	c.refuses(
 		RoadArcSampler.build_uniform_table(parsed["document"], 1.0e16),
-		RoadArcSampler.Refusal.TABLE_INCONSISTENT,
-		"positive span after a 2^53 m prefix refuses instead of collapsing the global station",
-		"advance the global station"
+		RoadArcSampler.Refusal.PRECISION_UNREACHABLE,
+		"positive span after a 2^53 m prefix is refused below its reported-error precision floor",
+		"roundoff-implied precision floor"
 	)
 
 
@@ -1304,3 +1322,135 @@ func _check_seeded_normal_span_regressions(c: Case) -> void:
 	c.measurements["seeded_normal_worst_reference_uncertainty_m"] = worst_uncertainty
 	c.measurements["seeded_normal_worst_error_minus_reported_m"] = worst_error_minus_reported
 	c.measurements["seeded_normal_worst_error_index"] = worst_index
+
+
+# --- Tightened-tolerance reported-error contract ----------------------------
+
+func _case_tightened_tolerance_precision_contract() -> Dictionary:
+	var c := Case.new()
+	c.name = "tightened_tolerance_precision_contract"
+
+	# Analytic straight with dyadic control components: constant speed makes
+	# the coarse and refined Simpson values agree at the nodes, so the geometric
+	# bracket distance is tiny while the leaf roundoff allowance dominates the
+	# reported error. This is exactly the gap Sol identified.
+	var diagonal_points := [
+		[0.0, 0.0, 0.0],
+		[8192.0, 0.0, 8192.0],
+		[16384.0, 0.0, 16384.0],
+		[24576.0, 0.0, 24576.0],
+	]
+	var source := make_single_span_source(
+		"lab.sampling.control.tight_diagonal",
+		diagonal_points[0],
+		diagonal_points[1],
+		diagonal_points[2],
+		diagonal_points[3]
+	)
+	var document := parse_control_source(c, source, "tight-tolerance diagonal")
+	if document == null:
+		return c.result()
+	var control_points: Array[Vector3] = document.spans[0].control_points()
+	var chord := scalar_chord_length(control_points)
+	var allowance := float(RoadArcSampler.ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF)
+	var floor := allowance * chord
+	var exact_length := 24576.0 * sqrt(2.0)
+
+	# The request is above the tiny geometric bracket distance but below the
+	# summed roundoff-implied reported-error floor. The old padded-distance-free
+	# acceptance would accept it and report above the request.
+	var below_floor := 1.0e-8
+	c.check(
+		below_floor < floor,
+		"below-floor request is below the diagonal reported-error floor (floor %.9f)" % floor
+	)
+	var below := RoadArcSampler.build_uniform_table(
+		document,
+		65536.0,
+		{RoadArcSampler.OPTION_ARC_LENGTH_TOLERANCE_M: below_floor}
+	)
+	c.refuses(
+		below,
+		RoadArcSampler.Refusal.PRECISION_UNREACHABLE,
+		"tolerance below the reported-error floor is refused",
+		"floor"
+	)
+	if typeof(below.get("diagnostic", null)) == TYPE_DICTIONARY:
+		var below_diagnostic: Dictionary = below["diagnostic"]
+		c.close(
+			float(below_diagnostic.get("requested_tolerance_m", NAN)),
+			below_floor,
+			0.0,
+			"precision refusal reports the requested tolerance"
+		)
+		c.close(
+			float(below_diagnostic.get("precision_floor_m", NAN)),
+			floor,
+			floor * 1.0e-9,
+			"precision refusal reports the derived floor"
+		)
+		c.close(
+			float(below_diagnostic.get("endpoint_chord_m", NAN)),
+			chord,
+			0.0,
+			"precision refusal reports the endpoint chord"
+		)
+
+	# Ordinary tight control just above the floor: accepted, and the reported
+	# padded bound must satisfy the caller's request rather than merely the
+	# geometric bracket distance.
+	var just_above := 5.0e-8
+	c.check(just_above > floor, "just-above-floor control is genuinely above the floor")
+	var just_above_result := RoadArcSampler.build_uniform_table(
+		document,
+		65536.0,
+		{RoadArcSampler.OPTION_ARC_LENGTH_TOLERANCE_M: just_above}
+	)
+	var just_above_table := c.accepts_table(
+		just_above_result, "tolerance just above the floor builds"
+	)
+	if just_above_table != null:
+		c.check(
+			just_above_table.length_error_estimate_m <= just_above,
+			"just-above-floor reported padded error satisfies the requested budget "
+				+ "(%.9f <= %.9f)" % [just_above_table.length_error_estimate_m, just_above]
+		)
+		c.close(
+			just_above_table.total_length_m,
+			exact_length,
+			just_above,
+			"just-above-floor tight length stays within the requested analytic error"
+		)
+		c.measurements["tight_diagonal_just_above_requested_tolerance_m"] = just_above
+		c.measurements["tight_diagonal_just_above_reported_error_m"] = (
+			just_above_table.length_error_estimate_m
+		)
+
+	# A second ordinary tight control well above the floor exercises the same
+	# padded acceptance on an unambiguously achievable budget.
+	var tight := 1.0e-6
+	var tight_result := RoadArcSampler.build_uniform_table(
+		document,
+		65536.0,
+		{RoadArcSampler.OPTION_ARC_LENGTH_TOLERANCE_M: tight}
+	)
+	var tight_table := c.accepts_table(tight_result, "tight tolerance well above the floor builds")
+	if tight_table != null:
+		c.check(
+			tight_table.length_error_estimate_m <= tight,
+			"tight tolerance reported padded error satisfies the requested budget "
+				+ "(%.9f <= %.9f)" % [tight_table.length_error_estimate_m, tight]
+		)
+		c.close(
+			tight_table.total_length_m,
+			exact_length,
+			tight,
+			"tight tolerance length stays within the requested analytic error"
+		)
+		c.measurements["tight_diagonal_requested_tolerance_m"] = tight
+		c.measurements["tight_diagonal_reported_error_m"] = tight_table.length_error_estimate_m
+
+	c.measurements["tight_diagonal_endpoint_chord_m"] = chord
+	c.measurements["tight_diagonal_precision_floor_m"] = floor
+	c.measurements["tight_diagonal_below_floor_refused"] = not bool(below.get("ok", false))
+	return c.result()
