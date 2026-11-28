@@ -20,6 +20,8 @@ const FeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
 const SynthScript := preload("res://src/audio/vehicle_feedback_synth.gd")
 const GearboxScript := preload("res://src/simulation/automatic_gearbox.gd")
 const ImpactEventScript := preload("res://src/simulation/impact_event.gd")
+const WallImpactProducerScript := preload("res://src/simulation/wall_impact_producer.gd")
+const WallContactPolicyScript := preload("res://src/simulation/wall_contact_policy.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -119,6 +121,17 @@ const WALL_VECTOR_TOLERANCE_M := 1e-5
 const WALL_LOCAL_TOLERANCE_M := 1e-5
 const WALL_NORMAL_TOLERANCE := 1e-5
 const WALL_SEVERITY_TOLERANCE_M_S := 1e-5
+## Bounded pressed-grind tick count for the wall-contact policy case: long
+## enough to prove a sustained press after the onset emits nothing, and well
+## inside one repeat-spacing window.
+const WALL_POLICY_GRIND_TICKS := 60
+## Road-plane gap between the hull nose and the authored wall face at which the
+## reversing car counts as separated for the renewed-episode regression.
+const WALL_POLICY_SEPARATION_GAP_M := 6.0
+const WALL_POLICY_REVERSE_MAX_TICKS := 300
+## Independent oracle ID for a test-side `WallImpactProducer.produce()` call;
+## never published.
+const WALL_POLICY_ORACLE_EVENT_ID := "drive_lab.test.oracle"
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
@@ -137,6 +150,7 @@ const CASE_IDS: Array[String] = [
 	"audio_feedback_integration",
 	"gearbox_integration",
 	"wall_impact_integration",
+	"wall_policy_integration",
 ]
 
 var d := DriveLabChecks.new()
@@ -287,6 +301,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_gearbox_integration()
 		"wall_impact_integration":
 			await _case_wall_impact_integration()
+		"wall_policy_integration":
+			await _case_wall_policy_integration()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	var result := {
@@ -3694,6 +3710,131 @@ func _case_wall_impact_integration() -> void:
 	await _wall_scope_retirement_keeps_car_state_checks()
 
 
+## Exercises the policy on real committed Jolt ticks, including an idle tick,
+## the authored frontal impact and the pressed contact that follows it.
+func _case_wall_policy_integration() -> void:
+	var lab = _make_wall_hit_lab([])
+	if lab == null:
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	_place_wall_lab_at_spawn(lab)
+	await _settle()
+	var clear_result = lab.step_once(d.throttle_command(1.0))
+	d.check(clear_result != null, "wall.policy.clear_tick_committed")
+	if clear_result == null:
+		await _teardown_lab(lab)
+		return
+	var clear: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(clear_result.status) == int(AdapterScript.Status.COMMITTED)
+			and not clear_result.has_wall_response_witness,
+		"wall.policy.clear_tick_has_no_wall_witness"
+	)
+	d.check(
+		int(clear["policy_tick"]) == int(lab.ticks_committed)
+			and int(clear["policy_counters"]["idle_ticks"]) == 1,
+		"wall.policy.clear_tick_advanced_once"
+	)
+	d.check(
+		str(clear["policy_decision_name"]) == "none"
+			and str(clear["policy_event_id"]) == ""
+			and lab.get_wall_event_count() == 0,
+		"wall.policy.clear_tick_allocates_no_event"
+	)
+	var witness = null
+	for index in range(WALL_MAX_TICKS):
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null:
+			d.check(false, "wall.policy.approach_tick_%d_returned_null" % index)
+			break
+		if result.has_wall_response_witness and result.has_wall_contact_point:
+			witness = result
+			break
+	d.check(witness != null, "wall.policy.real_wall_witness_occurred")
+	if witness == null:
+		await _teardown_lab(lab)
+		return
+	var onset: Dictionary = lab.get_wall_event_telemetry()
+	var event = lab.get_last_wall_event()
+	d.check(
+		str(onset["policy_decision_name"]) == "publish_onset"
+			and bool(onset["policy_publish"])
+			and int(onset["policy_counters"]["contact_ticks"]) == 1,
+		"wall.policy.first_contact_publishes_onset_once"
+	)
+	d.check(event != null and lab.get_wall_event_count() == 1,
+		"wall.policy.onset_is_in_real_ledger")
+	if event == null:
+		await _teardown_lab(lab)
+		return
+	var oracle := WallImpactProducerScript.produce(
+		witness, lab.adapter_config, DriveLabScript.WALL_EVENT_PRIMARY_CAR_ID,
+		WALL_POLICY_ORACLE_EVENT_ID, "", int(lab.ticks_committed)
+	)
+	d.check(not oracle.is_refused(), "wall.policy.producer_accepts_same_witness")
+	if not oracle.is_refused():
+		d.check_close(
+			float(onset["policy_severity_m_s"]), oracle.event.severity_m_s,
+			WALL_SEVERITY_TOLERANCE_M_S, "wall.policy.severity_from_producer"
+		)
+		d.check_vector_close(
+			onset["policy_response_normal"], oracle.event.contact_normal_world_m,
+			WALL_NORMAL_TOLERANCE, "wall.policy.normal_from_producer"
+		)
+		d.check(
+			int(onset["policy_region"]) == int(oracle.event.region)
+				and int(event.region) == int(oracle.event.region),
+			"wall.policy.region_from_producer"
+		)
+	d.check(
+		str(onset["policy_event_id"]) == event.event_id
+			and event.event_id.begins_with(
+				DriveLabScript.WALL_EVENT_ID_PREFIX + "."
+			)
+			and str(event.contact_id) == "",
+		"wall.policy.stable_id_and_empty_contact_id"
+	)
+	var policy_before: Dictionary = onset["policy_state"]
+	var counters_before: Dictionary = onset["policy_counters"]
+	var digest_before := lab.get_wall_event_content_digest()
+	d.check(lab.publish_wall_event(witness), "wall.policy.exact_retry_coalesces")
+	var retried: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		retried["policy_state"] == policy_before
+			and retried["policy_counters"] == counters_before
+			and str(retried["policy_event_id"]) == event.event_id,
+		"wall.policy.retry_does_not_advance_or_reidentify"
+	)
+	d.check(
+		lab.get_wall_event_count() == 1
+			and lab.get_wall_event_content_digest() == digest_before
+			and int(retried["coalesced"]) == int(onset["coalesced"]) + 1,
+		"wall.policy.retry_preserves_ledger_content"
+	)
+	var suppressed := false
+	for index in range(WALL_POLICY_GRIND_TICKS):
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null:
+			d.check(false, "wall.policy.grind_tick_%d_returned_null" % index)
+			break
+		var state: Dictionary = lab.get_wall_event_telemetry()
+		if str(state["policy_decision_name"]) == "suppress_repeat":
+			suppressed = true
+			d.check(
+				str(state["policy_event_id"]) == ""
+					and int(state["identity_tick_slots"]) == 0,
+				"wall.policy.physical_grind_allocates_no_id"
+			)
+			break
+	d.check(suppressed, "wall.policy.physical_grind_suppressed")
+	d.check(not lab.failed and not lab.halted, "wall.policy.lab_remains_operational")
+	measurements["onset_event_id"] = event.event_id
+	measurements["onset_severity_m_s"] = event.severity_m_s
+	measurements["grind_suppressed"] = suppressed
+	await _teardown_lab(lab)
+
+
 ## Drives one real pinned-Jolt head-on hit against the authored contact-bay
 ## frontal wall through the laboratory's own tick path, then proves the event
 ## was published on that committed tick and coalesces identical retries.
@@ -4175,6 +4316,11 @@ func _wall_refusal_paths_emit_no_event_checks() -> void:
 		)
 		d.check(lab.failed, "wall.refusal.lab_failed")
 		d.check(
+			int(lab.get_wall_event_telemetry()["policy_tick"]) == -1
+				and str(lab.get_wall_event_telemetry()["policy_decision_name"]) == "none",
+			"wall.refusal.adapter_refusal_does_not_advance_policy"
+		)
+		d.check(
 			lab.get_wall_event_count() == 0,
 			"wall.refusal.no_event_on_adapter_refusal"
 		)
@@ -4272,6 +4418,13 @@ func _wall_postcommit_gearbox_failure_withholds_witness_checks() -> void:
 		"wall.withheld.no_pair_published_for_witness_tick"
 	)
 	d.check(lab.get_wall_event_count() == 0, "wall.withheld.no_event_emitted")
+	var withheld_policy: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(withheld_policy["policy_tick"]) == committed_before
+			and int(withheld_policy["policy_counters"]["contact_ticks"]) == 0
+			and str(withheld_policy["policy_event_id"]) == "",
+		"wall.withheld.withheld_witness_does_not_advance_policy"
+	)
 	var withheld_telemetry: Dictionary = lab.get_wall_event_telemetry()
 	d.check(int(withheld_telemetry["published"]) == 0, "wall.withheld.no_publish_counter")
 	d.check(

@@ -206,24 +206,29 @@ sound or extra readout wiring is added.
 
 ## M1.8 wall-impact publication
 
-`wall_impact_integration` wires one one-car laboratory path through the
-committed `WallImpactProducer`. A wall `ImpactEvent` is published only after
-the adapter COMMITTED tick and the canonical gearbox/`CarState` pair are both
-accepted and published, through a laboratory-owned `ImpactEvent.Ledger`.
+`wall_impact_integration` and `wall_policy_integration` wire one one-car
+laboratory path through the committed `WallImpactProducer` and the pure
+`WallContactPolicy`. Every accepted COMMITTED tick advances the policy once,
+after the canonical gearbox/`CarState` pair is published. The policy derives
+severity, road-plane response normal and region from the producer's record;
+its onset and spaced-repeat decisions alone enter the laboratory-owned
+`ImpactEvent.Ledger`. A suppressed contact allocates no event ID or ledger
+entry. The producer can still build an exact-zero record independently.
 
-* caller-owned event IDs are deterministic per (scope generation, committed
-  tick index, collision fingerprint, per-tick sequence) under the stable
-  primary car ID `drive_lab.primary_car`; a later tick cannot reuse an earlier
-  ID even after ledger pruning, and an identical retry within one tick
-  coalesces in the real ledger; the retry-ID map is cleared on each new
-  accepted tick so a long run does not retain old fingerprints;
+* laboratory-owned event IDs follow
+  `drive_lab.wall.<scope generation>.<episode sequence>.<event sequence>`
+  under the stable primary car ID `drive_lab.primary_car`. They cannot be
+  reused after ledger pruning or scope retirement. An exact same-tick retry
+  coalesces an already published record without advancing policy counters;
+  the retry-ID map is cleared on each new accepted tick;
 * adapter refusal, a stale-pose block and a post-commit gearbox failure emit
   no event; a direct call with an adapter-only or retired witness is also
   refused; the withheld-witness path records a diagnostic and leaves motor
   state, body pose, RNG, progress and presentation untouched;
-* `configure()` retires the event scope explicitly without changing car state,
-  and the read-only surface exposes the last event copy, retained count,
-  publication/coalescing/refusal counters and the last diagnostic.
+* `configure()` retires the ledger and policy scope together without changing
+  car state. Read-only telemetry exposes the last event copy, retained count,
+  publication/coalescing/refusal counters, policy decision and counters, and
+  the last diagnostic.
 
 The case stages a real pinned-Jolt head-on hit on the authored contact bay's
 500 m straight. The handling-lab builder output is unchanged except that the
@@ -235,16 +240,21 @@ The checks require publication exactly on the witness tick, severity/local
 region/normal/points derived from the witness, zero imparted motion, one
 coalesced retry per repeated same-tick call, and no event on any failed
 publication path.
-The independent frozen candidate passed 16 cases and 5,160 checks, the
+The initial publication-only candidate passed 16 cases and 5,160 checks, the
 99-check bad-config control and the deliberate failure. A private mutation
 that omits the `step_once` publication call failed three new assertions,
 including missing event and empty ledger; its runner exited nonzero.
+The policy integration candidate passed 17 cases and 5,333 checks in an
+independent frozen run, the same bad-config control and the deliberate
+failure. Its added case checks a real Jolt onset, producer-derived policy
+inputs, an unchanged policy state on exact retry, a no-witness tick and a
+suppressed pressed-contact tick with no allocated ID.
 
-This is a bounded publication seam, not full M1.8 acceptance: presentation,
-sound, cosmetic damage consumption, car-car production and a coordinator
-event stream remain later work. The physical test covers one head-on wall hit
-on one authored straight; oblique contact, repeated contacts and other bays are
-not covered by this case.
+This is a bounded policy and publication seam, not full M1.8 acceptance:
+presentation, sound, cosmetic damage consumption, car-car production and a
+coordinator event stream remain later work. The physical tests cover one
+head-on wall hit and its pressed continuation on one authored straight;
+oblique contact, corner identity and other bays are not covered.
 
 ## Negative control
 

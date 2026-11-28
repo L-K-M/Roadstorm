@@ -93,6 +93,27 @@ extends Node3D
 ## dwell or canonical rpm. Gear selection drives no audio here; the only gear
 ## display is the committed `CarState.gear_index` mirror the speed HUD shows.
 ##
+## Wall-contact policy seam (M1.8 provisional slice): after the canonical
+## gearbox/CarState pair of a COMMITTED tick is published, the laboratory
+## advances the pure `WallContactPolicy` exactly once for that tick, witness
+## or not. The policy inputs come only from `WallImpactProducer`: severity is
+## its `stable_norm(pre - post)` across the contact response, the response
+## normal is its road-plane projection of the selected wall normal, and the
+## region is its hull classification. Motor acceleration, sweep travel and the
+## generic first-contact normal are never consulted. The pure producer keeps
+## building a legal exact-zero record for any witness; the policy alone
+## decides whether that witness enters the cosmetic event stream. A published
+## onset or repeat carries the policy's stable `<prefix>.<scope generation>.
+## <episode seq>.<event seq>` ID and an empty `contact_id`; a suppressed tick
+## allocates no ID and writes no ledger entry. Neither path changes body,
+## motor or gearbox state. The public `publish_wall_event()` is now a
+## same-tick retry only: it coalesces an already-published event and never
+## evaluates the policy, so no retry can advance policy counters or issue
+## another ID. `retire_wall_event_scope()` retires the policy to the same scope
+## generation as the ledger, so the two never disagree. This is a provisional
+## seam with no cosmetic consumer, no calibrated contact identity and no M1.8
+## acceptance claim.
+##
 ## Headless scripted mode never reads GUI input. Keyboard mode is a separate
 ## convenience path for interactive use.
 
@@ -108,6 +129,7 @@ const VehicleFeedbackScript := preload("res://src/audio/vehicle_feedback_player.
 const GearboxScript := preload("res://src/simulation/automatic_gearbox.gd")
 const WallImpactProducerScript := preload("res://src/simulation/wall_impact_producer.gd")
 const ImpactEventScript := preload("res://src/simulation/impact_event.gd")
+const WallContactPolicyScript := preload("res://src/simulation/wall_contact_policy.gd")
 
 ## Hard cap on recorded gearbox shift events. Further events are counted as
 ## dropped instead of growing without bound.
@@ -115,11 +137,22 @@ const MAX_GEAR_SHIFT_EVENTS := 128
 ## Stable primary car identity for every laboratory wall impact event. One
 ## car, one identity; reconfiguration and new runs never change it.
 const WALL_EVENT_PRIMARY_CAR_ID := "drive_lab.primary_car"
-## Prefix of caller-owned wall event IDs. A full ID also carries the lab event
-## scope generation, the committed tick index and a per-tick collision
-## sequence, so a later tick cannot reuse an earlier ID even if the bounded
-## ledger has already pruned that tick.
+## Prefix of laboratory-owned wall event IDs. The pure `WallContactPolicy`
+## completes it as `<prefix>.<scope generation>.<episode seq>.<event seq>`
+## for the onset and each spaced repeat of one wall episode, so a later scope,
+## episode or event can never reuse an earlier ID even after ledger pruning.
 const WALL_EVENT_ID_PREFIX := "drive_lab.wall"
+## Event ID used only to derive the policy inputs of one committed tick through
+## `WallImpactProducer`. The producer is a pure function of the adapter result,
+## so this probe record is never published; a publish decision rebuilds the
+## record under the policy's stable event ID.
+const WALL_POLICY_PROBE_EVENT_ID := "drive_lab.wall.probe"
+## Unit placeholder handed to the pure policy on a committed tick that carries
+## no publishable wall witness. The policy validates the normal's shape before
+## it reads `has_wall_witness`, and it stores the value only on a wall-contact
+## tick, so a fixed unit vector keeps no-witness ticks legal without inventing
+## a contact direction.
+const WALL_POLICY_NO_WITNESS_NORMAL := Vector3.UP
 ## Halt reason used after a state-only drive restore, which cannot advance the
 ## simulation until a body-pose reconciliation operation exists.
 const DRIVE_STATE_ONLY_HALT := "state-only drive restore awaits body pose reconciliation"
@@ -229,6 +262,28 @@ var _wall_event_ids_by_fingerprint := {}
 ## accepted; a new tick or an explicit retirement replaces or clears it.
 var _wall_event_accepted_fingerprint := ""
 var _wall_event_accepted_snapshot := {}
+## Pure wall-contact episode policy state for the current scope generation.
+## Advanced exactly once per accepted COMMITTED tick, by the committed path
+## only; the public same-tick retry never calls the policy. Its generation is
+## always the ledger scope generation above.
+var _wall_policy_state: WallContactPolicy.PolicyState = null
+## Component counters when the current scope began. The pure component's own
+## counters are lifetime totals that survive `retire()`, so the per-scope
+## telemetry view is reported as the difference from this snapshot.
+var _wall_policy_scope_start_counters := {}
+## Policy outcome of the most recent accepted committed tick. Cached so an
+## exact public retry coalesces without a second policy evaluation.
+var _wall_policy_tick := -1
+var _wall_policy_decision: int = WallContactPolicy.Decision.NONE
+var _wall_policy_publish := false
+var _wall_policy_event_id := ""
+var _wall_policy_episode_key := ""
+var _wall_policy_severity_m_s := 0.0
+var _wall_policy_region: int = WallContactPolicy.REGION_UNSET
+var _wall_policy_response_normal := Vector3.ZERO
+## Policy refusals recorded in the current scope. A refusal is a diagnostic
+## only: the tick stays committed with no wall event and physics continues.
+var wall_policy_refusals := 0
 ## Set only after the physical result and canonical gearbox/CarState pair are
 ## published. A direct caller cannot publish an adapter-only or stale result.
 var _wall_event_accepted_result: MotorBodyAdapter.Result = null
@@ -291,6 +346,7 @@ func _init() -> void:
 	state = CarStateScript.new()
 	gearbox = AutomaticGearbox.create(make_laboratory_gearbox_config())
 	wall_event_ledger = ImpactEventScript.Ledger.new()
+	_wall_policy_state = WallContactPolicyScript.new_state(0)
 
 
 func _ready() -> void:
@@ -768,10 +824,13 @@ func get_drive_restore_error() -> String:
 
 
 ## Retires the laboratory wall-event scope: clears the lab-owned ledger,
-## counters, diagnostics and per-tick ID maps, and advances the scope
-## generation so no retired ID can be regenerated. It never touches the
-## committed CarState, the canonical gearbox or the physical body pose.
-## `configure()` calls this on every new configuration/run.
+## counters, diagnostics and per-tick ID maps, advances the scope generation
+## so no retired ID can be regenerated, and retires the pure wall-contact
+## policy to that same generation so every open episode closes, the per-tick
+## retry cache and ordering watermark restart, and no episode or event key is
+## ever reused. It never touches the committed CarState, the canonical gearbox
+## or the physical body pose. `configure()` calls this on every new
+## configuration/run.
 func retire_wall_event_scope() -> void:
 	_wall_event_scope_generation += 1
 	if wall_event_ledger != null:
@@ -787,6 +846,39 @@ func retire_wall_event_scope() -> void:
 	_wall_event_accepted_tick = -1
 	_wall_event_accepted_fingerprint = ""
 	_wall_event_accepted_snapshot = {}
+	_retire_wall_policy(_wall_event_scope_generation)
+
+
+## Advances the pure policy to the new scope generation. `retire()` closes
+## every open episode, clears the per-tick retry cache and the ordering
+## watermark, and never reissues an identity, so the policy generation always
+## equals the ledger scope generation. The component's cumulative counters are
+## lifetime totals; the per-scope telemetry view restarts from zero here.
+func _retire_wall_policy(generation: int) -> void:
+	_wall_policy_tick = -1
+	_wall_policy_decision = int(WallContactPolicy.Decision.NONE)
+	_wall_policy_publish = false
+	_wall_policy_event_id = ""
+	_wall_policy_episode_key = ""
+	_wall_policy_severity_m_s = 0.0
+	_wall_policy_region = WallContactPolicy.REGION_UNSET
+	_wall_policy_response_normal = Vector3.ZERO
+	wall_policy_refusals = 0
+	_wall_policy_scope_start_counters = {}
+	if _wall_policy_state == null:
+		_wall_policy_state = WallContactPolicyScript.new_state(generation)
+	else:
+		var retired := WallContactPolicyScript.retire(_wall_policy_state, generation)
+		if bool(retired["ok"]):
+			_wall_policy_state = retired["state"]
+		else:
+			# Unreachable while the scope generation only advances. Kept as a
+			# loud diagnostic rather than a silently stale policy: the next tick
+			# would then refuse with a scope generation mismatch.
+			wall_event_diagnostic = "wall policy scope retirement refused: %s (%s)" % [
+				str(retired["code_name"]), str(retired["error"])
+			]
+	_wall_policy_scope_start_counters = _wall_policy_state.counters()
 
 
 ## Read-only copy of the last published or coalesced retained wall event, or
@@ -813,11 +905,25 @@ func get_wall_event_diagnostic() -> String:
 	return wall_event_diagnostic
 
 
-## Read-only wall-event telemetry for validation and reports.
+## Read-only wall-event telemetry for validation and reports. The `policy_*`
+## keys describe the pure policy: the decision and producer-derived inputs of
+## the most recent accepted committed tick, the policy scope generation (always
+## equal to `scope_generation`), per-scope counters, the component's lifetime
+## counters and a serialized copy of the policy state. Every value is a copy.
 func get_wall_event_telemetry() -> Dictionary:
 	var last_id := ""
 	if last_wall_event != null:
 		last_id = last_wall_event.event_id
+	var policy_generation := -1
+	var policy_state := {}
+	var lifetime := {}
+	if _wall_policy_state != null:
+		policy_generation = _wall_policy_state.scope_generation
+		policy_state = _wall_policy_state.to_dictionary()
+		lifetime = _wall_policy_state.counters()
+	var region_name := ""
+	if _wall_policy_region >= 0 and _wall_policy_region < ImpactEventScript.REGION_NAMES.size():
+		region_name = ImpactEventScript.REGION_NAMES[_wall_policy_region]
 	return {
 		"primary_car_id": WALL_EVENT_PRIMARY_CAR_ID,
 		"scope_generation": _wall_event_scope_generation,
@@ -829,6 +935,23 @@ func get_wall_event_telemetry() -> Dictionary:
 		"identity_tick_slots": _wall_event_ids_by_fingerprint.size(),
 		"last_event_id": last_id,
 		"diagnostic": wall_event_diagnostic,
+		"policy_scope_generation": policy_generation,
+		"policy_decision": int(_wall_policy_decision),
+		"policy_decision_name": WallContactPolicyScript.decision_name(
+			int(_wall_policy_decision)
+		),
+		"policy_tick": _wall_policy_tick,
+		"policy_publish": _wall_policy_publish,
+		"policy_event_id": _wall_policy_event_id,
+		"policy_episode_key": _wall_policy_episode_key,
+		"policy_severity_m_s": _wall_policy_severity_m_s,
+		"policy_region": int(_wall_policy_region),
+		"policy_region_name": region_name,
+		"policy_response_normal": _wall_policy_response_normal,
+		"policy_refusals": wall_policy_refusals,
+		"policy_counters": _wall_policy_scope_counters(),
+		"policy_counters_lifetime": lifetime,
+		"policy_state": policy_state,
 	}
 
 
@@ -859,17 +982,22 @@ func get_wall_event_content_digest() -> String:
 	return wall_event_ledger.content_digest()
 
 
-## Publishes one committed wall witness through `WallImpactProducer` into the
-## laboratory-owned ledger. Identity belongs to this laboratory and is pinned
-## to one accepted witness state per committed tick: the adapter exposes a
-## single selected wall witness, so the first publication assigns the
-## deterministic ID `<prefix>.<generation>.<tick>.0`, and an identical retry of
-## that exact state reuses it while the real ledger coalesces it. Any changed
-## witness field, a foreign Result object, a stale tick or a retired scope is
-## refused before an ID, event, ledger entry or motor state can change.
-## Returns true only when the record is represented in the ledger (published
-## or coalesced). Every failure is recorded as a diagnostic and leaves motor
-## state, body pose, RNG, progress and presentation untouched.
+## Same-tick public retry of the accepted committed tick's wall event.
+##
+## Publication itself happens once, inside `step_once()`, after the pure
+## policy decided the tick. This entry point only coalesces: it accepts exactly
+## the accepted Result object, the accepted tick and the accepted witness
+## fingerprint, and a foreign Result, a stale tick, a retired scope or any
+## mutated witness field is refused before an ID, event, ledger entry or policy
+## counter can change. A tick the policy suppressed, a tick without a publishable
+## witness and a tick whose publication failed have nothing to coalesce, so an
+## exact retry of them returns false and changes nothing. An exact retry of a
+## published event rebuilds the same record under the same policy event ID and
+## lets the real ledger coalesce it; the policy is never evaluated again, so no
+## counter advances and no second ID is issued. Returns true only when the
+## record is represented in the ledger. Every refusal is recorded as a
+## diagnostic and leaves motor state, body pose, RNG, progress and presentation
+## untouched.
 func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 	if result == null:
 		return false
@@ -896,24 +1024,135 @@ func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 		return false
 	if not result.has_wall_response_witness \
 			or not result.has_wall_contact_point:
-		if result.wall_contact:
+		# The committed tick already recorded any missed-witness diagnostic;
+		# an exact retry of a tick without a witness is inert.
+		return false
+	var event_id := _wall_event_id_for_tick(ticks_committed, fingerprint)
+	if event_id.is_empty():
+		# The policy suppressed this tick: no ID was allocated and no event
+		# was published, so there is nothing a retry may coalesce.
+		return false
+	if wall_event_ledger == null or not wall_event_ledger.has_event_id(event_id):
+		# The committed-tick publication did not succeed. A retry never
+		# publishes; the recorded failure diagnostic stands.
+		return false
+	return _publish_wall_event_id(result, event_id, ticks_committed)
+
+
+## Advances the pure wall-contact policy exactly once for the accepted
+## COMMITTED tick and publishes the cosmetic event it allows. Called only from
+## the committed path of `step_once()`, after the canonical gearbox/CarState pair
+## was published, so an adapter refusal, a stale-pose block and a post-commit
+## gearbox failure never reach the policy. The policy inputs come only from
+## `WallImpactProducer`; the producer is asked once with a probe ID to derive
+## them, and only a publish decision rebuilds the record under the policy's
+## stable event ID. A suppressed tick allocates no ID and writes no ledger
+## entry. Every failure is a diagnostic and leaves motor state, body pose, RNG,
+## progress and presentation untouched.
+func _advance_wall_policy(result: MotorBodyAdapter.Result) -> void:
+	var tick := ticks_committed
+	_wall_policy_tick = tick
+	_wall_policy_decision = int(WallContactPolicy.Decision.NONE)
+	_wall_policy_publish = false
+	_wall_policy_event_id = ""
+	_wall_policy_episode_key = ""
+	_wall_policy_severity_m_s = 0.0
+	_wall_policy_region = WallContactPolicy.REGION_UNSET
+	_wall_policy_response_normal = Vector3.ZERO
+	var mapped := _wall_policy_witness_fields(result, tick)
+	var has_witness := bool(mapped["ok"])
+	if not has_witness and result.wall_contact:
+		if bool(mapped["producer_refused"]):
+			wall_events_refused += 1
+			wall_event_diagnostic = "tick %d producer refused the wall witness: %s" % [
+				tick, str(mapped["reason"])
+			]
+		else:
 			wall_event_missed_witnesses += 1
 			wall_event_diagnostic = (
 				"tick %d wall contact had no publishable response/contact-point witness"
-				% ticks_committed
+				% tick
 			)
-		return false
-	var tick := ticks_committed
-	var ids_for_tick: Dictionary = {}
-	if _wall_event_ids_by_fingerprint.has(tick):
-		ids_for_tick = _wall_event_ids_by_fingerprint[tick]
-	var event_id: String = String(ids_for_tick.get(fingerprint, ""))
-	if event_id.is_empty():
-		event_id = "%s.%d.%d.0" % [
-			WALL_EVENT_ID_PREFIX, _wall_event_scope_generation, tick
+	var severity := 0.0
+	var normal := WALL_POLICY_NO_WITNESS_NORMAL
+	var region := WallContactPolicy.REGION_UNSET
+	if has_witness:
+		severity = float(mapped["severity_m_s"])
+		normal = mapped["response_normal"]
+		region = int(mapped["region"])
+	_wall_policy_severity_m_s = severity
+	_wall_policy_region = region
+	_wall_policy_response_normal = normal
+	var input := WallContactPolicyScript.make_input(
+		WALL_EVENT_PRIMARY_CAR_ID,
+		tick,
+		has_witness,
+		severity,
+		normal,
+		"",
+		region,
+		WALL_EVENT_ID_PREFIX,
+		_wall_event_scope_generation
+	)
+	var outcome := WallContactPolicyScript.evaluate(_wall_policy_state, input)
+	if not bool(outcome["ok"]):
+		wall_policy_refusals += 1
+		wall_event_diagnostic = "tick %d wall policy refused: %s (%s)" % [
+			tick, str(outcome["code_name"]), str(outcome["error"])
 		]
-		ids_for_tick[fingerprint] = event_id
-		_wall_event_ids_by_fingerprint[tick] = ids_for_tick
+		return
+	_wall_policy_state = outcome["state"]
+	_wall_policy_decision = int(outcome["decision"])
+	_wall_policy_publish = bool(outcome["publish"])
+	_wall_policy_event_id = str(outcome["event_id"])
+	_wall_policy_episode_key = str(outcome["episode_key"])
+	if not _wall_policy_publish:
+		return
+	# Identity is pinned to this accepted witness state only when the policy
+	# publishes, so a suppressed tick leaves the per-tick ID map empty.
+	_wall_event_ids_by_fingerprint[tick] = {
+		_wall_event_accepted_fingerprint: _wall_policy_event_id
+	}
+	_publish_wall_event_id(result, _wall_policy_event_id, tick)
+
+
+## Policy inputs of one committed tick, derived only through
+## `WallImpactProducer`. `ok` is false when the tick carries no publishable
+## wall witness or the producer refuses it; `producer_refused` distinguishes
+## the two so the caller records the right diagnostic.
+func _wall_policy_witness_fields(
+	result: MotorBodyAdapter.Result, tick_index: int
+) -> Dictionary:
+	if not result.has_wall_response_witness or not result.has_wall_contact_point:
+		return {"ok": false, "producer_refused": false, "reason": "no wall witness"}
+	var probe := WallImpactProducerScript.produce(
+		result,
+		adapter_config,
+		WALL_EVENT_PRIMARY_CAR_ID,
+		WALL_POLICY_PROBE_EVENT_ID,
+		"",
+		tick_index
+	)
+	if probe.is_refused():
+		return {"ok": false, "producer_refused": true, "reason": probe.reason}
+	var event: ImpactEvent = probe.event
+	return {
+		"ok": true,
+		"producer_refused": false,
+		"reason": "",
+		"severity_m_s": event.severity_m_s,
+		"response_normal": event.contact_normal_world_m,
+		"region": int(event.region),
+	}
+
+
+## Builds one wall record under `event_id` through the pure producer and
+## forwards it to the lab-owned ledger. Shared by the committed-tick publication
+## and the same-tick retry, which the ledger coalesces. Every refusal is a
+## diagnostic; nothing here touches motor, body, gearbox or policy state.
+func _publish_wall_event_id(
+	result: MotorBodyAdapter.Result, event_id: String, tick: int
+) -> bool:
 	var outcome := WallImpactProducerScript.produce(
 		result, adapter_config, WALL_EVENT_PRIMARY_CAR_ID, event_id, "", tick
 	)
@@ -941,6 +1180,30 @@ func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 		tick, event_id, published.reason
 	]
 	return false
+
+
+## The policy event ID allocated for one accepted tick and witness fingerprint,
+## or empty when the policy suppressed that tick or allocated nothing.
+func _wall_event_id_for_tick(tick_index: int, fingerprint: String) -> String:
+	if not _wall_event_ids_by_fingerprint.has(tick_index):
+		return ""
+	var ids_for_tick: Dictionary = _wall_event_ids_by_fingerprint[tick_index]
+	return String(ids_for_tick.get(fingerprint, ""))
+
+
+## Per-scope policy counters: the component's lifetime totals minus the totals
+## recorded when the current scope began.
+func _wall_policy_scope_counters() -> Dictionary:
+	if _wall_policy_state == null:
+		return {}
+	var lifetime := _wall_policy_state.counters()
+	var scoped := {}
+	for key in WallContactPolicyScript.COUNTER_KEYS:
+		scoped[key] = (
+			int(lifetime.get(key, 0))
+			- int(_wall_policy_scope_start_counters.get(key, 0))
+		)
+	return scoped
 
 
 ## Full authoritative witness snapshot at acceptance time. Stored by value
@@ -1112,9 +1375,9 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		ticks_committed += 1
 		_record_shift_event(proposal)
 		# Only one selected wall witness exists per committed tick. Snapshot its
-		# full authoritative state now, before the first publication; retries of
-		# this exact tick must match this snapshot, and old maps are cleared so
-		# they cannot grow with a long laboratory run.
+		# full authoritative state now, before the policy runs; retries of this
+		# exact tick must match this snapshot, and old maps are cleared so they
+		# cannot grow with a long laboratory run.
 		_wall_event_ids_by_fingerprint.clear()
 		_wall_event_accepted_result = result
 		_wall_event_accepted_tick = ticks_committed
@@ -1123,9 +1386,10 @@ func step_once(command) -> MotorBodyAdapter.Result:
 			_wall_event_accepted_snapshot
 		)
 		# The physical tick and the mirrored canonical pair are both published
-		# now. Only this committed path may publish a wall event; every earlier
-		# refusal, stale-pose block and post-commit gearbox failure returns first.
-		publish_wall_event(result)
+		# now. Only this committed path advances the wall-contact policy and may
+		# publish a wall event; every earlier refusal, stale-pose block and
+		# post-commit gearbox failure returns first.
+		_advance_wall_policy(result)
 		_update_telemetry(result)
 		_append_tick_log(result)
 		_update_presentation()
