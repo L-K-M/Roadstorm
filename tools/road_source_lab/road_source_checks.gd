@@ -129,6 +129,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_identity_and_structure_refusals"),
 		Callable(self, "_case_numeric_and_geometry_refusals"),
 		Callable(self, "_case_strict_json_text_preflight"),
+		Callable(self, "_case_exponent_decoder_bounds"),
 		Callable(self, "_case_mutation_controls"),
 		Callable(self, "_case_span_semantics"),
 	]:
@@ -190,6 +191,15 @@ static func fixture_copy(p_path: String) -> Dictionary:
 	if not bool(loaded["ok"]):
 		return {}
 	return (loaded["doc"] as Dictionary).duplicate(true)
+
+
+## Replaces only the first occurrence of p_needle, so one authored scalar can
+## be mutated without changing every identical value in the fixture.
+static func replace_once(p_text: String, p_needle: String, p_replacement: String) -> String:
+	var index := p_text.find(p_needle)
+	if index < 0:
+		return p_text
+	return p_text.substr(0, index) + p_replacement + p_text.substr(index + p_needle.length())
 
 
 ## Tolerant deep comparison: JSON numbers all arrive as floats, while a
@@ -1085,6 +1095,156 @@ func _case_strict_json_text_preflight() -> Dictionary:
 			RoadSourceDocument.parse_json(control[1]),
 			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
 			"strict grammar control refused: %s" % str(control[0])
+		)
+	return c.result()
+
+
+func _case_exponent_decoder_bounds() -> Dictionary:
+	var c := Case.new()
+	c.name = "exponent_decoder_bounds"
+
+	var open_text := read_fixture_text(OPEN_FIXTURE_PATH)
+	var closed_text := read_fixture_text(CLOSED_FIXTURE_PATH)
+
+	# Exact Sol payloads. Godot's permissive reader wrapped these exponents
+	# into plausible finite values (12.0, 0.0 and 1.0), so they previously passed
+	# finiteness and the authored width band. The lexical preflight must refuse
+	# them before decode, for width, bank and vector spellings alike.
+	for token in ["12e4294967296", "12e18446744073709551616", "12e-4294967296"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"giant width exponent %s refused before engine decode" % token,
+			"supported range"
+		)
+	for token in ["1e2147483648", "1e4294967296"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"giant bank exponent %s refused before engine decode" % token,
+			"supported range"
+		)
+	for vector_case in [
+		["\"anchor\": [0.0, 0.0, -40.0]", "\"anchor\": [12e4294967296, 0.0, -40.0]"],
+		["\"handle_in\": [0.0, 0.0, -28.0]", "\"handle_in\": [-12e18446744073709551616, 0.0, -28.0]"],
+	]:
+		c.refuses(
+			RoadSourceDocument.parse_json(replace_once(open_text, vector_case[0], vector_case[1])),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"giant vector exponent refused before engine decode",
+			"supported range"
+		)
+	c.refuses(
+		RoadSourceDocument.parse_json("{\"unused\": [12e4294967296]}"),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"giant exponent refused in a nested array outside the document schema",
+		"supported range"
+	)
+
+	# Ordinary signed exponents survive the lexical bound and decode to the
+	# authored value; e+2 and e-2 spellings are exercised directly.
+	var ordinary_width := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": 1.2e+1")
+		),
+		"ordinary e+1 width accepted"
+	)
+	if ordinary_width != null:
+		c.equal(ordinary_width.knot(0).width_m, 12.0, "e+1 width decodes to 12.0")
+	var fractional_width := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(open_text, "\"width_m\": 12.0", "\"width_m\": 120e-2")
+		),
+		"ordinary e-2 width accepted"
+	)
+	if fractional_width != null:
+		c.close(fractional_width.knot(0).width_m, 1.2, 1e-12, "e-2 width decodes to 1.2")
+	var ordinary_handle := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(
+				open_text,
+				"\"handle_in\": [0.0, 0.0, 12.0]",
+				"\"handle_in\": [0e+2, 0e-2, 1.2e+1]"
+			)
+		),
+		"ordinary e+2/e-2 handle accepted"
+	)
+	if ordinary_handle != null:
+		c.vector_equal(
+			ordinary_handle.knot(0).handle_in,
+			Vector3(0.0, 0.0, 12.0),
+			"signed exponents decode to the authored unused open handle"
+		)
+
+	# Boundary exponents are lexically supported; one past either boundary is
+	# refused. The bank field carries the decoded double directly, so it
+	# exercises the bound without float32 conversion masking the value.
+	var max_bank := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": 1e+308")
+		),
+		"+308 exponent accepted"
+	)
+	if max_bank != null:
+		c.check(is_finite(max_bank.knot(2).bank_deg), "+308 bank remains finite")
+		c.close(max_bank.knot(2).bank_deg, 1e308, 1e294, "+308 bank decodes near 1e308")
+	var min_bank := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": 1e-308")
+		),
+		"-308 exponent accepted"
+	)
+	if min_bank != null:
+		c.check(is_finite(min_bank.knot(2).bank_deg), "-308 bank remains finite")
+		c.check(
+			min_bank.knot(2).bank_deg > 0.0 and min_bank.knot(2).bank_deg < 1e-300,
+			"-308 bank decodes as a tiny positive value"
+		)
+	var padded_bank := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": 1e+0308")
+		),
+		"four-digit in-range exponent spelling accepted"
+	)
+	if padded_bank != null:
+		c.close(padded_bank.knot(2).bank_deg, 1e308, 1e294, "padded +308 bank decodes near 1e308")
+	c.refuses(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": 1e+309")
+		),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"+309 exponent refused",
+		"supported range"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": 1e-309")
+		),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"-309 exponent refused",
+		"supported range"
+	)
+
+	# Long leading-zero spellings are refused by digit count even when their
+	# numeric value is small or in range; the engine decoder's digit handling is
+	# not trusted with them.
+	for token in [
+		"1e+00308",
+		"1e-00308",
+		"1e+000000000000000000000308",
+		"1e+0000000000000000000000000000000000000000002",
+	]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"excessive exponent digit spelling %s refused" % token,
+			"number exponent"
 		)
 	return c.result()
 

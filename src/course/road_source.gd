@@ -413,8 +413,11 @@ class Span extends RefCounted:
 ## including Unicode surrogate pairs, and duplicates are refused in every
 ## object. Unpaired surrogate escapes are also refused as a contract constraint
 ## rather than interpreted as implementation-defined text. NUL escapes are
-## refused because the pinned engine decoder lossily replaces them. The scanner
-## validates only; Godot performs the final value decode.
+## refused because the pinned engine decoder lossily replaces them. Numeric
+## exponents are additionally bounded lexically before decoding, because the
+## pinned engine wraps an oversized exponent into a plausible finite value (for
+## example `12e4294967296` decodes as `12.0`). The scanner validates only;
+## Godot performs the final value decode.
 class _StrictJsonPreflight extends RefCounted:
 	const KIND_ROOT := 0
 	const KIND_OBJECT := 1
@@ -457,6 +460,19 @@ class _StrictJsonPreflight extends RefCounted:
 	const BYTE_LOWER_U := 0x75
 	const BYTE_BEGIN_OBJECT := 0x7b
 	const BYTE_END_OBJECT := 0x7d
+
+	## Lexical exponent bound enforced before Godot's decoder sees the token.
+	## The pinned engine's JSON reader wraps an exponent that overflows its
+	## internal integer, so a grammatically valid number such as
+	## `12e4294967296` otherwise decodes as a plausible finite `12.0` and can
+	## slip past the authored-value guards. Reject any exponent outside this
+	## symmetric decimal range. The bound is lexical: it does not by itself
+	## guarantee a finite decoded double, which callers still check downstream.
+	const SUPPORTED_EXPONENT_ABS_MAX := 308
+	## Exponent spellings longer than this are refused even when their numeric
+	## value is small. Long leading-zero forms stress the engine decoder's
+	## digit handling, and no ordinary authored value needs this many digits.
+	const SUPPORTED_EXPONENT_DIGIT_MAX := 4
 
 	var _bytes := PackedByteArray()
 	var _position := 0
@@ -709,13 +725,40 @@ class _StrictJsonPreflight extends RefCounted:
 				_position += 1
 
 		if not _at_end() and (_peek() == BYTE_LOWER_E or _peek() == BYTE_UPPER_E):
+			var exponent_start := _position
 			_position += 1
 			if not _at_end() and (_peek() == BYTE_MINUS or _peek() == BYTE_PLUS):
 				_position += 1
 			if _at_end() or not _is_digit(_peek()):
 				return _set_error("a number exponent needs at least one digit")
+			# Saturate instead of accumulating without bound: the running value
+			# only multiplies while it can stay within the supported range, so
+			# the scan cannot overflow on an arbitrarily long digit string.
+			var exponent_magnitude := 0
+			var exponent_digits := 0
+			var exponent_saturated := false
 			while not _at_end() and _is_digit(_peek()):
+				exponent_digits += 1
+				if not exponent_saturated:
+					var digit := _bytes[_position] - BYTE_ZERO
+					if exponent_magnitude <= SUPPORTED_EXPONENT_ABS_MAX / 10:
+						exponent_magnitude = exponent_magnitude * 10 + digit
+						exponent_saturated = exponent_magnitude > SUPPORTED_EXPONENT_ABS_MAX
+					else:
+						exponent_saturated = true
 				_position += 1
+			if exponent_saturated:
+				return _set_error(
+					"number exponent magnitude exceeds the supported range [-%d, +%d]"
+						% [SUPPORTED_EXPONENT_ABS_MAX, SUPPORTED_EXPONENT_ABS_MAX],
+					exponent_start
+				)
+			if exponent_digits > SUPPORTED_EXPONENT_DIGIT_MAX:
+				return _set_error(
+					"number exponent spelling has more than %d digits"
+						% SUPPORTED_EXPONENT_DIGIT_MAX,
+					exponent_start
+				)
 		return true
 
 

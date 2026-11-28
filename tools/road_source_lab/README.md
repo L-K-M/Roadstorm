@@ -95,9 +95,10 @@ or:
 
 `RoadSourceDocument.parse_json(text)` is the JSON-text convenience wrapper. It
 first runs an iterative lexical/structural preflight for the strict JSON text
-grammar: only the four JSON whitespace bytes, strict number forms, lowercase
-literals, properly closed objects and arrays without trailing commas, and
-valid quoted strings with valid escapes. The scanner is not a regex stripper;
+grammar: only the four JSON whitespace bytes, strict number forms whose
+decimal exponent stays within the supported range [-308, +308] and uses at
+most four digits, lowercase literals, properly closed objects and arrays
+without trailing commas, and valid quoted strings with valid escapes. The scanner is not a regex stripper;
 it tracks nested object/array state while treating commas, braces and brackets
 inside strings as content. Object member names are canonicalized after escape
 decoding, including `\uXXXX` sequences and surrogate pairs, and duplicate
@@ -105,10 +106,14 @@ member names are refused in every object before Godot's permissive JSON reader
 constructs a `Dictionary`. As additional contract constraints, unpaired
 surrogate escapes are refused rather than being interpreted as
 implementation-defined text, and NUL escapes are refused because the pinned
-engine decoder lossily replaces them. Only after those checks does the wrapper
-decode the text and apply `parse_document`, using the same structured refusal
-contract. Malformed JSON and non-finite literals are rejected rather than
-accepted.
+engine decoder lossily replaces them. The exponent limit exists because the
+pinned engine's JSON reader wraps an oversized exponent into a plausible
+finite value (`12e4294967296` decodes as `12.0`); such tokens are refused as
+malformed JSON text before decoding. The limit is lexical and does not by
+itself guarantee a finite decoded double, so decoded-value finiteness is still
+enforced downstream. Only after those checks does the wrapper decode the text
+and apply `parse_document`, using the same structured refusal contract.
+Malformed JSON and non-finite literals are rejected rather than accepted.
 
 A successful document exposes read-only `schema`, `course_id`, `revision`,
 `closed`, `knot_count`, `section_count`, `span_count`, `knots`, `sections` and
@@ -193,6 +198,9 @@ The laboratory currently covers:
 - malformed JSON and non-finite JSON literals, strict trailing-comma and
   duplicate-member refusals, nested structural scanning, escaped-key duplicate
   equivalence, and valid escaped string content;
+- numeric-exponent decoder bounds: the exact Sol giant-exponent width, bank
+  and vector payloads, ordinary signed e+2/e-2 spellings, +/-308 boundary
+  controls and excessive leading-zero exponent spellings;
 - degenerate adjacent anchors and degenerate span-participating tangent
   handles, with explicit coverage of the two unused open-endpoint handles;
 - canonical round-trip, repeated parsing, accessor copies and read-only public
