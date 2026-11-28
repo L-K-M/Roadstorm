@@ -634,8 +634,37 @@ static func _unknown_paths(recipe: Dictionary) -> Array[String]:
 			continue
 		var candidate: Variant = entry["path"]
 		if typeof(candidate) == TYPE_STRING and not candidate.is_empty():
-			paths.append(candidate)
+			paths.append(_canonical_unknown_path(candidate))
 	return paths
+
+
+## The source checker accepts decimal array indices with leading zeros and
+## resolves `[00]` to element zero. Normalize only digit runs here so a
+## direct mapper caller cannot bypass an unknown declaration by its spelling.
+## This is lexical: even an enormous malformed index never reaches int().
+static func _canonical_unknown_path(path: String) -> String:
+	var normalized := ""
+	var position := 0
+	while position < path.length():
+		if path.substr(position, 1) != "[":
+			normalized += path.substr(position, 1)
+			position += 1
+			continue
+		var closing := path.find("]", position + 1)
+		if closing < 0:
+			return path
+		var digits := path.substr(position + 1, closing - position - 1)
+		if digits.is_empty():
+			return path
+		for digit in digits:
+			if digit < "0" or digit > "9":
+				return path
+		var first := 0
+		while first < digits.length() - 1 and digits.substr(first, 1) == "0":
+			first += 1
+		normalized += "[" + digits.substr(first) + "]"
+		position = closing + 1
+	return normalized
 
 
 ## A required input counts as listed in `unknowns` when an entry names it

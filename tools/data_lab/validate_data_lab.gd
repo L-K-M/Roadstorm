@@ -2303,6 +2303,16 @@ func _case_source_handling_mapping_review_repairs(driver: DataLabDriver) -> void
 		"handling.acceleration_curve[0].speed_m_s: motor-input-unknown",
 		"resolved curve speed listed unknown"
 	)
+	var leading_zero_alias := driver.source_handling_recipe()
+	leading_zero_alias["unknowns"].append({
+		"path": "handling.acceleration_curve[00].speed_m_s",
+		"reason": "same resolved point with a leading-zero index",
+	})
+	_assert_refused_with(
+		driver, MapperScript.map_handling(leading_zero_alias),
+		"handling.acceleration_curve[0].speed_m_s: motor-input-unknown",
+		"leading-zero array index aliases the resolved point"
+	)
 
 	# The mapper copies authored m/kg/s values, so all four source units must
 	# be checked even when a caller bypasses the document checker.

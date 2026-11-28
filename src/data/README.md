@@ -236,7 +236,7 @@ exception and is never converted. The mapped acceleration curve keeps
 authored order and fails closed on unordered, empty or malformed points.
 Null values paired with matching `unknowns` entries are reported as unresolved;
 resolved values marked unknown are refused. Direct callers cannot bypass this
-check through a curve-point member.
+check through a curve-point member or a leading-zero array index alias.
 
 A refusal returns `ok == false`, `handling == null` and at least one
 path-level diagnostic. A success runs the resulting definition's full
