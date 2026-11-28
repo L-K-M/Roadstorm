@@ -23,11 +23,14 @@ const DriverScript = preload("res://tools/data_lab/data_lab_checks.gd")
 const IdentityScript = preload("res://src/data/definition_identity.gd")
 const HandlingScript = preload("res://src/data/handling_definition.gd")
 const CarScript = preload("res://src/data/car_definition.gd")
+const UpgradeScript = preload("res://src/data/upgrade_definition.gd")
 const MapperScript = preload("res://src/data/handling_recipe_mapper.gd")
 
 const CASE_IDS := [
 	"valid_in_memory_definition",
 	"tres_round_trip",
+	"upgrade_definition_contract",
+	"upgrade_tres_round_trip",
 	"enum_domain_controls",
 	"handling_diagnostic_attribution",
 	"deferred_fields_declaration",
@@ -62,6 +65,9 @@ const SCRATCH_DIR_PREFIX := "res://" + SCRATCH_DIR_NAME_PREFIX
 const KNOWN_SCRATCH_FILE_NAMES := [
 	"handling_roundtrip.tres",
 	"car_roundtrip.tres",
+	"upgrade_roundtrip_tires.tres",
+	"upgrade_roundtrip_chassis.tres",
+	"upgrade_roundtrip_engine.tres",
 	"bad_enum.tres",
 	"owned.txt",
 ]
@@ -134,6 +140,10 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_valid_in_memory_definition(driver)
 		"tres_round_trip":
 			_case_tres_round_trip(driver)
+		"upgrade_definition_contract":
+			_case_upgrade_definition_contract(driver)
+		"upgrade_tres_round_trip":
+			_case_upgrade_tres_round_trip(driver)
 		"enum_domain_controls":
 			_case_enum_domain_controls(driver)
 		"handling_diagnostic_attribution":
@@ -552,6 +562,347 @@ func _check_optional_number(driver, actual: Variant, expected: Variant, label: S
 	driver.check(actual != null, "%s remains authored after save/load" % label)
 	if actual != null and expected != null:
 		driver.check_float_eq(float(actual), float(expected), 1e-9, label)
+
+
+## Upgrade contract: every documented category at every level, exact
+## incremental prices, additive-to-stock factors, Tires' deliberate absence of
+## drift-state coefficients, inherited identity diagnostics, car/category/level/
+## price refusals and refusal of an effect summary outside the domain.
+func _case_upgrade_definition_contract(driver: DataLabDriver) -> void:
+	# docs/GAME_DESIGN.md "Upgrades": stock is free, level 1 costs 800 credits
+	# and level 2 another 1600 credits. The level 2 price is incremental, so one
+	# fully upgraded car costs 3 * (800 + 1600) = 7200 credits.
+	var documented_prices := [0, 800, 1600]
+	driver.check_eq(
+		UpgradeScript.PRICE_BY_LEVEL.size(),
+		documented_prices.size(),
+		"price ladder has one entry per level"
+	)
+	for index in range(mini(UpgradeScript.PRICE_BY_LEVEL.size(), documented_prices.size())):
+		driver.check_eq(
+			int(UpgradeScript.PRICE_BY_LEVEL[index]),
+			int(documented_prices[index]),
+			"level %d uses its exact incremental price" % index
+		)
+	var full_cost := 0
+	for category_index in range(UpgradeScript.Category.size()):
+		full_cost += int(UpgradeScript.PRICE_BY_LEVEL[1]) + int(UpgradeScript.PRICE_BY_LEVEL[2])
+	driver.check_eq(full_cost, 7200, "one fully upgraded car costs 7200 credits")
+
+	var categories := [
+		{
+			"id": UpgradeScript.Category.ENGINE,
+			"name": "engine",
+			"factor_keys": ["acceleration_multiplier", "top_speed_cap_multiplier"],
+		},
+		{
+			"id": UpgradeScript.Category.TIRES,
+			"name": "tires",
+			"factor_keys": [
+				"grip_lateral_damping_multiplier",
+				"drift_exit_blend_seconds_divisor",
+			],
+		},
+		{
+			"id": UpgradeScript.Category.CHASSIS,
+			"name": "chassis",
+			"factor_keys": [
+				"steering_yaw_response_gain_multiplier",
+				"impact_speed_loss_factor",
+			],
+		},
+	]
+	for entry in categories:
+		var category: int = entry["id"]
+		var category_name: String = entry["name"]
+		var factor_keys: Array = entry["factor_keys"]
+		for level in range(UpgradeScript.LEVEL_MIN, UpgradeScript.LEVEL_MAX + 1):
+			var label := "%s level %d" % [category_name, level]
+			var upgrade := driver.valid_upgrade(category, level)
+			driver.check_eq(upgrade.validate().size(), 0, "%s validates with no diagnostics" % label)
+			driver.check(upgrade.is_valid(), "%s is_valid agrees" % label)
+			driver.check_eq(
+				upgrade.price_credits,
+				int(documented_prices[level]),
+				"%s carries its exact incremental price" % label
+			)
+			driver.check_eq(
+				upgrade.identity_key(),
+				"1.0.0/example.data_lab.car.upgrade.%s.%d@0.1.0" % [category_name, level],
+				"%s identity key" % label
+			)
+			driver.check_eq(upgrade.status_name(), "EXAMPLE", "%s status name" % label)
+
+			var summary := upgrade.effect_summary()
+			driver.check_eq(
+				summary.size(),
+				factor_keys.size() + 2,
+				"%s effect summary exposes category, level and exactly two factors" % label
+			)
+			driver.check_eq(summary.get("category", ""), category_name, "%s effect category" % label)
+			driver.check_eq(summary.get("level", -1), level, "%s effect level" % label)
+			for key in factor_keys:
+				driver.check(summary.has(key), "%s has factor %s" % [label, String(key)])
+			match category:
+				UpgradeScript.Category.ENGINE:
+					_check_upgrade_factor(
+						driver, summary, "acceleration_multiplier",
+						1.0 + 0.03 * level, "%s acceleration factor" % label
+					)
+					_check_upgrade_factor(
+						driver, summary, "top_speed_cap_multiplier",
+						1.0 + 0.015 * level, "%s top-speed cap factor" % label
+					)
+					if level == UpgradeScript.LEVEL_MAX:
+						# Linear in L, never compounded: level 2 is 1.06, not 1.03^2.
+						_check_upgrade_factor(
+							driver, summary, "acceleration_multiplier",
+							2.0 * 0.03 + 1.0,
+							"engine level 2 adds the level-1 increment twice"
+						)
+				UpgradeScript.Category.TIRES:
+					_check_upgrade_factor(
+						driver, summary, "grip_lateral_damping_multiplier",
+						1.0 + 0.05 * level, "%s grip damping factor" % label
+					)
+					_check_upgrade_factor(
+						driver, summary, "drift_exit_blend_seconds_divisor",
+						1.0 + 0.05 * level, "%s drift-exit divisor" % label
+					)
+				UpgradeScript.Category.CHASSIS:
+					_check_upgrade_factor(
+						driver, summary, "steering_yaw_response_gain_multiplier",
+						1.0 + 0.04 * level, "%s yaw gain factor" % label
+					)
+					_check_upgrade_factor(
+						driver, summary, "impact_speed_loss_factor",
+						1.0 - 0.05 * level, "%s impact speed-loss factor" % label
+					)
+
+	# Tires deliberately carry no drift-state opinion: the design says they do
+	# not alter drift-state lateral damping, entry threshold or target slip
+	# range, so the summary must not invent keys for them.
+	var tires_summary := driver.valid_upgrade(
+		UpgradeScript.Category.TIRES, 1
+	).effect_summary()
+	for key in tires_summary.keys():
+		var key_name := String(key)
+		driver.check(
+			not key_name.contains("drift_state") and not key_name.contains("entry")
+			and not key_name.contains("slip"),
+			"Tires effect summary omits drift-state coefficient %s" % key_name
+		)
+	driver.check_eq(
+		tires_summary.size(), 4, "Tires summary stays limited to its two documented factors"
+	)
+
+	# Out-of-domain category and level values are diagnosed and refuse an
+	# effect summary instead of fabricating one.
+	var bad_category := driver.valid_upgrade()
+	bad_category.category = 99
+	driver.expect_diagnostic(
+		"category: out-of-range value 99", bad_category.validate(), "out-of-range category"
+	)
+	driver.check(not bad_category.is_valid(), "out-of-range category is invalid")
+	driver.check(
+		bad_category.effect_summary().is_empty(),
+		"out-of-range category refuses an effect summary"
+	)
+
+	var negative_category := driver.valid_upgrade()
+	negative_category.category = -1
+	driver.expect_diagnostic(
+		"category: out-of-range value -1", negative_category.validate(), "negative category"
+	)
+	driver.check(
+		negative_category.effect_summary().is_empty(),
+		"negative category refuses an effect summary"
+	)
+
+	var bad_level := driver.valid_upgrade()
+	bad_level.level = UpgradeScript.LEVEL_MAX + 1
+	driver.expect_diagnostic(
+		"level: out-of-range value 3; expected 0, 1 or 2",
+		bad_level.validate(), "level above maximum"
+	)
+	driver.check(not bad_level.is_valid(), "level above maximum is invalid")
+	driver.check(
+		bad_level.effect_summary().is_empty(),
+		"level above maximum refuses an effect summary"
+	)
+
+	var negative_level := driver.valid_upgrade()
+	negative_level.level = -1
+	driver.expect_diagnostic(
+		"level: out-of-range value -1; expected 0, 1 or 2",
+		negative_level.validate(), "negative level"
+	)
+	driver.check(
+		negative_level.effect_summary().is_empty(),
+		"negative level refuses an effect summary"
+	)
+
+	var wrong_price := driver.valid_upgrade(UpgradeScript.Category.ENGINE, 2)
+	wrong_price.price_credits = 800
+	driver.expect_diagnostic(
+		"price_credits: 800 does not match level 2 (expected 1600)",
+		wrong_price.validate(), "wrong price for level 2"
+	)
+	driver.check(not wrong_price.is_valid(), "wrong price for level 2 is invalid")
+
+	var zero_price := driver.valid_upgrade(UpgradeScript.Category.TIRES, 1)
+	zero_price.price_credits = 0
+	driver.expect_diagnostic(
+		"price_credits: 0 does not match level 1 (expected 800)",
+		zero_price.validate(), "stock price charged at level 1"
+	)
+
+	# Identity diagnostics stay attributable to their own paths.
+	var bad_schema := driver.valid_upgrade()
+	bad_schema.schema_version = "2.0.0"
+	driver.expect_diagnostic(
+		"schema_version: unsupported '2.0.0'", bad_schema.validate(), "unsupported schema version"
+	)
+	driver.check(not bad_schema.is_valid(), "unsupported schema version is invalid")
+
+	var bad_id := driver.valid_upgrade()
+	bad_id.definition_id = "Bad Upgrade"
+	driver.expect_diagnostic(
+		"definition_id: malformed 'Bad Upgrade'", bad_id.validate(), "malformed upgrade ID"
+	)
+
+	var bad_revision := driver.valid_upgrade()
+	bad_revision.revision = "1.0"
+	driver.expect_diagnostic(
+		"revision: malformed '1.0'", bad_revision.validate(), "two-component revision"
+	)
+
+	var blank_display := driver.valid_upgrade()
+	blank_display.display_name = ""
+	driver.expect_diagnostic(
+		"display_name: empty", blank_display.validate(), "empty display name"
+	)
+
+	var bad_status := driver.valid_upgrade()
+	bad_status.status = 99
+	driver.expect_diagnostic(
+		"status: out-of-range value 99", bad_status.validate(), "out-of-range status"
+	)
+	driver.check(not bad_status.is_valid(), "out-of-range status is invalid")
+	driver.check_eq(bad_status.status_name(), "INVALID", "invalid upgrade status_name stays safe")
+
+	var bad_car_id := driver.valid_upgrade()
+	bad_car_id.car_id = "Not A Stable ID"
+	driver.expect_diagnostic(
+		"car_id: malformed 'Not A Stable ID'", bad_car_id.validate(), "malformed car ID"
+	)
+	driver.check(not bad_car_id.is_valid(), "malformed car ID is invalid")
+
+
+## Upgrade `.tres` round trip through the shared reserved-scratch/cleanup path.
+## Each fixture is non-default in category, level, notes or display name, so a
+## reload that silently restored defaults cannot pass the comparator.
+func _case_upgrade_tres_round_trip(driver: DataLabDriver) -> void:
+	var tires := driver.valid_upgrade(UpgradeScript.Category.TIRES, 2)
+	tires.notes = "Non-default tires fixture for the .tres round trip."
+	var chassis := driver.valid_upgrade(UpgradeScript.Category.CHASSIS, 1)
+	chassis.display_name = "Data Lab Example Chassis Upgrade 1 (round trip)"
+	var engine := driver.valid_upgrade(UpgradeScript.Category.ENGINE, 0)
+	engine.notes = "Stock-level fixture proving level 0 survives serialization."
+	var fixtures := [
+		{"name": "tires", "resource": tires},
+		{"name": "chassis", "resource": chassis},
+		{"name": "engine", "resource": engine},
+	]
+
+	var scratch := _reserve_scratch_dir()
+	driver.check(scratch != "", "unique scratch directory reserved for the upgrade round trip")
+	if scratch == "":
+		driver.measure("upgrade_roundtrip_ok", false)
+		return
+	var roundtrip_ok := true
+	for fixture in fixtures:
+		var original: UpgradeDefinition = fixture["resource"]
+		var label := "upgrade %s level %d" % [String(fixture["name"]), original.level]
+		var path := scratch.path_join("upgrade_roundtrip_%s.tres" % String(fixture["name"]))
+		driver.check_eq(
+			driver.save_resource(original, path), OK,
+			"%s .tres saves into reserved scratch" % label
+		)
+		var loaded = driver.load_resource(path)
+		driver.check(loaded is UpgradeDefinition, "reloaded %s is an UpgradeDefinition" % label)
+		if loaded is UpgradeDefinition:
+			_assert_same_upgrade(driver, original, loaded)
+			driver.check(loaded.is_valid(), "reloaded %s validates" % label)
+			driver.check_eq(
+				loaded.effect_summary().size(), 4,
+				"reloaded %s keeps its two documented factors" % label
+			)
+		else:
+			roundtrip_ok = false
+
+	_cleanup_scratch_dirs()
+	driver.check(
+		not DirAccess.dir_exists_absolute(scratch),
+		"upgrade round trip scratch reservation is removed"
+	)
+	driver.measure("upgrade_roundtrip_ok", roundtrip_ok)
+
+
+func _assert_same_upgrade(driver, expected: UpgradeDefinition, actual: UpgradeDefinition) -> void:
+	driver.check_eq(actual.schema_version, expected.schema_version, "round trip upgrade schema version")
+	driver.check_eq(actual.definition_id, expected.definition_id, "round trip upgrade ID")
+	driver.check_eq(actual.revision, expected.revision, "round trip upgrade revision")
+	driver.check_eq(actual.display_name, expected.display_name, "round trip upgrade display name")
+	driver.check_eq(actual.status, expected.status, "round trip upgrade status")
+	driver.check_eq(actual.notes, expected.notes, "round trip upgrade notes")
+	driver.check_eq(actual.car_id, expected.car_id, "round trip upgrade car ID")
+	driver.check_eq(actual.category, expected.category, "round trip upgrade category")
+	driver.check_eq(actual.level, expected.level, "round trip upgrade level")
+	driver.check_eq(actual.price_credits, expected.price_credits, "round trip upgrade price")
+	_assert_same_effect_summary(
+		driver, expected.effect_summary(), actual.effect_summary(), "round trip upgrade effects"
+	)
+
+
+func _assert_same_effect_summary(
+	driver, expected: Dictionary, actual: Dictionary, label: String
+) -> void:
+	driver.check_eq(actual.size(), expected.size(), "%s effect key count" % label)
+	for key in expected.keys():
+		driver.check(actual.has(key), "%s effect key %s survives" % [label, String(key)])
+		if not actual.has(key):
+			continue
+		var expected_value: Variant = expected[key]
+		var actual_value: Variant = actual[key]
+		if typeof(expected_value) == TYPE_FLOAT:
+			driver.check(
+				typeof(actual_value) == TYPE_FLOAT,
+				"%s effect %s stays float" % [label, String(key)]
+			)
+			if typeof(actual_value) == TYPE_FLOAT:
+				driver.check_float_eq(
+					float(actual_value), float(expected_value), 1e-9,
+					"%s effect %s" % [label, String(key)]
+				)
+		else:
+			driver.check_eq(
+				actual_value, expected_value, "%s effect %s" % [label, String(key)]
+			)
+
+
+func _check_upgrade_factor(
+	driver: DataLabDriver, summary: Dictionary, key: String, expected: float, label: String
+) -> void:
+	if not summary.has(key):
+		driver.check(false, "%s: factor %s is present" % [label, key])
+		return
+	var value: Variant = summary[key]
+	driver.check(
+		typeof(value) == TYPE_FLOAT, "%s: factor %s is stored as a float" % [label, key]
+	)
+	if typeof(value) == TYPE_FLOAT:
+		driver.check_float_eq(float(value), expected, 1e-9, "%s: factor %s value" % [label, key])
 
 
 func _case_malformed_identity_controls(driver: DataLabDriver) -> void:
@@ -2384,10 +2735,10 @@ const LIMITATIONS := [
 	"Pure resource checks only: no Godot body, scene, physics query, clock, rendering, audio device, input routing or gameplay claim is exercised.",
 	"The fixtures are synthetic EXAMPLE resources with arbitrary authored numbers; no value is measured, frozen product handling or a Roadstorm vehicle.",
 	"The car and handling definitions are not integrated with ArcadeMotor: no motor proposal, world step, gear selection, surface transition, contact or race state is run.",
-	"Only the M0.2 core MotorTuning overlap is typed; drift, surge, drafting, airborne, contact caps, surfaces, engine top speed, presentation, upgrades and detachable parts are deferred fields, not absent features.",
+	"Only the M0.2 core MotorTuning overlap and the typed upgrade definition contract are covered; drift, surge, drafting, airborne, contact caps, surfaces, engine top speed, presentation, car-level upgrade wiring and detachable parts are deferred fields, not absent features.",
 	"HandlingRecipeMapper is pure and in-memory: it writes no .tres, bake manifest or provenance sidecar, and full JSON Schema/strict-parse/content-hash validation remains the external source-recipe checker prerequisite.",
-	"No track, event, upgrade, AI profile, ghost, model, observation or scenario resource is defined here; those remain later slices.",
-	"Tres round-trip coverage is limited to the M0.2 fields; it does not establish importer/cache behavior across Godot versions or exported templates.",
+	"No track, event, AI profile, ghost, model, observation or scenario resource is defined here; those remain later slices. The typed upgrade slice covers one car/category/level resource and its stock-relative effects, not purchases, credits, garage, loadout or save logic.",
+	"Tres round-trip coverage is limited to this lab's typed fields; it does not establish importer/cache behavior across Godot versions or exported templates.",
 	"Headless engine dummy display/audio drivers; no platform, controller, visual or release claim.",
 ]
 

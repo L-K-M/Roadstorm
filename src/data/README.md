@@ -17,6 +17,7 @@ closure claim beyond the typed resource contracts below.
 | `definition_identity.gd` | `DefinitionIdentity` base `Resource`: schema version, stable semantic ID, revision, display name, lifecycle status, documented units/frame constants, identity diagnostics. |
 | `handling_definition.gd` | `HandlingDefinition extends DefinitionIdentity`: piecewise acceleration, braking, drag, grip yaw/lateral damping, reverse bounds, validation, code-facing curve helpers and a motor-tuning field projection. |
 | `car_definition.gd` | `CarDefinition extends DefinitionIdentity`: dimensional/contact envelope, intact mass, contact proxy, typed handling reference, draft/completeness semantics, validation. |
+| `upgrade_definition.gd` | `UpgradeDefinition extends DefinitionIdentity`: explicit car ID, one of three categories, level 0/1/2, exact incremental credit price and pure additive-to-stock effect summary; validation refuses invalid category/level/price and out-of-domain effects. |
 | `handling_recipe_mapper.gd` | `HandlingRecipeMapper`: pure, in-memory source-recipe (1.1.0) to typed `HandlingDefinition` mapping with exact version dispatch, path-level refusal diagnostics and no file/scene mutation. |
 
 `tools/data_lab/` contains the pinned-Godot validation laboratory and runner.
@@ -172,6 +173,46 @@ falling through the named cases.
 - `handling.drift`, `handling.surge`, `handling.drafting`, `handling.airborne`,
   `handling.contact_caps`, `handling.surfaces`
 
+## UpgradeDefinition
+
+`UpgradeDefinition extends DefinitionIdentity` describes one car's one
+category at one level (0 stock, 1 or 2). It inherits schema version, stable
+semantic ID, revision, display name, lifecycle status and notes, and adds:
+
+| Field | Meaning |
+| --- | --- |
+| `car_id` | Stable semantic ID of the car this record applies to, using the `CarDefinition.definition_id` vocabulary, never a display name. |
+| `category` | `ENGINE`, `TIRES` or `CHASSIS`. |
+| `level` | Purchased level: 0 (stock), 1 or 2. |
+| `price_credits` | Incremental price for this level; must equal `PRICE_BY_LEVEL[level]`. |
+
+`PRICE_BY_LEVEL` is `[0, 800, 1600]` from `docs/GAME_DESIGN.md`
+("Upgrades"): level 1 costs 800 credits and level 2 another 1600, so fully
+upgrading one car costs 7200 credits. Prices are incremental, not cumulative.
+
+`effect_summary()` returns the documented stock-relative factors for the
+record's category and level, evaluated once at that integer level:
+
+- Engine: `acceleration_multiplier = 1 + 0.03L` and
+  `top_speed_cap_multiplier = 1 + 0.015L`.
+- Tires: `grip_lateral_damping_multiplier` and
+  `drift_exit_blend_seconds_divisor` both equal `1 + 0.05L`. Drift-state
+  lateral damping, entry threshold and target slip range are deliberately
+  absent: the design says Tires do not alter them, so the resource must not
+  imply an opinion about them.
+- Chassis: `steering_yaw_response_gain_multiplier = 1 + 0.04L` and
+  `impact_speed_loss_factor = 1 - 0.05L`.
+
+Every factor applies once to the stock value; none is compounded across levels
+or purchases. An out-of-domain category or level makes `effect_summary()`
+return an empty Dictionary instead of a fabricated effect. Validation
+diagnoses malformed `car_id`, an unsupported or out-of-range category, an
+out-of-range level, a price that does not match its level, nonfinite computed
+effects and every inherited identity defect; it never clamps or repairs.
+Presentation description, icon and garage text stay deferred in
+`DEFERRED_PRESENTATION_FIELDS_V1`; this slice owns no purchase, credit,
+garage, loadout or save logic.
+
 ## Validation policy
 
 A referenced handling is validated with its full `validate()`, not only the
@@ -277,14 +318,16 @@ recipe. It does not yet emit a `CarDefinition` or populate a runtime cache.
 No closure is claimed for content or systems beyond this slice.
 
 - **Car content:** presentation meshes/LODs/paints/icon, engine top speed and
-  engine curve duplication question, upgrades, detachable parts/attachment
-  transforms/impact regions/thresholds.
+  engine curve duplication question, per-car upgrade level wiring/equip state,
+  detachable parts/attachment transforms/impact regions/thresholds.
 - **Remaining handling:** drift entry/sustain/recovery/stability assist,
   surge candidates/selection, drafting geometry, airborne gravity/adhesion,
   contact caps, per-surface modifiers and route-local surface semantics.
-- **Other definitions:** Track, Event, Upgrade, AI profile, Ghost, Model,
-  AIObservation/TacticalIntent, ReferenceRun/Scenario resources. The existing
-  `schemas/` text contracts remain the source contracts.
+- **Other definitions:** Track, Event, AI profile, Ghost, Model,
+  AIObservation/TacticalIntent, ReferenceRun/Scenario resources. Production
+  upgrade content, purchase/credit, garage, loadout and save logic remain
+  later slices. The existing `schemas/` text contracts remain the source
+  contracts.
 - **Systems:** motor integration/adapter, `.tres` artifact writer and bake
   manifest/provenance recording for mapped recipes, content-hash computation,
   baking and validation wiring.

@@ -1,11 +1,12 @@
 # M0.2 typed-resource data lab
 
 Pinned-Godot checks for `src/data/definition_identity.gd`,
-`src/data/handling_definition.gd`, `src/data/car_definition.gd` and the pure
-source-recipe mapper `src/data/handling_recipe_mapper.gd`. The lab exercises
-in-memory validation, `.tres` save/load round trips, source-to-typed handling
-mapping, negative and nonfinite physical controls, dimensional bounds, identity
-rules, completeness semantics and a deliberate failing assertion.
+`src/data/handling_definition.gd`, `src/data/car_definition.gd`,
+`src/data/upgrade_definition.gd` and the pure source-recipe mapper
+`src/data/handling_recipe_mapper.gd`. The lab exercises in-memory validation,
+`.tres` save/load round trips, source-to-typed handling mapping, negative and
+nonfinite physical controls, dimensional bounds, identity rules, completeness
+semantics, the upgrade contract and a deliberate failing assertion.
 
 ## Run
 
@@ -35,6 +36,8 @@ Exit codes:
 | --- | --- |
 | `valid_in_memory_definition` | valid synthetic handling/draft car, identity grammar, units/frame constants, tuning projection, explicit deferred list |
 | `tres_round_trip` | `.tres` save/load into a reserved scratch directory, curve/scalar/dimensional/contact/completeness equality, full referenced-handling comparison plus altered-ID/curve detection controls, rebound loaded handling; the car references an external handling resource, not an embedded subresource |
+| `upgrade_definition_contract` | all three categories at levels 0/1/2, exact incremental price ladder `[0, 800, 1600]` and 7200-credit full-upgrade total, additive-to-stock factors from the documented literals (including a no-compounding control), Tires' deliberate omission of drift-state/entry/slip coefficients, malformed/unsupported schema/ID/revision/status/display-name/car-ID diagnostics, invalid category/level/price refusals and empty effect-summary refusal outside the domain |
+| `upgrade_tres_round_trip` | non-default Tires level 2, Chassis level 1 and Engine level 0 fixtures saved and reloaded through the reserved-scratch path; inherited identity fields, car/category/level/price, effect keys/types/values and loaded validity compared; reservation removed |
 | `enum_domain_controls` | out-of-range direct status/contact-proxy-shape/completeness assignments (including negative values), a hand-authored malformed `.tres`, and safe `status_name()` on invalid status |
 | `handling_diagnostic_attribution` | referenced handling identity/status/schema defects are reported as `handling.*`, distinct from the car's own paths even when both records carry the same defect, and physical diagnostics are not doubled |
 | `deferred_fields_declaration` | draft/incomplete declarations must list every `DEFERRED_FIELDS_V1` path exactly once; arbitrary, missing-one-field, duplicate and blank/whitespace-only entries fail while a full or nonblank extended declaration validates |
@@ -64,7 +67,9 @@ failure detection.
 Round-trip saves go to a fresh `res://data_lab_scratch_<stamp>_<ticks>_<pid>_<attempt>/`
 reserved with an atomic `mkdir`. Cleanup removes only the exact file names this
 validator creates inside a reservation (`handling_roundtrip.tres`,
-`car_roundtrip.tres`, `bad_enum.tres`, `owned.txt`), and only after checking
+`car_roundtrip.tres`, `upgrade_roundtrip_tires.tres`,
+`upgrade_roundtrip_chassis.tres`, `upgrade_roundtrip_engine.tres`,
+`bad_enum.tres`, `owned.txt`), and only after checking
 they are not directories. Any other entry, including nested directories and
 hidden files, is retained, printed to stderr and listed in the report's
 `scratch_cleanup_reports`; the reservation directory is removed only when
@@ -102,6 +107,11 @@ with the pinned Godot build. Exact `c4b99fd` ran 19 cases and 537 checks in
 hosted CI. The later frozen-source leading-zero alias repair passes 19 cases
 and 541 checks; its same repair case on the prior mapper fails 26 of 35
 assertions.
+
+The M0.2 upgrade-lab extension adds `upgrade_definition_contract` (161 checks)
+and `upgrade_tres_round_trip` (77 checks). On this slice's pinned engine the
+full lab passes 21 cases and 779 checks with zero failures, and the deliberate
+failure proof still exits nonzero.
 
 ## Limits
 

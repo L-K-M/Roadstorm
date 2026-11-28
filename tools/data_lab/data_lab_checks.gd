@@ -11,6 +11,7 @@ extends RefCounted
 
 const HandlingScript = preload("res://src/data/handling_definition.gd")
 const CarScript = preload("res://src/data/car_definition.gd")
+const UpgradeScript = preload("res://src/data/upgrade_definition.gd")
 
 var checks := 0
 var failures: Array[String] = []
@@ -128,6 +129,35 @@ func valid_car(handling = null) -> CarDefinition:
 	)
 	car.deferred_fields = PackedStringArray(CarDefinition.DEFERRED_FIELDS_V1)
 	return car
+
+
+## Synthetic valid upgrade fixture. Values are explicit test inputs chosen to
+## exercise every validated field, not product upgrade content. Its ID uses
+## the documented `example.data_lab.*` vocabulary with the category and level
+## as stable segments, and it carries a non-default status EXAMPLE. The car ID
+## is the same stable semantic ID family as `valid_car()`.
+func valid_upgrade(
+	category: UpgradeDefinition.Category = UpgradeDefinition.Category.ENGINE,
+	level: int = 1
+) -> UpgradeDefinition:
+	var category_name := String(UpgradeDefinition.Category.keys()[category]).to_lower()
+	var upgrade := UpgradeDefinition.new()
+	upgrade.schema_version = DefinitionIdentity.SUPPORTED_SCHEMA_VERSION
+	upgrade.definition_id = "example.data_lab.car.upgrade.%s.%d" % [category_name, level]
+	upgrade.revision = "0.1.0"
+	upgrade.display_name = "Data Lab Example %s Upgrade %d" % [
+		String(UpgradeDefinition.Category.keys()[category]),
+		level,
+	]
+	upgrade.status = DefinitionIdentity.Status.EXAMPLE
+	upgrade.notes = (
+		"Synthetic validation fixture; arbitrary authored values, not product upgrade content."
+	)
+	upgrade.car_id = "example.data_lab.car"
+	upgrade.category = category
+	upgrade.level = level
+	upgrade.price_credits = int(UpgradeDefinition.PRICE_BY_LEVEL[level])
+	return upgrade
 
 
 ## Synthetic version-1.1.0 source-recipe fixture for the handling mapper.
