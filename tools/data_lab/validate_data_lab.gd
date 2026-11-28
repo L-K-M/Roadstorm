@@ -43,6 +43,8 @@ const CASE_IDS := [
 	"source_handling_mapping_unlimited",
 	"source_handling_mapping_refusals",
 	"source_handling_mapping_numeric_honesty",
+	"source_handling_mapping_review_repairs",
+	"source_handling_mapping_json_fixtures",
 ]
 
 ## Fixed basenames that earlier lab revisions wrote at `res://`. The validator
@@ -162,6 +164,10 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_source_handling_mapping_refusals(driver)
 		"source_handling_mapping_numeric_honesty":
 			_case_source_handling_mapping_numeric_honesty(driver)
+		"source_handling_mapping_review_repairs":
+			_case_source_handling_mapping_review_repairs(driver)
+		"source_handling_mapping_json_fixtures":
+			_case_source_handling_mapping_json_fixtures(driver)
 	_checks += driver.checks
 	for failure in driver.failures:
 		_failures.append("%s: %s" % [case_id, failure])
@@ -2267,6 +2273,73 @@ func _case_source_handling_mapping_numeric_honesty(driver: DataLabDriver) -> voi
 	)
 
 	driver.measure("mapper_numeric_honesty_checks", 1)
+
+
+func _case_source_handling_mapping_review_repairs(driver: DataLabDriver) -> void:
+	# A null plus its honest unknown declaration is unresolved, not a resolved
+	# value mislabeled as unknown. Exercise scalar, yaw and whole-curve paths.
+	for field in ["braking_acceleration_m_s2", "max_yaw_rate_rad_s", "acceleration_curve"]:
+		var recipe := driver.source_handling_recipe()
+		recipe["handling"][field] = null
+		var path: String = "handling." + String(field)
+		recipe["unknowns"].append({"path": path, "reason": "not authored yet"})
+		var result = MapperScript.map_handling(recipe)
+		_assert_refused_with(driver, result, path + ": motor-input-unresolved", "null " + field)
+		driver.check_eq(
+			driver.count_diagnostics(path + ": motor-input-unknown", result.diagnostics),
+			0,
+			"null %s is not described as resolved" % field
+		)
+
+	# A direct caller that bypasses the checker must not map a resolved curve
+	# point while its exact member is declared unknown.
+	var point_unknown := driver.source_handling_recipe()
+	point_unknown["unknowns"].append({
+		"path": "handling.acceleration_curve[0].speed_m_s",
+		"reason": "declared unknown over a resolved value",
+	})
+	_assert_refused_with(
+		driver, MapperScript.map_handling(point_unknown),
+		"handling.acceleration_curve[0].speed_m_s: motor-input-unknown",
+		"resolved curve speed listed unknown"
+	)
+
+	# The mapper copies authored m/kg/s values, so all four source units must
+	# be checked even when a caller bypasses the document checker.
+	for field in ["length", "mass", "time"]:
+		var wrong_unit := driver.source_handling_recipe()
+		wrong_unit["units"][field] = "wrong"
+		_assert_refused_with(
+			driver, MapperScript.map_handling(wrong_unit),
+			"units.%s: bad-unit" % field,
+			"wrong " + field + " unit"
+		)
+	driver.measure("review_repair_checks", driver.checks)
+
+
+func _case_source_handling_mapping_json_fixtures(driver: DataLabDriver) -> void:
+	# These two committed files separately pass the Python motor-ready checker.
+	# Parsing them here pins the checker-to-Godot dictionary boundary.
+	for basename in ["example_rookie_finite.json", "example_rookie_unlimited.json"]:
+		var path: String = "res://fixtures/car_recipe/positive/" + String(basename)
+		var text := FileAccess.get_file_as_string(path)
+		driver.check(not text.is_empty(), "committed JSON fixture is readable: " + basename)
+		var parsed: Variant = JSON.parse_string(text)
+		driver.check(typeof(parsed) == TYPE_DICTIONARY, "fixture parses as object: " + basename)
+		if typeof(parsed) != TYPE_DICTIONARY:
+			continue
+		var result = MapperScript.map_handling(parsed)
+		var handling := _expect_mapping_success(driver, result, basename)
+		if handling != null:
+			driver.check_eq(
+				handling.definition_id, "car.example_rookie.handling",
+				"fixture maps the expected derived handling ID"
+			)
+			driver.check_eq(
+				is_inf(handling.max_yaw_rate_rad_s), basename == "example_rookie_unlimited.json",
+				"fixture maps the authored yaw cap kind"
+			)
+	driver.measure("json_fixtures", 2)
 
 
 # --- Deliberate failure proof ----------------------------------------------

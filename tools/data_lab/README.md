@@ -50,6 +50,8 @@ Exit codes:
 | `source_handling_mapping_unlimited` | exact `{"unlimited": true}` sole-member encoding maps to positive Godot `INF`; lower-bound trigger and nonzero reverse drive validate; source nonmutation |
 | `source_handling_mapping_refusals` | 1.0.0 refusal naming all five missing paths, unsupported/mistyped versions, missing/null/unknown motor inputs (including an unknown ancestor), missing parent/path, empty/unordered/duplicate/non-object/missing-member curves, invalid revision, bad status/identity/display name and wrong angle unit; refusals return no half-valid resource |
 | `source_handling_mapping_numeric_honesty` | NaN/infinity/overflow, boolean and numeric-string inputs refused, range bounds enforced after float conversion, rejected yaw encodings, reverse cross-field rule, non-finite curve points, exact int-to-float conversion and refusal-time source nonmutation |
+| `source_handling_mapping_review_repairs` | null plus matching `unknowns` reports unresolved rather than resolved-but-unknown; a resolved curve-point member listed unknown refuses; length, mass and time unit mismatches refuse on direct mapper calls |
+| `source_handling_mapping_json_fixtures` | the two committed checker-positive motor-ready JSON files parse in Godot and map to the expected typed identity and finite/unlimited yaw kind |
 
 `--case intentional_failure` clears a curve and asserts that it remains valid;
 that assertion must fail. The runner requires the
@@ -94,6 +96,11 @@ fails on any engine `SCRIPT ERROR` / `Parse Error` / `ERROR:` line in the
 import, validator or proof logs and labels it a parse/load failure rather than
 an assertion failure. Godot can exit `0` after a script load failure, so the
 captured log inspection is authoritative.
+
+The hosted CI workflow also runs `--case all` and the deliberate failure proof
+with the pinned Godot build. The local frozen-source review repair run passed
+19 cases and 537 checks; the same repair case on the prior mapper failed 22 of
+31 assertions.
 
 ## Limits
 

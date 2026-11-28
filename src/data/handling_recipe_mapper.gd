@@ -28,7 +28,7 @@ extends RefCounted
 ## refuses malformed dictionaries that reach it directly: unsupported or
 ## mistyped versions, missing/null/unknown motor inputs, wrong JSON/GDScript
 ## types, non-finite or out-of-range numbers, invalid acceleration points or
-## ordering, bad identity/revision/status values, a wrong angle unit and
+## ordering, bad identity/revision/status values, wrong source units and
 ## inconsistent reverse fields. It maps only the motor-ready core subset;
 ## engine top speed and its duplicated curve question, drift, surge, drafting,
 ## airborne, contact caps, surfaces, upgrades, presentation and detachable
@@ -266,17 +266,22 @@ static func _read_identity(recipe: Dictionary, diagnostics: Array[String]) -> _S
 
 	var units: Variant = recipe.get("units")
 	if typeof(units) != TYPE_DICTIONARY:
-		diagnostics.append(
-			"units.angle: bad-unit: units must be an object declaring angle 'deg'"
-		)
+		diagnostics.append("units: bad-unit: units must be an object declaring m/kg/s/deg")
 	else:
 		var units_dict: Dictionary = units
-		var angle: Variant = units_dict.get("angle")
-		if typeof(angle) != TYPE_STRING or angle != "deg":
-			diagnostics.append(
-				"units.angle: bad-unit: expected 'deg' (the yaw field remains the "
-				+ "explicit rad/s exception), got %s" % str(angle)
-			)
+		for name in ["length", "mass", "time", "angle"]:
+			var expected := ""
+			match name:
+				"length": expected = "m"
+				"mass": expected = "kg"
+				"time": expected = "s"
+				"angle": expected = "deg"
+			var actual: Variant = units_dict.get(name)
+			if typeof(actual) != TYPE_STRING or actual != expected:
+				diagnostics.append(
+					"units.%s: bad-unit: expected '%s', got %s"
+					% [name, expected, str(actual)]
+				)
 
 	return identity
 
@@ -392,12 +397,12 @@ static func _read_acceleration_curve(
 	if not handling.has("acceleration_curve"):
 		_missing_field(PATH, diagnostics)
 		return
-	if _path_is_unknown(PATH, unknown_paths):
-		_unknown_input(PATH, diagnostics)
-		return
 	var curve: Variant = handling["acceleration_curve"]
 	if curve == null:
 		_unresolved_input(PATH, diagnostics)
+		return
+	if _path_is_unknown(PATH, unknown_paths):
+		_unknown_input(PATH, diagnostics)
 		return
 	if typeof(curve) != TYPE_ARRAY:
 		diagnostics.append(
@@ -424,11 +429,25 @@ static func _read_acceleration_curve(
 			)
 			continue
 		var point_dict: Dictionary = point
+		if _path_is_unknown(point_path, unknown_paths):
+			_unknown_input(point_path, diagnostics)
+			continue
 		if not point_dict.has("speed_m_s"):
 			_missing_field(point_path + ".speed_m_s", diagnostics)
 		if not point_dict.has("acceleration_m_s2"):
 			_missing_field(point_path + ".acceleration_m_s2", diagnostics)
 		if not point_dict.has("speed_m_s") or not point_dict.has("acceleration_m_s2"):
+			continue
+		var unresolved_point := false
+		for member in ["speed_m_s", "acceleration_m_s2"]:
+			var member_path: String = point_path + "." + String(member)
+			if point_dict[member] == null:
+				_unresolved_input(member_path, diagnostics)
+				unresolved_point = true
+			elif _path_is_unknown(member_path, unknown_paths):
+				_unknown_input(member_path, diagnostics)
+				unresolved_point = true
+		if unresolved_point:
 			continue
 		var speed: Variant = _as_finite_number(
 			point_dict["speed_m_s"], point_path + ".speed_m_s", diagnostics
@@ -477,12 +496,12 @@ static func _read_required_float(
 	if not container.has(key):
 		_missing_field(path, diagnostics)
 		return -1.0
-	if _path_is_unknown(path, unknown_paths):
-		_unknown_input(path, diagnostics)
-		return -1.0
 	var value: Variant = container[key]
 	if value == null:
 		_unresolved_input(path, diagnostics)
+		return -1.0
+	if _path_is_unknown(path, unknown_paths):
+		_unknown_input(path, diagnostics)
 		return -1.0
 	var number: Variant = _as_finite_number(value, path, diagnostics)
 	if number == null:
@@ -538,12 +557,12 @@ static func _read_max_yaw_rate(
 	if not handling.has("max_yaw_rate_rad_s"):
 		_missing_field(PATH, diagnostics)
 		return
-	if _path_is_unknown(PATH, unknown_paths):
-		_unknown_input(PATH, diagnostics)
-		return
 	var value: Variant = handling["max_yaw_rate_rad_s"]
 	if value == null:
 		_unresolved_input(PATH, diagnostics)
+		return
+	if _path_is_unknown(PATH, unknown_paths):
+		_unknown_input(PATH, diagnostics)
 		return
 	if typeof(value) == TYPE_DICTIONARY:
 		var encoding: Dictionary = value

@@ -230,9 +230,13 @@ unsupported. For `1.1.0` all eleven motor inputs must be present, non-null,
 valid and absent from `unknowns`; the five added fields are required rather than
 defaulted. The exact sole-member object `{"unlimited": true}` maps to Godot
 `INF`; a finite positive yaw number maps through unchanged. The source declares
-`units.angle = deg`, but `max_yaw_rate_rad_s` is the documented field-level
-rad/s exception and is never converted. The mapped acceleration curve keeps
+`units.length = m`, `units.mass = kg`, `units.time = s` and `units.angle = deg`
+must all match; `max_yaw_rate_rad_s` is the documented field-level rad/s
+exception and is never converted. The mapped acceleration curve keeps
 authored order and fails closed on unordered, empty or malformed points.
+Null values paired with matching `unknowns` entries are reported as unresolved;
+resolved values marked unknown are refused. Direct callers cannot bypass this
+check through a curve-point member.
 
 A refusal returns `ok == false`, `handling == null` and at least one
 path-level diagnostic. A success runs the resulting definition's full
@@ -241,7 +245,7 @@ definition that cannot validate is never returned as a half-valid resource.
 Identity is derived as `<car_id>.handling` with display name
 `<car display_name> handling`; the car recipe's triplet `revision` and
 lifecycle `status` are copied after validation, and the typed `schema_version`
-stays `1.0.0`. The source version belongs in the future bake manifest and
+stays `1.0.0`. The source version belongs in the handling bake manifest and
 provenance `source_contract`, never in the typed resource. Full JSON
 Schema/strict-parse/content-hash validation remains the external prerequisite
 owned by `tools/car_recipe_schema/validate_car_recipe.py`; the mapper defends
@@ -258,14 +262,15 @@ For this first runtime mapping the nested source `handling` has no independent
 identity: derive `HandlingDefinition.definition_id` as `<car_id>.handling` and
 copy the car recipe's `revision` and lifecycle `status`, and derive its display
 name as `<car display_name> handling`. The typed `schema_version` stays at
-`1.0.0`; record the source version `1.1.0` separately in a future bake manifest
+`1.0.0`; record the source version `1.1.0` separately in the handling bake manifest
 and provenance `source_contract`. Never copy the source version into the typed
 resource. The car's typed `handling` reference points to that derived identity,
 so changing a
 car's inline handling requires a car revision change. A future reusable handling
 recipe needs its own versioned contract and must not invent an identity from a
-display name. Only directly authored typed resources and in-memory mapper
-results exist today; no derived `.tres` artifact is written by this slice.
+display name. The bounded `tools/car_recipe_bake/` command now writes one
+validated derived handling `.tres` and manifest from one checked motor-ready
+recipe. It does not yet emit a `CarDefinition` or populate a runtime cache.
 
 ## Explicitly deferred work
 

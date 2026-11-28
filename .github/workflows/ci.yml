@@ -124,6 +124,18 @@ jobs:
       - name: Test - headless checks, exit-code proof and engine-error gate (M0.4)
         run: tools/ci/ci.sh --godot "${{ steps.godot.outputs.bin }}" --source-sha "${{ github.sha }}" test
 
+      # M0.2 source-to-typed mapping is a Godot behaviour contract, not just
+      # a script-parse check. The lab stages its own isolated project, runs
+      # every data case and proves that its deliberate failing case exits
+      # nonzero. Bound the complete wrapper as well as its engine calls.
+      - name: Data mapping lab - pinned Godot behaviour (M0.2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout --kill-after=15s 600 sh tools/data_lab/run_validation.sh \
+            --project "$PWD" --godot "${{ steps.godot.outputs.bin }}" \
+            --timeout 120 --log "$RUNNER_TEMP/data-lab.log"
+
       # Regression proof for that gate (N1), and for the warning handling behind
       # R7'. It runs the same engine against throwaway snapshot copies in a
       # private temporary directory, injects the defects there, and checks the
