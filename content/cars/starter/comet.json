@@ -1,0 +1,198 @@
+{
+  "schema_version": "1.1.0",
+  "car_id": "car.comet",
+  "display_name": "Comet",
+  "revision": "0.1.0",
+  "status": "provisional",
+  "units": {
+    "length": "m",
+    "mass": "kg",
+    "time": "s",
+    "angle": "deg"
+  },
+  "coordinate_frame": {
+    "forward": "-Z",
+    "up": "+Y",
+    "origin": "ground_projection_of_axle_midpoint"
+  },
+  "dimensions": {
+    "length_m": 4.1,
+    "width_m": 1.85,
+    "height_m": 1.25,
+    "wheelbase_m": 2.55,
+    "ground_clearance_m": 0.11,
+    "jump_envelope_m": 0.4
+  },
+  "mass_kg": 1180,
+  "contact_proxy": {
+    "shape": "rounded_box",
+    "derived_from": "declared_dimensions",
+    "roof": null,
+    "underside": null
+  },
+  "engine": {
+    "top_speed_kmh": 222,
+    "acceleration_curve": null
+  },
+  "handling": {
+    "acceleration_curve": [
+      {
+        "speed_m_s": 0,
+        "acceleration_m_s2": 8.0
+      },
+      {
+        "speed_m_s": 20,
+        "acceleration_m_s2": 5.5
+      },
+      {
+        "speed_m_s": 50,
+        "acceleration_m_s2": 2.0
+      }
+    ],
+    "braking_acceleration_m_s2": 9.0,
+    "drag": {
+      "aerodynamic": 0.35,
+      "rolling": 0.013
+    },
+    "yaw_gain": {
+      "grip": 2.4,
+      "drift": 1.4
+    },
+    "lateral_damping": {
+      "grip_per_s": 6.0,
+      "drift_per_s": 2.6
+    },
+    "drift": {
+      "entry_min_speed_m_s": 12.0,
+      "entry_blend_s": 0.2,
+      "target_slip_deg_min": 12.0,
+      "target_slip_deg_max": 40.0,
+      "recovery_blend_s": 0.35,
+      "stability_assist_max_slip_deg": null
+    },
+    "surge": {
+      "candidate_deltas_m_s": [
+        0.5,
+        1.0,
+        1.5
+      ],
+      "duration_s": 0.5,
+      "cooldown_s": 2.0,
+      "stackable": false,
+      "selected_delta_m_s": null
+    },
+    "drafting": {
+      "min_gap_m": 5.0,
+      "max_gap_m": 20.0,
+      "cone_deg": 10.0,
+      "lateral_separation_m": 1.5,
+      "eligible_s": 0.7,
+      "fade_s": 0.5,
+      "max_drag_reduction": 0.02,
+      "stackable": false
+    },
+    "airborne": {
+      "gravity_m_s2": null,
+      "adhesion_bounds": null
+    },
+    "contact_caps": {
+      "solver_iterations": 8,
+      "overlap_passes": 2,
+      "max_single_correction_m": 0.05,
+      "max_total_correction_m": 0.2
+    },
+    "surfaces": [],
+    "max_yaw_rate_rad_s": 2.8,
+    "reverse_trigger_speed_m_s": 1.0,
+    "reverse_hold_time_s": 0.3,
+    "reverse_acceleration_m_s2": 2.0,
+    "reverse_top_speed_m_s": 6.0
+  },
+  "upgrades": {
+    "levels": [
+      0,
+      1,
+      2
+    ],
+    "engine": {
+      "acceleration_factors": [
+        1.0,
+        1.03,
+        1.06
+      ],
+      "top_speed_factors": [
+        1.0,
+        1.015,
+        1.03
+      ]
+    },
+    "tires": {
+      "grip_lateral_damping_factors": [
+        1.0,
+        1.05,
+        1.1
+      ],
+      "drift_exit_blend_divisors": [
+        1.0,
+        1.05,
+        1.1
+      ]
+    },
+    "chassis": {
+      "yaw_gain_factors": [
+        1.0,
+        1.04,
+        1.08
+      ],
+      "impact_speed_loss_factors": [
+        1.0,
+        0.95,
+        0.9
+      ]
+    },
+    "max_increase_percent": {
+      "acceleration": 6.0,
+      "top_speed": 3.0
+    }
+  },
+  "detachable_parts": [],
+  "unknowns": [
+    {
+      "path": "engine.acceleration_curve",
+      "reason": "Engine/handling curve duplication is unresolved in the 1.1.0 slice; only handling.acceleration_curve carries the provisional authored curve."
+    },
+    {
+      "path": "handling.drift.stability_assist_max_slip_deg",
+      "reason": "Not measured; stability-assist tuning awaits the M1 handling benchmark."
+    },
+    {
+      "path": "handling.surge.selected_delta_m_s",
+      "reason": "M1 compares the 0.5/1.0/1.5 m/s candidates and records one selection."
+    },
+    {
+      "path": "handling.airborne.gravity_m_s2",
+      "reason": "Not measured; airborne gravity is deferred pending M1 calibration."
+    },
+    {
+      "path": "handling.airborne.adhesion_bounds",
+      "reason": "Not authored; adhesion bounds remain unmeasured."
+    },
+    {
+      "path": "contact_proxy.roof",
+      "reason": "Contact proxy roof profile not authored; simplified declared-dimension hull only."
+    },
+    {
+      "path": "contact_proxy.underside",
+      "reason": "Contact proxy underside profile not authored; simplified declared-dimension hull only."
+    }
+  ],
+  "provenance": {
+    "source_contract": "roadstorm.handling_config.1.1.0",
+    "author": "starter-car-recipes-longcat-20261128",
+    "model": "longcat/LongCat-2.5",
+    "provider": "longcat",
+    "date_utc": "2026-11-28",
+    "note": "Authored preliminary coefficients for the starter-car-recipes job; unmeasured, unfrozen, no empirical pace-spread claim."
+  },
+  "content_hash": "sha256:783e1d077d6195e85ceb76cef38d2207e1c0d3a2fa778d1552109dc34ad628b4"
+}
