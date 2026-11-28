@@ -1,0 +1,62 @@
+{
+  "schema": "roadstorm.road_source.v1",
+  "course_id": "lab.closed_tiny",
+  "revision": "0.1.0",
+  "closed": true,
+  "knots": [
+    {
+      "anchor": [0.0, 0.0, 0.0],
+      "handle_in": [0.0, 0.0, 15.0],
+      "handle_out": [0.0, 0.0, -15.0],
+      "width_m": 12.0,
+      "bank_deg": 0.0
+    },
+    {
+      "anchor": [0.0, 0.0, -60.0],
+      "handle_in": [0.0, 0.0, -45.0],
+      "handle_out": [30.0, 0.0, -60.0],
+      "width_m": 12.0,
+      "bank_deg": 0.0
+    },
+    {
+      "anchor": [60.0, 0.0, -60.0],
+      "handle_in": [45.0, 0.0, -60.0],
+      "handle_out": [60.0, 0.0, -30.0],
+      "width_m": 9.0,
+      "bank_deg": -14.0
+    },
+    {
+      "anchor": [60.0, 0.0, 0.0],
+      "handle_in": [60.0, 0.0, -15.0],
+      "handle_out": [30.0, 0.0, 0.0],
+      "width_m": 9.0,
+      "bank_deg": 0.0
+    }
+  ],
+  "sections": [
+    {
+      "section_id": "lab.loop.north",
+      "surface_id": "asphalt",
+      "feature_tags": ["straight"]
+    },
+    {
+      "section_id": "lab.loop.east",
+      "surface_id": "asphalt",
+      "feature_tags": ["sweeper"],
+      "exception": {
+        "kind": "bank_deg_above_target",
+        "detail": "Knot 2 authors -14 degrees of bank, outside the approximately +/-12 degree design target; the later geometry gate reviews this exception."
+      }
+    },
+    {
+      "section_id": "lab.loop.south",
+      "surface_id": "gravel",
+      "feature_tags": ["gravel_sector"]
+    },
+    {
+      "section_id": "lab.loop.west",
+      "surface_id": "asphalt",
+      "feature_tags": ["chicane"]
+    }
+  ]
+}
