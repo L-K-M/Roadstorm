@@ -11,8 +11,12 @@ extends SceneTree
 ##     at least one COMMITTED physics tick and finite motion;
 ##   * Escape (cycle 1) and public navigation (cycle 2) both return to the
 ##     menu, twice in a row;
-##   * after each teardown no DriveLab, Camera3D or CanvasLayer survives and
-##     the retired laboratory node is invalid;
+##   * while practice is active the whole root viewport tree holds exactly the
+##     committed overlay ownership: the DriveLab's own HUD CanvasLayer plus the
+##     game's GameOverlay layer, and nothing else;
+##   * after each teardown no DriveLab, Camera3D or CanvasLayer survives under
+##     the root tree, the retired laboratory node is invalid, and the HUD layer
+##     instance that practice used is invalid too;
 ##   * a forced state-only drive restore halts the laboratory and the overlay
 ##     must report that halt truthfully.
 ##
@@ -24,9 +28,18 @@ extends SceneTree
 ##   godot --headless --fixed-fps 60 --path <project> \
 ##       --script res://tools/practice_flow_lab/practice_flow_lab.gd
 ##   godot ... -- --expect-failure
+##   godot ... -- --inject-root-hud
 ##
 ## `--expect-failure` deliberately records a failure so the wrapper can prove a
 ## failing check exits nonzero.
+##
+## `--inject-root-hud` is the mutation control for the overlay-ownership checks
+## above: it attaches an extra CanvasLayer with a Label to the root viewport
+## during the first practice entry. A node parked on the root is not freed by
+## returning to the menu, so this control must fail both the active ownership
+## check and the root-wide teardown check. It exists because a checkpoint review
+## injected exactly such a layer and the previous checks, which scanned only
+## below the returned menu, passed anyway.
 
 const BOOT_SCENE_PATH := "res://scenes/boot.tscn"
 const MENU_SCENE_PATH := "res://scenes/main_menu.tscn"
@@ -56,6 +69,7 @@ var _failures: Array[String] = []
 var _measured: Dictionary = {}
 var _finished := false
 var _probe: InputEventProbe = null
+var _inject_root_hud := false
 
 
 ## Records synthetic key events that reach the unhandled-input pipeline. A
@@ -88,6 +102,7 @@ func _initialize() -> void:
 	_probe.name = "PracticeInputProbe"
 	root.add_child.call_deferred(_probe)
 
+	_inject_root_hud = _has_user_flag("--inject-root-hud")
 	_negative_control()
 	_run.call_deferred()
 
@@ -125,6 +140,8 @@ func _run_cycle(index: int) -> Dictionary:
 		return record
 
 	var game := current_scene
+	if _inject_root_hud and index == 0:
+		_inject_root_hud_layer()
 	var structure_failures: Array[String] = []
 	var lab := _check_game_structure(game, structure_failures)
 	_sink_failures(structure_failures, prefix + ".structure")
@@ -134,6 +151,9 @@ func _run_cycle(index: int) -> Dictionary:
 		return record
 
 	record["drive_lab_present"] = true
+	# Captured while practice is alive so teardown can prove this very instance
+	# is gone, not merely that some equivalent HUD is absent.
+	record["hud_layer_instance"] = lab.hud_layer
 	var drive_record := await _drive_and_measure(lab, prefix)
 	record.merge(drive_record)
 
@@ -172,6 +192,23 @@ func _run_cycle(index: int) -> Dictionary:
 	_check(
 		remaining_layers.is_empty(),
 		prefix + ".teardown.no_hud_canvas_layer_remains (%d found)" % remaining_layers.size()
+	)
+	# The captured instance is read as an untyped value: by this point the HUD
+	# layer is freed, and assigning a freed instance to a typed variable is a
+	# script error that would abort the rest of this cycle's checks.
+	if not record.has("hud_layer_instance"):
+		_record_failure(
+			prefix + ".teardown.hud_layer_instance_captured", "HUD layer instance was not recorded"
+		)
+	else:
+		_check(
+			not is_instance_valid(record.get("hud_layer_instance")),
+			prefix + ".teardown.hud_layer_instance_is_invalid"
+		)
+	var root_layers := _collect_by_class(root, "CanvasLayer")
+	_check(
+		root_layers.is_empty(),
+		prefix + ".teardown.no_root_canvas_layer_remains (%s)" % _canvas_layer_paths()
 	)
 	return record
 
@@ -316,7 +353,69 @@ func _check_game_structure(game: Node, failures: Array[String]) -> DriveLab:
 		failures.append("back-hint/diagnostic overlay (GameOverlay) is missing")
 	elif game.get_node_or_null("GameOverlay/BackHint") == null:
 		failures.append("overlay back hint (GameOverlay/BackHint) is missing")
+	_check_practice_overlays(game, lab, failures)
 	return lab
+
+
+## Asserts the committed overlay ownership of an active practice run against the
+## whole root viewport tree, not just the laboratory subtree.
+##
+## The camera rig is attached to the root viewport, so any presentation node a
+## future slice parks on the root is visible from there. The intended owners
+## while practice runs are exactly two CanvasLayers: the laboratory's own HUD
+## layer (owned by DriveLab) and the game scene's GameOverlay layer. A third
+## layer anywhere under the root is unexpected and is reported by path, which is
+## what makes an injected root HUD fail here instead of surviving the returns.
+func _check_practice_overlays(game: Node, lab: DriveLab, failures: Array[String]) -> void:
+	var layers := _collect_by_class(root, "CanvasLayer")
+	var expected: Array[Node] = []
+	if lab != null and lab.hud_layer != null and is_instance_valid(lab.hud_layer):
+		expected.append(lab.hud_layer)
+	var overlay: Node = null
+	if game != null:
+		overlay = game.get_node_or_null("GameOverlay")
+	if overlay != null and is_instance_valid(overlay) and overlay is CanvasLayer:
+		expected.append(overlay)
+
+	if layers.size() != expected.size():
+		failures.append(
+			"practice exposes %d root CanvasLayer nodes, expected exactly %d (%s)" % [
+				layers.size(), expected.size(), _canvas_layer_paths(),
+			]
+		)
+	if expected.size() == 2:
+		if not layers.has(expected[0]):
+			failures.append("the DriveLab HUD layer is not present under the root viewport")
+		if not layers.has(expected[1]):
+			failures.append("the GameOverlay layer is not present under the root viewport")
+		if not _is_descendant_of(expected[0], lab):
+			failures.append("the DriveLab HUD layer is not inside the DriveLab subtree")
+		if expected[1].get_parent() != game:
+			failures.append("the GameOverlay layer is not a direct child of the game scene")
+	var unexpected: Array[String] = []
+	for layer in layers:
+		if not expected.has(layer):
+			unexpected.append(_node_path(layer))
+	if not unexpected.is_empty():
+		failures.append(
+			"unexpected root CanvasLayer outside the committed ownership: %s" % [
+				", ".join(unexpected),
+			]
+		)
+
+
+## Mutation control: parks an extra CanvasLayer with a Label on the root
+## viewport while practice is active, mirroring the checkpoint control that
+## slipped past the previous teardown checks.
+func _inject_root_hud_layer() -> void:
+	var layer := CanvasLayer.new()
+	layer.name = "InjectedRootHud"
+	var label := Label.new()
+	label.name = "InjectedLabel"
+	label.text = "injected root HUD"
+	layer.add_child(label)
+	root.add_child(layer)
+	print("[practice-flow] mutation control injected root CanvasLayer ", layer.get_path())
 
 
 ## Negative control: the same structural check must reject a scene with no
@@ -357,6 +456,11 @@ func _final_teardown_checks(cycle_records: Array) -> void:
 		_check(labs.is_empty(), "flow.final_no_drive_lab_in_menu (%d found)" % labs.size())
 		var cameras := _collect_by_class(root, "Camera3D")
 		_check(cameras.is_empty(), "flow.final_no_camera_in_menu (%d found)" % cameras.size())
+		var layers := _collect_by_class(root, "CanvasLayer")
+		_check(
+			layers.is_empty(),
+			"flow.final_no_root_canvas_layer (%s)" % _canvas_layer_paths()
+		)
 
 
 # --- Small utilities --------------------------------------------------------
@@ -400,6 +504,37 @@ func _collect_by_class(node: Node, type_name: String) -> Array[Node]:
 	for child in node.get_children():
 		found.append_array(_collect_by_class(child, type_name))
 	return found
+
+
+## Renders the current root-wide CanvasLayer set as scene-tree paths, so a
+## leftover layer is named in the failure instead of only counted.
+func _canvas_layer_paths() -> String:
+	var paths: Array[String] = []
+	for layer in _collect_by_class(root, "CanvasLayer"):
+		paths.append(_node_path(layer))
+	return "[%s]" % ", ".join(paths)
+
+
+func _node_path(node: Node) -> String:
+	if node == null:
+		return "<null>"
+	var path := String(node.name)
+	var parent := node.get_parent()
+	while parent != null and parent != root:
+		path = String(parent.name) + "/" + path
+		parent = parent.get_parent()
+	return path
+
+
+func _is_descendant_of(node: Node, ancestor: Node) -> bool:
+	if node == null or ancestor == null:
+		return false
+	var parent := node.get_parent()
+	while parent != null:
+		if parent == ancestor:
+			return true
+		parent = parent.get_parent()
+	return false
 
 
 func _finite_vector2(value: Vector2) -> bool:
@@ -482,7 +617,7 @@ func _finish() -> void:
 			"Headless dummy display/audio drivers; no rendered-GUI, visual-readability, audio-quality or physical-keyboard review.",
 			"No gamepad/controller routing, split-screen, race rules, rewards, cosmetics, saves or release claim.",
 			"Synthetic key events prove the input pipeline and one COMMITTED tick, not real device behaviour.",
-			"Teardown absence of DriveLab/Camera3D/CanvasLayer is structural evidence; no global listener registry is inspected.",
+			"Overlay ownership is checked by instance identity under the root viewport tree; no global listener, viewport or resource registry is inspected, so a leaked CanvasLayer reparented outside the root tree is out of scope.",
 			"No M0.2, M1 or M5 acceptance claim; the coordinator integrates and judges the slice.",
 		],
 	}

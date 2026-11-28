@@ -9,17 +9,29 @@
 #   * the deliberate failure proof (`--expect-failure`, nonzero exit and a
 #     recorded CHECKS_FAILED greater than zero).
 #
-# Every engine invocation is bounded by `timeout -k 5 <seconds>`, runs with a
-# private HOME/TMPDIR/XDG cache set, and is checked for engine error lines even
-# when its exit status is zero. The live checkout's .godot cache is never
-# written.
+# Every engine invocation is serialized on a shared Godot test lock with
+# `/usr/bin/lockf -k`, is bounded by `timeout -k 5 <seconds>` with the timeout
+# capped at 120 s, runs with a private HOME/TMPDIR/XDG cache set under the
+# ignored work/agents directory, and is checked for engine error lines even when
+# its exit status is zero. The live checkout's .godot cache is never written.
 #
 # Usage:
 #   tools/practice_flow_lab/run_practice_flow_lab.sh [--project DIR]
-#       [--godot BIN] [--timeout SECONDS] [--log FILE] [--keep-scratch]
+#       [--godot BIN] [--timeout SECONDS] [--lock FILE] [--log FILE]
+#       [--keep-scratch]
+#
+# The lock defaults to <project>/work/agents/coordinator/godot-test.lock when
+# that coordinator directory exists (the live repository), and otherwise to a
+# private lock inside this run's own scratch directory, so a plain source
+# archive never locks or writes outside itself. ROADSTORM_GODOT_LOCK sets the
+# same path from the environment.
 #
 # Exit codes: 0 = every case behaved as expected, 1 = a case failed,
 # 2 = unsafe inputs or an unusable engine.
+# 143 = cancelled by HUP/INT/TERM after the owned engine children were reaped.
+#
+# This runner owns the Godot lock for its own engine calls. Do not wrap it in an
+# outer `lockf` on the same path: lockf -k would block until this run finished.
 
 set -u
 
@@ -27,6 +39,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 GODOT_BIN=${ROADSTORM_GODOT:-}
 TIMEOUT=${ROADSTORM_TEST_TIMEOUT:-120}
+MAX_TIMEOUT=120
+LOCK_FILE=${ROADSTORM_GODOT_LOCK:-}
+LOCKF_BIN=${LOCKF_BIN:-/usr/bin/lockf}
 LOG_FILE=""
 KEEP_SCRATCH=0
 STAGE=""
@@ -35,10 +50,13 @@ RUN_CACHE=""
 usage() {
 	cat <<'EOF'
 Usage: run_practice_flow_lab.sh [--project DIR] [--godot BIN]
-                               [--timeout SECONDS] [--log FILE] [--keep-scratch]
+                               [--timeout SECONDS] [--lock FILE] [--log FILE]
+                               [--keep-scratch]
 
 Stages a private copy, imports it, and runs the headless practice-flow lab
-pass case plus the --expect-failure proof.
+pass case plus the --expect-failure proof. Every Godot call is serialized on a
+shared lock (default <project>/work/agents/coordinator/godot-test.lock) and
+bounded by a timeout capped at 120 seconds.
 EOF
 }
 
@@ -65,6 +83,11 @@ while [ $# -gt 0 ]; do
 		TIMEOUT=$2; shift 2 ;;
 	--timeout=*)
 		TIMEOUT=${1#*=}; shift ;;
+	--lock)
+		[ $# -ge 2 ] || die_usage "--lock needs a value"
+		LOCK_FILE=$2; shift 2 ;;
+	--lock=*)
+		LOCK_FILE=${1#*=}; shift ;;
 	--log)
 		[ $# -ge 2 ] || die_usage "--log needs a value"
 		LOG_FILE=$2; shift 2 ;;
@@ -83,6 +106,11 @@ case "$TIMEOUT" in
 '' | *[!0-9]*) die_usage "--timeout must be a positive integer" ;;
 esac
 [ "$TIMEOUT" -gt 0 ] || die_usage "--timeout must be a positive integer"
+# The lab is bounded work; a larger request is clamped, never honoured.
+if [ "$TIMEOUT" -gt "$MAX_TIMEOUT" ]; then
+	echo "[practice-flow-lab] --timeout $TIMEOUT exceeds the $MAX_TIMEOUT s bound; using $MAX_TIMEOUT" >&2
+	TIMEOUT=$MAX_TIMEOUT
+fi
 
 [ -f "$PROJECT_DIR/project.godot" ] || {
 	echo "[practice-flow-lab] not a project root: $PROJECT_DIR" >&2
@@ -94,6 +122,10 @@ for required in src scenes tools/practice_flow_lab; do
 		exit 2
 	}
 done
+[ -x "$LOCKF_BIN" ] || {
+	echo "[practice-flow-lab] lockf not usable: $LOCKF_BIN" >&2
+	exit 2
+}
 if [ -z "$GODOT_BIN" ]; then
 	GODOT_BIN="$PROJECT_DIR/work/agents/coordinator/toolchain-m01/prefix/editor/Godot.app/Contents/MacOS/Godot"
 fi
@@ -118,7 +150,26 @@ cleanup() {
 	[ -n "$RUN_CACHE" ] && rm -rf "$RUN_CACHE"
 	[ -n "$STAGE" ] && rm -rf "$STAGE"
 }
-trap cleanup EXIT HUP INT TERM
+
+# HUP/INT/TERM must not fall through into the interrupted control flow: reap
+# this runner's own engine children first, then remove the scratch and leave
+# with a cancellation status. Only direct children of this shell are signalled,
+# and never after they have been reaped.
+cancel() {
+	trap - HUP INT TERM
+	pkill -TERM -P $$ 2>/dev/null
+	sleep 1
+	pkill -KILL -P $$ 2>/dev/null
+	wait 2>/dev/null
+	cleanup
+	# The trap can fire while an engine call owns this shell's stderr, so the
+	# notice is also appended to the requested combined log when one is set.
+	[ -n "$LOG_FILE" ] && echo "[practice-flow-lab] cancelled after reaping engine children" >>"$LOG_FILE" 2>/dev/null
+	echo "[practice-flow-lab] cancelled after reaping engine children" >&2
+	exit 143
+}
+trap cleanup EXIT
+trap cancel HUP INT TERM
 
 SCRATCH_PARENT="$PROJECT_DIR/work/agents"
 mkdir -p "$SCRATCH_PARENT" || exit 2
@@ -130,6 +181,19 @@ RUN_CACHE=$(mktemp -d "$SCRATCH_PARENT/practice-flow-cache.XXXXXX" 2>/dev/null) 
 	echo "[practice-flow-lab] cannot create private cache directory" >&2
 	exit 2
 }
+
+# The shared Godot test lock serializes this run's engine calls against every
+# other agent's engine call on this machine. A plain source archive has no
+# coordinator directory, so it takes a private lock inside its own scratch
+# rather than writing to a shared path.
+if [ -z "$LOCK_FILE" ]; then
+	if [ -d "$PROJECT_DIR/work/agents/coordinator" ]; then
+		LOCK_FILE="$PROJECT_DIR/work/agents/coordinator/godot-test.lock"
+	else
+		LOCK_FILE="$RUN_CACHE/godot-test.lock"
+	fi
+fi
+echo "[practice-flow-lab] engine lock $LOCK_FILE"
 
 echo "[practice-flow-lab] staging isolated project copy in $STAGE"
 cp "$PROJECT_DIR/project.godot" "$STAGE/" || exit 2
@@ -154,6 +218,7 @@ run_engine() {
 		XDG_CACHE_HOME="$RUN_CACHE/cache" \
 		XDG_CONFIG_HOME="$RUN_CACHE/config" \
 		XDG_DATA_HOME="$RUN_CACHE/data" \
+		"$LOCKF_BIN" -k "$LOCK_FILE" \
 		timeout -k 5 "$TIMEOUT" "$GODOT_BIN" "$@"
 }
 
