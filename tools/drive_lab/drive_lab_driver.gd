@@ -3688,6 +3688,7 @@ func _gearbox_mirror_refusal_checks() -> void:
 
 func _case_wall_impact_integration() -> void:
 	await _wall_hit_publication_and_retry_checks()
+	await _wall_clear_tick_wall_contact_fabrication_checks()
 	await _wall_refusal_paths_emit_no_event_checks()
 	await _wall_postcommit_gearbox_failure_withholds_witness_checks()
 	await _wall_scope_retirement_keeps_car_state_checks()
@@ -3852,6 +3853,8 @@ func _wall_hit_publication_and_retry_checks() -> void:
 	var base_telemetry: Dictionary = lab.get_wall_event_telemetry()
 	var base_digest := lab.get_wall_event_content_digest()
 	var base_last_id := lab.get_last_wall_event().event_id
+	var base_state_snapshot := d.snapshot_state(lab.state)
+	var base_body_snapshot: Transform3D = lab.body.global_transform
 	for entry in [
 		{"key": "contact_point", "field": "point", "token": "contact point"},
 		{"key": "contact_normal", "field": "normal", "token": "contact normal"},
@@ -3861,7 +3864,9 @@ func _wall_hit_publication_and_retry_checks() -> void:
 		{"key": "collision_frame_basis", "field": "frame_basis", "token": "collision frame"},
 		{"key": "response_witness_flag", "field": "response_flag", "token": "wall response witness flag"},
 		{"key": "contact_point_witness_flag", "field": "contact_flag", "token": "wall contact point witness flag"},
+		{"key": "wall_contact_flag", "field": "wall_contact", "token": "wall contact flag"},
 		{"key": "adapter_status", "field": "status", "token": "adapter result status"},
+		{"key": "committed_velocity", "field": "committed_velocity", "token": "committed planar velocity"},
 	]:
 		_apply_wall_witness_mutation(witness, str(entry["field"]))
 		var iteration_base: Dictionary = lab.get_wall_event_telemetry()
@@ -3892,6 +3897,14 @@ func _wall_hit_publication_and_retry_checks() -> void:
 		d.check(
 			lab.get_wall_event_content_digest() == base_digest,
 			"wall.mutant.%s_digest_unchanged" % key
+		)
+		d.check(
+			d.snapshot_state(lab.state) == base_state_snapshot,
+			"wall.mutant.%s_canonical_state_unchanged" % key
+		)
+		d.check(
+			lab.body.global_transform == base_body_snapshot,
+			"wall.mutant.%s_body_pose_unchanged" % key
 		)
 		var mutant_last := lab.get_last_wall_event()
 		d.check(
@@ -3995,6 +4008,94 @@ func _wall_hit_publication_and_retry_checks() -> void:
 	await _teardown_lab(lab)
 
 
+# A clear accepted tick carries no wall witnesses, so the gate must not let a
+# caller-mutated `wall_contact` alone fabricate missed-witness telemetry. The
+# flag is part of the accepted snapshot: changing it refuses before any ID,
+# ledger entry or counter can move, and restoring it leaves the clear tick
+# unpublishable exactly as before.
+func _wall_clear_tick_wall_contact_fabrication_checks() -> void:
+	var lab = _make_wall_hit_lab([])
+	if lab == null:
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	_place_wall_lab_at_spawn(lab)
+	await _settle()
+	var clear_result = lab.step_once(d.throttle_command(1.0))
+	if clear_result == null:
+		d.check(false, "wall.clear.tick_returned_null")
+		await _teardown_lab(lab)
+		return
+	d.check(
+		int(clear_result.status) == int(AdapterScript.Status.COMMITTED),
+		"wall.clear.tick_is_committed"
+	)
+	d.check(
+		not clear_result.has_wall_response_witness
+			and not clear_result.has_wall_contact_point,
+		"wall.clear.tick_has_no_witnesses"
+	)
+	d.check(not clear_result.wall_contact, "wall.clear.tick_wall_contact_false")
+	var base_telemetry: Dictionary = lab.get_wall_event_telemetry()
+	var base_digest := lab.get_wall_event_content_digest()
+	var state_snapshot := d.snapshot_state(lab.state)
+	var body_snapshot: Transform3D = lab.body.global_transform
+	clear_result.wall_contact = true
+	var mutated_retry: bool = lab.publish_wall_event(clear_result)
+	d.check(not mutated_retry, "wall.clear.mutant_refused")
+	var mutant_telemetry: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(mutant_telemetry["refused"]) == int(base_telemetry["refused"]) + 1,
+		"wall.clear.mutant_counts_one_refusal"
+	)
+	d.check(
+		int(mutant_telemetry["missed_witnesses"])
+			== int(base_telemetry["missed_witnesses"]),
+		"wall.clear.mutant_does_not_fabricate_missed_witness"
+	)
+	d.check(
+		int(mutant_telemetry["published"]) == int(base_telemetry["published"]),
+		"wall.clear.mutant_no_new_publication"
+	)
+	d.check(
+		int(mutant_telemetry["coalesced"]) == int(base_telemetry["coalesced"]),
+		"wall.clear.mutant_no_coalesce"
+	)
+	d.check(lab.get_wall_event_count() == 0, "wall.clear.mutant_ledger_stays_empty")
+	d.check(
+		lab.get_wall_event_content_digest() == base_digest,
+		"wall.clear.mutant_digest_unchanged"
+	)
+	d.check(
+		d.snapshot_state(lab.state) == state_snapshot,
+		"wall.clear.mutant_canonical_state_unchanged"
+	)
+	d.check(
+		lab.body.global_transform == body_snapshot,
+		"wall.clear.mutant_body_pose_unchanged"
+	)
+	var diagnostic := str(lab.get_wall_event_diagnostic())
+	d.check(
+		diagnostic.contains("fingerprint mismatch")
+			and diagnostic.contains("wall contact flag"),
+		"wall.clear.mutant_specific_diagnostic"
+	)
+	clear_result.wall_contact = false
+	var restored_retry: bool = lab.publish_wall_event(clear_result)
+	d.check(not restored_retry, "wall.clear.restored_clear_tick_still_unpublishable")
+	d.check(
+		int(lab.get_wall_event_telemetry()["refused"])
+			== int(mutant_telemetry["refused"]),
+		"wall.clear.restore_adds_no_counter"
+	)
+	d.check(
+		int(lab.get_wall_event_telemetry()["missed_witnesses"])
+			== int(base_telemetry["missed_witnesses"]),
+		"wall.clear.restore_leaves_missed_witness_unchanged"
+	)
+	await _teardown_lab(lab)
+
+
 ## Saves every authoritative witness field the accepted-state fingerprint
 ## covers, by value, so the mutation regression can restore the real witness.
 func _saved_wall_witness_state(witness) -> Dictionary:
@@ -4002,11 +4103,13 @@ func _saved_wall_witness_state(witness) -> Dictionary:
 		"status": witness.status,
 		"has_response_witness": witness.has_wall_response_witness,
 		"has_contact_point": witness.has_wall_contact_point,
+		"wall_contact": witness.wall_contact,
 		"point": witness.wall_contact_point,
 		"normal": witness.wall_contact_normal,
 		"pre_velocity": witness.wall_pre_response_velocity_world_m_s,
 		"post_velocity": witness.wall_post_response_velocity_world_m_s,
 		"frame": witness.wall_contact_transform,
+		"committed_velocity": witness.committed_state.velocity_m_s,
 	}
 
 
@@ -4016,11 +4119,13 @@ func _restore_wall_witness_state(witness, saved: Dictionary) -> void:
 	witness.status = saved["status"]
 	witness.has_wall_response_witness = saved["has_response_witness"]
 	witness.has_wall_contact_point = saved["has_contact_point"]
+	witness.wall_contact = saved["wall_contact"]
 	witness.wall_contact_point = saved["point"]
 	witness.wall_contact_normal = saved["normal"]
 	witness.wall_pre_response_velocity_world_m_s = saved["pre_velocity"]
 	witness.wall_post_response_velocity_world_m_s = saved["post_velocity"]
 	witness.wall_contact_transform = saved["frame"]
+	witness.committed_state.velocity_m_s = saved["committed_velocity"]
 
 
 ## Applies one bounded mutation to the accepted witness for the retry-gate
@@ -4049,6 +4154,8 @@ func _apply_wall_witness_mutation(witness, field: String) -> void:
 			witness.has_wall_contact_point = false
 		"status":
 			witness.status = MotorBodyAdapter.Status.REFUSED_MOTION_BOUND
+		"wall_contact":
+			witness.wall_contact = false
 		"committed_velocity":
 			witness.committed_state.velocity_m_s.x += 0.1
 

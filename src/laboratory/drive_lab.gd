@@ -959,6 +959,7 @@ static func _wall_witness_snapshot(
 		"status": int(result.status),
 		"has_response_witness": result.has_wall_response_witness,
 		"has_contact_point": result.has_wall_contact_point,
+		"wall_contact": result.wall_contact,
 		"point": result.wall_contact_point,
 		"normal": result.wall_contact_normal,
 		"pre_velocity": result.wall_pre_response_velocity_world_m_s,
@@ -979,6 +980,7 @@ static func _wall_witness_fingerprint(snapshot: Dictionary) -> String:
 			bool(snapshot["has_response_witness"])
 		),
 		ImpactEventScript.encode_for_digest(bool(snapshot["has_contact_point"])),
+		ImpactEventScript.encode_for_digest(bool(snapshot["wall_contact"])),
 		ImpactEventScript.encode_for_digest(snapshot["point"]),
 		ImpactEventScript.encode_for_digest(snapshot["normal"]),
 		ImpactEventScript.encode_for_digest(snapshot["pre_velocity"]),
@@ -1006,6 +1008,8 @@ func _wall_witness_mismatch_field(
 		return "wall response witness flag"
 	if bool(snapshot["has_contact_point"]) != bool(accepted["has_contact_point"]):
 		return "wall contact point witness flag"
+	if bool(snapshot["wall_contact"]) != bool(accepted["wall_contact"]):
+		return "wall contact flag"
 	if snapshot["point"] != accepted["point"]:
 		return "contact point"
 	if snapshot["normal"] != accepted["normal"]:
