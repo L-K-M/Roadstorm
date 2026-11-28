@@ -14,6 +14,14 @@ const CLOSED_LOOP_PATH := FIXTURE_DIR + "/road_sampling_closed_loop.json"
 
 const INDEPENDENT_LENGTH_PANELS := 65536
 const CURVED_LENGTH_AGREEMENT_TOLERANCE_M := 0.005
+## Exact length of the Sol analytic quadratic B(t)=(t, 5t^2-3.17t, 0).
+const SOL_QUADRATIC_EXACT_LENGTH_M := 3.1086978942948535
+## Independent midpoint panels used only to invert the analytic quadratic.
+const ANALYTIC_INVERSE_PANELS := 4096
+## Pass gate for the pinned-engine review counterexamples: the authored
+## per-span tolerance, compared against an independent fine reference rather
+## than the sampler's own Richardson estimate.
+const REVIEW_COUNTEREXAMPLE_TOLERANCE_M := 0.001
 
 
 class Case extends RefCounted:
@@ -127,6 +135,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_source_preservation_and_table_copies"),
 		Callable(self, "_case_malformed_and_derived_refusals"),
 		Callable(self, "_case_budget_controls"),
+		Callable(self, "_case_conservative_bracket_regressions"),
 	]:
 		var result: Dictionary = call.call()
 		case_results.append(result)
@@ -217,6 +226,42 @@ static func fixture_control_points(source: Dictionary, span_index: int) -> Array
 		vector3_from_array(end["handle_in"]),
 		vector3_from_array(end["anchor"]),
 	]
+
+
+## Map a plan-view (x, y) point from the review counterexamples into the
+## sampler's world axes: Vector3(x, 0, -y).
+static func plan_point_to_array(p_point: Array) -> Array:
+	return [float(p_point[0]), 0.0, -float(p_point[1])]
+
+
+static func sol_quadratic_position(p_t: float) -> Vector3:
+	return Vector3(p_t, 5.0 * p_t * p_t - 3.17 * p_t, 0.0)
+
+
+static func sol_quadratic_speed(p_t: float) -> float:
+	var slope := 10.0 * p_t - 3.17
+	return sqrt(1.0 + slope * slope)
+
+
+## Composite midpoint length of the analytic quadratic from t=0 to t.
+static func sol_quadratic_length(p_t: float, p_panels: int) -> float:
+	var width := p_t / float(p_panels)
+	var sum := 0.0
+	for panel in range(p_panels):
+		sum += sol_quadratic_speed(width * (float(panel) + 0.5))
+	return sum * width
+
+
+static func sol_quadratic_inverse_length(p_target_s: float, p_panels: int) -> float:
+	var low := 0.0
+	var high := 1.0
+	for iteration in range(64):
+		var middle := 0.5 * (low + high)
+		if sol_quadratic_length(middle, p_panels) < p_target_s:
+			low = middle
+		else:
+			high = middle
+	return 0.5 * (low + high)
 
 
 static func independent_bezier_derivative(points: Array[Vector3], t: float) -> Vector3:
@@ -723,3 +768,200 @@ func _case_budget_controls() -> Dictionary:
 		"loosened output cap"
 	)
 	return c.result()
+
+
+# --- Conservative bracket review regressions ---------------------------------
+
+
+func _case_conservative_bracket_regressions() -> Dictionary:
+	var c := Case.new()
+	c.name = "conservative_bracket_regressions"
+	_check_sol_quadratic_regression(c)
+	_check_opus_counterexample_regression(
+		c,
+		"lab.sampling.control.opus_hook",
+		"Opus hook",
+		[
+			[0.0, 0.0],
+			[-41.51432074598111, -26.793159374705738],
+			[-5.398951534001867, -15.298719443537351],
+			[-12.430606748396634, -10.973956893541455],
+		],
+		5.0
+	)
+	_check_opus_counterexample_regression(
+		c,
+		"lab.sampling.control.opus_road1",
+		"Opus road1",
+		[
+			[0.0, 0.0],
+			[46.68122811764261, -30.631338526912597],
+			[88.92034614456695, -19.57132160513956],
+			[141.37228732321915, 0.0],
+		],
+		5.0
+	)
+	_check_global_station_collapse_regression(c)
+	return c.result()
+
+
+func _check_sol_quadratic_regression(c: Case) -> void:
+	var source := make_single_span_source(
+		"lab.sampling.control.sol_quadratic",
+		[0.0, 0.0, 0.0],
+		[1.0 / 3.0, -3.17 / 3.0, 0.0],
+		[2.0 / 3.0, 5.0 / 3.0 - 6.34 / 3.0, 0.0],
+		[1.0, 1.83, 0.0]
+	)
+	var document := parse_control_source(c, source, "Sol analytic quadratic")
+	if document == null:
+		return
+
+	var table := build_table(c, document, 1.0, "Sol analytic quadratic at 1 m spacing")
+	if table == null:
+		return
+	c.close(
+		table.total_length_m,
+		SOL_QUADRATIC_EXACT_LENGTH_M,
+		RoadArcSampler.DEFAULT_ARC_LENGTH_TOLERANCE_M,
+		"Sol analytic quadratic total length matches the exact arc length"
+	)
+	c.check(
+		table.length_error_estimate_m <= RoadArcSampler.DEFAULT_ARC_LENGTH_TOLERANCE_M,
+		"Sol analytic quadratic conservative error estimate stays inside the tolerance"
+	)
+	c.equal(table.sample_count, 5, "Sol analytic quadratic 1 m spacing sample count")
+	var samples := table.samples
+	c.close(
+		float(samples[samples.size() - 1]["s"]),
+		table.total_length_m,
+		0.0,
+		"Sol analytic quadratic last station is the exact end"
+	)
+	for sample in samples:
+		var t := float(sample["span_t"])
+		c.vector_close(
+			sample["position"],
+			sol_quadratic_position(t),
+			0.00001,
+			"Sol analytic quadratic sample position matches B(span_t)"
+		)
+		c.vector_close(
+			sample["forward_tangent"],
+			Vector3(1.0, 10.0 * t - 3.17, 0.0) / sol_quadratic_speed(t),
+			0.000001,
+			"Sol analytic quadratic forward tangent is analytic"
+		)
+		c.close(
+			absf(sol_quadratic_length(t, ANALYTIC_INVERSE_PANELS) - float(sample["s"])),
+			0.0,
+			0.002,
+			"Sol analytic quadratic station matches independent arc length at span_t"
+		)
+	for index in range(1, samples.size()):
+		var station := float((samples[index] as Dictionary)["s"])
+		var inverse_t := sol_quadratic_inverse_length(station, ANALYTIC_INVERSE_PANELS)
+		c.vector_close(
+			samples[index]["position"],
+			sol_quadratic_position(inverse_t),
+			0.005,
+			"Sol analytic quadratic sample position matches independent inverse at station %d" % index
+		)
+	c.measurements["sol_quadratic_total_length_m"] = table.total_length_m
+	c.measurements["sol_quadratic_absolute_difference_m"] = absf(
+		table.total_length_m - SOL_QUADRATIC_EXACT_LENGTH_M
+	)
+	c.measurements["sol_quadratic_reported_error_m"] = table.length_error_estimate_m
+
+	var near_table := build_table(c, document, 3.05, "Sol analytic quadratic near-end spacing")
+	if near_table == null:
+		return
+	c.close(
+		near_table.total_length_m,
+		SOL_QUADRATIC_EXACT_LENGTH_M,
+		RoadArcSampler.DEFAULT_ARC_LENGTH_TOLERANCE_M,
+		"Sol analytic quadratic near-end spacing total length matches the exact arc length"
+	)
+	c.equal(near_table.sample_count, 3, "Sol analytic quadratic near-end spacing sample count")
+	var near_samples := near_table.samples
+	var near_last: Dictionary = near_samples[near_samples.size() - 1]
+	c.close(float(near_last["s"]), near_table.total_length_m, 0.0, "near-end last station is exact")
+	c.close(float(near_last["span_t"]), 1.0, 0.0, "near-end final sample is t=1")
+	c.vector_close(
+		near_last["position"],
+		sol_quadratic_position(1.0),
+		0.000000001,
+		"near-end final position is exact"
+	)
+	c.measurements["sol_quadratic_near_end_total_length_m"] = near_table.total_length_m
+	c.measurements["sol_quadratic_near_end_absolute_difference_m"] = absf(
+		near_table.total_length_m - SOL_QUADRATIC_EXACT_LENGTH_M
+	)
+
+
+func _check_opus_counterexample_regression(
+	c: Case,
+	p_course_id: String,
+	p_label: String,
+	p_plan: Array,
+	p_spacing: float
+) -> void:
+	var source := make_single_span_source(
+		p_course_id,
+		plan_point_to_array(p_plan[0]),
+		plan_point_to_array(p_plan[1]),
+		plan_point_to_array(p_plan[2]),
+		plan_point_to_array(p_plan[3])
+	)
+	var document := parse_control_source(c, source, p_label)
+	if document == null:
+		return
+	var control_points: Array[Vector3] = document.spans[0].control_points()
+	var reference := independent_midpoint_length(control_points, INDEPENDENT_LENGTH_PANELS)
+	var table := build_table(c, document, p_spacing, p_label + " builds")
+	if table == null:
+		return
+	c.close(
+		table.total_length_m,
+		reference,
+		REVIEW_COUNTEREXAMPLE_TOLERANCE_M,
+		p_label + " length agrees with the independent fine reference"
+	)
+	c.check(
+		table.length_error_estimate_m <= RoadArcSampler.DEFAULT_ARC_LENGTH_TOLERANCE_M,
+		p_label + " conservative error estimate stays inside the tolerance"
+	)
+	c.measurements[p_course_id + "_sampler_length_m"] = table.total_length_m
+	c.measurements[p_course_id + "_reference_length_m"] = reference
+	c.measurements[p_course_id + "_absolute_difference_m"] = absf(table.total_length_m - reference)
+	c.measurements[p_course_id + "_reported_error_m"] = table.length_error_estimate_m
+
+
+func _check_global_station_collapse_regression(c: Case) -> void:
+	var loaded := load_fixture(OPEN_STRAIGHT_PATH)
+	c.check(bool(loaded["ok"]), "global-station collapse fixture loads: " + str(loaded["error"]))
+	if not bool(loaded["ok"]):
+		return
+	var doc: Dictionary = loaded["doc"]
+	var knots: Array = doc["knots"]
+	var prefix := 9007199254740992.0
+	knots[0]["handle_out"] = [prefix / 4.0, 0.0, 0.0]
+	knots[1]["handle_in"] = [2.0 * prefix / 4.0, 0.0, 0.0]
+	knots[1]["anchor"] = [prefix, 0.0, 0.0]
+	knots[1]["handle_out"] = [prefix, 0.0, 0.0625]
+	knots[2]["handle_in"] = [prefix, 0.0, 0.1875]
+	knots[2]["anchor"] = [prefix, 0.0, 0.25]
+	knots[2]["handle_out"] = [prefix, 0.0, 0.3125]
+	var parsed := RoadSourceDocument.parse_document(doc)
+	c.check(
+		bool(parsed["ok"]),
+		"global-station collapse source parses: " + str(parsed["error"])
+	)
+	if not bool(parsed["ok"]):
+		return
+	c.refuses(
+		RoadArcSampler.build_uniform_table(parsed["document"], 1.0e16),
+		RoadArcSampler.Refusal.TABLE_INCONSISTENT,
+		"positive span after a 2^53 m prefix refuses instead of collapsing the global station",
+		"advance the global station"
+	)

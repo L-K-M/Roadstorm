@@ -120,10 +120,16 @@ normal is produced here.
 ## Numerical method, budgets and refusals
 
 Each cubic span's speed `|dB/dt|` is integrated by adaptive recursive Simpson
-quadrature in a fixed left-to-right order. The per-span reported error is the
-sum of local Richardson error estimates. Arc-length inversion brackets the
-target from the adaptive table, then uses bounded Newton steps with bisection
-fallback and fixed Richardson-refined composite Simpson quadrature.
+quadrature in a fixed left-to-right order. A candidate leaf is accepted only
+after an independent eight-piece geometric bracket places its extrapolated
+length between summed chord and control-polygon bounds within an explicit
+roundoff allowance. Its reported error is the conservative maximum distance
+to either bound; the per-span error sums accepted leaf bounds. A cap reached
+before this check passes is a structured refusal. Arc-length inversion brackets
+the target from the adaptive table, then uses bounded Newton steps with
+bisection fallback and fixed Richardson-refined composite Simpson quadrature.
+The inversion estimate is separate and is not an independently bounded
+geometric error estimate.
 
 Defaults and caps:
 
@@ -154,7 +160,7 @@ partial table.
 
 ## Validation coverage
 
-The validator runs 7 cases and 274 checks in one pinned-engine cohort:
+The validator runs 8 cases and 325 checks in one pinned-engine cohort:
 
 - `open_straight_uniform_table`: analytic 60 m straight length, exact stations,
   endpoint positions and roles, interior knot boundary ownership, linear
@@ -177,7 +183,11 @@ The validator runs 7 cases and 274 checks in one pinned-engine cohort:
   non-dyadic interior zero derivative, and derived-state overflow from large
   control points;
 - `budget_controls`: output sample cap, table node cap, subdivision depth cap,
-  non-integer cap, and a loosened cap.
+  non-integer cap, and a loosened cap;
+- `conservative_bracket_regressions`: Sol's analytic short quadratic and
+  near-end spacing, Opus's road-like and hook counterexamples against
+  independent length references, and refusal when a positive span after a
+  large prefix cannot advance its global station.
 
 The deliberate failure probe prints `ROAD_SAMPLING_FAILURE_PROBE` with two
 checks and one intentional failure, then exits 3. A zero exit would mean

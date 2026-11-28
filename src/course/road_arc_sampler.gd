@@ -27,13 +27,22 @@ const RoadSourceDocument := preload("res://src/course/road_source.gd")
 ##     the two authored knot values; it does not make them linear in distance.
 ##
 ## Numerical method. Each cubic span's speed |dB/dt| is integrated by adaptive
-## recursive Simpson quadrature in a fixed left-to-right order. The per-span
-## reported error is the sum of local Richardson error estimates. Arc-length
-## inversion uses the adaptive table for a bracket, then bounded Newton steps
-## with bisection fallback and fixed Richardson-refined composite Simpson
-## quadrature. Tolerances and caps are explicit. Options may tighten the
-## defaults but cannot loosen them; hitting a cap is a structured refusal, not
-## a silent approximation-quality reduction or partial table.
+## recursive Simpson quadrature in a fixed left-to-right order. Every
+## candidate leaf must additionally lie inside an independent geometric
+## bracket for the same Bezier subsegment: the summed chord lengths lower-bound
+## the true arc length and the summed subsegment control-polygon lengths
+## upper-bound it. A leaf is accepted only when its extrapolated Simpson value
+## lies inside that bracket (within an explicit IEEE-754 roundoff allowance)
+## and the maximum distance from the value to either bracket bound is within
+## the local tolerance. The per-span reported error is the sum of those
+## conservative distances, not the Richardson extrapolation; a leaf whose
+## bracket is nonfinite or inverted beyond roundoff is refused, as is a leaf
+## that cannot satisfy both conditions before the depth or node cap.
+## Arc-length inversion uses the adaptive table for a bracket, then bounded
+## Newton steps with bisection fallback and fixed Richardson-refined composite
+## Simpson quadrature. Tolerances and caps are explicit. Options may tighten
+## the defaults but cannot loosen them; hitting a cap is a structured refusal,
+## not a silent approximation-quality reduction or partial table.
 
 const RESULT_SCHEMA := "roadstorm.road_arc_table.v1"
 
@@ -53,6 +62,14 @@ const OPTION_KEYS: Array = [
 	OPTION_MAX_OUTPUT_SAMPLES,
 ]
 
+const ARC_LENGTH_BOUND_PIECES := 8
+## Relative IEEE-754 roundoff allowance used only to compare the geometric
+## bracket with the extrapolated Simpson value. The true subarc length always
+## lies between the summed chord and control-polygon bounds, so a lower bound
+## above the upper bound by more than this allowance is an inconsistent
+## derived state rather than roundoff. The allowance is far below the authored
+## tolerance and never widens an accepted leaf's stored error bound.
+const ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF := 1.0e-12
 const INVERSION_COARSE_PANELS := 8
 const INVERSION_FINE_PANELS := 16
 const INVERSION_MAX_ITERATIONS := 16
@@ -411,6 +428,19 @@ static func build_uniform_table(
 				Refusal.NONFINITE_DERIVED_STATE,
 				"chained span length or error estimate became nonfinite",
 				{"span_index": span_index, "section_id": section.section_id}
+			)
+		if total_length <= span_start:
+			return _refuse(
+				Refusal.TABLE_INCONSISTENT,
+				"span %d (%s) produced a positive local length that does not advance the global station"
+				% [span_index, section.section_id],
+				{
+					"span_index": span_index,
+				"section_id": section.section_id,
+					"span_start_s": span_start,
+					"span_end_s": total_length,
+					"length_m": length,
+				}
 			)
 
 		var record := {
@@ -797,8 +827,9 @@ static func _integrate_span_recursive(
 	var right_integral := _simpson_integral(middle, p_b, p_fm, right_speed, p_fb)
 	var refined := left_integral + right_integral
 	var delta := refined - p_whole
-	var error_estimate := absf(delta) / 15.0
-	if not is_finite(refined) or not is_finite(error_estimate):
+	var richardson_estimate := absf(delta) / 15.0
+	var extrapolated := refined + delta / 15.0
+	if not is_finite(refined) or not is_finite(richardson_estimate) or not is_finite(extrapolated):
 		_set_integration_state_failure(p_state, {
 			"code": Refusal.NONFINITE_DERIVED_STATE,
 			"error": "adaptive Simpson integration became nonfinite",
@@ -806,24 +837,59 @@ static func _integrate_span_recursive(
 		})
 		return
 
-	if error_estimate <= p_tolerance:
-		_accept_integration_leaf(
-			p_state, p_b, refined + delta / 15.0, error_estimate, p_max_nodes, p_a, p_depth
-		)
-		return
+	var candidate_bounds := {}
+	if richardson_estimate <= p_tolerance:
+		candidate_bounds = _bezier_interval_length_bounds(p_control_points, p_a, p_b)
+		if not bool(candidate_bounds["ok"]):
+			_set_integration_state_failure(p_state, candidate_bounds)
+			return
+		var lower := float(candidate_bounds["lower"])
+		var upper := float(candidate_bounds["upper"])
+		var roundoff_slack := _arc_length_bound_roundoff_slack(lower, upper)
+		if lower > upper + roundoff_slack:
+			_set_integration_state_failure(p_state, {
+				"code": Refusal.TABLE_INCONSISTENT,
+				"error": "geometric arc-length bracket is inverted beyond roundoff",
+				"diagnostic": {
+					"t0": p_a,
+					"t1": p_b,
+					"depth": p_depth,
+					"bracket_lower_m": lower,
+					"bracket_upper_m": upper,
+					"roundoff_slack_m": roundoff_slack,
+				},
+			})
+			return
+		if extrapolated >= lower - roundoff_slack and extrapolated <= upper + roundoff_slack:
+			var distance := maxf(extrapolated - lower, upper - extrapolated)
+			if distance <= p_tolerance:
+				_accept_integration_leaf(
+					p_state, p_b, extrapolated, distance, p_max_nodes, p_a, p_depth
+				)
+				return
 
 	if p_depth >= p_max_depth:
+		var cap_diagnostic := {
+			"t0": p_a,
+			"t1": p_b,
+			"depth": p_depth,
+			"max_subdivision_depth": p_max_depth,
+			"richardson_estimate_m": richardson_estimate,
+			"richardson_tolerance_m": p_tolerance,
+		}
+		if not candidate_bounds.is_empty():
+			var cap_lower := float(candidate_bounds["lower"])
+			var cap_upper := float(candidate_bounds["upper"])
+			cap_diagnostic["bracket_lower_m"] = cap_lower
+			cap_diagnostic["bracket_upper_m"] = cap_upper
+			cap_diagnostic["extrapolated_length_m"] = extrapolated
+			cap_diagnostic["bracket_distance_m"] = maxf(
+				extrapolated - cap_lower, cap_upper - extrapolated
+			)
 		_set_integration_state_failure(p_state, {
 			"code": Refusal.SUBDIVISION_CAP_EXCEEDED,
-			"error": "adaptive Simpson subdivision depth cap reached before tolerance",
-			"diagnostic": {
-				"t0": p_a,
-				"t1": p_b,
-				"depth": p_depth,
-				"max_subdivision_depth": p_max_depth,
-				"error_estimate_m": error_estimate,
-				"tolerance_m": p_tolerance,
-			},
+			"error": "adaptive Simpson subdivision depth cap reached before the geometric arc-length bracket and tolerance were satisfied",
+			"diagnostic": cap_diagnostic,
 		})
 		return
 
@@ -841,12 +907,12 @@ static func _accept_integration_leaf(
 	p_state: Dictionary,
 	p_end_t: float,
 	p_length: float,
-	p_error_estimate: float,
+	p_length_error_estimate_m: float,
 	p_max_nodes: int,
 	p_start_t: float,
 	p_depth: int
 ) -> void:
-	if not is_finite(p_length) or not is_finite(p_error_estimate):
+	if not is_finite(p_length) or not is_finite(p_length_error_estimate_m):
 		_set_integration_state_failure(p_state, {
 			"code": Refusal.NONFINITE_DERIVED_STATE,
 			"error": "accepted integration leaf has a nonfinite length or error estimate",
@@ -888,7 +954,7 @@ static func _accept_integration_leaf(
 		return
 	nodes.append({"t": p_end_t, "s": new_end})
 	p_state["s_end"] = new_end
-	p_state["error_estimate_m"] = float(p_state["error_estimate_m"]) + p_error_estimate
+	p_state["error_estimate_m"] = float(p_state["error_estimate_m"]) + p_length_error_estimate_m
 	p_state["leaf_count"] = int(p_state["leaf_count"]) + 1
 
 
@@ -918,6 +984,70 @@ static func _simpson_integral(
 	p_fb: float
 ) -> float:
 	return (p_b - p_a) * (p_fa + 4.0 * p_fm + p_fb) / 6.0
+
+
+## Conservative geometric length bracket for one Bezier parameter interval.
+## The interval is split into ARC_LENGTH_BOUND_PIECES equal subintervals. Each
+## subinterval is reparameterised as a cubic with Q0=B(u), Q1=B(u)+h*B'(u)/3,
+## Q2=B(v)-h*B'(v)/3, Q3=B(v), where h=v-u. The chord |Q3-Q0| lower-bounds
+## that subarc and the control-polygon perimeter upper-bounds it; summing both
+## over a contiguous partition of [a,b] bounds the whole subarc. Returns a
+## failure dictionary with structured diagnostics when a bound is nonfinite.
+static func _bezier_interval_length_bounds(
+	p_control_points: Array[Vector3],
+	p_a: float,
+	p_b: float
+) -> Dictionary:
+	var lower := 0.0
+	var upper := 0.0
+	var step := (p_b - p_a) / float(ARC_LENGTH_BOUND_PIECES)
+	var start_t := p_a
+	for piece in range(ARC_LENGTH_BOUND_PIECES):
+		var end_t := clampf(p_a + step * float(piece + 1), start_t, p_b)
+		if piece == ARC_LENGTH_BOUND_PIECES - 1:
+			end_t = p_b
+		var width := end_t - start_t
+		var q0 := _bezier_position(p_control_points, start_t)
+		var derivative0 := _bezier_derivative(p_control_points, start_t)
+		var q3 := _bezier_position(p_control_points, end_t)
+		var derivative1 := _bezier_derivative(p_control_points, end_t)
+		var q1 := q0 + derivative0 * (width / 3.0)
+		var q2 := q3 - derivative1 * (width / 3.0)
+		var chord := (q3 - q0).length()
+		var polygon := (
+			(q1 - q0).length() + (q2 - q1).length() + (q3 - q2).length()
+		)
+		if not is_finite(chord) or not is_finite(polygon):
+			return {
+				"ok": false,
+				"code": Refusal.NONFINITE_DERIVED_STATE,
+				"error": "geometric arc-length bracket became nonfinite",
+				"diagnostic": {
+					"t0": p_a,
+					"t1": p_b,
+					"piece": piece,
+					"u": start_t,
+					"v": end_t,
+					"chord_m": chord,
+					"polygon_m": polygon,
+				},
+			}
+		lower += chord
+		upper += polygon
+		start_t = end_t
+	if not is_finite(lower) or not is_finite(upper):
+		return {
+			"ok": false,
+			"code": Refusal.NONFINITE_DERIVED_STATE,
+			"error": "summed geometric arc-length bracket became nonfinite",
+			"diagnostic": {"t0": p_a, "t1": p_b, "lower_m": lower, "upper_m": upper},
+		}
+	return {"ok": true, "lower": lower, "upper": upper}
+
+
+static func _arc_length_bound_roundoff_slack(p_lower: float, p_upper: float) -> float:
+	var scale := maxf(1.0, maxf(absf(p_lower), absf(p_upper)))
+	return ARC_LENGTH_BOUND_RELATIVE_ROUNDOFF * scale
 
 
 # --- Arc inversion and evaluation -------------------------------------------
