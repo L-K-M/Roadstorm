@@ -9,7 +9,7 @@ isolated runner. The component is an M1.5 slice, not an integrated race HUD.
 
 | Path | Role |
 | --- | --- |
-| `src/presentation/speed_hud.gd` | owned component: speed readout, reverse text cue, five-phase drift cue, qualifying flag forwarding, per-slot scale |
+| `src/presentation/speed_hud.gd` | owned component: speed readout, committed gear indication, independent reverse travel text, five-phase drift cue, qualifying flag forwarding, per-slot scale |
 | `scenes/ui/speed_hud.tscn` | standalone scene: panel, labels and owned script |
 | `tools/hud_lab/validate_speed_hud.gd` | headless `SceneTree` validation entry point |
 | `tools/hud_lab/run_validation.sh` | pinned-engine wrapper that stages an isolated copy, imports resources, bounds every Godot run, and runs the pass plus deliberate-failure cases |
@@ -20,11 +20,15 @@ Call `update(state, cue, units)` once per display refresh with a committed
 `CarState`, a small `DriftCue` telemetry record (`phase`, `qualifying`,
 `slip_deg`) and `SpeedUnit.KM_H` or `SpeedUnit.MPH`. Validation happens before
 any widget mutation, so nonfinite state/telemetry, a null record, or an invalid
-phase/unit returns false and leaves the previous display untouched. The numeral
-is the absolute road-plane speed converted from m/s; `REVERSE` appears from a
-small forward-component deadband. Drift text distinguishes grip, entry,
-sustained, recovery and airborne, and slip degrees are shown for the three
-contact phases. Color and shape duplicate the text cue; no score, points or
+phase/unit, or a committed `gear_index` outside `-1`/`1..8`, returns false and
+leaves the previous display untouched. The numeral is the absolute road-plane
+speed converted from m/s; `REVERSE` appears from a small forward-component
+deadband and is independent of the gear text. Gear is sourced only from the
+committed mirror: `R` for `-1` and `1`..`8` forward, so backward rolling in a
+forward gear still shows that gear beside `REVERSE`, while `R` can appear while
+stationary and the HUD never infers a shift from speed. Drift text distinguishes
+grip, entry, sustained, recovery and airborne, and slip degrees are shown for
+the three contact phases. Color and shape duplicate the text cue; no score, points or
 reward wording exists. `QUALIFYING DRIFT` forwards the supplier's eligibility
 flag only during a sustained drift, so airborne never claims qualification.
 
@@ -32,7 +36,9 @@ The scene instantiates once per player viewport; there is no autoload or global
 state. Labels are created once and only their text/visibility changes per
 update. All positions, sizes, font sizes and colors are provisional authored
 values subject to visual/contrast review; the base layout targets a 960x540
-panel (40 px numerals, 20-22 px labels) and `set_hud_scale()` scales it.
+panel (40 px numerals, 32 px gear, 20-22 px labels) and `set_hud_scale()`
+scales it. The validator checks the gear label stays inside the panel, fits its
+`1`/`R`/`8` glyphs and overlaps no existing label or marker at 100% and 150%.
 
 Unimplemented seams, explicitly not claimed: race/panel integration,
 split-screen cost, localization, accessibility settings beyond redundant text,

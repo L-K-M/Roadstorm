@@ -7,9 +7,10 @@ extends SceneTree
 ##
 ## Exercises the presentation-only `SpeedHud` component: scene/script wiring,
 ## 960x540 layout at 100% and 150% HUD scale, zero/forward/reverse label text,
-## km/h and mph conversion, all five drift phases plus qualifying gating,
-## nonfinite/invalid input atomicity, instance independence, no node churn and
-## rejection of reward-style wording.
+## committed gear indication (`R` and `1`..`8`) with its independent REVERSE
+## travel text, km/h and mph conversion, all five drift phases plus qualifying
+## gating, invalid/out-of-domain gear atomicity, instance independence, no node
+## churn and rejection of reward-style wording.
 ##
 ## `--expect-failure` deliberately records a failure so the nonzero exit path
 ## is observable. The bounded wrapper tools/hud_lab/run_validation.sh runs the
@@ -36,11 +37,27 @@ const EXPECTED_COMMIT_PREFIX := "ed1daf0bf"
 const BASE_CONTENT_SIZE := Vector2(360.0, 172.0)
 const BASE_SPEED_FONT := 40.0
 const BASE_UNIT_FONT := 20.0
+const BASE_GEAR_FONT := 32.0
 const BASE_REVERSE_FONT := 22.0
 const BASE_DRIFT_FONT := 22.0
 const BASE_QUALIFYING_FONT := 20.0
-const BASE_FONTS := [BASE_SPEED_FONT, BASE_UNIT_FONT, BASE_REVERSE_FONT, BASE_DRIFT_FONT, BASE_QUALIFYING_FONT]
-const LABEL_NAMES := ["SpeedLabel", "UnitLabel", "ReverseLabel", "DriftLabel", "QualifyingLabel"]
+const BASE_FONTS := [
+	BASE_SPEED_FONT,
+	BASE_UNIT_FONT,
+	BASE_GEAR_FONT,
+	BASE_REVERSE_FONT,
+	BASE_DRIFT_FONT,
+	BASE_QUALIFYING_FONT,
+]
+const LABEL_NAMES := ["SpeedLabel", "UnitLabel", "GearLabel", "ReverseLabel", "DriftLabel", "QualifyingLabel"]
+
+## Independent oracle for the mirrored gearbox gear domain:
+## `-1` reverse or `1..8` forward (AutomaticGearbox.MAX_FORWARD_GEARS).
+const GEAR_REVERSE_INDEX := -1
+const GEAR_MAX_FORWARD := 8
+const GEAR_TEXT_REVERSE := "R"
+const GEAR_TEXT_FORWARD := ["1", "2", "3", "4", "5", "6", "7", "8"]
+const GEAR_STRESS_TEXTS := ["1", GEAR_TEXT_REVERSE, "8"]
 
 const UNIT_KMH := 0
 const UNIT_MPH := 1
@@ -134,6 +151,7 @@ func _run_checks() -> void:
 	_check_layout_at_scale(1.0, "layout_100")
 	_check_layout_at_scale(1.5, "layout_150")
 	_check_speed_labels()
+	_check_gear_indication()
 	_check_drift_cues()
 	_check_atomicity()
 	_check_no_churn()
@@ -165,6 +183,12 @@ func _check_structure() -> void:
 	_check(speed != null and speed.text == "0", "structure.initial_speed_text", str(speed.text if speed != null else ""))
 	var unit := _label("UnitLabel")
 	_check(unit != null and unit.text == UNIT_LABELS[UNIT_KMH], "structure.initial_unit_text", str(unit.text if unit != null else ""))
+	var gear := _label("GearLabel")
+	_check(
+		gear != null and gear.text == "" and not gear.visible,
+		"structure.initial_gear_hidden",
+		str(gear.text if gear != null else "")
+	)
 	var reverse := _label("ReverseLabel")
 	_check(reverse != null and reverse.text == "" and not reverse.visible, "structure.initial_reverse_hidden", "")
 	var drift := _label("DriftLabel")
@@ -205,14 +229,25 @@ func _check_layout_at_scale(scale: float, prefix: String) -> void:
 			"%d vs %d" % [label.get_theme_font_size("font_size"), effective_font]
 		)
 		var font := label.get_theme_font("font")
+		var font_size := label.get_theme_font_size("font_size")
 		var text_size := font.get_string_size(
-			label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, label.get_theme_font_size("font_size")
+			label.text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size
 		)
 		_check(
 			text_size.x <= label.size.x + 0.5 and text_size.y <= label.size.y + 0.5,
 			prefix + ".%s_text_fits" % LABEL_NAMES[index].to_snake_case(),
 			"text=%s rect=%s" % [text_size, label.size]
 		)
+		if LABEL_NAMES[index] == "GearLabel":
+			for stress in GEAR_STRESS_TEXTS:
+				var stress_size := font.get_string_size(
+					stress, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size
+				)
+				_check(
+					stress_size.x <= label.size.x + 0.5 and stress_size.y <= label.size.y + 0.5,
+					prefix + ".gear_stress_fit_%s" % stress,
+					"text=%s rect=%s" % [stress_size, label.size]
+				)
 
 	_check(
 		_hud.get_node("Contents/SpeedLabel").get_theme_font_size("font_size") >= MIN_SPEED_PX,
@@ -234,7 +269,10 @@ func _check_layout_at_scale(scale: float, prefix: String) -> void:
 		str(marker.get_global_rect())
 	)
 
+	_check_no_overlap(prefix)
+
 	_measured["%s_speed_font" % prefix] = _hud.get_node("Contents/SpeedLabel").get_theme_font_size("font_size")
+	_measured["%s_gear_font" % prefix] = _hud.get_node("Contents/GearLabel").get_theme_font_size("font_size")
 	_measured["%s_contents_size" % prefix] = contents.size
 
 
@@ -276,6 +314,67 @@ func _check_speed_labels() -> void:
 	_check(_hud.update(_make_state(Vector2(0.0, -20.0), PI * 0.5), cue, UNIT_KMH), "speed.lateral_update", "")
 	_check_text("SpeedLabel", "72", "speed.lateral_text")
 	_check(not _label("ReverseLabel").visible, "speed.lateral_no_reverse", "")
+
+
+func _check_gear_indication() -> void:
+	var cue := _make_cue(PHASE_GRIP)
+
+	# Forward gears mirror the committed indication only.
+	for gear in range(1, GEAR_MAX_FORWARD + 1):
+		var accepted := _hud.update(_make_state(Vector2(0.0, 20.0), 0.0, gear), cue, UNIT_KMH)
+		_check(accepted, "gear.forward_%d_update" % gear, str(accepted))
+		_check_text("GearLabel", GEAR_TEXT_FORWARD[gear - 1], "gear.forward_%d_text" % gear)
+
+	# Reverse gear may be shown while stationary, with no REVERSE travel cue.
+	_check(
+		_hud.update(_make_state(Vector2.ZERO, 0.0, GEAR_REVERSE_INDEX), cue, UNIT_KMH),
+		"gear.reverse_stationary_update",
+		""
+	)
+	_check_text("GearLabel", GEAR_TEXT_REVERSE, "gear.reverse_stationary_text")
+	_check(not _label("ReverseLabel").visible, "gear.reverse_stationary_no_travel_reverse", "")
+
+	# Reverse gear with forward travel still shows R; gear never follows motion.
+	_check(
+		_hud.update(_make_state(Vector2(0.0, 20.0), 0.0, GEAR_REVERSE_INDEX), cue, UNIT_KMH),
+		"gear.reverse_forward_roll_update",
+		""
+	)
+	_check_text("GearLabel", GEAR_TEXT_REVERSE, "gear.reverse_forward_roll_text")
+	_check(not _label("ReverseLabel").visible, "gear.reverse_forward_roll_no_travel_reverse", "")
+
+	# Backward rolling in a forward gear keeps that gear and adds REVERSE.
+	_check(
+		_hud.update(_make_state(Vector2(0.0, -10.0), 0.0, 1), cue, UNIT_KMH),
+		"gear.backward_roll_forward_gear_update",
+		""
+	)
+	_check_text("GearLabel", GEAR_TEXT_FORWARD[0], "gear.backward_roll_forward_gear_text")
+	_check(_label("ReverseLabel").visible, "gear.backward_roll_reverse_visible", "")
+	_check_text("ReverseLabel", REVERSE_TEXT, "gear.backward_roll_reverse_text")
+
+	# Backward rolling in reverse gear shows R plus REVERSE.
+	_check(
+		_hud.update(_make_state(Vector2(0.0, -10.0), 0.0, GEAR_REVERSE_INDEX), cue, UNIT_KMH),
+		"gear.backward_roll_reverse_gear_update",
+		""
+	)
+	_check_text("GearLabel", GEAR_TEXT_REVERSE, "gear.backward_roll_reverse_gear_text")
+	_check(_label("ReverseLabel").visible, "gear.backward_roll_reverse_gear_reverse_visible", "")
+
+	# Text is the primary accessible cue: one character, always visible after a
+	# committed update, distinct from every other label's text.
+	_check(_label("GearLabel").visible, "gear.visible_after_update", "")
+	var gear_label := _label("GearLabel")
+	var font := gear_label.get_theme_font("font")
+	var font_size := gear_label.get_theme_font_size("font_size")
+	for text in GEAR_STRESS_TEXTS:
+		var text_size := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size)
+		_check(
+			text_size.x <= gear_label.size.x + 0.5 and text_size.y <= gear_label.size.y + 0.5,
+			"gear.text_fits_%s" % text,
+			"text=%s rect=%s" % [text_size, gear_label.size]
+		)
 
 
 func _check_drift_cues() -> void:
@@ -335,6 +434,9 @@ func _check_atomicity() -> void:
 	var nan_slip_cue := _make_cue(PHASE_SUSTAINED, false, NAN)
 	var high_phase_cue := _make_cue(99, false, 0.0)
 	var low_phase_cue := _make_cue(-1, false, 0.0)
+	var zero_gear_state := _make_state(Vector2(0.0, 20.0), 0.0, 0)
+	var high_gear_state := _make_state(Vector2(0.0, 20.0), 0.0, GEAR_MAX_FORWARD + 1)
+	var below_reverse_state := _make_state(Vector2(0.0, 20.0), 0.0, GEAR_REVERSE_INDEX - 1)
 
 	var cases: Array[Dictionary] = [
 		{"kind": "null_state", "state": null, "cue": cue, "units": UNIT_KMH},
@@ -346,6 +448,9 @@ func _check_atomicity() -> void:
 		{"kind": "low_phase", "state": _make_state(Vector2(0.0, 20.0)), "cue": low_phase_cue, "units": UNIT_KMH},
 		{"kind": "high_units", "state": _make_state(Vector2(0.0, 20.0)), "cue": cue, "units": 99},
 		{"kind": "low_units", "state": _make_state(Vector2(0.0, 20.0)), "cue": cue, "units": -1},
+		{"kind": "gear_zero", "state": zero_gear_state, "cue": cue, "units": UNIT_KMH},
+		{"kind": "gear_high", "state": high_gear_state, "cue": cue, "units": UNIT_KMH},
+		{"kind": "gear_below_reverse", "state": below_reverse_state, "cue": cue, "units": UNIT_KMH},
 	]
 	for index in cases.size():
 		var case: Dictionary = cases[index]
@@ -373,22 +478,35 @@ func _check_no_churn() -> void:
 
 func _check_instance_independence() -> void:
 	var cue := _make_cue(PHASE_GRIP)
-	_check(_hud.update(_make_state(Vector2(0.0, 30.0)), cue, UNIT_KMH), "independence.first_update", "")
-	_check(_second.update(_make_state(Vector2.ZERO), cue, UNIT_KMH), "independence.second_update", "")
+	_check(
+		_hud.update(_make_state(Vector2(0.0, 30.0), 0.0, 5), cue, UNIT_KMH),
+		"independence.first_update",
+		""
+	)
+	_check(
+		_second.update(_make_state(Vector2.ZERO, 0.0, GEAR_REVERSE_INDEX), cue, UNIT_KMH),
+		"independence.second_update",
+		""
+	)
 	_check_text("SpeedLabel", "108", "independence.first_text")
+	_check_text("GearLabel", GEAR_TEXT_FORWARD[4], "independence.first_gear")
 	var second_speed := _second.get_node("Contents/SpeedLabel") as Label
 	_check(second_speed.text == "0", "independence.second_text", second_speed.text)
+	var second_gear := _second.get_node("Contents/GearLabel") as Label
+	_check(second_gear.text == GEAR_TEXT_REVERSE, "independence.second_gear", second_gear.text)
+	_check(second_gear.visible, "independence.second_gear_visible", "")
 	_check(_hud.get_marker() != _second.get_marker(), "independence.distinct_markers", "")
 
 
 # --- Helpers ---------------------------------------------------------------
 
 
-func _make_state(velocity: Vector2, heading_rad: float = 0.0) -> CarState:
+func _make_state(velocity: Vector2, heading_rad: float = 0.0, gear_index: int = 1) -> CarState:
 	var state := CarState.new()
 	state.velocity_m_s = velocity
 	state.heading_rad = heading_rad
 	state.grounded = true
+	state.gear_index = gear_index
 	return state
 
 
@@ -421,6 +539,8 @@ func _snapshot() -> Dictionary:
 	return {
 		"speed": _label("SpeedLabel").text,
 		"unit": _label("UnitLabel").text,
+		"gear": _label("GearLabel").text,
+		"gear_visible": _label("GearLabel").visible,
 		"reverse": _label("ReverseLabel").text,
 		"reverse_visible": _label("ReverseLabel").visible,
 		"drift": _label("DriftLabel").text,
@@ -449,6 +569,37 @@ func _rect_within(inner: Rect2, outer: Rect2) -> bool:
 
 func _vec_close(a: Vector2, b: Vector2, tolerance: float) -> bool:
 	return absf(a.x - b.x) <= tolerance and absf(a.y - b.y) <= tolerance
+
+
+func _rects_intersect(a: Rect2, b: Rect2) -> bool:
+	var epsilon := 0.001
+	return (
+		a.position.x < b.end.x - epsilon
+		and b.position.x < a.end.x - epsilon
+		and a.position.y < b.end.y - epsilon
+		and b.position.y < a.end.y - epsilon
+	)
+
+
+func _check_no_overlap(prefix: String) -> void:
+	var marker := _hud.get_marker()
+	for first in LABEL_NAMES.size():
+		var a := _hud.get_node("Contents/%s" % LABEL_NAMES[first]) as Control
+		for second in range(first + 1, LABEL_NAMES.size()):
+			var b := _hud.get_node("Contents/%s" % LABEL_NAMES[second]) as Control
+			_check(
+				not _rects_intersect(a.get_global_rect(), b.get_global_rect()),
+				prefix + ".no_overlap_%s_%s" % [
+					LABEL_NAMES[first].to_snake_case(),
+					LABEL_NAMES[second].to_snake_case(),
+				],
+				"%s vs %s" % [a.get_global_rect(), b.get_global_rect()]
+			)
+		_check(
+			not _rects_intersect(a.get_global_rect(), marker.get_global_rect()),
+			prefix + ".no_overlap_%s_marker" % LABEL_NAMES[first].to_snake_case(),
+			"%s vs %s" % [a.get_global_rect(), marker.get_global_rect()]
+		)
 
 
 func _has_user_flag(flag: String) -> bool:
