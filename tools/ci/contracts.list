@@ -14,6 +14,7 @@
 required|project.godot|M0.2|Engine configuration and the shell's entry point.
 required|scenes/|M0.2|Boot, menu and race scenes.
 required|src/|M0.2|Typed GDScript sources.
+required|tools/car_recipe_schema/run_tests.sh|M0.2|Standard-library source-recipe checker suite; hosted CI runs it from the exact checkout.
 required|tools/smoke/|M0.4|Existing headless smoke runner used by `ci.sh test`.
 pending|tests/|M0.4|Original headless test runner, fixtures and integration scenarios.
 pending|schemas/|M0.9|Versioned handling/AI/reference/scenario schemas.

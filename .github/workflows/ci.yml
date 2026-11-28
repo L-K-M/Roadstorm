@@ -496,11 +496,11 @@ jobs:
           retention-days: 14
 
   # Contract suites (M0.5: tests must run from the checked-out candidate).
-  # These are standard-library Python/shell suites over schemas/, fixtures/
-  # and tools/python_pin. This is deliberately a separate headless job: it
-  # needs no Godot editor, no templates and no generation-service accounts,
-  # and it does not touch them. A missing or failing suite fails the job
-  # explicitly rather than being skipped silently.
+  # These are standard-library Python/shell suites over schemas/, fixtures/,
+  # tools/python_pin and tools/car_recipe_schema. This is deliberately a
+  # separate headless job: it needs no Godot editor, no templates and no
+  # generation-service accounts, and it does not touch them. A missing or
+  # failing suite fails the job explicitly rather than being skipped silently.
   contract-suites:
     name: contract suites (standard library)
     runs-on: ubuntu-latest
@@ -550,6 +550,7 @@ jobs:
           failed=0
           for _suite in \
             schemas/handling/run_tests.sh \
+            tools/car_recipe_schema/run_tests.sh \
             fixtures/observation/run_tests.sh \
             fixtures/intent/run_tests.sh \
             fixtures/scenario/run_tests.sh \

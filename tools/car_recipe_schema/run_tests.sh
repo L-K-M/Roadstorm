@@ -11,21 +11,16 @@
 #
 # Writes nothing into the repository. Logs go to a uniquely mktemp-reserved
 # private directory: under an existing caller-supplied CAR_RECIPE_WORK_DIR when
-# given, otherwise under this job's ignored work/agents/car-recipe-v11.coord-387da7b
-# directory when it exists, otherwise under ${TMPDIR:-/tmp}. No output base is
-# ever created, followed as a fixed path or deleted. Printed output is bounded
-# and a failing check exits nonzero.
+# given, otherwise under ${TMPDIR:-/tmp}. The caller's base is never created,
+# moved or deleted; only its unique child is added and left as evidence.
+# Printed output is bounded and a failing check exits nonzero.
 
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../.." && pwd)"
-JOB_DIR="$ROOT/work/agents/car-recipe-v11.coord-387da7b"
 
 if [ -n "${CAR_RECIPE_WORK_DIR:-}" ]; then
     WORK_BASE=$CAR_RECIPE_WORK_DIR
-elif [ -d "$JOB_DIR" ]; then
-    WORK_BASE=$JOB_DIR
 else
     WORK_BASE=${TMPDIR:-/tmp}
 fi
