@@ -6,7 +6,7 @@ Original version-1.1.0 handling source recipes for the three starters named in
 | Stable ID | Display name | File | Stock top speed |
 | --- | --- | --- | --- |
 | `car.sparrow` | Sparrow | `sparrow.json` | 212 km/h |
-| `car.comet` | Comet | `comet.json` | 222 km/h |
+| `car.balanced_starter` | Comet | `comet.json` | 222 km/h |
 | `car.slidewinder` | Slidewinder | `slidewinder.json` | 230 km/h |
 
 ## Status

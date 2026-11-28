@@ -1,6 +1,6 @@
 {
   "schema_version": "1.1.0",
-  "car_id": "car.comet",
+  "car_id": "car.balanced_starter",
   "display_name": "Comet",
   "revision": "0.1.0",
   "status": "provisional",
@@ -194,5 +194,5 @@
     "date_utc": "2026-11-28",
     "note": "Authored preliminary coefficients for the starter-car-recipes job; unmeasured, unfrozen, no empirical pace-spread claim."
   },
-  "content_hash": "sha256:783e1d077d6195e85ceb76cef38d2207e1c0d3a2fa778d1552109dc34ad628b4"
+  "content_hash": "sha256:c7333d11198243464d3539ba6b0a8043ed944e3ee5e01bb73e9adbb329fa0644"
 }
