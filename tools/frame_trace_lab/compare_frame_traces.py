@@ -39,6 +39,21 @@ GATE_TOLERANCE_TICKS = 1
 # process frames is deliberately small next to the 602/1204/2408 expected
 # counts, while still covering counter phase at launch and drain boundaries.
 PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE = 4
+# The driver zeroes both engine counters after its ten settle frames and stops
+# them after four drain frames. A coherent full run must therefore contain all
+# 1200 commit frames. Accept those commits plus the four drain frames and four
+# additional counter-boundary frames, for a deliberately tight allowance of
+# eight frames. The process counter is bounded to the same run across the
+# nominal 30/60/120 cadence cohort before exact integer ratio arithmetic.
+PHYSICS_FRAME_STARTUP_DRAIN_ALLOWANCE = 8
+MIN_FULL_RUN_PHYSICS_FRAMES = EXPECTED_TICKS
+MAX_FULL_RUN_PHYSICS_FRAMES = EXPECTED_TICKS + PHYSICS_FRAME_STARTUP_DRAIN_ALLOWANCE
+MIN_FULL_RUN_PROCESS_FRAMES = (
+    MIN_FULL_RUN_PHYSICS_FRAMES * min(EXPECTED_FPS) // 60 - PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE
+)
+MAX_FULL_RUN_PROCESS_FRAMES = (
+    MAX_FULL_RUN_PHYSICS_FRAMES * max(EXPECTED_FPS) // 60 + PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE
+)
 EXPECTED_ENGINE_BACKEND = "Jolt Physics"
 EXPECTED_ENGINE_VERSION = {
     "major": 4,
@@ -99,11 +114,41 @@ class InputError(Exception):
 
 
 def is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if isinstance(value, float):
+        return math.isfinite(value)
+    try:
+        float(value)
+    except (OverflowError, ValueError):
+        return False
+    return True
 
 
 def is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def safe_repr(value: Any) -> str:
+    if is_int(value) and value.bit_length() > 1024:
+        return f"<integer bit_length={value.bit_length()}>"
+    try:
+        text = repr(value)
+    except Exception:
+        return f"<{type(value).__name__}>"
+    if len(text) > 120:
+        return text[:117] + "..."
+    return text
+
+
+def safe_text(value: Any) -> str:
+    try:
+        text = str(value)
+    except Exception:
+        return f"<{type(value).__name__}>"
+    if len(text) > 240:
+        return text[:237] + "..."
+    return text
 
 
 def load_result(path: Path) -> dict[str, Any]:
@@ -192,19 +237,33 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
         err(f"{path}: timing.physics_frames is not a positive integer")
     if not is_int(process_frames) or process_frames <= 0:
         err(f"{path}: timing.process_frames is not a positive integer")
-    if (
-        is_int(nominal_fps)
-        and nominal_fps in EXPECTED_FPS
-        and is_int(physics_frames)
-        and physics_frames > 0
-        and is_int(process_frames)
-        and process_frames > 0
-    ):
-        ideal_process_frames = float(physics_frames) * float(nominal_fps) / 60.0
-        process_frame_delta = abs(float(process_frames) - ideal_process_frames)
-        measured_ratio = float(physics_frames) / float(process_frames)
+
+    physics_counter_bounded = is_int(physics_frames) and physics_frames > 0
+    process_counter_bounded = is_int(process_frames) and process_frames > 0
+    if physics_counter_bounded and not MIN_FULL_RUN_PHYSICS_FRAMES <= physics_frames <= MAX_FULL_RUN_PHYSICS_FRAMES:
+        err(
+            f"{path}: timing.physics_frames is outside the plausible full-run range "
+            f"[{MIN_FULL_RUN_PHYSICS_FRAMES}, {MAX_FULL_RUN_PHYSICS_FRAMES}] for {EXPECTED_TICKS} "
+            f"committed ticks plus at most {PHYSICS_FRAME_STARTUP_DRAIN_ALLOWANCE} "
+            "startup/drain/counter-boundary frames"
+        )
+        physics_counter_bounded = False
+    if process_counter_bounded and not MIN_FULL_RUN_PROCESS_FRAMES <= process_frames <= MAX_FULL_RUN_PROCESS_FRAMES:
+        err(
+            f"{path}: timing.process_frames is outside the plausible full-run range "
+            f"[{MIN_FULL_RUN_PROCESS_FRAMES}, {MAX_FULL_RUN_PROCESS_FRAMES}] for the nominal "
+            "30/60/120 cadence cohort"
+        )
+        process_counter_bounded = False
+    if is_int(nominal_fps) and nominal_fps in EXPECTED_FPS and physics_counter_bounded and process_counter_bounded:
+        # Exact integer form of
+        # abs(process_frames - physics_frames * nominal_fps / 60) <= 4.
+        # The bounds above keep the values small; no float conversion is used,
+        # so maliciously large JSON integers cannot overflow this comparison.
+        scaled_process_frame_delta = abs(process_frames * 60 - physics_frames * nominal_fps)
+        measured_ratio = physics_frames / process_frames
         nominal_ratio = 60.0 / float(nominal_fps)
-        if process_frame_delta > PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE:
+        if scaled_process_frame_delta > PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE * 60:
             err(
                 f"{path}: observed physics/process frame ratio {measured_ratio:.9g} "
                 f"does not match nominal {nominal_ratio:.9g} for {nominal_fps} FPS "
@@ -310,8 +369,9 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
         if not isinstance(entry, dict):
             err(f"{prefix}: trace entry is not an object")
             continue
-        if entry.get("tick") != index:
-            err(f"{prefix}: tick field is {entry.get('tick')!r}")
+        tick = entry.get("tick")
+        if not is_int(tick) or tick != index:
+            err(f"{prefix}: tick field is {safe_repr(tick)}, expected integer {index}")
         if entry.get("command_index") != index - 1:
             err(f"{prefix}: command_index is {entry.get('command_index')!r}")
         if entry.get("expected_phase") != expected_phase(index):
@@ -339,13 +399,19 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
                 err(f"{prefix}: {key} is not a boolean")
 
     computed_gate_tick = None
-    for entry in trace:
+    for index, entry in enumerate(trace, start=1):
         if not isinstance(entry, dict):
             continue
         station = entry.get("road_station_m")
         tick = entry.get("tick")
-        if is_int(tick) and is_number(station) and float(station) >= 100.0:
-            computed_gate_tick = tick
+        if (
+            is_int(tick)
+            and tick == index
+            and entry.get("status") == 0
+            and is_number(station)
+            and station >= 100.0
+        ):
+            computed_gate_tick = index
             break
     if computed_gate_tick is None:
         err(f"{path}: no committed tick_trace row reaches the 100.0 m gate")
@@ -429,6 +495,31 @@ def compare_valid_results(results: dict[int, dict[str, Any]]) -> tuple[list[str]
     return failures, metrics
 
 
+def emit_exception_failure(exc: Exception) -> int:
+    print("FAIL input presence, JSON structure, schema, coherence and fixed-schedule validation")
+    print("FAIL exact tick count, discrete counts, commands and per-tick discrete state")
+    print("FAILURES_BEGIN")
+    print(
+        "FAILURE malformed input could not be rejected by the normal validator path "
+        f"without an internal exception ({type(exc).__name__}: {safe_text(exc)})"
+    )
+    print("FAILURES_END")
+    payload = {
+        "pass": False,
+        "failure_count": 1,
+        "tolerances": {
+            "position_m": POSITION_TOLERANCE_M,
+            "speed_m_s": SPEED_TOLERANCE_M_S,
+            "heading_deg": HEADING_TOLERANCE_DEG,
+            "gate_ticks": GATE_TOLERANCE_TICKS,
+        },
+        "metrics": {},
+    }
+    print("COMPARISON_RESULT " + json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    print("COMPARISON FAIL")
+    return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="compare three frame-trace result JSON files")
     parser.add_argument("inputs", nargs=3, type=Path, metavar="RESULT_JSON")
@@ -443,7 +534,13 @@ def main() -> int:
             input_errors.append(str(exc))
             loaded.append((path, None))
             continue
-        errors = validate_result(data, path)
+        try:
+            errors = validate_result(data, path)
+        except Exception as exc:
+            errors = [
+                f"{path}: malformed input could not be validated without an internal "
+                f"exception ({type(exc).__name__}: {safe_text(exc)})"
+            ]
         if errors:
             input_errors.extend(errors)
             loaded.append((path, None))
@@ -464,7 +561,14 @@ def main() -> int:
         if missing_fps:
             failures.append(f"missing nominal fixed-fps inputs: {missing_fps}")
         if not failures:
-            failures, metrics = compare_valid_results(results)
+            try:
+                failures, metrics = compare_valid_results(results)
+            except Exception as exc:
+                failures = [
+                    "comparison could not be completed for malformed input without an internal "
+                    f"exception ({type(exc).__name__}: {safe_text(exc)})"
+                ]
+                metrics = {}
 
     if not input_errors and not failures:
         for fps in sorted(results):
@@ -533,3 +637,5 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except BrokenPipeError:
         raise SystemExit(1)
+    except Exception as exc:
+        raise SystemExit(emit_exception_failure(exc))

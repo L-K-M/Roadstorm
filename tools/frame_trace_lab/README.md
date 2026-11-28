@@ -32,9 +32,20 @@ use the expected schema and be independently coherent: 1200 consumed commands,
 records, consecutive ticks/callbacks, completion by `script complete`, no
 failure, constant zero-steer heading, fixed full-schedule command values, the
 pinned Godot 4.7.2/Jolt recording, matching host cohort fields, and a valid
-100 m gate crossing. The measured physics/process frame-counter ratio must
-match the nominal 30/60/120 cadence within an explicit +/-4 process-frame
-startup/drain tolerance, and the recorded gate tick must equal the first
+100 m gate crossing. The measured physics frame counter must plausibly cover
+the committed run before cadence evidence is used: it must lie in [1200, 1208].
+The lower bound is the 1200 committed physics frames; the explicitly chosen
+allowance is the driver's four measured drain frames plus four additional
+counter-boundary frames. The driver's ten settle frames occur before it zeroes
+the counters and are not part of that allowance. The measured process counter
+must lie in the cohort-wide range [596, 2420], derived from those physics
+bounds at nominal 30 through 120 FPS with the same +/-4 process-frame
+startup/drain tolerance. Only then is the physics/process cadence evaluated,
+using exact integer arithmetic equivalent to `abs(process_frames -
+physics_frames * nominal_fps / 60) <= 4`; this retains the genuine observed
+1204/602, 1204/1204 and 1204/2408 triples while rejecting impossible or
+overflowing counters. Each `tick_trace` row's tick must be an integer equal to
+its ordinal row, and the recorded gate tick must equal the first validated
 committed `tick_trace` row reaching 100 m. It compares exact tick counts,
 command sequences, per-tick discrete state, endpoint discrete state, and
 event/count fields.
@@ -104,12 +115,21 @@ After the positive comparison, the runner verifies that
 - `mode.nominal_fixed_fps` malformed as an array, which must produce the
   structured `COMPARISON_RESULT ... "pass":false` and `COMPARISON FAIL`
   markers rather than an exception;
+- row 357's tick changed to the JSON number `357.0` while the summary gate is
+  changed to 358, which must fail exact integer/ordinal tick validation rather
+  than being skipped by the first-crossing scan;
+- both engine frame counters replaced by 1 despite the committed 1200-tick
+  run, which must fail the plausible physics/process counter bounds;
+- `timing.physics_frames` replaced by the exact JSON integer digits for
+  `10**400`, which must fail bounded counter validation with structured output
+  and no Python traceback;
 - a mutated host-cohort field;
 - a mutated pinned engine version field;
 - a mutated pinned physics backend.
 
-Every control must exit 1, emit the structured failed-comparison markers, and
-contain its expected failure reason; a nonzero exit alone is insufficient.
+Every control must exit 1, emit the structured failed-comparison markers,
+contain its expected failure reason, and produce no Python traceback; a
+nonzero exit alone is insufficient.
 These controls are evidence that the comparator is not vacuously green. They do
 not prove the production game is frame-rate independent.
 

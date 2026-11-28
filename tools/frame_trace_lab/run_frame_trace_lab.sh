@@ -431,6 +431,20 @@ bad_type = load("full-60.json")
 bad_type["mode"]["nominal_fixed_fps"] = []
 write("bad-type-as-full-60.json", bad_type)
 
+float_gate = load("full-60.json")
+float_gate["tick_trace"][356]["tick"] = 357.0
+float_gate["gate"]["first_committed_tick"] = 358
+write("float-gate-as-full-60.json", float_gate)
+
+impossible_counters = load("full-60.json")
+impossible_counters["timing"]["physics_frames"] = 1
+impossible_counters["timing"]["process_frames"] = 1
+write("impossible-counters-as-full-60.json", impossible_counters)
+
+overflow_counter = load("full-60.json")
+overflow_counter["timing"]["physics_frames"] = 10**400
+write("overflow-counter-as-full-60.json", overflow_counter)
+
 host_mismatch = load("full-60.json")
 host_mismatch["host"]["processor_count"] += 1
 write("host-mismatch-as-full-60.json", host_mismatch)
@@ -463,7 +477,12 @@ expect_compare_failure() {
 		&& grep -q '^COMPARISON_RESULT .*"pass":false' "$LOGS/compare-$_name.log" \
 		&& grep -q '^COMPARISON FAIL$' "$LOGS/compare-$_name.log" \
 		&& grep -Fq "$_reason" "$LOGS/compare-$_name.log"; then
-		echo "compare_${_name}_rejected=yes" >>"$SUMMARY"
+		if grep -q 'Traceback (most recent call last)' "$LOGS/compare-$_name.log"; then
+			echo "compare_${_name}_rejected=no_traceback" >>"$SUMMARY"
+			CONTROLS_OK=0
+		else
+			echo "compare_${_name}_rejected=yes" >>"$SUMMARY"
+		fi
 	else
 		echo "compare_${_name}_rejected=no_rc$_rc" >>"$SUMMARY"
 		CONTROLS_OK=0
@@ -490,6 +509,14 @@ expect_compare_failure stale-gate \
 	"$RESULTS/full-30.json" "$RESULTS/stale-gate-as-full-60.json" "$RESULTS/full-120.json"
 expect_compare_failure bad-type "nominal_fixed_fps is [], expected one of" \
 	"$RESULTS/full-30.json" "$RESULTS/bad-type-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure float-gate "tick field is 357.0, expected integer 357" \
+	"$RESULTS/full-30.json" "$RESULTS/float-gate-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure impossible-counters \
+	"timing.physics_frames is outside the plausible full-run range [1200, 1208]" \
+	"$RESULTS/full-30.json" "$RESULTS/impossible-counters-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure overflow-counter \
+	"timing.physics_frames is outside the plausible full-run range [1200, 1208]" \
+	"$RESULTS/full-30.json" "$RESULTS/overflow-counter-as-full-60.json" "$RESULTS/full-120.json"
 expect_compare_failure host-cohort "host cohort differs between inputs" \
 	"$RESULTS/full-30.json" "$RESULTS/host-mismatch-as-full-60.json" "$RESULTS/full-120.json"
 expect_compare_failure engine-version "engine version is" \
