@@ -139,6 +139,34 @@ class InputEventProbe extends Node:
 			events.append({"keycode": key.keycode, "pressed": key.pressed, "echo": key.echo})
 
 
+## Test-only gearbox that forces the two post-COMMITTED refusal paths.
+## Validation swaps it into a laboratory so recovery behavior is exercised
+## without adding a production fault hook; it copies the real configuration and
+## current canonical state, then overrides only the failing step.
+class GearboxFaultInjector extends AutomaticGearbox:
+	var fault := ""
+
+	func _init(config: AutomaticGearbox.GearboxConfig, fault_name: String) -> void:
+		_forward_gear_count = config.forward_gear_count
+		_upshifts = config.upshift_speeds_m_s.duplicate()
+		_downshifts = config.downshift_speeds_m_s.duplicate()
+		_min_shift_dwell_s = config.min_shift_dwell_s
+		_reverse_exit_forward_speed_m_s = config.reverse_exit_forward_speed_m_s
+		_top_reference_speed_m_s = config.top_reference_speed_m_s
+		reset()
+		fault = fault_name
+
+	func propose(car_state, dt: float = 1.0 / 60.0):
+		if fault == "proposal_refused":
+			return null
+		return super.propose(car_state, dt)
+
+	func mirror_gear(car_state):
+		if fault == "mirror_refused":
+			return null
+		return super.mirror_gear(car_state)
+
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_holder = Node3D.new()
@@ -2326,6 +2354,45 @@ func feedback_oracle_tire_db_from_intensity(intensity: float) -> float:
 
 # --- M1.1 gearbox integration ---------------------------------------------
 
+func _throttle_commands(count: int) -> Array:
+	var commands: Array = []
+	for _index in range(count):
+		commands.append(d.throttle_command(1.0))
+	return commands
+
+
+## Full-throttle manual run until the committed forward speed exceeds
+## `threshold_m_s`, bounded by `max_ticks`. Returns the committed tick count.
+func _gearbox_warmup_until_speed(lab, threshold_m_s: float, max_ticks: int) -> int:
+	lab.set_auto_tick(false)
+	var ticks := 0
+	while ticks < max_ticks and lab.state.forward_speed_m_s() <= threshold_m_s:
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null or int(result.status) != int(AdapterScript.Status.COMMITTED):
+			break
+		if lab.failed:
+			break
+		ticks += 1
+		await get_tree().physics_frame
+	return ticks
+
+
+## Shared assertion block: after a post-commit gearbox failure, `configure()`
+## clears the failure/halt flags but must keep the body-pose block, and an
+## attempted tick must make no adapter call.
+func _gearbox_assert_pose_block_survives_configure(lab, label: String) -> void:
+	var commands := _throttle_commands(5)
+	var configured: bool = lab.configure(lab.tuning, lab.adapter_config, commands)
+	d.check(configured, label + ".configure_accepted")
+	d.check(lab.is_drive_replay_blocked(), label + ".configure_keeps_pose_block")
+	var steps_before := int(lab.steps_called)
+	var blocked = lab.step_once(d.throttle_command(1.0))
+	d.check(blocked == null, label + ".blocked_tick_refused")
+	d.check(
+		int(lab.steps_called) == steps_before,
+		label + ".blocked_tick_makes_no_adapter_call"
+	)
+
 ## One canonical AutomaticGearbox per laboratory: initial pair agreement,
 ## natural shifts with bounded event telemetry and no dithering, reverse-latch
 ## entry and backward coast after latch clear, state-only snapshot/restore with
@@ -2339,6 +2406,7 @@ func _case_gearbox_integration() -> void:
 	await _gearbox_invalid_pair_atomicity_checks()
 	await _gearbox_reconfigure_reset_checks()
 	await _gearbox_physical_trace_checks()
+	await _gearbox_failure_path_checks()
 
 
 func _gearbox_api_available(lab) -> bool:
@@ -3179,6 +3247,204 @@ func _gearbox_physical_trace_checks() -> void:
 	measurements["gearbox_trace_entries"] = reference["trace"].size()
 	measurements["gearbox_trace_mismatches"] = mismatches
 	await _teardown_lab(fresh_lab)
+
+
+# --- M1.1 post-commit gearbox failure paths -------------------------------
+
+## Forces a real COMMITTED adapter tick whose gearbox proposal or mirror then
+## refuses. The body has physically advanced before the refusal, so the
+## laboratory must restore the canonical gearbox, keep the last published pair,
+## mark the pose unreconciled and survive `configure()` without allowing another
+## adapter call.
+func _gearbox_failure_path_checks() -> void:
+	await _gearbox_proposal_refusal_checks()
+	await _gearbox_mirror_refusal_checks()
+
+
+func _gearbox_proposal_refusal_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var warmed: bool = await _gearbox_manual_run(lab, _throttle_commands(40))
+	d.check(warmed, "gearbox.failure.proposal.warmup_committed")
+	if not warmed:
+		await _teardown_lab(lab)
+		return
+	var state_before := d.snapshot_state(lab.state)
+	var box_before: Dictionary = lab.get_gearbox_snapshot()
+	var gear_before := int(lab.state.gear_index)
+	var body_before: Transform3D = lab.body.global_transform
+	var steps_before := int(lab.steps_called)
+	var refusals_before := int(lab.get_gearbox_telemetry()["gearbox_refusals"])
+	var injector := GearboxFaultInjector.new(
+		lab.make_laboratory_gearbox_config(), "proposal_refused"
+	)
+	injector.restore_state(lab.gearbox.get_state())
+	lab.gearbox = injector
+	var result = lab.step_once(d.throttle_command(1.0))
+	d.check(result != null, "gearbox.failure.proposal.result_present")
+	if result != null:
+		d.check(
+			int(result.status) == int(AdapterScript.Status.COMMITTED),
+			"gearbox.failure.proposal.physical_commit_happened"
+		)
+	d.check(lab.failed, "gearbox.failure.proposal.lab_failed: " + str(lab.failure_reason))
+	d.check(lab.halted, "gearbox.failure.proposal.lab_halted")
+	d.check(lab.is_drive_replay_blocked(), "gearbox.failure.proposal.body_pose_marked_stale")
+	d.check(
+		str(lab.get_drive_replay_block_reason()) != "",
+		"gearbox.failure.proposal.block_reason_present"
+	)
+	d.check(
+		int(lab.get_gearbox_telemetry()["gearbox_refusals"]) == refusals_before + 1,
+		"gearbox.failure.proposal.refusal_counted"
+	)
+	d.check(
+		int(lab.steps_called) == steps_before + 1,
+		"gearbox.failure.proposal.exactly_one_adapter_call"
+	)
+	d.check(
+		d.snapshot_state(lab.state) == state_before,
+		"gearbox.failure.proposal.published_pair_untouched"
+	)
+	d.check(
+		int(lab.state.gear_index) == gear_before,
+		"gearbox.failure.proposal.published_gear_unchanged"
+	)
+	d.check(
+		lab.get_gearbox_snapshot() == box_before,
+		"gearbox.failure.proposal.canonical_restored"
+	)
+	var travel: float = lab.body.global_transform.origin.distance_to(body_before.origin)
+	d.check(
+		travel > 1e-4,
+		"gearbox.failure.proposal.nonzero_physical_travel (travel=%.6f)" % travel
+	)
+	# A failed laboratory refuses a drive restore explicitly, with no live pair
+	# mutation.
+	var restore_pair = lab.snapshot_drive_state()
+	var restored: bool = lab.restore_drive_snapshot(restore_pair)
+	d.check(not restored, "gearbox.failure.restore_on_failed_lab_refused")
+	d.check(
+		d.snapshot_state(lab.state) == state_before,
+		"gearbox.failure.failed_restore_no_published_change"
+	)
+	d.check(
+		lab.get_gearbox_snapshot() == box_before,
+		"gearbox.failure.failed_restore_no_canonical_change"
+	)
+	d.check(
+		str(lab.get_drive_restore_error()) != "",
+		"gearbox.failure.failed_restore_reason_recorded"
+	)
+	d.check(
+		lab.is_drive_replay_blocked(),
+		"gearbox.failure.failed_restore_keeps_pose_block"
+	)
+	_gearbox_assert_pose_block_survives_configure(lab, "gearbox.failure.proposal")
+	await _teardown_lab(lab)
+
+
+func _gearbox_mirror_refusal_checks() -> void:
+	var lab = _make_lab([])
+	if lab == null:
+		return
+	if not _gearbox_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	var warmup_ticks: int = await _gearbox_warmup_until_speed(lab, 8.5, 300)
+	var speed: float = lab.state.forward_speed_m_s()
+	d.check(
+		warmup_ticks > 0 and speed > 8.5,
+		"gearbox.failure.mirror.warmup_above_first_upshift (ticks=%d speed=%.3f)"
+			% [warmup_ticks, speed]
+	)
+	if speed <= 8.5:
+		await _teardown_lab(lab)
+		return
+	# Install a known, internally consistent pre-tick pair so the abandoned
+	# proposal would visibly advance the canonical gear (speed is above the first
+	# upshift threshold). The rollback must put exactly this state back.
+	var inner: AutomaticGearbox = lab.gearbox
+	var pre_box := GearboxScript.GearboxState.new()
+	pre_box.gear_index = 1
+	pre_box.shift_cooldown_s = 0.0
+	pre_box.normalized_rpm = 0.0
+	d.check(inner.restore_state(pre_box), "gearbox.failure.mirror.pre_tick_pair_installed")
+	lab.state.gear_index = 1
+	var state_before := d.snapshot_state(lab.state)
+	var box_before: Dictionary = lab.get_gearbox_snapshot()
+	var events_before: Array = lab.get_gear_shift_events().duplicate()
+	var body_before: Transform3D = lab.body.global_transform
+	var steps_before := int(lab.steps_called)
+	var injector := GearboxFaultInjector.new(
+		lab.make_laboratory_gearbox_config(), "mirror_refused"
+	)
+	injector.restore_state(inner.get_state())
+	lab.gearbox = injector
+	var result = lab.step_once(d.throttle_command(1.0))
+	d.check(result != null, "gearbox.failure.mirror.result_present")
+	if result != null:
+		d.check(
+			int(result.status) == int(AdapterScript.Status.COMMITTED),
+			"gearbox.failure.mirror.physical_commit_happened"
+		)
+	d.check(lab.failed, "gearbox.failure.mirror.lab_failed: " + str(lab.failure_reason))
+	d.check(lab.halted, "gearbox.failure.mirror.lab_halted")
+	d.check(lab.is_drive_replay_blocked(), "gearbox.failure.mirror.body_pose_marked_stale")
+	d.check(
+		str(lab.get_drive_replay_block_reason()) != "",
+		"gearbox.failure.mirror.block_reason_present"
+	)
+	d.check(
+		int(lab.steps_called) == steps_before + 1,
+		"gearbox.failure.mirror.exactly_one_adapter_call"
+	)
+	# The canonical gear must be put back, not left advanced by the abandoned
+	# proposal.
+	var canonical_after: Dictionary = lab.get_gearbox_snapshot()
+	d.check(
+		canonical_after == box_before,
+		"gearbox.failure.mirror.canonical_gear_and_dwell_restored"
+	)
+	d.check(
+		int(canonical_after["gear_index"]) == 1,
+		"gearbox.failure.mirror.canonical_gear_is_pre_tick"
+	)
+	d.check_exact_float(
+		float(canonical_after["shift_cooldown_s"]), 0.0,
+		"gearbox.failure.mirror.canonical_dwell_is_pre_tick"
+	)
+	d.check_exact_float(
+		float(canonical_after["normalized_rpm"]), 0.0,
+	"gearbox.failure.mirror.canonical_rpm_is_pre_tick"
+	)
+	d.check(
+		d.snapshot_state(lab.state) == state_before,
+		"gearbox.failure.mirror.published_pair_untouched"
+	)
+	d.check(
+		int(lab.state.gear_index) == int(box_before["gear_index"]),
+		"gearbox.failure.mirror.published_gear_matches_canonical"
+	)
+	d.check(
+		lab.get_gear_shift_events() == events_before,
+		"gearbox.failure.mirror.no_shift_event_published"
+	)
+	var travel: float = lab.body.global_transform.origin.distance_to(body_before.origin)
+	d.check(
+		travel > 1e-4,
+		"gearbox.failure.mirror.nonzero_physical_travel (travel=%.6f)" % travel
+	)
+	_gearbox_assert_pose_block_survives_configure(lab, "gearbox.failure.mirror")
+	await _teardown_lab(lab)
 
 
 # --- Bounded waits and synthetic input -------------------------------------

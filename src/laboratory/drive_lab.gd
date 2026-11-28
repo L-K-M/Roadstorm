@@ -65,16 +65,20 @@ extends Node3D
 ##
 ## Automatic-gearbox integration (M1.1 bounded slice): exactly one
 ## `AutomaticGearbox` instance owns gear indication. Every accepted
-## `MotorBodyAdapter` COMMITTED tick proposes exactly once from that committed
-## physical `CarState` at fixed `DT`, mirrors the canonical gear into the
-## published `CarState`, and only then advances the published pair, telemetry,
-## presentation and audio. A gearbox proposal or mirror refusal is an atomic
-## failure path: the adapter commit is irreversible, so the laboratory records
-## an explicit bounded reason, does not publish the unmirrored record as its
-## committed pair, keeps the last successfully published pair untouched, and
-## halts without another adapter call. That last pair remains internally
-## consistent but is deliberately not reconciled with the irreversibly
-## advanced body; validation proves no further adapter call happens.
+## `MotorBodyAdapter` COMMITTED tick retains the canonical gearbox state, then
+## proposes exactly once from that committed physical `CarState` at fixed `DT`,
+## mirrors the canonical gear into the published `CarState`, and only then
+## advances the published pair, telemetry, presentation and audio. A proposal,
+## mirror, mirrored-agreement or committed-state refusal is an atomic failure
+## path: the adapter commit is irreversible, so the laboratory restores the
+## canonical gearbox to its retained pre-tick state, keeps the last published
+## pair untouched, marks the body pose unreconciled, and halts without another
+## adapter call. The physical body is never rolled back or teleported;
+## `configure()` clears failure/halt flags but not the pose block, so no later
+## tick can reuse the old published pair with the advanced body. That last pair
+## remains internally consistent but is deliberately not reconciled with the
+## irreversibly advanced body; validation proves no further adapter call
+## happens.
 ##
 ## Replay/restore is explicitly state-only in this slice.
 ## `snapshot_drive_state()` captures the complete `CarState` + `GearboxState`
@@ -106,6 +110,10 @@ const MAX_GEAR_SHIFT_EVENTS := 128
 ## Halt reason used after a state-only drive restore, which cannot advance the
 ## simulation until a body-pose reconciliation operation exists.
 const DRIVE_STATE_ONLY_HALT := "state-only drive restore awaits body pose reconciliation"
+## Block reason used after a COMMITTED physical tick whose gearbox pair could
+## not be published. The body has already advanced and is never rolled back;
+## ticks stay blocked until a future body-pose reconciliation operation exists.
+const DRIVE_BODY_POSE_STALE_HALT := "committed physical tick left the body pose unreconciled"
 
 ## Complete state-only drive replay record: one committed `CarState` and the
 ## canonical `GearboxState` captured as a pair. The pair carries the shift
@@ -186,9 +194,13 @@ var gearbox_failure_reason := ""
 var drive_restores := 0
 var drive_restore_refusals := 0
 var drive_restore_refusal_reason := ""
-## True after a state-only drive restore. Cleared only by a future body-pose
-## reconciliation operation, which this slice deliberately does not implement.
+## True after a state-only drive restore or a post-commit gearbox failure.
+## Cleared only by a future body-pose reconciliation operation, which this
+## slice deliberately does not implement.
 var _drive_body_pose_stale := false
+## Explicit reason `_drive_body_pose_stale` is set, readable through
+## `get_drive_replay_block_reason()`.
+var _drive_body_pose_block_reason := ""
 
 var state: CarState = null
 var last_result: MotorBodyAdapter.Result = null
@@ -649,11 +661,17 @@ func snapshot_drive_state() -> DriveSnapshot:
 ## Restores a complete `DriveSnapshot` pair atomically. The whole pair is
 ## validated against a temporary gearbox before either live record changes;
 ## an invalid or incomplete pair returns false and leaves both records
-## untouched. A valid restore repairs `CarState.gear_index` from the canonical
-## gearbox gear, publishes both records together, then blocks all ticks because
-## the body pose is deliberately not restored. There is intentionally no
+## untouched. A laboratory that has already failed refuses explicitly: a
+## restore cannot undo the recorded failure and must not mutate the live pair.
+## A valid restore repairs `CarState.gear_index` from the canonical gearbox
+## gear, publishes both records together, then blocks all ticks because the
+## body pose is deliberately not restored. There is intentionally no
 ## CarState-only restore: dwell and rpm would be lost.
 func restore_drive_snapshot(snapshot) -> bool:
+	if failed:
+		return _reject_drive_restore(
+			"cannot restore a drive snapshot into a laboratory that has already failed"
+		)
 	if snapshot == null or not (snapshot is DriveSnapshot):
 		return _reject_drive_restore("snapshot is absent or is not a DriveSnapshot")
 	if snapshot.car_state == null or snapshot.gearbox_state == null:
@@ -677,7 +695,7 @@ func restore_drive_snapshot(snapshot) -> bool:
 	state = published
 	last_committed_physical = null
 	drive_restores += 1
-	_drive_body_pose_stale = true
+	_mark_body_pose_stale(DRIVE_STATE_ONLY_HALT)
 	_running = false
 	if not failed and not halted:
 		halted = true
@@ -685,19 +703,16 @@ func restore_drive_snapshot(snapshot) -> bool:
 	return true
 
 
-## True while a state-only drive restore has left the body pose unreconciled.
-## `step_once()` refuses every tick in this state until a future body-pose
-## reconciliation operation exists.
+## True while the body pose is unreconciled after a state-only restore or a
+## post-commit gearbox failure. `step_once()` refuses every tick in this state
+## until a future body-pose reconciliation operation exists.
 func is_drive_replay_blocked() -> bool:
 	return _drive_body_pose_stale
 
 
-## Explicit reason ticks are blocked after a state-only restore, empty when
-## ticks are allowed.
+## Explicit reason ticks are blocked, empty when ticks are allowed.
 func get_drive_replay_block_reason() -> String:
-	if _drive_body_pose_stale:
-		return DRIVE_STATE_ONLY_HALT
-	return ""
+	return _drive_body_pose_block_reason
 
 
 ## Last drive-restore refusal reason, empty when no restore was refused.
@@ -745,37 +760,45 @@ func step_once(command) -> MotorBodyAdapter.Result:
 	last_result = result
 	if result.status == MotorBodyAdapter.Status.COMMITTED:
 		if result.committed_state == null or not result.committed_state.is_finite():
+			# The adapter already advanced the body for this COMMITTED tick, so
+			# even a missing or nonfinite record leaves the pose unreconciled. No
+			# gearbox proposal happened; there is no canonical state to restore.
+			_mark_body_pose_stale(DRIVE_BODY_POSE_STALE_HALT)
 			_fail("nonfinite committed state")
 			return result
 		# The adapter commit is irreversible from here: the body transform has
-		# already advanced. Remember the physical record for diagnostics, then
-		# obtain exactly one gearbox proposal and its canonical gear mirror. A
-		# refusal below leaves `state` at the last successfully published pair;
-		# it never publishes an unmirrored record as the committed pair.
+		# already advanced. Remember the physical record for diagnostics and
+		# retain the canonical gearbox state. If any later gearbox step cannot
+		# publish a valid mirrored pair, the canonical gearbox returns to this
+		# pre-tick state and `state` stays at the last successfully published
+		# pair; the body pose is marked unreconciled and the run halts without
+		# publishing an unmirrored or mismatched record as the committed pair.
 		var committed := result.committed_state
 		last_committed_physical = committed.copy()
+		var pre_tick_gearbox := gearbox.get_state()
 		var proposal := gearbox.propose(committed, DT)
 		if proposal == null:
 			_reject_gearbox_step(
 				"gearbox proposal refused after the irreversible COMMITTED physical tick; "
-				+ "canonical gearbox is unchanged and no CarState was published"
+				+ _rollback_pre_tick_gearbox(pre_tick_gearbox)
+				+ " and no CarState was published"
 			)
 			return result
 		var published := gearbox.mirror_gear(committed)
 		if published == null:
 			_reject_gearbox_step(
-				(
-					"gearbox mirror refused after the irreversible COMMITTED physical tick; "
-					+ "canonical gear advanced to %d but no CarState was published"
-				) % int(proposal.gear_index)
+				"gearbox mirror refused after the irreversible COMMITTED physical tick; "
+				+ _rollback_pre_tick_gearbox(pre_tick_gearbox)
+				+ " and no CarState was published"
 			)
 			return result
 		if int(published.gear_index) != int(proposal.gear_index) or not published.is_finite():
 			_reject_gearbox_step(
 				(
 					"gearbox mirror disagreed with the canonical gear after the irreversible "
-					+ "COMMITTED physical tick (canonical=%d mirrored=%d); no mismatched "
-					+ "CarState was published"
+					+ "COMMITTED physical tick (canonical=%d mirrored=%d); "
+					+ _rollback_pre_tick_gearbox(pre_tick_gearbox)
+					+ " and no mismatched CarState was published"
 				) % [int(proposal.gear_index), int(published.gear_index)]
 			)
 			return result
@@ -1173,9 +1196,11 @@ func _reset_run_state() -> void:
 	rear_view_holds = 0
 	last_result = null
 	# Reconfiguration starts a fresh complete pair: canonical gear 1, zero
-	# dwell and the published mirror agreeing with it. A prior state-only
-	# restore's body-pose block is deliberately NOT cleared here; no body-pose
-	# reconciliation operation exists yet.
+	# dwell and the published mirror agreeing with it. A body-pose block from
+	# a state-only restore or a post-commit gearbox failure is deliberately NOT
+	# cleared here: configure() clears failure/halt flags but no body-pose
+	# reconciliation operation exists yet, so reusing the old published pair
+	# with an advanced body must stay impossible.
 	gear_shift_events = []
 	gear_shift_events_dropped = 0
 	gearbox_refusals = 0
@@ -1223,12 +1248,33 @@ func _record_shift_event(proposal: AutomaticGearbox.GearboxProposal) -> void:
 	})
 
 
+## Puts the canonical gearbox back to the retained pre-tick state after a
+## COMMITTED physical tick whose gearbox pair could not be published. Returns
+## a clause for the bounded failure reason. The physical body is never touched.
+func _rollback_pre_tick_gearbox(pre_tick) -> String:
+	if gearbox == null or pre_tick == null:
+		return "canonical gearbox RESTORE FAILED"
+	if not gearbox.restore_state(pre_tick):
+		return "canonical gearbox RESTORE FAILED"
+	return "canonical gearbox was restored to its pre-tick state"
+
+
+## Records an unreconcilable body pose: the physical body has advanced past the
+## last published pair and no reconciliation operation exists. Ticks stay
+## blocked even after `configure()`, which clears only failure/halt flags.
+func _mark_body_pose_stale(reason: String) -> void:
+	_drive_body_pose_stale = true
+	_drive_body_pose_block_reason = reason
+
+
 ## Bounded explicit gearbox failure. The physical tick is already committed
-## and cannot be rolled back; this records the reason and halts the run without
-## publishing the unmirrored record as the committed pair.
+## and cannot be rolled back; this records the reason, marks the body pose
+## unreconciled and halts the run without publishing the unmirrored record as
+## the committed pair.
 func _reject_gearbox_step(reason: String) -> void:
 	gearbox_refusals += 1
 	gearbox_failure_reason = reason
+	_mark_body_pose_stale(DRIVE_BODY_POSE_STALE_HALT)
 	_fail(reason)
 
 

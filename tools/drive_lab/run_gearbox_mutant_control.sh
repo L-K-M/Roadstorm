@@ -221,8 +221,19 @@ echo "[mutant-control] mutation=$mutation validator rc=$validator_rc"
 grep '"case":"gearbox_integration"' "$validator_log" | tail -n 1
 
 if [ -n "$log_file" ]; then
-	tail -c 2097152 "$validator_log" >"$log_file" || status=1
-	echo "[mutant-control] validator log copied to $log_file (bounded to 2 MiB)"
+	# Create the caller's log exclusively: an existing regular file, dangling
+	# symlink or symlink to a file must be refused without being truncated,
+	# followed or replaced. The pre-check covers the common cases; noclobber on
+	# the redirection closes the check/create race without following a symlink.
+	if [ -e "$log_file" ] || [ -L "$log_file" ]; then
+		echo "mutant-control: --log path already exists, refusing to touch it: $log_file" >&2
+		status=1
+	elif ( set -C; tail -c 2097152 "$validator_log" >"$log_file" ) 2>/dev/null; then
+		echo "[mutant-control] validator log copied to $log_file (bounded to 2 MiB)"
+	else
+		echo "mutant-control: could not create $log_file exclusively" >&2
+		status=1
+	fi
 fi
 if [ "$keep_scratch" -eq 1 ]; then
 	echo "[mutant-control] logs kept in $stage"

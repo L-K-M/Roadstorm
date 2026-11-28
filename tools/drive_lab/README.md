@@ -168,11 +168,23 @@ replay completion. After a restore, `is_drive_replay_blocked()` stays true and
 reconciliation operation exists. Restoring a `CarState` alone is not offered;
 shift dwell and canonical rpm would be lost.
 
-A gearbox proposal or mirror refusal after an irreversible adapter COMMITTED
-tick is reported as an explicit bounded failure and halts the run. The
-unmirrored physical record is never published as the committed pair, and no
-further adapter call is made; the last successfully published pair is not
-reconciled with the irreversibly advanced body.
+A gearbox proposal, mirror or mirrored-agreement refusal after an irreversible
+adapter COMMITTED tick is reported as an explicit bounded failure and halts
+the run. The laboratory retains the canonical gearbox state before proposing,
+restores it on refusal, and never publishes the unmirrored physical record as
+the committed pair. The body has already advanced, so the laboratory marks the
+body pose unreconciled: `configure()` clears the failure/halt flags but keeps
+`is_drive_replay_blocked()`, and no further adapter call is made. The physical
+body is never rolled back or teleported, and the last successfully published
+pair is deliberately not reconciled with the irreversibly advanced body.
+Restoring a snapshot into a laboratory that has already failed is refused
+explicitly and leaves both live records untouched.
+
+The failure-path checks inject a test-only gearbox that forces a proposal
+refusal and a mirror refusal on a real COMMITTED tick. They require nonzero
+physical travel, the retained pre-tick canonical gear/dwell/rpm back, the last
+published pair untouched, no shift event for the unpublished tick, and a
+body-pose block that survives `configure()` without consuming an adapter call.
 
 Gear selection drives no audio or HUD display here. This slice wires neither
 shift sound nor a gear readout, and claims none.
@@ -193,8 +205,11 @@ timeout 600 lockf -k -w -t 600 work/agents/coordinator/godot-test.lock \
 
 Repeat with `--mutation proposal_refused` to exercise the refusal path. Exit 0
 means the mutation was detected (`gearbox_integration` failed behaviourally);
-exit 1 means it was not. The script stages its own private copy, imports under
-a watchdog, and never mutates the real checkout.
+exit 1 means it was not. `--log` creates a new file exclusively and refuses an
+existing regular file, dangling symlink or symlink target without touching it;
+the guard is checked against positive fresh logs and negative preexisting-file
+and preexisting-symlink paths. The script stages its own private copy, imports
+under a watchdog, and never mutates the real checkout.
 
 Scope: one car, one flat straight, structural and behavioural headless checks.
 The validator does not prove rendering, visual readability, HUD contrast or
