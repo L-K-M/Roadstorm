@@ -43,8 +43,12 @@ The source decimal to binary64 boundary is defined once, here:
 * A literal is refused with a path-level finding when it has no binary64
   representation the source text can be recovered from: out of range
   (``non-finite-number``, for example ``1e999`` or a 400-digit integer) or not
-  round-trip stable (``number-not-representable``, for example
-  ``1.00000000000000001`` or the underflowing ``1e-400``).
+  exactly recoverable (``number-not-representable``). Decimals must be
+  round-trip stable (for example ``1.00000000000000001`` or the underflowing
+  ``1e-400``); integers must convert back exactly, so an in-range but
+  precision-losing integer such as the 309-digit ``10**308`` is refused even
+  though ``float(10**308)`` is finite. ``2**300`` is exactly representable and
+  accepted.
 * ``to_binary64`` is the single place where a parsed decimal becomes a Python
   ``float``. The canonical hash is taken over that converted document, so
   ``30`` and ``30.0`` stay distinct (integer versus floating syntax) while
@@ -75,6 +79,13 @@ Deliberate limitations (documented in README.md):
   are semantic checks the schema cannot fully express.
 * It cannot make unknown facts known. Missing or null values are reported,
   never filled in and never guessed.
+* Documents nest at most ``MAX_NESTING_DEPTH`` containers. Deeper input is
+  refused with a ``nesting-too-deep`` finding before any recursive traversal or
+  canonicalization runs, so a hostile file cannot exhaust the interpreter
+  stack. Parse-time ``decimal`` and recursion failures become findings too.
+* ``unknowns`` paths are matched as whole strings and their array indices are
+  digit-bounded and range-checked before conversion, so a malformed path is
+  reported instead of raising.
 
 Usage as a library::
 
@@ -106,6 +117,11 @@ SUPPORTED_VERSIONS = ("1.0.0", "1.1.0")
 DEFAULT_MODE = "motor-ready"
 MODES = ("schema", "motor-ready")
 
+# Maximum JSON container nesting accepted by the checker. Parsing, traversal,
+# canonicalization and hashing all stop at this depth so a pathological file is
+# refused instead of exhausting the interpreter stack.
+MAX_NESTING_DEPTH = 200
+
 RECIPE_SCHEMA_V1_0_0 = "handling_config.schema.json"
 RECIPE_SCHEMA_V1_1_0 = "handling_config_v1_1.schema.json"
 
@@ -118,8 +134,12 @@ REVISION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 # JSON-Schema-style match above would accept, such as a trailing line feed.
 DEFINITION_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_-]+)*$")
 UNKNOWN_PATH_RE = re.compile(
-    r"^[a-z_][a-z0-9_]*(?:\[[0-9]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[0-9]+\])?)*$"
+    r"[a-z_][a-z0-9_]*(?:\[[0-9]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[0-9]+\])?)*"
 )
+# Array indices in unknowns paths are bounded before integer conversion, so a
+# multi-thousand-digit index cannot reach CPython's int-string limit. Nine
+# digits covers any array this process can materialize.
+MAX_UNKNOWN_INDEX_DIGITS = 9
 # A collected path segment that an unknowns entry can spell. Anything else is
 # written as a bracketed quoted segment that no unknowns path can name.
 PATH_SEGMENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
@@ -326,6 +346,22 @@ def load_json_document(path: Path) -> tuple[dict[str, Any] | None, list[Finding]
     except ValueError as exc:
         findings.append(Finding("", "invalid-json", f"not a strict JSON document: {exc}"))
         return None, findings
+    except ArithmeticError as exc:
+        # decimal.InvalidOperation from an exponent the decimal machinery cannot
+        # construct. It is a boundary defect, not a traceback.
+        findings.append(
+            Finding("", "invalid-number", f"a number has no usable decimal value: {exc}")
+        )
+        return None, findings
+    except RecursionError:
+        findings.append(
+            Finding(
+                "",
+                "nesting-too-deep",
+                f"JSON nesting exceeds what the parser can materialize (limit {MAX_NESTING_DEPTH})",
+            )
+        )
+        return None, findings
     if not isinstance(document, dict):
         findings.append(Finding("", "not-an-object", "top-level JSON value is not an object"))
         return None, findings
@@ -367,6 +403,10 @@ def canonical_json(document: Mapping[str, Any]) -> str:
         raise CanonicalizationError(f"cannot canonicalize document: {exc}") from exc
     except TypeError as exc:
         raise CanonicalizationError(f"cannot canonicalize document: {exc}") from exc
+    except RecursionError as exc:
+        raise CanonicalizationError(
+            f"cannot canonicalize document nested deeper than {MAX_NESTING_DEPTH} containers"
+        ) from exc
 
 
 def to_binary64(value: Any) -> Any:
@@ -401,7 +441,12 @@ def to_binary64(value: Any) -> Any:
 def content_hash_of(document: Mapping[str, Any]) -> str:
     """SHA-256 over canonical JSON of the file with content_hash removed."""
     payload = {key: value for key, value in document.items() if key != "content_hash"}
-    text = canonical_json(to_binary64(payload))
+    try:
+        text = canonical_json(to_binary64(payload))
+    except RecursionError as exc:
+        raise CanonicalizationError(
+            f"document is nested deeper than the supported {MAX_NESTING_DEPTH} containers"
+        ) from exc
     try:
         encoded = text.encode("utf-8")
     except UnicodeEncodeError as exc:
@@ -420,7 +465,12 @@ def _number_text(value: Any) -> str:
     Long literals are truncated so one 400-digit integer cannot flood the CLI
     output; the path already identifies the member.
     """
-    text = str(value) if isinstance(value, Decimal) else repr(value)
+    try:
+        text = str(value) if isinstance(value, Decimal) else repr(value)
+    except (ValueError, OverflowError):
+        # CPython bounds int/str conversion at 4300 digits by default; a direct
+        # API caller can still construct a longer integer.
+        return f"<{type(value).__name__} too long to print>"
     if len(text) <= 48:
         return text
     return f"{text[:24]}...{text[-16:]} ({len(text)} characters)"
@@ -473,6 +523,22 @@ def _is_round_trip_stable(value: Decimal) -> bool:
     if converted is None:
         return False
     return value == Decimal(repr(converted)) or value == Decimal(converted)
+
+
+def _is_exactly_representable_integer(value: int) -> bool:
+    """Whether an integer literal survives binary64 conversion unchanged.
+
+    An in-range integer such as ``10**308`` converts to a finite float but not
+    back to the same integer, so the typed runtime would silently lose source
+    precision. Powers of two and every integer up to ``2**53`` convert exactly.
+    """
+    converted = _finite_float(value)
+    if converted is None:
+        return False
+    try:
+        return int(converted) == value
+    except (OverflowError, ValueError):
+        return False
 
 
 def _is_number(value: Any) -> bool:
@@ -667,6 +733,29 @@ def _check_boolean(value: Any, path: str, findings: list[Finding], code: str = "
     return True
 
 
+def _parse_array_index(digits: str) -> int | None:
+    """Parse an array-index segment, bounded before integer conversion.
+
+    Returns None for anything that is not a plain ASCII digit string within the
+    documented bound, so neither CPython's int-string limit nor a negative or
+    otherwise malformed suffix can raise while resolving a path.
+    """
+    if len(digits) > MAX_UNKNOWN_INDEX_DIGITS or not digits.isascii() or not digits.isdigit():
+        return None
+    try:
+        return int(digits)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _has_bounded_array_indices(path: str) -> bool:
+    """Whether every ``[index]`` segment fits the documented digit bound."""
+    return all(
+        len(digits) <= MAX_UNKNOWN_INDEX_DIGITS
+        for digits in re.findall(r"\[([0-9]+)\]", path)
+    )
+
+
 def _resolve_path(document: Mapping[str, Any], path: str) -> tuple[Any, bool]:
     """Resolve a dotted path with optional [index] segments; return (value, found)."""
     node: Any = document
@@ -674,7 +763,11 @@ def _resolve_path(document: Mapping[str, Any], path: str) -> tuple[Any, bool]:
         name, index = token, None
         if "[" in token:
             name, _, rest = token.partition("[")
-            index = int(rest.rstrip("]"))
+            if not rest.endswith("]"):
+                return None, False
+            index = _parse_array_index(rest[:-1])
+            if index is None:
+                return None, False
         if isinstance(node, Mapping) and name in node:
             node = node[name]
         elif isinstance(node, list) and name.isdigit() and int(name) < len(node):
@@ -730,6 +823,51 @@ def _declared_path_covers(declared: str, null_path: str) -> bool:
     return False
 
 
+def _deepest_nesting(document: Mapping[str, Any]) -> tuple[int, str]:
+    """Maximum container nesting and the first path past ``MAX_NESTING_DEPTH``.
+
+    Iterative, so it can measure a document the parser already materialized
+    without adding interpreter frames. Descent stops one level past the limit;
+    only the measured depth decides whether the document is refused.
+    """
+    deepest = 0
+    limit_path = ""
+    stack: list[tuple[Any, str, int, str]] = [(document, "", 0, "")]
+    while stack:
+        node, path, depth, top_path = stack.pop()
+        if depth > deepest:
+            deepest = depth
+        if depth > MAX_NESTING_DEPTH:
+            if not limit_path:
+                # Name the top-level member holding the deep subtree, not the
+                # 200-index path down to it.
+                limit_path = top_path
+            continue
+        children: list[tuple[Any, str, int, str]] = []
+        if isinstance(node, Mapping):
+            children = [
+                (
+                    item,
+                    _child(path, _path_segment(key)),
+                    depth + 1,
+                    top_path or _child(path, _path_segment(key)),
+                )
+                for key, item in node.items()
+            ]
+        elif isinstance(node, list):
+            children = [
+                (
+                    item,
+                    _index(path, index),
+                    depth + 1,
+                    top_path or _index(path, index),
+                )
+                for index, item in enumerate(node)
+            ]
+        stack.extend(reversed(children))
+    return deepest, limit_path
+
+
 def _scan_representability(value: Any, path: str, findings: list[Finding]) -> None:
     """Refuse, at its own path, anything that has no strict-JSON representation.
 
@@ -770,6 +908,16 @@ def _scan_representability(value: Any, path: str, findings: list[Finding]) -> No
                     "number-not-representable",
                     f"decimal literal {_number_text(value)} is not recoverable from its binary64 "
                     f"value {converted!r}; the source text and the baked value would disagree",
+                )
+            )
+        elif isinstance(value, int) and not _is_exactly_representable_integer(value):
+            findings.append(
+                Finding(
+                    path,
+                    "number-not-representable",
+                    f"integer literal {_number_text(value)} is not exactly representable as "
+                    f"binary64 (it rounds to {converted!r}); the source text and the baked "
+                    "value would disagree",
                 )
             )
         return
@@ -1518,9 +1666,17 @@ def _validate_unknowns(document: Mapping[str, Any], findings: list[Finding]) -> 
             continue
         _check_closed(entry, path, UNKNOWN_ENTRY_MEMBERS, findings, RECIPE_SCHEMA_V1_0_0)
         unknown_path = entry.get("path")
-        if not isinstance(unknown_path, str) or not UNKNOWN_PATH_RE.match(unknown_path):
+        if not isinstance(unknown_path, str) or not UNKNOWN_PATH_RE.fullmatch(unknown_path):
             findings.append(
                 Finding(_child(path, "path"), "bad-unknown-path", "path must be a dotted path with optional [index] segments")
+            )
+        elif not _has_bounded_array_indices(unknown_path):
+            findings.append(
+                Finding(
+                    _child(path, "path"),
+                    "bad-unknown-path",
+                    f"array index may use at most {MAX_UNKNOWN_INDEX_DIGITS} digits",
+                )
             )
         else:
             paths.append(unknown_path)
@@ -1660,18 +1816,24 @@ def _validate_motor_ready(document: Mapping[str, Any], findings: list[Finding]) 
             continue
         previous_speed: float | None = None
         for index, point in enumerate(value):
-            speed = point.get("speed_m_s") if isinstance(point, dict) else None
-            if not _is_finite_number(speed):
+            speed_value = point.get("speed_m_s") if isinstance(point, dict) else None
+            if not _is_finite_number(speed_value):
                 # Malformed points are already reported by schema validation;
                 # ordering compares the authored finite speeds only.
                 continue
+            # Compare the binary64 values the mapper will publish, not the
+            # authored Python numbers: distinct integers such as 2**53 and
+            # 2**53 + 1 collapse to one float and must not pass as strictly
+            # increasing. The representability scan has already refused any
+            # literal that cannot survive this conversion exactly.
+            speed = float(speed_value)
             if previous_speed is not None and speed <= previous_speed:
                 findings.append(
                     Finding(
                         f"{_index(path, index)}.speed_m_s",
                         "motor-input-order",
-                        f"speed {_number_text(speed)} does not strictly exceed previous speed "
-                        f"{_number_text(previous_speed)}",
+                        f"runtime speed {speed!r} does not strictly exceed previous runtime "
+                        f"speed {previous_speed!r} (authored {_number_text(speed_value)})",
                     )
                 )
             previous_speed = speed
@@ -1724,6 +1886,21 @@ def validate_recipe_document(
 ) -> list[Finding]:
     """Validate a parsed recipe document and return findings (empty = valid)."""
     findings: list[Finding] = []
+
+    # Structural boundary first: every traversal below is recursive. A
+    # document deeper than the policy is refused before representability,
+    # canonicalization or hashing can exhaust the interpreter stack.
+    depth, deep_path = _deepest_nesting(document)
+    if depth > MAX_NESTING_DEPTH:
+        findings.append(
+            Finding(
+                deep_path,
+                "nesting-too-deep",
+                f"document nesting exceeds the supported maximum of "
+                f"{MAX_NESTING_DEPTH} containers; refusing before traversal",
+            )
+        )
+        return findings
 
     # Refuse unrepresentable values first: they have no canonical text, so no
     # semantic check or hash could be meaningful. This covers the whole

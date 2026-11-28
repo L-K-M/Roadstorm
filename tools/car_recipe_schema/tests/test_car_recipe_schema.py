@@ -100,6 +100,14 @@ def validate_text(text: str, mode: str = "schema") -> list[Any]:
         return vcr.validate_recipe_file(path, mode=mode)
 
 
+def validate_bytes(payload: bytes, mode: str = "motor-ready") -> list[Any]:
+    """Validate raw recipe bytes through the file entry point."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "recipe.json"
+        path.write_bytes(payload)
+        return vcr.validate_recipe_file(path, mode=mode)
+
+
 def rehash(text: str) -> str:
     """Rewrite a recipe text with a recomputed content_hash.
 
@@ -811,6 +819,44 @@ class MotorReadyTests(unittest.TestCase):
                     "handling.acceleration_curve[1].speed_m_s", paths(findings)
                 )
 
+    def test_acceleration_curve_order_compares_binary64_values(self) -> None:
+        # The reviewer's exact counterexample: two distinct authored integers
+        # that both round to 9007199254740992.0. Schema mode stays shape-only;
+        # motor-ready mode compares the runtime floats and names the point.
+        head, separator, tail = BASE_FIXTURE_TEXT.partition('"handling"')
+        tail = tail.replace('"speed_m_s": 0', '"speed_m_s": 9007199254740992', 1)
+        tail = tail.replace('"speed_m_s": 30', '"speed_m_s": 9007199254740993', 1)
+        text = rehash(head + separator + tail)
+        schema_findings = validate_text(text, mode="schema")
+        self.assertNotIn("motor-input-order", codes(schema_findings))
+        self.assertIn(
+            ("number-not-representable", "handling.acceleration_curve[1].speed_m_s"),
+            pairs(schema_findings),
+        )
+        findings = validate_text(text, mode="motor-ready")
+        self.assertIn(
+            ("motor-input-order", "handling.acceleration_curve[1].speed_m_s"),
+            pairs(findings),
+        )
+
+    def test_acceleration_curve_order_collapses_stable_decimal_literals(self) -> None:
+        # Two distinct round-trip-stable decimals that share one binary64
+        # value: the mapper publishes a duplicate speed, so order must refuse.
+        head, separator, tail = BASE_FIXTURE_TEXT.partition('"handling"')
+        tail = tail.replace('"speed_m_s": 0', '"speed_m_s": 0.1', 1)
+        tail = tail.replace(
+            '"speed_m_s": 30',
+            '"speed_m_s": 0.1000000000000000055511151231257827021181583404541015625',
+            1,
+        )
+        text = rehash(head + separator + tail)
+        self.assertEqual(validate_text(text, mode="schema"), [])
+        findings = validate_text(text, mode="motor-ready")
+        self.assertIn(
+            ("motor-input-order", "handling.acceleration_curve[1].speed_m_s"),
+            pairs(findings),
+        )
+
 
 class InheritedContractParityTests(unittest.TestCase):
     """Both source versions inherit every pre-1.1.0 member constraint unchanged."""
@@ -867,10 +913,27 @@ class NumberBoundaryTests(unittest.TestCase):
                     findings = validate_text(text, mode)
                     self.assertIn(("non-finite-number", field), pairs(findings))
 
-    def test_in_range_long_integer_is_accepted(self) -> None:
-        # The refusal is about binary64 range, not digit count: 1e308 is finite.
+    def test_long_integer_range_and_exactness_are_distinct(self) -> None:
+        # 10**308 fits binary64 but does not convert back exactly, so the typed
+        # runtime would silently lose source precision. Digit count alone is
+        # not the refusal reason; recoverability is.
         text = rehash(replace_number(BASE_FIXTURE_TEXT, "mass_kg", self.IN_RANGE_309))
+        findings = validate_text(text)
+        self.assertIn(("number-not-representable", "mass_kg"), pairs(findings))
+
+        # 2**300 has 91 digits and is exactly representable, so it is accepted.
+        exact = str(2**300)
+        text = rehash(replace_number(BASE_FIXTURE_TEXT, "mass_kg", exact))
         self.assertEqual(validate_text(text), [])
+
+    def test_integer_policy_at_the_api_boundary(self) -> None:
+        document = base_document()
+        document["mass_kg"] = 10**308
+        self.assertIn(("number-not-representable", "mass_kg"), pairs(findings_for(document)))
+
+        document["mass_kg"] = 2**300
+        document["content_hash"] = vcr.content_hash_of(document)
+        self.assertEqual(findings_for(document), [])
 
     def test_precision_losing_literal_is_refused(self) -> None:
         text = replace_number(
@@ -1157,6 +1220,71 @@ class PresentationNullPathTests(unittest.TestCase):
         self.assertEqual(findings_for(base_document()), [])
 
 
+class RobustnessBoundaryTests(unittest.TestCase):
+    """Malformed boundary input must produce findings, never exceptions."""
+
+    def _write_rehashed(self, tmp: str, mutate_fn: Callable[[dict[str, Any]], None]) -> Path:
+        document = base_document()
+        mutate_fn(document)
+        document["content_hash"] = vcr.content_hash_of(document)
+        return write_recipe(tmp, "recipe.json", json.dumps(document))
+
+    def test_unknown_path_trailing_newline_is_a_structured_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_rehashed(
+                tmp,
+                lambda d: d["unknowns"].append(
+                    {"path": "detachable_parts[1]\n", "reason": "trailing newline"}
+                ),
+            )
+            findings = vcr.validate_recipe_file(path, mode="motor-ready")
+        self.assertIn(("bad-unknown-path", "unknowns[6].path"), pairs(findings))
+
+    def test_unknown_path_huge_index_is_bounded_and_structured(self) -> None:
+        huge = "detachable_parts[" + "1" * 4400 + "].mesh_id"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write_rehashed(
+                tmp, lambda d: d["unknowns"].append({"path": huge, "reason": "huge index"})
+            )
+            findings = vcr.validate_recipe_file(path, mode="motor-ready")
+        self.assertIn(("bad-unknown-path", "unknowns[6].path"), pairs(findings))
+        self.assertLessEqual(len(findings), 2)
+
+    def test_extreme_decimal_exponent_is_a_controlled_finding(self) -> None:
+        payload = b'{"presentation":{"probe":1e99999999999999999999999999}}'
+        findings = validate_bytes(payload)
+        self.assertIn(("invalid-number", ""), pairs(findings))
+
+    def test_deep_presentation_nesting_is_refused_at_the_file_boundary(self) -> None:
+        deep = "[" * 3000 + "null" + "]" * 3000
+        text = insert_member(BASE_FIXTURE_TEXT, f'  "presentation": {{"probe": {deep}}},')
+        findings = validate_text(text)
+        self.assertIn(("nesting-too-deep", "presentation"), pairs(findings))
+
+    def test_deep_api_document_is_refused_without_recursion(self) -> None:
+        node: Any = None
+        for _ in range(3000):
+            node = [node]
+        findings = findings_for(node)
+        self.assertIn("nesting-too-deep", codes(findings))
+
+    def test_nesting_at_the_supported_limit_is_still_processed(self) -> None:
+        node: Any = {}
+        for _ in range(vcr.MAX_NESTING_DEPTH - 2):
+            node = [node]
+        document = base_document()
+        document["presentation"] = {"probe": node}
+        document["content_hash"] = vcr.content_hash_of(document)
+        self.assertEqual(findings_for(document), [])
+
+    def test_canonical_hash_of_deep_document_is_a_controlled_error(self) -> None:
+        node: Any = None
+        for _ in range(3000):
+            node = [node]
+        with self.assertRaises(vcr.CanonicalizationError):
+            vcr.content_hash_of({"presentation": node})
+
+
 class CommandLineTests(unittest.TestCase):
     def _run(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -1171,6 +1299,16 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("0 error(s)", result.stdout)
 
+    def test_motor_ready_positive_files_exit_zero(self) -> None:
+        result = self._run(
+            "--mode",
+            "motor-ready",
+            str(FIXTURES / "positive" / "example_rookie_finite.json"),
+            str(FIXTURES / "positive" / "example_rookie_unlimited.json"),
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0 error(s)", result.stdout)
+
     def test_missing_path_exits_two(self) -> None:
         result = self._run(str(ROOT / "does" / "not" / "exist.json"))
         self.assertEqual(result.returncode, 2)
@@ -1178,6 +1316,32 @@ class CommandLineTests(unittest.TestCase):
     def test_bad_usage_exits_two(self) -> None:
         result = self._run("--mode", "nonsense")
         self.assertEqual(result.returncode, 2)
+
+    def test_boundary_defects_exit_one_without_traceback(self) -> None:
+        cases = [
+            (
+                b'{"presentation":{"probe":1e99999999999999999999999999}}',
+                "invalid-number",
+            ),
+            (
+                b'{"presentation":{"probe":'
+                + b"[" * 3000
+                + b"null"
+                + b"]" * 3000
+                + b"}}",
+                "nesting-too-deep",
+            ),
+        ]
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "boundary.json"
+                    path.write_bytes(payload)
+                    result = self._run("--mode", "motor-ready", str(path))
+                self.assertEqual(result.returncode, 1)
+                combined = result.stdout + result.stderr
+                self.assertIn(expected, combined)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_failing_control_known_bad_input_exits_nonzero(self) -> None:
         """Deliberate control: a known-bad recipe must exit nonzero with a diagnostic."""

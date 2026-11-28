@@ -29,7 +29,10 @@ usage. The tool only validates; it writes no artifacts.
 * `--mode motor-ready` (default) additionally refuses a recipe whose required
   typed motor inputs are missing, `null` or listed in `unknowns`, naming their
   dotted paths; refuses an acceleration curve whose speeds do not strictly
-  increase; and runs two typed-resource preflight checks, a `revision` that is
+  increase after binary64 conversion (so distinct authored numbers that
+  collapse to the same runtime float are refused at
+  `handling.acceleration_curve[i].speed_m_s`); and runs two typed-resource
+  preflight checks, a `revision` that is
   not `MAJOR.MINOR.PATCH` (`bad-revision-format`) and a derived
   `<car_id>.handling` identity that would fail `DefinitionIdentity`'s
   whole-string stable-ID match (`bad-handling-id`). A `1.0.0` recipe is always
@@ -50,7 +53,14 @@ The boundary is defined in one place, `to_binary64` in the checker:
 
 * JSON numbers with a fraction or exponent are parsed as `decimal.Decimal`, so
   the authored literal survives into validation. Integer literals stay Python
-  `int`, which keeps integer and floating syntax distinct.
+  `int`, which keeps integer and floating syntax distinct in bounds and in the
+  canonical hash.
+* Every integer literal must also be exactly representable as binary64:
+  `int(float(value)) == value`. A 309-digit in-range integer such as `10**308`
+  converts to a finite float but not back to itself, so it is refused as
+  `number-not-representable`; a 91-digit power of two such as `2**300` converts
+  exactly and is accepted. Without this rule the mapper would silently lose
+  source precision.
 * Every declared bound is compared against the exact decimal value, never
   against a pre-rounded float. `reverse_trigger_speed_m_s` of
   `1.00000000000000001` is therefore above the maximum of `1`, even though it
@@ -69,12 +79,25 @@ The boundary is defined in one place, `to_binary64` in the checker:
 * `to_binary64` is the only place a parsed decimal becomes a Python `float`,
   and it is used for hashing and for anything a consumer reads out of a loaded
   document. Bound comparisons happen before it, in exact decimal arithmetic.
+* Acceleration-curve ordering in `motor-ready` mode compares the binary64
+  values, matching the mapper, while schema mode keeps the historical
+  shape-only acceptance.
 
 These checks run over the whole document, including the open `presentation`
 subtree, before any semantic check and before hashing. An escaped lone
 surrogate in any key or string is refused the same way (`unpaired-surrogate`),
 because such a string cannot be encoded as UTF-8; a paired escape such as
 `\ud83d\ude00` is combined by the JSON parser and accepted.
+
+## Boundary robustness
+
+Documents nest at most 200 containers (`MAX_NESTING_DEPTH`). The depth gate
+runs before any recursive scan, canonicalization or hashing, so deeper input
+is refused with `nesting-too-deep` and cannot exhaust the interpreter stack.
+Parse-time boundary defects are reported the same way: a `Decimal` exponent
+the decimal machinery cannot construct is `invalid-number`, and a document the
+parser cannot materialize is `nesting-too-deep`. The CLI prints findings and
+exits 1; none of these cases produces a traceback.
 
 ## Canonical `content_hash`
 
@@ -116,12 +139,19 @@ quoted segment such as `presentation["paint.color"]`. No `unknowns` path can
 spell a bracketed segment, so a literal dotted key can never be mistaken for a
 nested member, and an ancestor path can never falsely explain it.
 
+The path grammar is applied as a whole-string match, so a trailing line feed is
+reported as `bad-unknown-path` instead of reaching the resolver. Array-index
+segments are bounded in digit count (nine) and range-checked before integer
+conversion, so an over-long index such as 4,400 digits is also a structured
+`bad-unknown-path` finding rather than an exception.
+
 ## What it checks
 
 Required members, closed objects (`additionalProperties: false`), types,
 ranges, the five added `1.1.0` fields, the reverse cross-field rule, the
 null/`unknowns` honesty rule in both directions, strict JSON parsing (duplicate
-members and `Infinity`/`NaN` literals rejected), number representability and
+members and `Infinity`/`NaN` literals rejected), whole-string unknowns paths
+with bounded indices, number representability, the nesting-depth limit and
 UTF-8 encodability, and the canonical `content_hash`.
 
 ## Deliberate limitations
@@ -138,6 +168,9 @@ UTF-8 encodability, and the canonical `content_hash`.
 * It cannot make unknown facts known. Missing or null values are reported,
   never filled in and never guessed.
 * `provenance.source_contract` is not compared with `schema_version`; the
-  contract spelling is still open.
+  checker deliberately leaves provenance honest-but-unverified. The versioned
+  token spelling is fixed by the contract note and fixtures as
+  `roadstorm.handling_config.1.1.0`; validating it belongs to the future
+  producer/bake-manifest boundary, not to this checker.
 
 Original project code under the Unlicense.
