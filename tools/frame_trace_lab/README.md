@@ -32,24 +32,43 @@ use the expected schema and be independently coherent: 1200 consumed commands,
 records, consecutive ticks/callbacks, completion by `script complete`, no
 failure, constant zero-steer heading, fixed full-schedule command values, the
 pinned Godot 4.7.2/Jolt recording, matching host cohort fields, and a valid
-100 m gate crossing. The measured physics frame counter must plausibly cover
-the committed run before cadence evidence is used: it must lie in [1200, 1208].
-The lower bound is the 1200 committed physics frames; the explicitly chosen
-allowance is the driver's four measured drain frames plus four additional
-counter-boundary frames. The driver's ten settle frames occur before it zeroes
-the counters and are not part of that allowance. The measured process counter
-must lie in the cohort-wide range [596, 2420], derived from those physics
-bounds at nominal 30 through 120 FPS with the same +/-4 process-frame
-startup/drain tolerance. Only then is the physics/process cadence evaluated,
-using exact integer arithmetic equivalent to `abs(process_frames -
-physics_frames * nominal_fps / 60) <= 4`; this retains the genuine observed
-1204/602, 1204/1204 and 1204/2408 triples while rejecting impossible or
-overflowing counters. Each `tick_trace` row's tick must be an integer equal to
-its ordinal row, and the recorded gate tick must equal the first validated
-committed `tick_trace` row reaching 100 m. It compares exact tick counts,
-command sequences, per-tick discrete state, endpoint discrete state, and
-event/count fields.
-Continuous endpoint tolerances are the benchmark values:
+100 m gate crossing. The endpoint's radian and degree heading representations
+must agree within floating-point conversion roundoff before angular arithmetic;
+an inconsistent pair is not a possible producer record. The measured physics
+frame counter and laboratory physics-callback counter must plausibly cover the
+committed run before cadence or callback evidence is used: each must lie in
+[1200, 1208]. The lower bound is the 1200 committed physics frames; the
+explicitly chosen allowance is the driver's four measured drain frames plus
+four additional counter-boundary frames. The driver's ten settle frames occur
+before it zeroes the counters and are not part of that allowance. The duplicate
+`run`/`timing` callback counts must agree. The measured process counter must
+lie in the cohort-wide range [596, 2420], derived from those physics bounds at
+nominal 30 through 120 FPS with the same +/-4 process-frame startup/drain
+tolerance. Only then is the physics/process cadence evaluated, using exact
+integer arithmetic equivalent to `abs(process_frames - physics_frames *
+nominal_fps / 60) <= 4`; this retains the genuine observed 1204/602,
+1204/1204 and 1204/2408 triples while rejecting impossible or overflowing
+counters. Each `tick_trace` row's tick must be an integer equal to its ordinal
+row, and the recorded gate tick must equal the first validated committed
+`tick_trace` row reaching 100 m.
+
+The first absolute callback index is an arbitrary producer offset, so the
+comparator does not require a particular origin. It uses the inclusive ordinal
+span `last_callback_index - first_callback_index + 1`. The 1200 committed rows
+must occupy exactly 1200 contiguous commit-callback ordinals; completion,
+drain and counter-boundary callbacks are outside that committed span. The span
+must also fit within both measured physics-frame and physics-callback counts
+for the same recorded window. This is a count-semantics invariant, not a
+threshold fitted to one fixture. It compares exact tick counts, command
+sequences, per-tick discrete state, endpoint discrete state, and event/count
+fields.
+
+Position, speed and heading deltas must be finite before any tolerance
+comparison. Heading operands are normalized modulo 360 degrees before their
+difference is formed, so finite unwrapped angles cannot overflow that
+subtraction. A nonfinite derived metric fails the comparison closed, and the
+structured marker is serialized as strict JSON rather than emitting `NaN` or
+`Infinity`. Continuous endpoint tolerances are the benchmark values:
 
 - position: at most 0.10 m
 - speed: at most 0.10 m/s
@@ -123,13 +142,23 @@ After the positive comparison, the runner verifies that
 - `timing.physics_frames` replaced by the exact JSON integer digits for
   `10**400`, which must fail bounded counter validation with structured output
   and no Python traceback;
+- a full cohort whose endpoint degree headings are `+1.7e308`, `-1.7e308` and
+  `+1.7e308` while the radian fields remain unchanged, which must fail the
+  producer heading-representation domain before angular arithmetic;
+- finite 60 Hz endpoint coordinates replaced by `[1.7e308, 1.7e308]`, whose
+  derived position delta cannot remain finite in binary64 and must fail closed
+  with strict-JSON output;
+- strictly increasing 60 Hz callback indices `10000 + 2 * row`, spanning 2399
+  ordinals across 1200 rows despite the measured physics window of about 1204
+  frames, which must fail the contiguous-span and measured-count checks;
 - a mutated host-cohort field;
 - a mutated pinned engine version field;
 - a mutated pinned physics backend.
 
-Every control must exit 1, emit the structured failed-comparison markers,
-contain its expected failure reason, and produce no Python traceback; a
-nonzero exit alone is insufficient.
+Every control must exit 1, emit exactly one strict-JSON
+`COMPARISON_RESULT ... "pass":false` marker plus `COMPARISON FAIL`, contain its
+expected failure reason, and produce no Python traceback; a nonzero exit alone
+is insufficient.
 These controls are evidence that the comparator is not vacuously green. They do
 not prove the production game is frame-rate independent.
 
@@ -143,9 +172,10 @@ sections are:
   across the three compared launches;
 - `engine`: pinned engine version, physics backend, configured/observed
   physics rate and fixed-FPS argument;
-- `timing`: wall time plus engine process/physics frame counters. The counters
-  independently constrain the nominal cadence cohort; they are not
-  presented-frame evidence;
+- `timing`: wall time plus engine process/physics frame counters and the
+  laboratory physics-callback count for the same measured window. The counters
+  independently constrain the nominal cadence cohort and committed callback
+  span; they are not presented-frame evidence;
 - `schedule`: logical tick and command counts;
 - `run`: completion/failure state, counts and laboratory telemetry;
 - `endpoint`: final position, velocity, speed, heading and discrete state;

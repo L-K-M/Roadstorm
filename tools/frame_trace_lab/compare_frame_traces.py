@@ -35,6 +35,12 @@ SPEED_TOLERANCE_M_S = 0.10
 HEADING_TOLERANCE_DEG = 1.0
 GATE_TOLERANCE_TICKS = 1
 
+# The endpoint carries the same orientation in radians and degrees. Accept
+# only floating-point conversion roundoff between those representations; this
+# consistency domain is checked before any angular arithmetic.
+HEADING_RAD_TO_DEG_REL_TOLERANCE = 1e-12
+HEADING_RAD_TO_DEG_ABS_TOLERANCE = 1e-12
+
 # Startup and drain frames are included in the recorded engine counters. Four
 # process frames is deliberately small next to the 602/1204/2408 expected
 # counts, while still covering counter phase at launch and drain boundaries.
@@ -113,6 +119,10 @@ class InputError(Exception):
     pass
 
 
+class DerivedMetricError(Exception):
+    pass
+
+
 def is_number(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
@@ -149,6 +159,10 @@ def safe_text(value: Any) -> str:
     if len(text) > 240:
         return text[:237] + "..."
     return text
+
+
+def strict_json_dumps(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def load_result(path: Path) -> dict[str, Any]:
@@ -233,13 +247,17 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
 
     physics_frames = timing.get("physics_frames")
     process_frames = timing.get("process_frames")
+    physics_callbacks = timing.get("physics_callbacks")
     if not is_int(physics_frames) or physics_frames <= 0:
         err(f"{path}: timing.physics_frames is not a positive integer")
     if not is_int(process_frames) or process_frames <= 0:
         err(f"{path}: timing.process_frames is not a positive integer")
+    if not is_int(physics_callbacks) or physics_callbacks <= 0:
+        err(f"{path}: timing.physics_callbacks is not a positive integer")
 
     physics_counter_bounded = is_int(physics_frames) and physics_frames > 0
     process_counter_bounded = is_int(process_frames) and process_frames > 0
+    physics_callback_counter_bounded = is_int(physics_callbacks) and physics_callbacks > 0
     if physics_counter_bounded and not MIN_FULL_RUN_PHYSICS_FRAMES <= physics_frames <= MAX_FULL_RUN_PHYSICS_FRAMES:
         err(
             f"{path}: timing.physics_frames is outside the plausible full-run range "
@@ -248,6 +266,17 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
             "startup/drain/counter-boundary frames"
         )
         physics_counter_bounded = False
+    if (
+        physics_callback_counter_bounded
+        and not MIN_FULL_RUN_PHYSICS_FRAMES <= physics_callbacks <= MAX_FULL_RUN_PHYSICS_FRAMES
+    ):
+        err(
+            f"{path}: timing.physics_callbacks is outside the plausible full-run range "
+            f"[{MIN_FULL_RUN_PHYSICS_FRAMES}, {MAX_FULL_RUN_PHYSICS_FRAMES}] for {EXPECTED_TICKS} "
+            f"committed ticks plus at most {PHYSICS_FRAME_STARTUP_DRAIN_ALLOWANCE} "
+            "startup/drain/counter-boundary frames"
+        )
+        physics_callback_counter_bounded = False
     if process_counter_bounded and not MIN_FULL_RUN_PROCESS_FRAMES <= process_frames <= MAX_FULL_RUN_PROCESS_FRAMES:
         err(
             f"{path}: timing.process_frames is outside the plausible full-run range "
@@ -297,6 +326,14 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
     for key in ("steps_called", "ticks_committed", "commands_consumed", "tick_log_entries", "tick_log_dropped"):
         if not is_int(run.get(key)):
             err(f"{path}: run.{key} is not an integer")
+    run_physics_callbacks = run.get("physics_callbacks")
+    if not is_int(run_physics_callbacks):
+        err(f"{path}: run.physics_callbacks is not an integer")
+    if is_int(run_physics_callbacks) and is_int(physics_callbacks) and run_physics_callbacks != physics_callbacks:
+        err(
+            f"{path}: run.physics_callbacks is {run_physics_callbacks}, but "
+            f"timing.physics_callbacks is {physics_callbacks}"
+        )
     if is_int(run.get("steps_called")) and run["steps_called"] != EXPECTED_TICKS:
         err(f"{path}: steps_called is {run['steps_called']}, expected {EXPECTED_TICKS}")
     if is_int(run.get("ticks_committed")) and run["ticks_committed"] != EXPECTED_TICKS:
@@ -347,6 +384,17 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
     for key in ("speed_m_s", "forward_speed_m_s", "heading_rad", "heading_deg", "road_station_m", "trace_station_m", "station_cross_check_delta_m"):
         if not is_number(endpoint.get(key)):
             err(f"{path}: endpoint.{key} is not finite")
+    heading_rad = endpoint.get("heading_rad")
+    heading_deg = endpoint.get("heading_deg")
+    if is_number(heading_rad) and is_number(heading_deg):
+        expected_heading_deg = math.degrees(float(heading_rad))
+        if not math.isfinite(expected_heading_deg) or not math.isclose(
+            float(heading_deg),
+            expected_heading_deg,
+            rel_tol=HEADING_RAD_TO_DEG_REL_TOLERANCE,
+            abs_tol=HEADING_RAD_TO_DEG_ABS_TOLERANCE,
+        ):
+            err(f"{path}: endpoint.heading_deg is inconsistent with endpoint.heading_rad")
     if is_number(endpoint.get("station_cross_check_delta_m")) and endpoint["station_cross_check_delta_m"] > 1e-6:
         err(f"{path}: endpoint station disagrees with the final trace station")
     for key in ENDPOINT_DISCRETE_KEYS:
@@ -363,7 +411,10 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
         err(f"{path}: tick_trace length is {len(trace)}, expected {EXPECTED_TICKS}")
         return errors
 
-    previous_callback = 0
+    previous_callback = None
+    first_callback = None
+    last_callback = None
+    callback_order_valid = True
     for index, entry in enumerate(trace, start=1):
         prefix = f"{path}: tick {index}"
         if not isinstance(entry, dict):
@@ -383,11 +434,15 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
         callback = entry.get("callback_index")
         if not is_int(callback):
             err(f"{prefix}: callback_index is not an integer")
-        elif callback <= previous_callback:
-            err(f"{prefix}: callback_index is not strictly increasing")
-            previous_callback = callback if is_int(callback) else previous_callback
+            callback_order_valid = False
         else:
+            if first_callback is None:
+                first_callback = callback
+            if previous_callback is not None and callback <= previous_callback:
+                err(f"{prefix}: callback_index is not strictly increasing")
+                callback_order_valid = False
             previous_callback = callback
+            last_callback = callback
         for key in ("road_station_m", "speed_m_s", "forward_speed_m_s", "lateral_speed_m_s", "heading_rad"):
             if not is_number(entry.get(key)):
                 err(f"{prefix}: {key} is not finite")
@@ -397,6 +452,28 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
         for key in ("reverse_engaged", "grounded", "contact", "wall_contact"):
             if not isinstance(entry.get(key), bool):
                 err(f"{prefix}: {key} is not a boolean")
+
+    if callback_order_valid and first_callback is not None and last_callback is not None:
+        # The absolute first index is an arbitrary producer offset. Only the
+        # inclusive ordinal span is meaningful: 1200 committed rows are emitted
+        # by 1200 contiguous physics callbacks, while completion, drain and
+        # counter-boundary callbacks occur outside that committed span.
+        callback_span = last_callback - first_callback + 1
+        if callback_span != EXPECTED_TICKS:
+            err(
+                f"{path}: committed callback_index span is {callback_span} callback ordinals, "
+                f"expected exactly {EXPECTED_TICKS} contiguous committed callbacks"
+            )
+        if physics_counter_bounded and callback_span > physics_frames:
+            err(
+                f"{path}: committed callback_index span is {callback_span} callback ordinals, "
+                f"exceeding measured timing.physics_frames {physics_frames}"
+            )
+        if physics_callback_counter_bounded and callback_span > physics_callbacks:
+            err(
+                f"{path}: committed callback_index span is {callback_span} callback ordinals, "
+                f"exceeding measured timing.physics_callbacks {physics_callbacks}"
+            )
 
     computed_gate_tick = None
     for index, entry in enumerate(trace, start=1):
@@ -425,7 +502,35 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
 
 
 def angle_difference_deg(a: float, b: float) -> float:
-    return abs((a - b + 180.0) % 360.0 - 180.0)
+    # Normalize before subtraction. Both reduced operands are bounded, so even
+    # finite but huge unwrapped producer angles cannot overflow the difference.
+    a_normalized = float(a) % 360.0
+    b_normalized = float(b) % 360.0
+    return abs((a_normalized - b_normalized + 180.0) % 360.0 - 180.0)
+
+
+def require_finite_metric(label: str, name: str, value: float) -> float:
+    if not math.isfinite(value):
+        raise DerivedMetricError(f"{label}: {name} derived metric is not finite")
+    return value
+
+
+def endpoint_position_delta(pos_a: list[Any], pos_b: list[Any], label: str) -> float:
+    delta_x = float(pos_a[0]) - float(pos_b[0])
+    delta_y = float(pos_a[1]) - float(pos_b[1])
+    if not math.isfinite(delta_x) or not math.isfinite(delta_y):
+        raise DerivedMetricError(f"{label}: endpoint position derived delta is not finite")
+    delta = math.hypot(delta_x, delta_y)
+    if not math.isfinite(delta):
+        raise DerivedMetricError(f"{label}: endpoint position derived delta is not finite")
+    return delta
+
+
+def endpoint_speed_delta(speed_a: float, speed_b: float, label: str) -> float:
+    difference = float(speed_a) - float(speed_b)
+    if not math.isfinite(difference):
+        raise DerivedMetricError(f"{label}: endpoint speed derived delta is not finite")
+    return abs(difference)
 
 
 def compare_valid_results(results: dict[int, dict[str, Any]]) -> tuple[list[str], dict[str, Any]]:
@@ -452,9 +557,13 @@ def compare_valid_results(results: dict[int, dict[str, Any]]) -> tuple[list[str]
 
         pos_a = a["endpoint"]["position_m"]
         pos_b = b["endpoint"]["position_m"]
-        position_delta = math.hypot(float(pos_a[0]) - float(pos_b[0]), float(pos_a[1]) - float(pos_b[1]))
-        speed_delta = abs(float(a["endpoint"]["speed_m_s"]) - float(b["endpoint"]["speed_m_s"]))
-        heading_delta = angle_difference_deg(float(a["endpoint"]["heading_deg"]), float(b["endpoint"]["heading_deg"]))
+        position_delta = endpoint_position_delta(pos_a, pos_b, label)
+        speed_delta = endpoint_speed_delta(a["endpoint"]["speed_m_s"], b["endpoint"]["speed_m_s"], label)
+        heading_delta = require_finite_metric(
+            label,
+            "endpoint heading",
+            angle_difference_deg(float(a["endpoint"]["heading_deg"]), float(b["endpoint"]["heading_deg"])),
+        )
         gate_delta = abs(int(a["gate"]["first_committed_tick"]) - int(b["gate"]["first_committed_tick"]))
 
         pair_metrics["position_delta_m"] = position_delta
@@ -515,7 +624,7 @@ def emit_exception_failure(exc: Exception) -> int:
         },
         "metrics": {},
     }
-    print("COMPARISON_RESULT " + json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    print("COMPARISON_RESULT " + strict_json_dumps(payload))
     print("COMPARISON FAIL")
     return 1
 
@@ -563,6 +672,9 @@ def main() -> int:
         if not failures:
             try:
                 failures, metrics = compare_valid_results(results)
+            except DerivedMetricError as exc:
+                failures = [str(exc)]
+                metrics = {}
             except Exception as exc:
                 failures = [
                     "comparison could not be completed for malformed input without an internal "
@@ -627,7 +739,7 @@ def main() -> int:
         },
         "metrics": metrics,
     }
-    print("COMPARISON_RESULT " + json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    print("COMPARISON_RESULT " + strict_json_dumps(payload))
     print("COMPARISON " + ("PASS" if not failures else "FAIL"))
     return 0 if not failures else 1
 

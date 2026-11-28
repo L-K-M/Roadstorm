@@ -445,6 +445,20 @@ overflow_counter = load("full-60.json")
 overflow_counter["timing"]["physics_frames"] = 10**400
 write("overflow-counter-as-full-60.json", overflow_counter)
 
+for fps, heading in ((30, 1.7e308), (60, -1.7e308), (120, 1.7e308)):
+    heading_overflow = load(f"full-{fps}.json")
+    heading_overflow["endpoint"]["heading_deg"] = heading
+    write(f"heading-overflow-{fps}.json", heading_overflow)
+
+coordinate_overflow = load("full-60.json")
+coordinate_overflow["endpoint"]["position_m"] = [1.7e308, 1.7e308]
+write("coordinate-overflow-as-full-60.json", coordinate_overflow)
+
+impossible_callback_span = load("full-60.json")
+for zero_based_row, entry in enumerate(impossible_callback_span["tick_trace"]):
+    entry["callback_index"] = 10000 + 2 * zero_based_row
+write("impossible-callback-span-as-full-60.json", impossible_callback_span)
+
 host_mismatch = load("full-60.json")
 host_mismatch["host"]["processor_count"] += 1
 write("host-mismatch-as-full-60.json", host_mismatch)
@@ -466,6 +480,26 @@ echo "control_fixture_rc=$_control_fixture_rc" >>"$SUMMARY"
 [ "$_control_fixture_rc" -eq 0 ] || fatal 1 "could not create negative-control inputs; see $CONTROL_PY_LOG"
 
 CONTROLS_OK=1
+single_failure_marker_valid() {
+	timeout -k 3 30 python3 -c '
+import json
+import sys
+prefix = "COMPARISON_RESULT "
+with open(sys.argv[1], encoding="utf-8") as handle:
+    markers = [line[len(prefix):] for line in handle if line.startswith(prefix)]
+if len(markers) != 1:
+    raise SystemExit(1)
+try:
+    payload = json.loads(
+        markers[0],
+        parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+    )
+except (json.JSONDecodeError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if payload.get("pass") is False else 1)
+' "$1" >/dev/null 2>&1
+}
+
 expect_compare_failure() {
 	_name=$1
 	_reason=$2
@@ -476,7 +510,8 @@ expect_compare_failure() {
 	if [ "$_rc" -eq 1 ] \
 		&& grep -q '^COMPARISON_RESULT .*"pass":false' "$LOGS/compare-$_name.log" \
 		&& grep -q '^COMPARISON FAIL$' "$LOGS/compare-$_name.log" \
-		&& grep -Fq "$_reason" "$LOGS/compare-$_name.log"; then
+		&& grep -Fq "$_reason" "$LOGS/compare-$_name.log" \
+		&& single_failure_marker_valid "$LOGS/compare-$_name.log"; then
 		if grep -q 'Traceback (most recent call last)' "$LOGS/compare-$_name.log"; then
 			echo "compare_${_name}_rejected=no_traceback" >>"$SUMMARY"
 			CONTROLS_OK=0
@@ -517,6 +552,15 @@ expect_compare_failure impossible-counters \
 expect_compare_failure overflow-counter \
 	"timing.physics_frames is outside the plausible full-run range [1200, 1208]" \
 	"$RESULTS/full-30.json" "$RESULTS/overflow-counter-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure heading-overflow \
+	"endpoint.heading_deg is inconsistent with endpoint.heading_rad" \
+	"$RESULTS/heading-overflow-30.json" "$RESULTS/heading-overflow-60.json" "$RESULTS/heading-overflow-120.json"
+expect_compare_failure coordinate-overflow \
+	"endpoint position derived delta is not finite" \
+	"$RESULTS/full-30.json" "$RESULTS/coordinate-overflow-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure impossible-callback-span \
+	"exceeding measured timing.physics_frames" \
+	"$RESULTS/full-30.json" "$RESULTS/impossible-callback-span-as-full-60.json" "$RESULTS/full-120.json"
 expect_compare_failure host-cohort "host cohort differs between inputs" \
 	"$RESULTS/full-30.json" "$RESULTS/host-mismatch-as-full-60.json" "$RESULTS/full-120.json"
 expect_compare_failure engine-version "engine version is" \
