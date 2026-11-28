@@ -36,6 +36,7 @@ const JOLT_CASE_ID := "real_jolt_wall_integration"
 const STEERING_JOLT_CASE_ID := "real_jolt_steering_corner"
 const NONZERO_HEADING_JOLT_CASE_ID := "real_jolt_nonzero_heading_corner"
 const NARROW_WALL_END_JOLT_CASE_ID := "real_jolt_narrow_wall_end"
+const WALL_WIDTH_END_JOLT_CASE_ID := "real_jolt_1_2_wall_end_envelope"
 
 ## Frames allowed for static colliders to reach the physics server.
 const SETTLE_FRAMES := 8
@@ -55,11 +56,14 @@ const NONZERO_HEADING_CORNER_TICKS := 40
 const STEERING_WALL_WIDTH_M := 60.0
 ## Narrow wall whose vertical convex end can slide along the car's side face.
 const NARROW_WALL_WIDTH_M := 0.6
-## Corner-band and normal-axis thresholds mirrored from the producer's
-## published contract. Kept as explicit literals so a silent threshold change
-## is visible here. The old normalized band is retained only as a negative
-## control for the regression coverage.
-const LAB_REGION_CORNER_BAND_M := 0.035
+## Width of the centered box wall whose end exposed the material wrong-region
+## pulse in independent review.
+const WALL_END_WIDTH_M := 1.2
+## Normalized two-sided corner-band and normal-axis thresholds mirrored from
+## the producer's published contract. Kept as explicit literals so a silent
+## threshold change is visible here. The old normalized point-tie band is
+## retained only as a negative control for the regression coverage.
+const LAB_REGION_CORNER_BAND_NORMALIZED := 0.04
 const LAB_REGION_NORMAL_AXIS_MARGIN := 1e-3
 const OLD_NORMALIZED_REGION_TIE_MARGIN := 1e-2
 
@@ -95,6 +99,7 @@ func _run() -> void:
 	_results.append(await _case_real_jolt_steering_corner())
 	_results.append(await _case_real_jolt_nonzero_heading_corner())
 	_results.append(await _case_real_jolt_narrow_wall_end())
+	_results.append(await _case_real_jolt_wall_width_end_envelope())
 	for case_result in _results:
 		print("WALL_IMPACT_LAB_RESULT ", JSON.stringify(case_result))
 
@@ -110,7 +115,8 @@ func _run() -> void:
 		var case_name := String(result["case"])
 		if (case_name == JOLT_CASE_ID or case_name == STEERING_JOLT_CASE_ID \
 				or case_name == NONZERO_HEADING_JOLT_CASE_ID \
-				or case_name == NARROW_WALL_END_JOLT_CASE_ID) \
+				or case_name == NARROW_WALL_END_JOLT_CASE_ID \
+				or case_name == WALL_WIDTH_END_JOLT_CASE_ID) \
 				and bool(result["pass"]):
 			jolt_cases_passed += 1
 	var summary := {
@@ -982,7 +988,7 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.side_override.rightward_normal_resolves_right"
 		)
 
-	# The metre corner band covers the larger inset measured on pinned Jolt
+	# The normalized corner band covers the larger inset measured on pinned Jolt
 	# even when the old normalized near-tie difference is outside 0.01.
 	var wide_point := Vector3(-0.889209, 0.0, -1.896407)
 	var wide_normal := Vector3(0.934434, 0.0, 0.356136)
@@ -1000,9 +1006,11 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.wide_solver_inset.outside_old_normalized_band"
 		)
 		d.check(
-			half.x - absf(wide_point.x) <= LAB_REGION_CORNER_BAND_M
-				and half.z - absf(wide_point.z) <= LAB_REGION_CORNER_BAND_M,
-			"near_tie.wide_solver_inset.inside_metre_corner_band"
+			_normalized_plane_distance(wide_point.x, half.x)
+				<= LAB_REGION_CORNER_BAND_NORMALIZED
+				and _normalized_plane_distance(wide_point.z, half.z)
+					<= LAB_REGION_CORNER_BAND_NORMALIZED,
+			"near_tie.wide_solver_inset.inside_normalized_corner_band"
 		)
 		d.check(
 			_baseline_point_only_region(wide_point, config.hull_size_m)
@@ -1082,8 +1090,10 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.wall_end_%s.end_inset" % label
 		)
 		d.check(
-			side_inset <= LAB_REGION_CORNER_BAND_M
-				and end_inset <= LAB_REGION_CORNER_BAND_M,
+			_normalized_plane_distance(point.x, half.x)
+				<= LAB_REGION_CORNER_BAND_NORMALIZED
+				and _normalized_plane_distance(point.z, half.z)
+					<= LAB_REGION_CORNER_BAND_NORMALIZED,
 			"near_tie.wall_end_%s.inside_measured_corner_band" % label
 		)
 		var baseline_region := _baseline_point_only_region(
@@ -1182,6 +1192,34 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.near_diagonal_margin.falls_back_to_point_rule"
 		)
 
+	# Just above the same axis margin the normal is no longer ambiguous. Pin
+	# that boundary explicitly: the compatible X-dominant normal names LEFT at
+	# the same front-left point where the point fallback would name FRONT.
+	var clear_diagonal_normal := Vector3(
+		diagonal_component + 2.1e-3, 0.0, diagonal_component
+	)
+	var clear_diagonal := d.make_witness(
+		near_diagonal_point,
+		-clear_diagonal_normal * 20.0,
+		Vector3.ZERO,
+		clear_diagonal_normal
+	)
+	var clear_diagonal_outcome := _produce(clear_diagonal, config)
+	d.check(
+		clear_diagonal_outcome.is_ok(), "near_tie.clear_diagonal_margin.published"
+	)
+	if clear_diagonal_outcome.is_ok():
+		var clear_diagonal_local := _local_response_normal(clear_diagonal)
+		d.check(
+			absf(absf(clear_diagonal_local.x) - absf(clear_diagonal_local.z))
+				> LAB_REGION_NORMAL_AXIS_MARGIN,
+			"near_tie.clear_diagonal_margin.normal_is_outside_margin"
+		)
+		d.check(
+			clear_diagonal_outcome.event.region == ImpactEvent.ContactRegion.LEFT,
+			"near_tie.clear_diagonal_margin.compatible_normal_names_left"
+		)
+
 	# Outside the tie band the point alone classifies, whatever the normal.
 	var unambiguous := {
 		"front_face": {
@@ -1213,41 +1251,124 @@ func _case_corner_near_tie_response_normal() -> void:
 				"near_tie.%s.point_classifies_outside_band" % label
 			)
 
-	# Just outside the chosen end-axis band the point rule still wins. This
-	# point uses the measured side inset but sits 0.040 m inside the nose
-	# plane; its clearly front-facing normal would win inside the band, so it
-	# brackets the upper edge instead of allowing unconditional normal-first
-	# classification or unbounded widening.
-	var outside_end_inset_m := 0.040
-	var outside_band_point := Vector3(
+	# The former 0.040 m absolute end-inset guard is not a physical ceiling:
+	# real pinned-Jolt 1.2 m wall-end witnesses remain side-face contacts at
+	# 0.0369-0.0493 m end-plane insets. That point is inside the normalized
+	# corner capture, so a clearly front-facing compatible normal now names
+	# FRONT even though the point rule names LEFT. This explicit inversion of
+	# the old synthetic expectation documents the contract change rather than
+	# hiding it.
+	var legacy_end_inset_m := 0.040
+	var legacy_band_point := Vector3(
 		-(half.x - measured_side_inset_m), 0.0,
-		-(half.z - outside_end_inset_m)
+		-(half.z - legacy_end_inset_m)
 	)
-	var outside_band_normal := Vector3(0.2, 0.0, 0.98)
-	var outside_band := d.make_witness(
-		outside_band_point,
-		-outside_band_normal * 20.0,
+	var boundary_normal := Vector3(0.2, 0.0, 0.98)
+	var legacy_band := d.make_witness(
+		legacy_band_point,
+		-boundary_normal * 20.0,
 		Vector3.ZERO,
-		outside_band_normal
+		boundary_normal
 	)
-	var outside_band_outcome := _produce(outside_band, config)
-	d.check(outside_band_outcome.is_ok(), "near_tie.outside_band.published")
-	if outside_band_outcome.is_ok():
+	var legacy_band_outcome := _produce(legacy_band, config)
+	d.check(legacy_band_outcome.is_ok(), "near_tie.legacy_40mm.published")
+	if legacy_band_outcome.is_ok():
 		d.check(
-			half.x - absf(outside_band_point.x) <= LAB_REGION_CORNER_BAND_M
-				and half.z - absf(outside_band_point.z)
-					> LAB_REGION_CORNER_BAND_M,
-			"near_tie.outside_band.only_one_axis_outside"
+			_normalized_plane_distance(legacy_band_point.x, half.x)
+				<= LAB_REGION_CORNER_BAND_NORMALIZED
+				and _normalized_plane_distance(legacy_band_point.z, half.z)
+					<= LAB_REGION_CORNER_BAND_NORMALIZED,
+			"near_tie.legacy_40mm.inside_normalized_band"
 		)
 		d.check(
-			_baseline_point_only_region(outside_band_point, config.hull_size_m)
+			_baseline_point_only_region(legacy_band_point, config.hull_size_m)
 				== ImpactEvent.ContactRegion.LEFT,
-			"near_tie.outside_band.point_rule_names_left"
+			"near_tie.legacy_40mm.point_rule_names_left"
 		)
 		d.check(
-			outside_band_outcome.event.region == ImpactEvent.ContactRegion.LEFT,
-			"near_tie.outside_band.point_rule_wins"
+			legacy_band_outcome.event.region == ImpactEvent.ContactRegion.FRONT,
+			"near_tie.legacy_40mm.compatible_normal_wins"
 		)
+
+	# The capture remains bounded. These two controls bracket the normalized
+	# end-plane boundary on the default hull (0.04 * 1.9 m = 0.076 m): just
+	# inside, the compatible front normal wins; just outside, the same normal
+	# is ignored and the point rule's LEFT answer is preserved.
+	var boundary_cases := {
+		"inside": {"inset": 0.075, "region": ImpactEvent.ContactRegion.FRONT},
+		"outside": {"inset": 0.077, "region": ImpactEvent.ContactRegion.LEFT},
+	}
+	for label in boundary_cases:
+		var end_inset: float = boundary_cases[label]["inset"]
+		var point := Vector3(
+			-(half.x - measured_side_inset_m), 0.0,
+			-(half.z - end_inset)
+		)
+		var outcome := _produce(
+			d.make_witness(
+				point, -boundary_normal * 20.0, Vector3.ZERO, boundary_normal
+			),
+			config
+		)
+		d.check(outcome.is_ok(), "near_tie.boundary_%s.published" % label)
+		if not outcome.is_ok():
+			continue
+		var end_distance := _normalized_plane_distance(point.z, half.z)
+		if label == "inside":
+			d.check(
+				end_distance < LAB_REGION_CORNER_BAND_NORMALIZED,
+				"near_tie.boundary_inside.below_normalized_limit"
+			)
+		else:
+			d.check(
+				end_distance > LAB_REGION_CORNER_BAND_NORMALIZED,
+				"near_tie.boundary_outside.above_normalized_limit"
+			)
+		d.check(
+			_baseline_point_only_region(point, config.hull_size_m)
+				== ImpactEvent.ContactRegion.LEFT,
+			"near_tie.boundary_%s.point_rule_names_left" % label
+		)
+		d.check(
+			outcome.event.region == boundary_cases[label]["region"],
+			"near_tie.boundary_%s.expected_classifier" % label
+		)
+
+	# The capture scales with hull dimensions instead of encoding the default
+	# hull's metre extents. On a 2.4 m x 3.0 m hull, equal normalized plane
+	# distances produce the same inside/outside decision even though their
+	# absolute metre insets differ from the default hull's.
+	var scaled_config := d.make_config()
+	scaled_config.hull_size_m = Vector3(2.4, 1.0, 3.0)
+	var scaled_half := scaled_config.hull_size_m * 0.5
+	var scaled_boundary_cases := {
+		"inside": {
+			"point": Vector3(
+				-(scaled_half.x * 0.98), 0.0, -(scaled_half.z * 0.961)
+			),
+			"region": ImpactEvent.ContactRegion.FRONT,
+		},
+		"outside": {
+			"point": Vector3(
+				-(scaled_half.x * 0.98), 0.0, -(scaled_half.z * 0.959)
+			),
+			"region": ImpactEvent.ContactRegion.LEFT,
+		},
+	}
+	for label in scaled_boundary_cases:
+		var point: Vector3 = scaled_boundary_cases[label]["point"]
+		var outcome := _produce(
+			d.make_witness(
+				point, -boundary_normal * 20.0, Vector3.ZERO, boundary_normal
+			),
+			scaled_config
+		)
+		d.check(outcome.is_ok(), "near_tie.scaled_hull_%s.published" % label)
+		if outcome.is_ok():
+			d.check(
+				outcome.event.region == scaled_boundary_cases[label]["region"],
+				"near_tie.scaled_hull_%s.normalized_capture_scales" % label
+			)
 
 	# The same near-tie must resolve through a rotated collision-time frame,
 	# proving the normal is transformed by that frame rather than read in
@@ -1289,7 +1410,7 @@ func _case_corner_near_tie_response_normal() -> void:
 
 	measurements["near_tie_cases"] = (
 		front_cases.size() + rear_cases.size() + unambiguous.size()
-		+ wall_end_cases.size() + 7
+		+ wall_end_cases.size() + 13
 	)
 
 
@@ -2005,9 +2126,15 @@ func _case_real_jolt_narrow_wall_end() -> Dictionary:
 			var inset_z := half_extents.z - absf(local_point.z)
 			max_inset_x = maxf(max_inset_x, inset_x)
 			max_inset_z = maxf(max_inset_z, inset_z)
+			# Mirror the producer exactly: the capture is a two-sided plane
+			# distance, not a one-sided signed inset. The measured target rows
+			# are inside both planes, but an outside-plane solver point must not
+			# satisfy the predicate merely because its signed inset is negative.
 			var in_corner_band := (
-				inset_x <= LAB_REGION_CORNER_BAND_M
-				and inset_z <= LAB_REGION_CORNER_BAND_M
+				_normalized_plane_distance(local_point.x, half_extents.x)
+					<= LAB_REGION_CORNER_BAND_NORMALIZED
+				and _normalized_plane_distance(local_point.z, half_extents.z)
+					<= LAB_REGION_CORNER_BAND_NORMALIZED
 			)
 			if in_corner_band:
 				max_band_inset_x = maxf(max_band_inset_x, inset_x)
@@ -2102,8 +2229,9 @@ func _case_real_jolt_narrow_wall_end() -> Dictionary:
 		if not edge.is_empty():
 			d.check(
 				float(edge["inset_z_m"]) > 0.025
-					and float(edge["inset_z_m"]) <= LAB_REGION_CORNER_BAND_M,
-				"%s.edge_outside_old_band_inside_new_band" % label
+					and float(edge["inset_z_m"]) / half_extents.z
+						<= LAB_REGION_CORNER_BAND_NORMALIZED,
+				"%s.edge_inside_normalized_corner_band" % label
 			)
 			d.check_close(
 				float(edge["inset_x_m"]), float(scenario["edge_inset_x_m"]),
@@ -2161,6 +2289,192 @@ func _case_real_jolt_narrow_wall_end() -> Dictionary:
 			)
 	return {
 		"case": NARROW_WALL_END_JOLT_CASE_ID,
+		"pass": d.failures.is_empty(),
+		"checks": d.checks,
+		"checks_failed": d.failures.size(),
+		"failures": d.failures.duplicate(),
+		"measurements": measurements.duplicate(),
+	}
+
+
+func _case_real_jolt_wall_width_end_envelope() -> Dictionary:
+	d = ChecksScript.new()
+	measurements = {}
+	var body_checks := BodyLabChecksScript.new()
+	# Independent-review 1.2 m wall-end regressions. The material stream must
+	# not publish LEFT -> FRONT -> LEFT while the selected response normal
+	# remains sign-compatible and clearly left-dominant. The two low-speed rows
+	# bracket the deeper normalized solver insets measured at the front and
+	# rear ends; the rear row is low severity and is retained as envelope
+	# evidence rather than as an independent material-impact verdict.
+	var scenarios := [
+		{
+			"label": "v35_h0.900_s-1_t1",
+			"speed": 35.0,
+			"heading": 0.9,
+			"steer": -1.0,
+			"throttle": 1.0,
+			"expectations": {
+				30: ImpactEvent.ContactRegion.LEFT,
+				31: ImpactEvent.ContactRegion.LEFT,
+				32: ImpactEvent.ContactRegion.LEFT,
+				33: ImpactEvent.ContactRegion.FRONT,
+			},
+			"focus_tick": 31,
+			"focus_inset_x_m": 0.0192550,
+			"focus_inset_z_m": 0.0395654,
+			"focus_severity_m_s": 4.5728713,
+			"severity_tolerance": 0.25,
+		},
+		{
+			"label": "v8_h0.785_s-1_t0",
+			"speed": 8.0,
+			"heading": 0.785398,
+			"steer": -1.0,
+			"throttle": 0.0,
+			"expectations": {
+				19: ImpactEvent.ContactRegion.LEFT,
+			},
+			"focus_tick": 19,
+			"focus_inset_x_m": 0.0193685,
+			"focus_inset_z_m": 0.0368828,
+			"focus_severity_m_s": 1.0318913,
+			"severity_tolerance": 0.15,
+		},
+		{
+			"label": "v8_h0.300_s1_t1",
+			"speed": 8.0,
+			"heading": 0.3,
+			"steer": 1.0,
+			"throttle": 1.0,
+			"expectations": {
+				34: ImpactEvent.ContactRegion.LEFT,
+			},
+			"focus_tick": 34,
+			"focus_inset_x_m": 0.0336717,
+			"focus_inset_z_m": 0.0492767,
+			"focus_severity_m_s": 0.0823506,
+			"severity_tolerance": 0.08,
+		},
+	]
+	for scenario in scenarios:
+		var label: String = scenario["label"]
+		var heading: float = scenario["heading"]
+		var report: Dictionary = await _run_steering_scenario(
+			label, _nonzero_heading_probe_start(heading),
+			Vector2(0.0, scenario["speed"]), heading,
+			body_checks.make_steer_command(
+				scenario["steer"], scenario["throttle"]
+			),
+			NONZERO_HEADING_CORNER_TICKS,
+			WALL_END_WIDTH_M
+		)
+		var witnesses: Array = report["witnesses"]
+		var config: MotorBodyAdapter.Config = report["config"]
+		var half_extents := config.hull_size_m * 0.5
+		d.check(witnesses.size() >= 1, "%s.witness_stream_observed" % label)
+		var events := {}
+		var local_points := {}
+		var local_normals := {}
+		for witness_record in witnesses:
+			var result: MotorBodyAdapter.Result = witness_record["result"]
+			var tick_index: int = witness_record["index"]
+			var outcome := ProducerScript.produce(
+				result, config, "car-wall-end-" + label,
+				"evt-%s-%d" % [label, tick_index], "", tick_index
+			)
+			d.check(outcome.is_ok(), "%s.tick_%d.produced" % [label, tick_index])
+			if not outcome.is_ok():
+				continue
+			var event := outcome.event
+			events[tick_index] = event
+			local_points[tick_index] = event.contact_point_local_m
+			local_normals[tick_index] = _local_response_normal(result)
+			d.check(event.is_valid(), "%s.tick_%d.event_valid" % [label, tick_index])
+
+		var expectations: Dictionary = scenario["expectations"]
+		for tick_value in expectations:
+			var tick := int(tick_value)
+			var expected: ImpactEvent.ContactRegion = expectations[tick_value]
+			d.check(events.has(tick), "%s.tick_%d.witness_present" % [label, tick])
+			if events.has(tick):
+				var expected_event: ImpactEvent = events[tick]
+				d.check(
+					expected_event.region == expected,
+					"%s.tick_%d.expected_region" % [label, tick]
+				)
+
+		if label == "v35_h0.900_s-1_t1" \
+				and events.has(30) and events.has(31) and events.has(32):
+			var tick30: ImpactEvent = events[30]
+			var tick31: ImpactEvent = events[31]
+			var tick32: ImpactEvent = events[32]
+			d.check(
+				not (
+					tick30.region == ImpactEvent.ContactRegion.LEFT
+					and tick31.region == ImpactEvent.ContactRegion.FRONT
+					and tick32.region == ImpactEvent.ContactRegion.LEFT
+				),
+				"%s.no_left_front_left_pulse" % label
+			)
+
+		var focus_tick := int(scenario["focus_tick"])
+		d.check(events.has(focus_tick), "%s.focus_witness_present" % label)
+		if events.has(focus_tick):
+			var focus_event: ImpactEvent = events[focus_tick]
+			var focus_point: Vector3 = local_points[focus_tick]
+			var focus_normal: Vector3 = local_normals[focus_tick]
+			var inset_x := half_extents.x - absf(focus_point.x)
+			var inset_z := half_extents.z - absf(focus_point.z)
+			var x_dominance := absf(focus_normal.x) - absf(focus_normal.z)
+			d.check_close(
+				inset_x, float(scenario["focus_inset_x_m"]), 5.0e-4,
+				"%s.focus_inset_x_matches_measurement" % label
+			)
+			d.check_close(
+				inset_z, float(scenario["focus_inset_z_m"]), 5.0e-4,
+				"%s.focus_inset_z_matches_measurement" % label
+			)
+			d.check_close(
+				focus_event.severity_m_s, float(scenario["focus_severity_m_s"]),
+				float(scenario["severity_tolerance"]),
+				"%s.focus_severity_matches_measurement" % label
+			)
+			d.check(
+				focus_normal.x > 0.0 and x_dominance > 0.25,
+				"%s.focus_normal_is_clearly_left" % label
+			)
+			d.check(
+				_normalized_plane_distance(focus_point.x, half_extents.x)
+					<= LAB_REGION_CORNER_BAND_NORMALIZED
+					and _normalized_plane_distance(focus_point.z, half_extents.z)
+						<= LAB_REGION_CORNER_BAND_NORMALIZED,
+				"%s.focus_inside_normalized_corner_band" % label
+			)
+			measurements[label + "_focus_tick"] = focus_tick
+			measurements[label + "_focus_severity_m_s"] = focus_event.severity_m_s
+			measurements[label + "_focus_inset_x_m"] = inset_x
+			measurements[label + "_focus_inset_z_m"] = inset_z
+			measurements[label + "_focus_local_point"] = focus_point
+			measurements[label + "_focus_local_normal"] = focus_normal
+		if label == "v35_h0.900_s-1_t1" and events.has(33):
+			var genuine_front_normal: Vector3 = local_normals[33]
+			d.check(
+				genuine_front_normal.z > 0.0
+					and absf(genuine_front_normal.z)
+						> absf(genuine_front_normal.x) + 0.25,
+				"%s.tick_33.normal_is_genuinely_front" % label
+			)
+		measurements[label + "_scenario"] = {
+			"speed_m_s": scenario["speed"],
+			"heading_rad": heading,
+			"steer": scenario["steer"],
+			"throttle": scenario["throttle"],
+			"wall_width_m": WALL_END_WIDTH_M,
+		}
+		measurements[label + "_witnesses"] = witnesses.size()
+	return {
+		"case": WALL_WIDTH_END_JOLT_CASE_ID,
 		"pass": d.failures.is_empty(),
 		"checks": d.checks,
 		"checks_failed": d.failures.size(),
@@ -2268,6 +2582,10 @@ func _baseline_point_only_region(
 		if local_point.x > 0.0
 		else ImpactEvent.ContactRegion.LEFT
 	)
+
+
+func _normalized_plane_distance(coordinate: float, half_extent: float) -> float:
+	return absf(absf(coordinate) - half_extent) / half_extent
 
 
 func _road_plane_unit_normal(normal: Vector3) -> Vector3:

@@ -40,14 +40,15 @@ extends RefCounted
 ## the final pose must transform again. Region is classified from that local
 ## point against half the validated `Config.hull_size_m` extents (local -Z
 ## forward, +X right). A box-wall contact lands on a hull vertex whose pinned
-## solver point can sit inside both face planes by centimetres; when both axes
-## are within `REGION_CORNER_BAND_M` of their half-extents the collision-time
+## solver point can sit inside both face planes by centimetres; when both
+## axes' two-sided plane distances, each normalized by that axis's half
+## extent, are within `REGION_CORNER_BAND_NORMALIZED` the collision-time
 ## response normal, transformed by the same frame's inverse basis, identifies
 ## the struck face if its dominant-axis sign borders the contacted quadrant.
 ## A normal whose X and Z components are too close to call, or whose sign is
 ## inconsistent with that quadrant, identifies nothing and classification
 ## falls back to the exact-point comparison, whose deterministic corner tie
-## resolves to FRONT/REAR. Contacts outside the corner band stay
+## resolves to FRONT/REAR. Contacts outside the normalized corner band stay
 ## point-classified.
 ##
 ## On this adapter path the wall response alters velocity after the sweep and
@@ -62,19 +63,24 @@ extends RefCounted
 ## cosmetic damage remain later integration work; this module makes no M1
 ## acceptance claim.
 
-## Metre band around both hull half-extents within which a local contact point
-## counts as part of a corner. This is a classification capture width, not a
-## solver tolerance. Pinned Godot 4.7.2/Jolt flat straight box-wall vertex
-## witnesses were measured inset by at most 0.0160 m in X and 0.0139 m in Z
-## across 38,034 witnesses, independent of `orientation_contact_tolerance_m`
-## in its validated 0-0.1 m range. A 0.6 m wall end sliding along the side of
-## the same laboratory hull remained a side-face contact as close as 0.0288 m
-## to the nose plane, so 0.035 m covers that measured wall-end transition
-## while true face-centre contacts remain far outside the band. This constant
-## is not a general hull contract: other hull dimensions, wall shapes or
-## orientation tolerances need their own pinned measurements before widening
-## or reusing it.
-const REGION_CORNER_BAND_M := 0.035
+## Dimensionless two-sided band around both hull face planes within which a
+## local contact point counts as part of a corner. This is a classification
+## capture width, not a solver tolerance. Normalizing by each half extent
+## keeps the rule tied to the contact point's position in the hull's own
+## normalized face coordinates instead of baking the laboratory hull's 1.8 m
+## width and 3.8 m length into an absolute metre cutoff. Pinned Godot
+## 4.7.2/Jolt flat straight box-wall vertex witnesses were measured inset by
+## at most 0.0160 m in X and 0.0139 m in Z across 38,034 broad-wall witnesses,
+## independent of `orientation_contact_tolerance_m` in its validated 0-0.1 m
+## range. In the narrow-wall-end sweep over 0.3, 0.6, 1.2 and 2.4 m widths,
+## the deepest sign-compatible wall-end disagreement reached normalized plane
+## distances of 0.0374 in X and 0.0259 in Z; the material 1.2 m left-face
+## witness measured 0.0214 and 0.0208. The 0.04 capture covers that measured
+## envelope while true face-centre contacts remain far outside it. This
+## constant is not a general hull contract: other hull dimensions, wall shapes
+## or orientation tolerances need their own pinned measurements before reusing
+## it.
+const REGION_CORNER_BAND_NORMALIZED := 0.04
 ## Minimum difference between the absolute X and Z components of the local
 ## response normal for it to identify a face. A normal closer to diagonal than
 ## this cannot break a near-tie and the exact-point comparison is used.
@@ -256,8 +262,9 @@ static func _normalized_road_plane_normal(normal: Vector3) -> Vector3:
 ## FRONT/REAR/LEFT/RIGHT from a local contact point against half the hull
 ## extents. Local -Z is forward and +X is right. Coordinates are normalized by
 ## their own half extent for the deterministic point rule. When the point is
-## within `REGION_CORNER_BAND_M` of both face planes, the collision-time
-## response normal in the same local frame may name the struck face. The
+## within `REGION_CORNER_BAND_NORMALIZED` of both face planes, the
+## collision-time response normal in the same local frame may name the struck
+## face. The
 ## normal is used only when one axis is clearly dominant and its sign borders
 ## the contacted quadrant: front (local Z negative) expects +Z, rear expects
 ## -Z, left (local X negative) expects +X and right expects -X. A diagonal or
@@ -273,10 +280,12 @@ static func _classify_region(
 	var half_extents := hull_size_m * 0.5
 	var lateral := absf(local_point.x) / half_extents.x
 	var longitudinal := absf(local_point.z) / half_extents.z
-	var near_side_face := absf(absf(local_point.x) - half_extents.x) \
-		<= REGION_CORNER_BAND_M
-	var near_end_face := absf(absf(local_point.z) - half_extents.z) \
-		<= REGION_CORNER_BAND_M
+	var lateral_plane_distance := absf(absf(local_point.x) - half_extents.x) \
+		/ half_extents.x
+	var longitudinal_plane_distance := absf(absf(local_point.z) - half_extents.z) \
+		/ half_extents.z
+	var near_side_face := lateral_plane_distance <= REGION_CORNER_BAND_NORMALIZED
+	var near_end_face := longitudinal_plane_distance <= REGION_CORNER_BAND_NORMALIZED
 	if near_side_face and near_end_face:
 		var lateral_normal := absf(local_normal.x)
 		var longitudinal_normal := absf(local_normal.z)
