@@ -1,21 +1,12 @@
 [gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://src/boot/game.gd" id="1_game"]
+[ext_resource type="PackedScene" path="res://scenes/laboratory/drive_lab.tscn" id="2_drive_lab"]
 
 [node name="Game" type="Node3D"]
 script = ExtResource("1_game")
 
-[node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 6, 10)
+[node name="DriveLab" parent="." instance=ExtResource("2_drive_lab")]
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.866025, -0.353553, 0.353553, 0, 0.707107, 0.707107, -0.5, -0.612372, 0.612372, 0, 8, 0)
-
-[node name="Notice" type="Label3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 3, -6)
-pixel_size = 0.02
-billboard = 1
-double_sided = false
-text = "Placeholder race scene
-M0 shell: no track, cars, motor or simulation yet"
-font_size = 64

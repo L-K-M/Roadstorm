@@ -1,8 +1,9 @@
 # Boot smoke test
 
 Headless check for the M0 shell (`project.godot`, `scenes/`, `src/boot/`).
-It is a placeholder-shell check only: it does not exercise any gameplay, because
-no gameplay exists yet.
+It proves the shell boots and the menu can reach the committed graybox
+`DriveLab` practice scene. It is a structural check only: it claims no
+gameplay, handling, rendering or acceptance result.
 
 ## Run
 
@@ -97,7 +98,11 @@ expected, `1` = a case misbehaved, `2` = the harness could not run.
   (`can_instantiate()`), so a parse error or a detached script fails.
 - The menu's quit button has its `pressed` signal connected: the observable
   side effect of `main_menu.gd::_ready` completing.
-- The boot scene hands off to the menu, and the placeholder race scene loads.
+- The boot scene hands off to the menu, and the game scene loads hosting
+  exactly one committed `scenes/laboratory/drive_lab.tscn` instance.
+- The game scene exposes the DriveLab's single chase camera (body, camera and
+  speed HUD present) instead of the removed direct-child placeholder
+  `Camera3D`; the obsolete node must be absent.
 
 ## Limitations
 

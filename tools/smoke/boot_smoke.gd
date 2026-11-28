@@ -16,10 +16,13 @@ extends SceneTree
 ##   * the menu's quit button has its 'pressed' signal connected, the
 ##     observable side effect of main_menu.gd::_ready completing;
 ##   * the boot scene hands off to the menu;
-##   * the placeholder race scene loads in the same shell.
+##   * the game scene loads in the same shell hosting exactly one committed
+##     `scenes/laboratory/drive_lab.tscn` instance, whose body, chase camera
+##     and speed HUD are present, and which exposes that single camera rather
+##     than the removed direct-child placeholder camera.
 ##
-## It deliberately does not claim any gameplay exists: the menu and race scenes
-## are placeholders.
+## It deliberately claims no gameplay acceptance: the practice entry exercises
+## the existing laboratory slice only.
 ##
 ## Limit: a runtime script error (an exception thrown from a script that still
 ## parses, e.g. inside _ready) cannot be observed from inside the engine
@@ -39,6 +42,8 @@ extends SceneTree
 const BOOT_SCENE_PATH := "res://scenes/boot.tscn"
 const MENU_SCENE_PATH := "res://scenes/main_menu.tscn"
 const GAME_SCENE_PATH := "res://scenes/game.tscn"
+
+const DriveLabScript := preload("res://src/laboratory/drive_lab.gd")
 
 const EXPECTED_MAJOR := 4
 const EXPECTED_MINOR := 7
@@ -111,7 +116,7 @@ func _on_process_frame() -> void:
 		_stage = 1
 		change_scene_to_file(GAME_SCENE_PATH)
 	elif _stage == 1 and current.scene_file_path == GAME_SCENE_PATH:
-		print("[boot-smoke] placeholder race scene loaded after %d frame(s)" % _frames)
+		print("[boot-smoke] practice scene loaded after %d frame(s)" % _frames)
 		_check_game(current)
 		_finish()
 
@@ -223,8 +228,41 @@ func _check_game(game: Node) -> void:
 	if not (game is Node3D):
 		_fail("game root is %s, expected Node3D" % game.get_class())
 		return
-	if game.get_node_or_null(^"Camera3D") == null:
-		_fail("placeholder race scene has no Camera3D")
+	var labs := _collect_script_instances(game, DriveLabScript)
+	if labs.size() != 1:
+		_fail(
+			"game scene hosts %d DriveLab instances, expected exactly one committed drive_lab.tscn instance"
+			% labs.size()
+		)
+		return
+	var lab: DriveLab = labs[0] as DriveLab
+	if lab.body == null:
+		_fail("DriveLab has no CharacterBody3D body")
+	if lab.camera_rig == null or lab.camera_rig.get_camera() == null:
+		_fail("DriveLab camera rig has no Camera3D")
+	if lab.speed_hud == null or lab.hud_layer == null:
+		_fail("DriveLab presentation is incomplete: speed HUD or its CanvasLayer is missing")
+	# CameraRig.attach_to_viewport() reparents the rig under the root Viewport.
+	var cameras := root.find_children("*", "Camera3D", true, false)
+	if cameras.size() != 1:
+		_fail(
+			"game scene exposes %d Camera3D nodes, expected the single DriveLab-backed camera"
+			% cameras.size()
+		)
+	elif lab.camera_rig != null and lab.camera_rig.get_camera() != cameras[0]:
+		_fail("the single game Camera3D is not the DriveLab camera")
+	if game.get_node_or_null(^"Camera3D") != null:
+		_fail("obsolete placeholder direct-child Camera3D is still present")
+
+
+## Every node in `node`'s subtree whose attached script is exactly `script`.
+func _collect_script_instances(node: Node, script: Script) -> Array[Node]:
+	var found: Array[Node] = []
+	if node.get_script() == script:
+		found.append(node)
+	for child in node.get_children():
+		found.append_array(_collect_script_instances(child, script))
+	return found
 
 
 func _has_user_flag(flag: String) -> bool:
@@ -238,7 +276,7 @@ func _fail(message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("[boot-smoke] PASS: M0 shell boots, hands off and loads the placeholder race scene")
+		print("[boot-smoke] PASS: M0 shell boots, hands off and loads the DriveLab-backed practice scene")
 		quit(0)
 	else:
 		printerr("[boot-smoke] RESULT: FAIL (%d problem(s))" % _failures.size())
