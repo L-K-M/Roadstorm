@@ -90,11 +90,12 @@ const EXPECTED_JOIN_DUPLICATE_INDICES: Array = [31, 127]
 
 const FLOAT_TOLERANCE := 1e-6
 ## Tolerance for matching a recorded section boundary or length against the
-## authored expected stations, and for matching adjacent section records at a
-## join. Per-sample tag ownership does not expand intervals by this tolerance:
-## a raw sample is owned by exactly one recorded section, except at a station
-## exactly equal to a shared boundary, where the recognized duplicate-join side
-## copies may each claim their own adjacent section. See
+## authored expected stations. Adjacent section records must share their join
+## station exactly; a recorded overlap or gap is refused before sample ownership
+## is assigned. Per-sample tag ownership does not expand intervals by this
+## tolerance: a raw sample is owned by exactly one recorded section, except at a
+## station exactly equal to a shared boundary, where the recognized
+## duplicate-join side copies may each claim their own adjacent section. See
 ## `_samples_ownership_error`.
 const SECTION_STATION_TOLERANCE := 1e-4
 
@@ -569,8 +570,10 @@ static func _filter_join_duplicates(samples: Array, sections: Array) -> Dictiona
 	## road ribbons abut. That duplicate is metadata for mesh construction, not a
 	## second centerline point: accept it only when it is exactly the same position
 	## at the exact recorded end/start station of adjacent sections, then skip it.
-	## Every other repeated station, decrease, reordering or positional mismatch is
-	## a refusal.
+	## Adjacent section records must themselves share an exact join station;
+	## otherwise their closed intervals overlap or leave a gap and a near-boundary
+	## sample could borrow the neighbouring section's tag. Every other repeated
+	## station, decrease, reordering or positional mismatch is a refusal.
 	if samples.size() < 2:
 		return _filter_fail("fewer than two samples")
 	if sections.size() != 3:
@@ -629,6 +632,23 @@ static func _filter_join_duplicates(samples: Array, sections: Array) -> Dictiona
 			return _filter_fail("section %d end station changed" % index)
 		if absf(length - (float(expected_stations[index + 1]) - float(expected_stations[index]))) > SECTION_STATION_TOLERANCE:
 			return _filter_fail("section %d length changed" % index)
+
+	# Exact adjacency is required before any sample ownership is assigned. The
+	# builder carries the same station float across an ordinary join, so both
+	# legitimate two-sided duplicate joins pass unchanged. A recorded overlap or
+	# gap, however small, makes the closed intervals non-disjoint and is refused
+	# here rather than letting a near-boundary sample borrow the neighbour tag.
+	for index in range(2):
+		if section_ends[index] != section_starts[index + 1]:
+			return _filter_fail(
+				"adjacent section records do not share an exact join station: "
+				+ "%s end_s_m=%.9f vs %s start_s_m=%.9f (difference %.9f m)" % [
+					String(EXPECTED_SECTION_IDS[index]), section_ends[index],
+					String(EXPECTED_SECTION_IDS[index + 1]),
+					section_starts[index + 1],
+					absf(section_ends[index] - section_starts[index + 1]),
+				]
+			)
 
 	var unique: Array = []
 	var duplicate_indices: Array = []

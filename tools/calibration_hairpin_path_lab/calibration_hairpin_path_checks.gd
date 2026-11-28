@@ -1097,6 +1097,34 @@ func _case_tag_ownership_refusal() -> Dictionary:
 		band_after_error.contains("does not own that station"),
 		"post-join band refusal names ownership"
 	)
+
+	# A recorded adjacent-boundary overlap paired with an interior relabel must
+	# refuse before sample ownership is assigned. The relabelled sample would
+	# otherwise sit inside both closed intervals and borrow the arc tag.
+	var overlap_relabel := _mutated_samples("overlap_before_join_arc_tag")
+	var overlap_error := SourceScript._validate_samples(
+		overlap_relabel["samples"], overlap_relabel["sections"]
+	)
+	c.check(
+		not overlap_error.is_empty(),
+		"recorded overlap with relabelled interior sample is refused"
+	)
+	c.check(
+		overlap_error.contains("exact join station"),
+		"overlap refusal names the exact join station requirement"
+	)
+
+	# A small recorded gap must refuse even though each boundary still matches
+	# its authored expected station within SECTION_STATION_TOLERANCE.
+	var gap_records := _mutated_samples("gap_before_join_section_records")
+	var gap_error := SourceScript._validate_samples(
+		gap_records["samples"], gap_records["sections"]
+	)
+	c.check(not gap_error.is_empty(), "recorded gap between section records is refused")
+	c.check(
+		gap_error.contains("exact join station"),
+		"gap refusal names the exact join station requirement"
+	)
 	return c.result()
 
 
@@ -1284,6 +1312,12 @@ static func _mutated_samples(kind: String) -> Dictionary:
 		"band_after_join_exit_tag":
 			samples[125]["s"] = float(sections[1]["end_s_m"]) - 5e-5
 			samples[125]["section_id"] = "hairpin.exit"
+		"overlap_before_join_arc_tag":
+			sections[1]["start_s_m"] = float(sections[0]["end_s_m"]) - 5e-5
+			samples[29]["s"] = float(sections[0]["end_s_m"]) - 2.5e-5
+			samples[29]["section_id"] = "hairpin.arc"
+		"gap_before_join_section_records":
+			sections[1]["start_s_m"] = float(sections[0]["end_s_m"]) + 5e-5
 	return {"samples": samples, "sections": sections}
 
 

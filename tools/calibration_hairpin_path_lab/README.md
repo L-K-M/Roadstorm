@@ -63,16 +63,19 @@ reorder, discontinuity or broken run is refused.
 
 Tag ownership uses the recorded section intervals exactly. A station strictly
 inside one interval belongs to that section alone; no interval is expanded by a
-tolerance for this check. The only multi-owner station is one exactly equal to a
-shared boundary, where the two recognized duplicate-join side copies each carry
-their own adjacent section id. An ordinary interior sample moved into the old
-1e-4 m boundary band therefore cannot borrow the neighbouring section's tag.
-The `SECTION_STATION_TOLERANCE` of 1e-4 m applies only to comparing recorded
-section boundary stations and lengths against the authored expected values and
-to matching adjacent section records at a join. Exact boundary ownership is a
-property of the recorded intervals; this lab does not prove that an
-independently re-authored stream cannot place a single sample exactly on a
-shared boundary.
+tolerance for this check. Adjacent recorded sections must share their join
+station exactly: a recorded overlap or gap, however small, is refused before any
+sample ownership is assigned. The builder carries the same station float across
+an ordinary join, so both legitimate two-sided duplicate joins pass. The only
+multi-owner station is one exactly equal to such a shared boundary, where the
+two recognized duplicate-join side copies each carry their own adjacent section
+id. An ordinary interior sample moved into the old 1e-4 m boundary band
+therefore cannot borrow the neighbouring section's tag. The
+`SECTION_STATION_TOLERANCE` of 1e-4 m applies only to comparing recorded section
+boundary stations and lengths against the authored expected values; adjacent
+records are compared exactly. Exact boundary ownership is a property of the
+recorded intervals; this lab does not prove that an independently re-authored
+stream cannot place a single sample exactly on a shared boundary.
 
 ## Route-progress policy
 
@@ -155,6 +158,9 @@ summary JSON with `--summary-out=<path>`. The deliberate probe prints
 - ordered tag ownership by exact recorded intervals, including refusal of an
   interior sample moved into the former 1e-4 m boundary band and retagged with
   the neighbouring section, while both genuine join side copies still pass;
+- exact adjacency of recorded section boundaries through the public validation
+  path: a recorded overlap paired with an interior relabel, and a small recorded
+  gap, are both refused, while the genuine builder joins still pass;
 - 30 m approach, 180-degree radius-30 m left arc, 30 m exit;
 - geometric turn (+pi about the derived arc center) and 180-degree heading
   reversal between approach and exit travel directions;
@@ -191,4 +197,7 @@ summary JSON with `--summary-out=<path>`. The deliberate probe prints
 - Ownership is exact at recorded interval boundaries. A station exactly equal
   to a shared boundary may be claimed by either adjacent section; the builder
   emits that station only as the duplicate-join pair, and this lab does not
-  model a single non-duplicate sample placed exactly on a boundary.
+  model a single non-duplicate sample placed exactly on a boundary. Recorded
+  adjacent boundaries must be exactly equal; a smaller-than-tolerance overlap or
+  gap is refused before ownership is assigned, which is a converter-input guard,
+  not a claim about an independently re-authored stream.
