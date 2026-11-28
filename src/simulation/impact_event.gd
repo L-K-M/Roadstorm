@@ -81,7 +81,7 @@ enum ContactRegion { FRONT, REAR, LEFT, RIGHT }
 enum NormalMode {
 	## Publish the normal unchanged; a non-unit normal is refused.
 	PRESERVE,
-	## Normalize a nonzero finite normal before validation and publication.
+	## Normalize a finite normal whose length is at least NORMAL_MIN_LENGTH.
 	NORMALIZE,
 }
 
@@ -484,7 +484,8 @@ class Builder extends RefCounted:
 
 	## Apply the explicit normal mode. PRESERVE leaves the normal untouched so
 	## the common validation rule still refuses non-unit input. NORMALIZE
-	## accepts any nonzero finite normal and publishes a unit normal, using
+	## accepts a finite normal of at least NORMAL_MIN_LENGTH and publishes a
+	## unit normal, using
 	## the scaled norm so a very large finite normal normalizes instead of
 	## overflowing into a zero vector.
 	func _resolve_normal() -> Vector3:
@@ -544,9 +545,10 @@ class Builder extends RefCounted:
 ## fresh record.
 ##
 ## Producer obligation. One retained perspective per (`contact_id`,
-## `primary_car_id`) pair. A contact the producer reports again on a later tick
-## must either reuse the perspective's `event_id`, so the retry coalesces, or
-## supply a distinct `contact_id` per tick. This component cannot tell a
+## `primary_car_id`) pair. An identical retry must repeat the same tick,
+## event ID and payload to coalesce. A contact reported on a later tick needs
+## a distinct contact ID and event ID; reusing the event ID with a new tick is
+## a conflicting payload and refuses. This component cannot tell a
 ## deliberate new contact from a retry of the same one, because it never sees
 ## the contact geometry.
 ##
