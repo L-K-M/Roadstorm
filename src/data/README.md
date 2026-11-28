@@ -196,40 +196,45 @@ see the runtime/source mapping below.
 
 ## Runtime/source mapping (no importer yet)
 
-`schemas/handling_config.schema.json` is the editable source-recipe contract;
-its nullable coefficients and `unknowns` list preserve values that have not been
-measured. `HandlingDefinition` is a runtime-ready core subset and requires an
-explicit number for every core field used by `ArcadeMotor.MotorTuning`. A future
-baker must refuse to emit a motor-ready `HandlingDefinition` when a required
-source coefficient is `null` or listed as unknown, report the missing paths and
+`schemas/handling_config.schema.json` is the historical 1.0.0 editable source
+recipe; `schemas/handling_config_v1_1.schema.json` is the separate version 1.1.0
+source contract. Their nullable coefficients and `unknowns` lists preserve values
+that have not been measured. `HandlingDefinition` is a runtime-ready core subset
+and requires resolved values for every field used by `ArcadeMotor.MotorTuning`.
+A future baker must refuse to emit a motor-ready `HandlingDefinition` when a
+required source coefficient is absent, `null`, invalid or listed as unknown,
+report the missing paths and
 preserve the source `null`/`unknowns`; it must never silently substitute the
 resource's inert zero. A draft `CarDefinition` can exist for structural editing,
 but its validation alone does not authorize a motor, a measured status or
 product-complete content.
 
-The closed schema has **no** source property for five required fields:
+The closed 1.0.0 schema has **no** source property for five required fields:
 `max_yaw_rate_rad_s` (rad/s), `reverse_trigger_speed_m_s` (m/s),
 `reverse_hold_time_s` (s), `reverse_acceleration_m_s2` (m/s²) and
-`reverse_top_speed_m_s` (m/s); the uncapped-yaw choice (`INF`) is likewise
-unsourced. A schema-valid recipe therefore cannot supply the full declared
-runtime subset even with every nullable coefficient resolved and every
-`unknowns` entry cleared. Until a versioned source-schema revision supplies
-those fields (for example a new `schema_version` adding exactly those
-properties while keeping `additionalProperties: false`), a future baker must
-refuse every recipe and report the missing paths; the typed defaults are
-direct-authoring placeholders and must never be emitted as if authored. This is
-an explicit missing-field refusal decision, not implemented refusal code. See
+`reverse_top_speed_m_s` (m/s); the uncapped-yaw choice is likewise unsourced.
+Version 1.1.0 adds all five as required but nullable properties while keeping
+the closed shape. It represents authored uncapped yaw only as the exact object
+`{"unlimited": true}`, mapped to Godot `INF`; `null` remains unresolved. A
+future baker must refuse every 1.0.0 recipe as not motor-ready, naming all five
+missing paths, and refuse any unresolved or invalid 1.1.0 coefficient. It must
+never emit the typed defaults as if authored. This is a mapping decision, not
+implemented artifact-writing refusal code. See
 `docs/evidence/m02-typed-runtime-mapping-20261127.md`.
 
 Only directly authored typed resources are usable today: `HandlingDefinition`
 and `CarDefinition` validate and round-trip from hand-authored `.tres`, but they
-cannot be derived from the current source recipe. This slice remains
+cannot yet be derived from either source recipe version. This slice remains
 provisional and does not complete M0.2.
 
 For this first runtime mapping the nested source `handling` has no independent
 identity: derive `HandlingDefinition.definition_id` as `<car_id>.handling` and
-copy the car recipe's `schema_version`, `revision` and lifecycle `status`. The
-car's typed `handling` reference points to that derived identity, so changing a
+copy the car recipe's `revision` and lifecycle `status`, and derive its display
+name as `<car display_name> handling`. The typed `schema_version` stays at
+`1.0.0`; record the source version `1.1.0` separately in a future bake manifest
+and provenance `source_contract`. Never copy the source version into the typed
+resource. The car's typed `handling` reference points to that derived identity,
+so changing a
 car's inline handling requires a car revision change. A future reusable handling
 recipe needs its own versioned contract and must not invent an identity from a
 display name. No importer is implemented in this slice.
