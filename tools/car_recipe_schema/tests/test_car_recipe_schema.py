@@ -14,10 +14,12 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -56,6 +58,59 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+BASE_FIXTURE_TEXT = (FIXTURES / "positive" / "example_rookie_finite.json").read_text(
+    encoding="utf-8"
+)
+
+
+def write_recipe(directory: str, name: str, text: str) -> Path:
+    path = Path(directory) / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def replace_number(text: str, key: str, literal: str) -> str:
+    """Replace one numeric member's literal in a recipe text, keeping the text."""
+    pattern = re.compile(rf"(\"{key}\":\s*)[^,\n]+")
+    updated, count = pattern.subn(rf"\g<1>{literal}", text, count=1)
+    assert count == 1, f"no numeric member {key!r} to replace"
+    return updated
+
+
+def insert_member(text: str, member_text: str) -> str:
+    """Insert a root member before content_hash in a recipe text."""
+    anchor = '  "content_hash"'
+    assert anchor in text
+    return text.replace(anchor, member_text + "\n" + anchor, 1)
+
+
+def load_text(text: str) -> dict[str, Any]:
+    """Parse a recipe text through the checker's strict loader."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_recipe(tmp, "recipe.json", text)
+        document, findings = vcr.load_json_document(path)
+    assert document is not None and findings == [], findings
+    return document
+
+
+def validate_text(text: str, mode: str = "schema") -> list[Any]:
+    """Validate a recipe text through the file entry point."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_recipe(tmp, "recipe.json", text)
+        return vcr.validate_recipe_file(path, mode=mode)
+
+
+def rehash(text: str) -> str:
+    """Rewrite a recipe text with a recomputed content_hash.
+
+    Leaves only the defect under test: every other difference, including a stale
+    hash, is removed.
+    """
+    document = load_text(text)
+    document["content_hash"] = vcr.content_hash_of(document)
+    return json.dumps(vcr.to_binary64(document), indent=2, ensure_ascii=False)
+
+
 def base_document(version: str = "1.1.0") -> dict[str, Any]:
     """A complete, valid 1.1.0 recipe (the committed positive base)."""
     path = FIXTURES / "positive" / "example_rookie_finite.json"
@@ -79,6 +134,11 @@ def codes(findings: list[Any]) -> set[str]:
 
 def paths(findings: list[Any]) -> set[str]:
     return {finding.path for finding in findings}
+
+
+def pairs(findings: list[Any]) -> set[tuple[str, str]]:
+    """Every (code, path) pair in a finding list."""
+    return {(finding.code, finding.path) for finding in findings}
 
 
 def mutate(fn: Callable[[dict[str, Any]], None], version: str = "1.1.0") -> dict[str, Any]:
@@ -224,6 +284,79 @@ INHERITED_VALID = [
 ]
 
 
+# (fixture file, expected code, expected path) for every negative fixture. The
+# fixture loop asserts the declared defect rather than accepting any finding,
+# so a fixture that starts failing for an unrelated reason is caught.
+NEGATIVE_FIXTURE_EXPECTATIONS = {
+    "accel_positive_top_null.json": (
+        "reverse-cross-field",
+        "handling.reverse_top_speed_m_s",
+    ),
+    "accel_positive_top_zero.json": (
+        "reverse-cross-field",
+        "handling.reverse_top_speed_m_s",
+    ),
+    "boolean_as_number.json": ("bad-number", "handling.braking_acceleration_m_s2"),
+    "duplicate_key.json": ("invalid-json", ""),
+    "extra_handling_member.json": ("unknown-member", "handling.extra_field"),
+    "hold_below_minimum.json": ("bad-number", "handling.reverse_hold_time_s"),
+    "missing_max_yaw_rate_rad_s.json": (
+        "missing-field",
+        "handling.max_yaw_rate_rad_s",
+    ),
+    "missing_reverse_acceleration_m_s2.json": (
+        "missing-field",
+        "handling.reverse_acceleration_m_s2",
+    ),
+    "missing_reverse_hold_time_s.json": (
+        "missing-field",
+        "handling.reverse_hold_time_s",
+    ),
+    "missing_reverse_top_speed_m_s.json": (
+        "missing-field",
+        "handling.reverse_top_speed_m_s",
+    ),
+    "missing_reverse_trigger_speed_m_s.json": (
+        "missing-field",
+        "handling.reverse_trigger_speed_m_s",
+    ),
+    "null_field_without_unknowns.json": (
+        "null-without-unknown",
+        "handling.max_yaw_rate_rad_s",
+    ),
+    "resolved_value_listed_unknown.json": (
+        "resolved-but-unknown",
+        "handling.max_yaw_rate_rad_s",
+    ),
+    "reverse_acceleration_negative.json": (
+        "bad-number",
+        "handling.reverse_acceleration_m_s2",
+    ),
+    "reverse_top_speed_negative.json": ("bad-number", "handling.reverse_top_speed_m_s"),
+    "stale_content_hash.json": ("content-hash-mismatch", "content_hash"),
+    "top_null_without_unknowns.json": (
+        "reverse-cross-field",
+        "handling.reverse_top_speed_m_s",
+    ),
+    "trigger_above_one.json": ("bad-number", "handling.reverse_trigger_speed_m_s"),
+    "unsupported_version.json": ("unsupported-schema-version", "schema_version"),
+    "version_trailing_newline.json": (
+        "unsupported-schema-version",
+        "schema_version",
+    ),
+    "yaw_boolean.json": ("bad-yaw-rate", "handling.max_yaw_rate_rad_s"),
+    "yaw_infinity_literal.json": ("invalid-json", ""),
+    "yaw_negative.json": ("bad-yaw-rate", "handling.max_yaw_rate_rad_s"),
+    "yaw_numeric_string.json": ("bad-yaw-rate", "handling.max_yaw_rate_rad_s"),
+    "yaw_unlimited_extra_key.json": (
+        "bad-unlimited-encoding",
+        "handling.max_yaw_rate_rad_s",
+    ),
+    "yaw_unlimited_false.json": ("bad-yaw-rate", "handling.max_yaw_rate_rad_s"),
+    "yaw_zero.json": ("bad-yaw-rate", "handling.max_yaw_rate_rad_s"),
+}
+
+
 class DeepDiff:
     """Recursive structural diff producing shallowest divergence paths."""
 
@@ -334,13 +467,20 @@ class FixtureBehaviourTests(unittest.TestCase):
                 self.assertEqual(document["content_hash"], vcr.content_hash_of(document))
 
     def test_every_negative_fixture_is_rejected_in_schema_mode(self) -> None:
+        self.assertEqual(
+            sorted(path.name for path in (FIXTURES / "negative").glob("*.json")),
+            sorted(NEGATIVE_FIXTURE_EXPECTATIONS),
+            "every negative fixture must declare its expected code and path",
+        )
         for path in sorted((FIXTURES / "negative").glob("*.json")):
             with self.subTest(path=path.name):
                 document, load_findings = vcr.load_json_document(path)
-                if document is None:
-                    self.assertTrue(load_findings)
-                    continue
-                self.assertTrue(findings_for(document), f"{path.name} unexpectedly passed")
+                findings = load_findings if document is None else findings_for(document)
+                self.assertIn(
+                    NEGATIVE_FIXTURE_EXPECTATIONS[path.name],
+                    pairs(findings),
+                    f"{path.name} was not rejected for its declared reason",
+                )
 
     def test_finite_and_unlimited_positives_are_motor_ready(self) -> None:
         for name in ("example_rookie_finite.json", "example_rookie_unlimited.json"):
@@ -699,6 +839,322 @@ class InheritedContractParityTests(unittest.TestCase):
                         self.assertEqual(offenders, [])
                         if version == "1.1.0" or mode == "schema":
                             self.assertEqual([str(f) for f in findings], [])
+
+
+class NumberBoundaryTests(unittest.TestCase):
+    """The source decimal to binary64 boundary.
+
+    Every case goes through the file entry point so the authored literal, not a
+    pre-rounded Python float, is what the checker sees.
+    """
+
+    OUT_OF_RANGE = "1" + "0" * 400
+    OUT_OF_RANGE_309 = "9" * 309
+    IN_RANGE_309 = "1" + "0" * 308
+    PRECISION_LOSING = "1.00000000000000001"
+    UNDERFLOWING = "1e-400"
+
+    def test_out_of_range_integers_are_refused_at_their_path(self) -> None:
+        cases = [
+            ("handling.max_yaw_rate_rad_s", self.OUT_OF_RANGE),
+            ("handling.reverse_hold_time_s", self.OUT_OF_RANGE),
+            ("mass_kg", self.OUT_OF_RANGE_309),
+        ]
+        for field, literal in cases:
+            for mode in ("schema", "motor-ready"):
+                with self.subTest(field=field, literal_length=len(literal), mode=mode):
+                    text = replace_number(BASE_FIXTURE_TEXT, field.removeprefix("handling."), literal)
+                    findings = validate_text(text, mode)
+                    self.assertIn(("non-finite-number", field), pairs(findings))
+
+    def test_in_range_long_integer_is_accepted(self) -> None:
+        # The refusal is about binary64 range, not digit count: 1e308 is finite.
+        text = rehash(replace_number(BASE_FIXTURE_TEXT, "mass_kg", self.IN_RANGE_309))
+        self.assertEqual(validate_text(text), [])
+
+    def test_precision_losing_literal_is_refused(self) -> None:
+        text = replace_number(
+            BASE_FIXTURE_TEXT, "reverse_trigger_speed_m_s", self.PRECISION_LOSING
+        )
+        for mode in ("schema", "motor-ready"):
+            with self.subTest(mode=mode):
+                findings = validate_text(text, mode)
+                self.assertIn(
+                    ("number-not-representable", "handling.reverse_trigger_speed_m_s"),
+                    pairs(findings),
+                )
+                # It is also above the declared maximum once compared exactly.
+                self.assertIn(("bad-number", "handling.reverse_trigger_speed_m_s"), pairs(findings))
+
+    def test_underflowing_literal_is_refused(self) -> None:
+        text = insert_member(
+            BASE_FIXTURE_TEXT, f'  "presentation": {{"scale": {self.UNDERFLOWING}}},'
+        )
+        self.assertIn(("number-not-representable", "presentation.scale"), pairs(validate_text(text)))
+
+    def test_round_trip_stable_literals_are_accepted(self) -> None:
+        presentation = (
+            '  "presentation": {\n'
+            '    "paint.color": "sunset",\n'
+            '    "scale": 0.1,\n'
+            '    "tiny": 1e-07,\n'
+            '    "subnormal": 1e-300,\n'
+            '    "count": 30,\n'
+            '    "ratio": 1.05\n'
+            '  },'
+        )
+        text = rehash(insert_member(BASE_FIXTURE_TEXT, presentation))
+        for mode in ("schema", "motor-ready"):
+            with self.subTest(mode=mode):
+                self.assertEqual(validate_text(text, mode), [])
+
+    def test_exact_boundaries_are_compared_in_decimal_space(self) -> None:
+        stable = rehash(replace_number(BASE_FIXTURE_TEXT, "reverse_trigger_speed_m_s", "0.9999999999999999"))
+        self.assertEqual(validate_text(stable), [])
+
+        # The exact decimal expansion of binary64 0.3 is round-trip stable,
+        # but is still strictly below the authored source minimum 0.3.
+        below_hold = str(Decimal(0.3))
+        text = replace_number(BASE_FIXTURE_TEXT, "reverse_hold_time_s", below_hold)
+        findings = validate_text(text)
+        self.assertIn(("bad-number", "handling.reverse_hold_time_s"), pairs(findings))
+        self.assertNotIn("number-not-representable", codes(findings))
+
+    def test_direct_api_refuses_non_finite_and_huge_numbers(self) -> None:
+        document = base_document()
+        document["handling"]["max_yaw_rate_rad_s"] = float("inf")
+        document["mass_kg"] = 10**400
+        findings = findings_for(document)
+        self.assertIn(("non-finite-number", "handling.max_yaw_rate_rad_s"), pairs(findings))
+        self.assertIn(("non-finite-number", "mass_kg"), pairs(findings))
+        self.assertIn("bad-yaw-rate", codes(findings))
+
+    def test_direct_api_compares_decimal_values_exactly(self) -> None:
+        document = base_document()
+        document["handling"]["reverse_trigger_speed_m_s"] = Decimal("1.0")
+        self.assertEqual(findings_for(document), [])
+
+        document["handling"]["reverse_trigger_speed_m_s"] = Decimal("1.00000000000000001")
+        findings = findings_for(document)
+        self.assertIn(("number-not-representable", "handling.reverse_trigger_speed_m_s"), pairs(findings))
+        self.assertIn(("bad-number", "handling.reverse_trigger_speed_m_s"), pairs(findings))
+
+    def test_non_finite_literal_in_freeform_presentation_is_refused(self) -> None:
+        text = insert_member(BASE_FIXTURE_TEXT, '  "presentation": {"icon": 1e999},')
+        findings = validate_text(text)
+        self.assertIn(("non-finite-number", "presentation.icon"), pairs(findings))
+        self.assertIn("content-hash-uncomputable", codes(findings))
+
+    def test_canonical_json_never_emits_non_finite_tokens(self) -> None:
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(value=value):
+                with self.assertRaises(vcr.CanonicalizationError):
+                    vcr.canonical_json({"a": value})
+        text = vcr.canonical_json(vcr.to_binary64(base_document()))
+        self.assertNotIn("NaN", text)
+        self.assertNotIn("Infinity", text)
+
+    def test_content_hash_of_a_non_representable_document_raises(self) -> None:
+        document = base_document()
+        document["presentation"] = {"icon": Decimal("1e999")}
+        with self.assertRaises(vcr.CanonicalizationError):
+            vcr.content_hash_of(document)
+        document["presentation"] = {"icon": Decimal("1.00000000000000001")}
+        with self.assertRaises(vcr.CanonicalizationError):
+            vcr.content_hash_of(document)
+
+
+class SurrogateTests(unittest.TestCase):
+    """Escaped lone surrogates cannot be encoded as UTF-8 or hashed."""
+
+    def test_lone_surrogate_in_a_string_is_refused(self) -> None:
+        text = BASE_FIXTURE_TEXT.replace(
+            '"display_name": "Example Rookie"', '"display_name": "Bad \\ud800 Name"'
+        )
+        findings = validate_text(text)
+        self.assertIn(("unpaired-surrogate", "display_name"), pairs(findings))
+        self.assertIn("content-hash-uncomputable", codes(findings))
+
+    def test_lone_surrogate_in_a_member_name_is_refused(self) -> None:
+        text = BASE_FIXTURE_TEXT.replace('"mass_kg": 1200', '"ma\\ud800ss_kg": 1200')
+        findings = validate_text(text)
+        surrogate_paths = {
+            path for code, path in pairs(findings) if code == "unpaired-surrogate"
+        }
+        self.assertEqual(surrogate_paths, {'ma\\ud800ss_kg'})
+        self.assertIn("content-hash-uncomputable", codes(findings))
+
+    def test_lone_surrogate_in_the_open_presentation_subtree_is_refused(self) -> None:
+        text = insert_member(
+            BASE_FIXTURE_TEXT, '  "presentation": {"pa\\ud800int": null},'
+        )
+        findings = validate_text(text)
+        self.assertIn(("unpaired-surrogate", 'presentation.pa\\ud800int'), pairs(findings))
+
+    def test_paired_surrogate_escape_is_combined_and_accepted(self) -> None:
+        text = rehash(
+            BASE_FIXTURE_TEXT.replace(
+                '"display_name": "Example Rookie"',
+                '"display_name": "R\\u00e9sum\\u00e9 \\ud83d\\ude00"',
+            )
+        )
+        self.assertEqual(validate_text(text), [])
+
+
+class CanonicalHashGoldenTests(unittest.TestCase):
+    """A pinned digest for the canonical hash rule."""
+
+    # sha256 over canonical JSON (sorted keys, compact separators, UTF-8) of the
+    # positive example with a non-ASCII display name and a presentation object
+    # holding float notation, integer notation, a dotted key and nesting, with
+    # the content_hash member removed.
+    GOLDEN_DIGEST = "sha256:6d28c6e67fdac14d57399f066c277cd864f28e3679a169a941e45794cf05158a"
+
+    def golden_document(self) -> dict[str, Any]:
+        document = base_document()
+        document["display_name"] = "Résumé 😀 Racer"
+        document["presentation"] = {
+            "paint.color": "sunset",
+            "scale": 0.1,
+            "count": 30,
+            "nested": {"deep": {"value": 1e-07}},
+        }
+        return document
+
+    def test_golden_digest_is_stable(self) -> None:
+        self.assertEqual(vcr.content_hash_of(self.golden_document()), self.GOLDEN_DIGEST)
+
+    def test_key_order_and_whitespace_do_not_change_the_digest(self) -> None:
+        document = self.golden_document()
+        shuffled = dict(reversed(list(document.items())))
+        self.assertEqual(vcr.content_hash_of(shuffled), self.GOLDEN_DIGEST)
+
+    def test_float_and_integer_notation_change_the_digest(self) -> None:
+        document = self.golden_document()
+        integer_notation = copy.deepcopy(document)
+        integer_notation["presentation"]["count"] = 30.0
+        self.assertNotEqual(
+            vcr.content_hash_of(integer_notation), self.GOLDEN_DIGEST
+        )
+
+    def test_integer_and_float_literals_hash_differently(self) -> None:
+        self.assertNotEqual(vcr.content_hash_of({"a": 30}), vcr.content_hash_of({"a": 30.0}))
+        # Exponent and plain fraction notation for one binary64 value agree.
+        self.assertEqual(
+            vcr.content_hash_of({"a": Decimal("1e2")}),
+            vcr.content_hash_of({"a": 100.0}),
+        )
+
+    def test_differently_formatted_files_with_the_golden_hash_validate(self) -> None:
+        document = self.golden_document()
+        document["content_hash"] = self.GOLDEN_DIGEST
+        plain = vcr.to_binary64(document)
+        variants = {
+            "compact_ascii": json.dumps(plain, separators=(",", ":")),
+            "pretty_unicode": json.dumps(plain, indent=4, ensure_ascii=False),
+        }
+        for label, text in variants.items():
+            with self.subTest(variant=label):
+                self.assertEqual(validate_text(text), [])
+
+
+class MotorReadyPreflightTests(unittest.TestCase):
+    """Motor-ready mode runs the typed-resource checks a baker will make."""
+
+    NON_TRIPLETS = ("draft-A", "0.1", "01.2.3", "0.1.0\n", "1.2.3.4", "v1.2.3")
+
+    def test_non_triplet_revision_is_schema_valid_but_not_motor_ready(self) -> None:
+        for revision in self.NON_TRIPLETS:
+            with self.subTest(revision=revision):
+                document = mutate(lambda d, r=revision: d.__setitem__("revision", r))
+                self.assertEqual(findings_for(document), [])
+                findings = findings_for(document, mode="motor-ready")
+                self.assertIn(("bad-revision-format", "revision"), pairs(findings))
+
+    def test_triplet_revision_is_motor_ready(self) -> None:
+        for revision in ("0.1.0", "1.2.3", "10.20.30"):
+            with self.subTest(revision=revision):
+                document = mutate(lambda d, r=revision: d.__setitem__("revision", r))
+                self.assertEqual(findings_for(document, mode="motor-ready"), [])
+
+    def test_car_id_that_would_fail_definition_identity_is_refused(self) -> None:
+        text = BASE_FIXTURE_TEXT.replace(
+            '"car_id": "car.example_rookie"', '"car_id": "car.example_rookie\\n"'
+        )
+        # Schema mode keeps the historical source rule, which the JSON-Schema
+        # style match accepts.
+        schema_findings = validate_text(text, mode="schema")
+        self.assertNotIn("bad-handling-id", codes(schema_findings))
+        self.assertNotIn("bad-car-id", codes(schema_findings))
+
+        motor_findings = validate_text(text, mode="motor-ready")
+        self.assertIn(("bad-handling-id", "car_id"), pairs(motor_findings))
+
+    def test_well_formed_car_id_is_motor_ready(self) -> None:
+        document = mutate(lambda d: d.__setitem__("car_id", "car.comet"))
+        self.assertEqual(findings_for(document, mode="motor-ready"), [])
+
+
+class PresentationNullPathTests(unittest.TestCase):
+    """The open presentation subtree and the null/unknowns path policy."""
+
+    COSMETIC = (
+        '  "presentation": {\n'
+        '    "paint.color": null,\n'
+        '    "paint-id": null,\n'
+        '    "paint": {"color": null},\n'
+        '    "count": 3\n'
+        '  },'
+    )
+
+    def test_open_presentation_subtree_is_exempt_from_the_unknowns_rule(self) -> None:
+        text = rehash(insert_member(BASE_FIXTURE_TEXT, self.COSMETIC))
+        for mode in ("schema", "motor-ready"):
+            with self.subTest(mode=mode):
+                findings = validate_text(text, mode)
+                self.assertNotIn("unlisted-null", codes(findings))
+                self.assertEqual(findings, [])
+
+    def test_presentation_is_still_checked_for_representability(self) -> None:
+        text = insert_member(BASE_FIXTURE_TEXT, '  "presentation": {"icon": 1e999},')
+        findings = validate_text(text)
+        self.assertIn(("non-finite-number", "presentation.icon"), pairs(findings))
+
+    def test_unknowns_path_cannot_name_a_dotted_literal_key(self) -> None:
+        text = rehash(
+            insert_member(BASE_FIXTURE_TEXT, '  "presentation": {"paint.color": null},')
+        )
+        document = load_text(text)
+        document["unknowns"].append(
+            {"path": "presentation.paint.color", "reason": "literal key, not a member"}
+        )
+        findings = findings_for(document)
+        self.assertIn(("unresolved-unknown", "unknowns"), pairs(findings))
+
+    def test_declared_path_covers_only_structural_segments(self) -> None:
+        covers = vcr._declared_path_covers
+        self.assertTrue(covers("a.b", "a.b"))
+        self.assertTrue(covers("a.b", "a.b.c"))
+        self.assertTrue(covers("a.b", "a.b[0].c"))
+        self.assertTrue(covers("a.b", "a.b[12]"))
+        self.assertFalse(covers("a.b", 'a.b["c.d"]'))
+        self.assertFalse(covers("a", 'a["b.c"]'))
+        self.assertFalse(covers("a.b", "a.bc"))
+
+    def test_closed_subtree_null_still_requires_its_exact_entry(self) -> None:
+        document = mutate(
+            lambda d: (
+                d["handling"]["surge"].__setitem__("selected_delta_m_s", None),
+                drop_unknown_entry(d, "handling.surge.selected_delta_m_s"),
+            )
+        )
+        self.assertIn(
+            ("unlisted-null", "handling.surge.selected_delta_m_s"),
+            pairs(findings_for(document)),
+        )
+
+    def test_closed_subtree_null_with_its_entry_is_accepted(self) -> None:
+        self.assertEqual(findings_for(base_document()), [])
 
 
 class CommandLineTests(unittest.TestCase):

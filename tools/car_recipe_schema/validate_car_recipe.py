@@ -24,7 +24,46 @@ Modes:
   passes even though it cannot supply the five motor inputs.
 * ``motor-ready`` (default) additionally refuses a recipe whose required motor
   inputs are missing, ``null`` or listed in ``unknowns``, naming their dotted
-  paths. A ``1.0.0`` recipe is always refused here.
+  paths, and runs the two typed-resource preflight checks a baker will make
+  (revision triplet and derived handling identity). A ``1.0.0`` recipe is
+  always refused here.
+
+Number handling
+---------------
+
+The source decimal to binary64 boundary is defined once, here:
+
+* JSON numbers with a fraction or exponent are parsed as ``decimal.Decimal``,
+  so the authored literal survives into validation. Integer literals stay
+  Python ``int``.
+* Every declared bound is compared against the *exact* decimal value, never
+  against a pre-rounded float. ``reverse_trigger_speed_m_s`` of
+  ``1.00000000000000001`` is therefore above the maximum of ``1`` even though
+  it would round to ``1.0``.
+* A literal is refused with a path-level finding when it has no binary64
+  representation the source text can be recovered from: out of range
+  (``non-finite-number``, for example ``1e999`` or a 400-digit integer) or not
+  round-trip stable (``number-not-representable``, for example
+  ``1.00000000000000001`` or the underflowing ``1e-400``).
+* ``to_binary64`` is the single place where a parsed decimal becomes a Python
+  ``float``. The canonical hash is taken over that converted document, so
+  ``30`` and ``30.0`` stay distinct (integer versus floating syntax) while
+  ``100.0`` and ``1e2`` agree.
+* ``canonical_json`` never emits ``NaN`` or ``Infinity``: it raises
+  ``CanonicalizationError`` instead.
+
+Null and unknowns policy
+------------------------
+
+A ``null`` in a closed physical subtree must be paired with an ``unknowns``
+entry at exactly its dotted path (a declared ancestor path may cover its own
+children). The open ``presentation`` subtree is exempt: it is purely cosmetic,
+``additionalProperties: true``, and its keys may contain dots or hyphens. Its
+nulls are therefore never collected and never require an ``unknowns`` entry.
+Keys that are not plain ``[a-z_][a-z0-9_]*`` segments are written as bracketed
+quoted segments (``presentation["paint.color"]``) when a path is collected, so
+a literal dotted key can never be mistaken for a nested member and an
+``unknowns`` path can never falsely explain it.
 
 Deliberate limitations (documented in README.md):
 
@@ -55,6 +94,7 @@ import json
 import math
 import re
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -73,9 +113,18 @@ RECIPE_SCHEMA_V1_1_0 = "handling_config_v1_1.schema.json"
 STABLE_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_-]+)*$")
 CONTENT_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+# Same grammar as DefinitionIdentity.DEFINITION_ID_PATTERN. It is applied as a
+# whole-string match because the typed resource refuses a value that the
+# JSON-Schema-style match above would accept, such as a trailing line feed.
+DEFINITION_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_-]+)*$")
 UNKNOWN_PATH_RE = re.compile(
     r"^[a-z_][a-z0-9_]*(?:\[[0-9]+\])?(?:\.[a-z_][a-z0-9_]*(?:\[[0-9]+\])?)*$"
 )
+# A collected path segment that an unknowns entry can spell. Anything else is
+# written as a bracketed quoted segment that no unknowns path can name.
+PATH_SEGMENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+# The derived typed identity of a car recipe's handling object.
+HANDLING_ID_SUFFIX = ".handling"
 
 STATUSES = ("provisional", "measured", "frozen", "superseded", "example")
 PROVENANCE_FIELDS = (
@@ -222,9 +271,9 @@ class Finding:
         self.is_error = is_error
 
     def __str__(self) -> str:
-        location = self.path or "<document>"
+        location = _safe_text(self.path) or "<document>"
         severity = "ERROR" if self.is_error else "warn"
-        return f"{severity} {location}: {self.code}: {self.message}"
+        return f"{severity} {location}: {self.code}: {_safe_text(self.message)}"
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"Finding({self.path!r}, {self.code!r}, {self.message!r}, {self.is_error!r})"
@@ -249,7 +298,13 @@ def _reject_constant(token: str) -> Any:
 
 
 def load_json_document(path: Path) -> tuple[dict[str, Any] | None, list[Finding]]:
-    """Load a JSON object, reporting unreadable/invalid files as findings."""
+    """Load a JSON object, reporting unreadable/invalid files as findings.
+
+    Numbers carrying a fraction or an exponent are parsed as ``Decimal`` so the
+    authored literal is still available for exact bound comparisons; integer
+    literals stay Python ``int``. See ``to_binary64`` for the conversion that
+    happens later, and the module docstring for the boundary.
+    """
     findings: list[Finding] = []
     try:
         raw = path.read_bytes()
@@ -266,6 +321,7 @@ def load_json_document(path: Path) -> tuple[dict[str, Any] | None, list[Finding]
             text,
             object_pairs_hook=_reject_duplicate_keys,
             parse_constant=_reject_constant,
+            parse_float=Decimal,
         )
     except ValueError as exc:
         findings.append(Finding("", "invalid-json", f"not a strict JSON document: {exc}"))
@@ -281,15 +337,76 @@ def load_json_document(path: Path) -> tuple[dict[str, Any] | None, list[Finding]
 # ---------------------------------------------------------------------------
 
 
+class CanonicalizationError(ValueError):
+    """A document has no canonical JSON text.
+
+    Raised instead of emitting a non-JSON token such as ``NaN`` or
+    ``Infinity``, instead of losing a decimal literal's value, and instead of
+    failing to encode an unpaired surrogate.
+    """
+
+
 def canonical_json(document: Mapping[str, Any]) -> str:
-    """Canonical JSON: recursively sorted keys, compact separators, UTF-8 text."""
-    return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Canonical JSON: recursively sorted keys, compact separators, UTF-8 text.
+
+    Number serialization is CPython's: integer literals keep integer syntax and
+    everything else is written with ``repr`` of its binary64 value, so ``30`` and
+    ``30.0`` differ while ``100.0`` and ``1e2`` agree. Non-finite numbers and
+    values that are not JSON numbers at all raise ``CanonicalizationError``
+    rather than emitting ``NaN`` or ``Infinity``.
+    """
+    try:
+        return json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except ValueError as exc:
+        raise CanonicalizationError(f"cannot canonicalize document: {exc}") from exc
+    except TypeError as exc:
+        raise CanonicalizationError(f"cannot canonicalize document: {exc}") from exc
+
+
+def to_binary64(value: Any) -> Any:
+    """Convert parsed decimal literals to Python floats, keeping structure.
+
+    This is the single source decimal to binary64 boundary. Integers stay
+    integers (JSON integer syntax is preserved for hashing and typing); a
+    ``Decimal`` becomes the ``float`` it rounds to. The conversion is only
+    sound for values already accepted by ``_scan_representability``, and it
+    raises ``CanonicalizationError`` for anything else instead of silently
+    losing a value.
+    """
+    if isinstance(value, Decimal):
+        try:
+            converted = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise CanonicalizationError(f"decimal {value} has no binary64 value: {exc}") from exc
+        if not math.isfinite(converted):
+            raise CanonicalizationError(f"decimal {value} has no finite binary64 value")
+        if not _is_round_trip_stable(value):
+            raise CanonicalizationError(
+                f"decimal {_number_text(value)} is not recoverable from its binary64 value"
+            )
+        return converted
+    if isinstance(value, dict):
+        return {key: to_binary64(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [to_binary64(item) for item in value]
+    return value
 
 
 def content_hash_of(document: Mapping[str, Any]) -> str:
     """SHA-256 over canonical JSON of the file with content_hash removed."""
     payload = {key: value for key, value in document.items() if key != "content_hash"}
-    return "sha256:" + hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    text = canonical_json(to_binary64(payload))
+    try:
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise CanonicalizationError(f"cannot encode canonical document: {exc}") from exc
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -297,12 +414,73 @@ def content_hash_of(document: Mapping[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _number_text(value: Any) -> str:
+    """Printable text for a parsed number, quoting the authored decimal.
+
+    Long literals are truncated so one 400-digit integer cannot flood the CLI
+    output; the path already identifies the member.
+    """
+    text = str(value) if isinstance(value, Decimal) else repr(value)
+    if len(text) <= 48:
+        return text
+    return f"{text[:24]}...{text[-16:]} ({len(text)} characters)"
+
+
+def _safe_text(value: str) -> str:
+    """Text safe to print and to build paths from, with surrogates escaped."""
+    if not _has_unpaired_surrogate(value):
+        return value
+    return value.encode("utf-8", "backslashreplace").decode("ascii", "replace")
+
+
+def _has_unpaired_surrogate(value: str) -> bool:
+    """Whether a string carries a code point UTF-8 cannot encode.
+
+    ``json`` combines a ``\\ud83d\\ude00`` escape pair, so anything left here is
+    unpaired and cannot be written to UTF-8 or hashed.
+    """
+    return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+
+
+def _finite_float(value: Any) -> float | None:
+    """The finite binary64 value of a parsed number, or None if it has none.
+
+    ``float`` of a very large integer raises ``OverflowError`` and of an
+    overflowing decimal returns infinity; both mean the literal has no finite
+    binary64 value and must be refused with a path finding.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        return None
+    try:
+        converted = float(value)
+    except (OverflowError, ValueError):
+        return None
+    if not math.isfinite(converted):
+        return None
+    return converted
+
+
+def _is_round_trip_stable(value: Decimal) -> bool:
+    """Whether the authored decimal is recoverable from its binary64 value.
+
+    A literal is stable when it is either the shortest decimal that rounds to
+    its binary64 value (``0.1``, ``1e-07``) or that value written out exactly.
+    ``1.00000000000000001`` rounds to ``1.0`` and ``1e-400`` rounds to ``0.0``;
+    neither can be recovered, so the source text and the baked value would
+    disagree.
+    """
+    converted = _finite_float(value)
+    if converted is None:
+        return False
+    return value == Decimal(repr(converted)) or value == Decimal(converted)
+
+
 def _is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
 
 
 def _is_finite_number(value: Any) -> bool:
-    return _is_number(value) and math.isfinite(value)
+    return _finite_float(value) is not None
 
 
 def _is_integer(value: Any) -> bool:
@@ -310,6 +488,8 @@ def _is_integer(value: Any) -> bool:
         return False
     if isinstance(value, int):
         return True
+    if isinstance(value, Decimal):
+        return value.is_finite() and value == value.to_integral_value()
     return _is_finite_number(value) and float(value).is_integer()
 
 
@@ -319,6 +499,19 @@ def _child(path: str, key: str) -> str:
 
 def _index(path: str, index: int) -> str:
     return f"{path}[{index}]"
+
+
+def _path_segment(key: str) -> str:
+    """One collected path segment for an object key.
+
+    Keys that an ``unknowns`` path can spell stay dotted; every other key, such
+    as ``paint.color`` or ``paint-id`` in the open presentation subtree, is
+    written as a bracketed quoted segment so it can never collide with a
+    nested member's path.
+    """
+    if PATH_SEGMENT_RE.match(key):
+        return key
+    return '["' + _safe_text(key) + '"]'
 
 
 def _check_closed(
@@ -334,7 +527,7 @@ def _check_closed(
         if key not in allowed:
             findings.append(
                 Finding(
-                    _child(path, key),
+                    _child(path, _path_segment(key)),
                     "unknown-member",
                     f"member {key!r} is not declared by {contract} (additionalProperties: false)",
                 )
@@ -361,19 +554,33 @@ def _check_number(
     if not _is_number(value):
         findings.append(Finding(path, code, f"expected a number, got {type(value).__name__}"))
         return False
-    if not math.isfinite(value):
-        findings.append(Finding(path, code, f"non-finite number {value!r}"))
+    if _finite_float(value) is None:
+        findings.append(Finding(path, code, f"non-finite number {_number_text(value)}"))
         return False
-    if exclusive_minimum is not None and value <= exclusive_minimum:
+    # Decimal carries the authored JSON literal. Comparing it directly with a
+    # binary float bound would compare against that float's expansion (for
+    # example, float 0.3 is slightly less than decimal 0.3), admitting a
+    # literal below the declared bound. Convert the bound's source spelling.
+    exact_exclusive_minimum = (
+        Decimal(str(exclusive_minimum)) if isinstance(value, Decimal) and exclusive_minimum is not None
+        else exclusive_minimum
+    )
+    exact_minimum = (
+        Decimal(str(minimum)) if isinstance(value, Decimal) and minimum is not None else minimum
+    )
+    exact_maximum = (
+        Decimal(str(maximum)) if isinstance(value, Decimal) and maximum is not None else maximum
+    )
+    if exact_exclusive_minimum is not None and value <= exact_exclusive_minimum:
         findings.append(
-            Finding(path, code, f"{value!r} must be greater than {exclusive_minimum!r}")
+            Finding(path, code, f"{_number_text(value)} must be greater than {exclusive_minimum!r}")
         )
         return False
-    if minimum is not None and value < minimum:
-        findings.append(Finding(path, code, f"{value!r} is below the minimum {minimum!r}"))
+    if exact_minimum is not None and value < exact_minimum:
+        findings.append(Finding(path, code, f"{_number_text(value)} is below the minimum {minimum!r}"))
         return False
-    if maximum is not None and value > maximum:
-        findings.append(Finding(path, code, f"{value!r} is above the maximum {maximum!r}"))
+    if exact_maximum is not None and value > exact_maximum:
+        findings.append(Finding(path, code, f"{_number_text(value)} is above the maximum {maximum!r}"))
         return False
     return True
 
@@ -413,15 +620,17 @@ def _check_number_array(
             findings.append(Finding(item_path, code, "expected a finite number"))
             ok = False
             continue
-        if minimum is not None and item < minimum:
-            findings.append(Finding(item_path, code, f"{item!r} is below the minimum {minimum!r}"))
+        exact_minimum = Decimal(str(minimum)) if isinstance(item, Decimal) and minimum is not None else minimum
+        exact_maximum = Decimal(str(maximum)) if isinstance(item, Decimal) and maximum is not None else maximum
+        if exact_minimum is not None and item < exact_minimum:
+            findings.append(Finding(item_path, code, f"{_number_text(item)} is below the minimum {minimum!r}"))
             ok = False
-        if maximum is not None and item > maximum:
-            findings.append(Finding(item_path, code, f"{item!r} is above the maximum {maximum!r}"))
+        if exact_maximum is not None and item > exact_maximum:
+            findings.append(Finding(item_path, code, f"{_number_text(item)} is above the maximum {maximum!r}"))
             ok = False
         if unique:
             if item in seen:
-                findings.append(Finding(item_path, code, f"duplicate entry {item!r}"))
+                findings.append(Finding(item_path, code, f"duplicate entry {_number_text(item)}"))
                 ok = False
             else:
                 seen.append(item)
@@ -479,20 +688,107 @@ def _resolve_path(document: Mapping[str, Any], path: str) -> tuple[Any, bool]:
     return node, True
 
 
-def _collect_null_paths(value: Any, path: str, out: list[str]) -> None:
-    """Collect dotted paths of JSON null values, skipping documentation-only keys."""
+def _collect_null_paths(value: Any, path: str, out: list[str], *, root: bool = False) -> None:
+    """Collect dotted paths of JSON null values, skipping documentation-only keys.
+
+    ``root`` marks the document level, where the documentation members and the
+    open presentation subtree are skipped. Below that, only ``note``/``notes``
+    keys are documentation. Keys are written with ``_path_segment`` so a literal
+    dotted key can never be mistaken for a nested member.
+    """
     if value is None:
         out.append(path)
         return
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in NOTE_KEYS or key in NULL_EXEMPT_SUBTREES:
+            if key in NOTE_KEYS:
                 continue
-            _collect_null_paths(item, _child(path, key), out)
+            if root and (key in NULL_EXEMPT_SUBTREES or key == "presentation"):
+                continue
+            _collect_null_paths(item, _child(path, _path_segment(key)), out)
         return
     if isinstance(value, list):
         for index, item in enumerate(value):
             _collect_null_paths(item, _index(path, index), out)
+
+
+def _declared_path_covers(declared: str, null_path: str) -> bool:
+    """Whether a declared unknowns path names this null or one of its ancestors.
+
+    Only structural segments count. A declared path may cover a child through
+    ``a.b`` or ``a.b[0]``, but never a bracketed quoted key segment such as
+    ``a["b.c"]``: no unknowns path can spell one, so it must not be silently
+    explained by an ancestor.
+    """
+    if null_path == declared:
+        return True
+    if null_path.startswith(declared + "."):
+        return True
+    if null_path.startswith(declared + "["):
+        rest = null_path[len(declared) + 1 :]
+        return bool(re.match(r"[0-9]+\]", rest))
+    return False
+
+
+def _scan_representability(value: Any, path: str, findings: list[Finding]) -> None:
+    """Refuse, at its own path, anything that has no strict-JSON representation.
+
+    This runs before every semantic check and before hashing, so the defects it
+    covers are reported as findings instead of raising during comparison,
+    canonicalization or encoding. It covers the whole document, including the
+    open presentation subtree, and it is the reason the canonical serializer can
+    assume its input is representable.
+    """
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        if _has_unpaired_surrogate(value):
+            findings.append(
+                Finding(
+                    path,
+                    "unpaired-surrogate",
+                    "string carries an unpaired surrogate escape and cannot be encoded as UTF-8: "
+                    f"{_safe_text(value)!r}",
+                )
+            )
+        return
+    if isinstance(value, (int, float, Decimal)):
+        converted = _finite_float(value)
+        if converted is None:
+            findings.append(
+                Finding(
+                    path,
+                    "non-finite-number",
+                    f"number {_number_text(value)} has no finite binary64 value; JSON has no infinity",
+                )
+            )
+            return
+        if isinstance(value, Decimal) and not _is_round_trip_stable(value):
+            findings.append(
+                Finding(
+                    path,
+                    "number-not-representable",
+                    f"decimal literal {_number_text(value)} is not recoverable from its binary64 "
+                    f"value {converted!r}; the source text and the baked value would disagree",
+                )
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _has_unpaired_surrogate(key):
+                findings.append(
+                    Finding(
+                        _child(path, _safe_text(key)),
+                        "unpaired-surrogate",
+                        "member name carries an unpaired surrogate escape and cannot be encoded "
+                        f"as UTF-8: {_safe_text(key)!r}",
+                    )
+                )
+            _scan_representability(item, _child(path, _path_segment(key)), findings)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _scan_representability(item, _index(path, index), findings)
 
 
 # ---------------------------------------------------------------------------
@@ -903,11 +1199,11 @@ def _validate_max_yaw_rate(value: Any, path: str, findings: list[Finding]) -> No
     if not _is_number(value):
         findings.append(Finding(path, "bad-yaw-rate", f"expected a number, null or an unlimited object, got {type(value).__name__}"))
         return
-    if not math.isfinite(value):
-        findings.append(Finding(path, "bad-yaw-rate", f"non-finite number {value!r}; use {{\"unlimited\": true}} for INF"))
+    if _finite_float(value) is None:
+        findings.append(Finding(path, "bad-yaw-rate", f"non-finite number {_number_text(value)}; use {{\"unlimited\": true}} for INF"))
         return
     if value <= 0:
-        findings.append(Finding(path, "bad-yaw-rate", f"{value!r} must be positive"))
+        findings.append(Finding(path, "bad-yaw-rate", f"{_number_text(value)} must be positive"))
 
 
 def _validate_handling(
@@ -1011,7 +1307,7 @@ def _validate_handling(
                 Finding(
                     "handling.reverse_top_speed_m_s",
                     "reverse-cross-field",
-                    f"reverse acceleration {acceleration!r} > 0 requires a present, positive reverse_top_speed_m_s (null is unresolved)",
+                    f"reverse acceleration {_number_text(acceleration)} > 0 requires a present, positive reverse_top_speed_m_s (null is unresolved)",
                 )
             )
         elif not _is_finite_number(top_speed) or top_speed <= 0:
@@ -1019,7 +1315,7 @@ def _validate_handling(
                 Finding(
                     "handling.reverse_top_speed_m_s",
                     "reverse-cross-field",
-                    f"reverse acceleration {acceleration!r} > 0 requires a positive reverse_top_speed_m_s (got {top_speed!r})",
+                    f"reverse acceleration {_number_text(acceleration)} > 0 requires a positive reverse_top_speed_m_s (got {_number_text(top_speed)})",
                 )
             )
 
@@ -1255,13 +1551,10 @@ def _validate_unknowns(document: Mapping[str, Any], findings: list[Finding]) -> 
             )
 
     null_paths: list[str] = []
-    _collect_null_paths(document, "", null_paths)
+    _collect_null_paths(document, "", null_paths, root=True)
     for null_path in null_paths:
         explained = any(
-            null_path == candidate
-            or null_path.startswith(candidate + ".")
-            or null_path.startswith(candidate + "[")
-            for candidate in paths
+            _declared_path_covers(candidate, null_path) for candidate in paths
         )
         if not explained:
             findings.append(
@@ -1290,7 +1583,17 @@ def _validate_content_hash(document: Mapping[str, Any], findings: list[Finding])
     if not isinstance(recorded, str) or not CONTENT_HASH_RE.match(recorded):
         findings.append(Finding("content_hash", "bad-content-hash", "must look like 'sha256:<64 lowercase hex>'"))
         return
-    actual = content_hash_of(document)
+    try:
+        actual = content_hash_of(document)
+    except CanonicalizationError as exc:
+        findings.append(
+            Finding(
+                "content_hash",
+                "content-hash-uncomputable",
+                f"the document has no canonical JSON text, so no hash can be recorded: {exc}",
+            )
+        )
+        return
     if recorded != actual:
         findings.append(
             Finding(
@@ -1302,6 +1605,14 @@ def _validate_content_hash(document: Mapping[str, Any], findings: list[Finding])
 
 
 def _validate_presentation(document: Mapping[str, Any], findings: list[Finding]) -> None:
+    """The open presentation subtree: an object, nothing more.
+
+    ``presentation`` is cosmetic (``additionalProperties: true`` in both schema
+    versions) and never changes contact or handling, so its keys may be
+    arbitrary and its values are not typed here. It is still covered by the
+    representability scan, and it is exempt from the null/``unknowns`` honesty
+    rule; see ``_collect_null_paths``.
+    """
     if "presentation" not in document:
         return
     if not isinstance(document["presentation"], dict):
@@ -1359,10 +1670,46 @@ def _validate_motor_ready(document: Mapping[str, Any], findings: list[Finding]) 
                     Finding(
                         f"{_index(path, index)}.speed_m_s",
                         "motor-input-order",
-                        f"speed {speed!r} does not strictly exceed previous speed {previous_speed!r}",
+                        f"speed {_number_text(speed)} does not strictly exceed previous speed "
+                        f"{_number_text(previous_speed)}",
                     )
                 )
             previous_speed = speed
+
+
+def _validate_bake_preflight(document: Mapping[str, Any], findings: list[Finding]) -> None:
+    """Typed-resource checks a baker makes, run in motor-ready mode only.
+
+    These are stricter than the source schema on purpose. The source contract
+    accepts any nonempty revision and a stable ID under the JSON-Schema match;
+    ``DefinitionIdentity`` requires a MAJOR.MINOR.PATCH revision and a
+    whole-string match on the derived ``<car_id>.handling`` identity. Reporting
+    them here keeps the source documents historical while motor-ready mode
+    stops short of promising a complete typed bake: a recipe that passes this
+    mode is necessary for baking, not sufficient for it.
+    """
+    revision = document.get("revision")
+    if isinstance(revision, str) and revision and not REVISION_RE.fullmatch(revision):
+        findings.append(
+            Finding(
+                "revision",
+                "bad-revision-format",
+                f"revision {revision!r} is not MAJOR.MINOR.PATCH without leading zeros; "
+                "DefinitionIdentity would refuse the derived typed resource",
+            )
+        )
+    car_id = document.get("car_id")
+    if isinstance(car_id, str) and car_id:
+        derived = car_id + HANDLING_ID_SUFFIX
+        if not DEFINITION_ID_RE.fullmatch(derived):
+            findings.append(
+                Finding(
+                    "car_id",
+                    "bad-handling-id",
+                    f"derived typed identity {derived!r} would fail DefinitionIdentity's "
+                    "whole-string stable-ID match",
+                )
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1377,6 +1724,11 @@ def validate_recipe_document(
 ) -> list[Finding]:
     """Validate a parsed recipe document and return findings (empty = valid)."""
     findings: list[Finding] = []
+
+    # Refuse unrepresentable values first: they have no canonical text, so no
+    # semantic check or hash could be meaningful. This covers the whole
+    # document, including the open presentation subtree.
+    _scan_representability(document, "", findings)
 
     for field in ROOT_REQUIRED:
         if field not in document:
@@ -1425,6 +1777,7 @@ def validate_recipe_document(
 
     if mode == "motor-ready":
         _validate_motor_ready(document, findings)
+        _validate_bake_preflight(document, findings)
 
     return findings
 
