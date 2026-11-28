@@ -143,6 +143,15 @@ summary JSON with `--summary-out=<path>`. The deliberate probe prints
 - committed `MotorBodyAdapter.world_vector_to_road` mapping
   (`Vector2(world.x, -world.z)`), cross-checked for every produced sample;
 - repeatability, interpolation and end clamping;
+- fail-closed numeric guards: every required authored bay, fixture,
+  timing-gate, run initial-state and builder section scalar must be present,
+  numeric and finite before any float conversion or tolerance comparison;
+  missing, wrong-type, NaN and infinite values refuse the build (this covers
+  all four timing-gate `arc_length_m` values, both run entry speeds and all
+  section `start_s_m`/`end_s_m`/`length_m` fields);
+- ordered tag ownership: every raw sample's section and surface tag is checked
+  against the recorded section whose station interval contains it, with
+  explicit allowance for the two legitimate side copies at each exact join;
 - refusal of missing/changed bay or fixture data, corrupted timing gates,
   non-join repeated stations, reordered stations, discontinuous or mispaired
   joins, missing section records and corrupted produced paths;

@@ -14,10 +14,11 @@ const AdapterScript = preload("res://src/simulation/motor_body_adapter.gd")
 const VECTOR_TOLERANCE := 1e-7
 const STATION_TOLERANCE := 1e-4
 const ARC_RADIUS_TOLERANCE := 0.01
-## The builder integrates the arc as a 1 m sampled polyline. On a 30 m radius
-## the chord endpoint sits about 3 mm inside the ideal circle, so 1 cm is a
-## tight but stable positional tolerance while station/order checks remain much
-## stricter.
+## The builder integrates the arc as a 1 m sampled polyline, stepping along
+## the mid-heading, so each chord endpoint sits slightly outside the ideal
+## circle (a replica measured up to +2.73 mm at the arc exit on the 30 m
+## radius). The 1 cm positional tolerance is a tight but stable bound for that
+## outside offset, while station/order checks remain much stricter.
 const POLYLINE_TOLERANCE_M := 0.01
 const TURN_TOLERANCE_RAD := 1e-4
 
@@ -82,6 +83,8 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_repeatability_and_interpolation"),
 		Callable(self, "_case_changed_or_missing_source_refusal"),
 		Callable(self, "_case_provisional_labels_and_progress_policy"),
+		Callable(self, "_case_fail_closed_scalar_guards"),
+		Callable(self, "_case_tag_ownership_refusal"),
 	]:
 		var result: Dictionary = call.call()
 		case_results.append(result)
@@ -677,14 +680,28 @@ func _case_changed_or_missing_source_refusal() -> Dictionary:
 	c.check(not reorder_error.is_empty(), "reordered samples are refused")
 	c.check(reorder_error.contains("non-monotonic or reordered"), "reordered refusal names station ordering")
 
-	# Impossible join: adjacent recorded sections no longer pair with the
-	# duplicate's preceding/following section tags.
-	var mispaired_sections: Array = []
+	# Tampered section identity is refused by the section record guard. A
+	# repeated boundary sample whose following-section tag no longer pairs
+	# with the preceding tag under unchanged records is refused separately.
+	var mislabeled_sections: Array = []
 	for rec in raw_sections:
-		mispaired_sections.append(rec.duplicate(true))
-	mispaired_sections[0]["section_id"] = "hairpin.arc"
-	var pairing_error := SourceScript._validate_samples(raw_samples, mispaired_sections)
-	c.check(not pairing_error.is_empty(), "mispaired adjacent section records are refused")
+		mislabeled_sections.append(rec.duplicate(true))
+	mislabeled_sections[0]["section_id"] = "hairpin.arc"
+	var section_identity_error := SourceScript._validate_samples(
+		raw_samples, mislabeled_sections
+	)
+	c.check(not section_identity_error.is_empty(), "mislabeled section record is refused")
+	c.check(
+		section_identity_error.contains("section 0 section_id changed"),
+		"section-identity refusal names the tampered record"
+	)
+
+	var mispaired_tags: Array = []
+	for smp in raw_samples:
+		mispaired_tags.append(smp.duplicate(true))
+	mispaired_tags[31]["section_id"] = "hairpin.approach"
+	var pairing_error := SourceScript._validate_samples(mispaired_tags, raw_sections)
+	c.check(not pairing_error.is_empty(), "mispaired join tags are refused")
 	c.check(
 		pairing_error.contains("does not join adjacent recorded sections"),
 		"impossible join refusal names the pairing failure"
@@ -762,7 +779,375 @@ func _case_provisional_labels_and_progress_policy() -> Dictionary:
 	return c.result()
 
 
+func _case_fail_closed_scalar_guards() -> Dictionary:
+	var c := Case.new()
+	c.name = "fail_closed_scalar_guards"
+
+	# Authored bay scalars: missing, wrong-type, NaN and infinity must all
+	# refuse before any float conversion or tolerance comparison.
+	for kind in [
+		"missing_yaw_deg", "nan_yaw_deg", "inf_yaw_deg", "string_yaw_deg",
+		"missing_origin", "wrong_type_origin", "nonfinite_origin",
+		"missing_segments", "wrong_type_segments",
+		"missing_width_m", "nan_width_m", "inf_width_m", "string_width_m",
+		"missing_lateral_offset_m", "missing_grade_start_percent",
+		"missing_bank_end_deg", "missing_length_m", "missing_radius_m",
+		"missing_angle_deg",
+	]:
+		var mutated := _mutated_bay(kind)
+		var refused := SourceScript.build(mutated, {})
+		c.check(
+			not bool(refused["ok"]),
+			"bay %s is refused (error: %s)" % [kind, String(refused["error"])]
+		)
+		c.check(
+			not String(refused["error"]).is_empty(),
+			"bay %s refusal carries a diagnostic" % kind
+		)
+
+	var missing_yaw := SourceScript.build(_mutated_bay("missing_yaw_deg"), {})
+	c.check(
+		String(missing_yaw["error"]).contains("yaw_deg is missing"),
+		"missing bay yaw names the missing key"
+	)
+	var nan_width := SourceScript.build(_mutated_bay("nan_width_m"), {})
+	c.check(
+		String(nan_width["error"]).contains("width_m is not finite"),
+		"NaN bay width names the nonfinite value"
+	)
+
+	# Fixture scalars, including all four timing gates and both initial states.
+	for kind in [
+		"missing_coordinate_frame", "wrong_type_geometry",
+		"missing_geometry_segments", "missing_fixture_width_m",
+		"nan_fixture_width_m", "missing_fixture_length_m",
+		"missing_fixture_radius_m", "missing_fixture_angle_deg",
+		"missing_timing_gates",
+		"missing_gate_arc_start", "missing_gate_arc_entry",
+		"missing_gate_arc_exit", "missing_gate_arc_finish",
+		"missing_all_gate_arc_lengths", "nan_gate_arc_exit",
+		"missing_gate_segment_index", "nan_gate_segment_index",
+		"missing_primary_velocity", "nan_primary_velocity",
+		"inf_primary_velocity", "string_primary_heading",
+		"missing_grip_velocity", "grip_speed_40", "nan_grip_velocity",
+		"missing_grip_run", "missing_grip_initial_state",
+	]:
+		var mutated := _mutated_fixture(kind)
+		var refused := SourceScript.build({}, mutated)
+		c.check(
+			not bool(refused["ok"]),
+			"fixture %s is refused (error: %s)" % [kind, String(refused["error"])]
+		)
+		c.check(
+			not String(refused["error"]).is_empty(),
+			"fixture %s refusal carries a diagnostic" % kind
+		)
+
+	var all_missing := SourceScript.build(
+		{}, _mutated_fixture("missing_all_gate_arc_lengths")
+	)
+	c.check(
+		String(all_missing["error"]).contains("arc_length_m"),
+		"all-missing gate arc lengths name arc_length_m"
+	)
+	var grip_speed := SourceScript.build({}, _mutated_fixture("grip_speed_40"))
+	c.check(
+		String(grip_speed["error"]).contains("grip_entry entry speed changed"),
+		"grip_entry speed 40 refusal names the grip run"
+	)
+
+	# Builder section records and raw samples.
+	for kind in [
+		"missing_section_start", "missing_section_end", "missing_section_length",
+		"nan_section_start", "string_section_end", "nan_section_width",
+		"missing_section_surface", "missing_sample_s", "nan_sample_s",
+		"wrong_type_sample_pos",
+	]:
+		var mutated := _mutated_samples(kind)
+		var error := SourceScript._validate_samples(
+			mutated["samples"], mutated["sections"]
+		)
+		c.check(not error.is_empty(), "section/sample %s is refused" % kind)
+
+	var missing_start := SourceScript._validate_samples(
+		_mutated_samples("missing_section_start")["samples"],
+		_mutated_samples("missing_section_start")["sections"]
+	)
+	c.check(
+		missing_start.contains("start_s_m is missing"),
+		"missing section start names start_s_m"
+	)
+	var missing_length := SourceScript._validate_samples(
+		_mutated_samples("missing_section_length")["samples"],
+		_mutated_samples("missing_section_length")["sections"]
+	)
+	c.check(
+		missing_length.contains("length_m is missing"),
+		"missing section length names length_m"
+	)
+	return c.result()
+
+
+func _case_tag_ownership_refusal() -> Dictionary:
+	var c := Case.new()
+	c.name = "tag_ownership_refusal"
+
+	var raw := _live_raw_sample()
+	if raw.is_empty():
+		c.check(false, "test can sample the live hairpin bay")
+		return c.result()
+	var raw_samples: Array = raw["samples"]
+	var raw_sections: Array = raw["sections"]
+
+	# The unmodified raw stream passes, including the two legitimate side
+	# copies at each join (approach copy at index 30, arc copy at index 31).
+	c.equal(
+		SourceScript._validate_samples(raw_samples, raw_sections), "",
+		"unmodified raw stream passes"
+	)
+	c.equal(
+		String(raw_samples[30]["section_id"]), "hairpin.approach",
+		"join keeps the preceding approach copy"
+	)
+	c.equal(
+		String(raw_samples[31]["section_id"]), "hairpin.arc",
+		"join keeps the following arc copy"
+	)
+
+	var starts: Array = []
+	var ends: Array = []
+	for rec: Dictionary in raw_sections:
+		starts.append(float(rec["start_s_m"]))
+		ends.append(float(rec["end_s_m"]))
+	c.equal(
+		SourceScript._samples_ownership_error(raw_samples, raw_sections, starts, ends),
+		"",
+		"both legitimate join side copies satisfy ownership"
+	)
+
+	# An interior sample relabelled with another section tag must refuse.
+	var relabelled_section := _mutated_samples("relabel_interior_section")
+	var section_error := SourceScript._validate_samples(
+		relabelled_section["samples"], relabelled_section["sections"]
+	)
+	c.check(not section_error.is_empty(), "interior sample with exit tag is refused")
+	c.check(
+		section_error.contains("does not own that station"),
+		"section-tag refusal names ownership"
+	)
+
+	# An interior sample relabelled with another surface must refuse.
+	var relabelled_surface := _mutated_samples("relabel_interior_surface")
+	var surface_error := SourceScript._validate_samples(
+		relabelled_surface["samples"], relabelled_surface["sections"]
+	)
+	c.check(
+		not surface_error.is_empty(),
+		"interior sample with gravel surface is refused"
+	)
+	c.check(
+		surface_error.contains("surface"),
+		"surface-tag refusal names the mismatch"
+	)
+
+	# Both tags changed together must refuse.
+	var relabelled_both := _mutated_samples("relabel_interior_both")
+	var both_error := SourceScript._validate_samples(
+		relabelled_both["samples"], relabelled_both["sections"]
+	)
+	c.check(
+		not both_error.is_empty(),
+		"interior sample with exit/gravel tags is refused"
+	)
+
+	# A mid-arc sample relabelled with the approach tag must refuse.
+	var relabelled_arc := _mutated_samples("relabel_arc_interior")
+	var arc_error := SourceScript._validate_samples(
+		relabelled_arc["samples"], relabelled_arc["sections"]
+	)
+	c.check(not arc_error.is_empty(), "mid-arc sample with approach tag is refused")
+	return c.result()
+
+
 # --- Helpers --------------------------------------------------------------
+
+
+# --- Negative-control mutation helpers ------------------------------------
+
+
+static func _run_by_id(fixture: Dictionary, run_id: String) -> Dictionary:
+	var runs: Array = fixture.get("runs", [])
+	for run: Dictionary in runs:
+		if String(run.get("run_id", "")) == run_id:
+			return run
+	return {}
+
+
+static func _gate_by_id(fixture: Dictionary, gate_id: String) -> Dictionary:
+	var gates: Array = fixture.get("timing_gates", [])
+	for gate: Dictionary in gates:
+		if String(gate.get("gate_id", "")) == gate_id:
+			return gate
+	return {}
+
+
+static func _mutated_bay(kind: String) -> Dictionary:
+	var bay := _live_bay_copy()
+	match kind:
+		"missing_yaw_deg":
+			bay.erase("yaw_deg")
+		"nan_yaw_deg":
+			bay["yaw_deg"] = NAN
+		"inf_yaw_deg":
+			bay["yaw_deg"] = INF
+		"string_yaw_deg":
+			bay["yaw_deg"] = "0"
+		"missing_origin":
+			bay.erase("origin")
+		"wrong_type_origin":
+			bay["origin"] = "240,0,60"
+		"nonfinite_origin":
+			bay["origin"] = Vector3(240.0, INF, 60.0)
+		"missing_segments":
+			bay.erase("segments")
+		"wrong_type_segments":
+			bay["segments"] = "segments"
+		"missing_width_m":
+			(bay["segments"][0] as Dictionary).erase("width_m")
+		"nan_width_m":
+			bay["segments"][0]["width_m"] = NAN
+		"inf_width_m":
+			bay["segments"][0]["width_m"] = INF
+		"string_width_m":
+			bay["segments"][0]["width_m"] = "12"
+		"missing_lateral_offset_m":
+			(bay["segments"][0] as Dictionary).erase("lateral_offset_m")
+		"missing_grade_start_percent":
+			(bay["segments"][0] as Dictionary).erase("grade_start_percent")
+		"missing_bank_end_deg":
+			(bay["segments"][2] as Dictionary).erase("bank_end_deg")
+		"missing_length_m":
+			(bay["segments"][0] as Dictionary).erase("length_m")
+		"missing_radius_m":
+			(bay["segments"][1] as Dictionary).erase("radius_m")
+		"missing_angle_deg":
+			(bay["segments"][1] as Dictionary).erase("angle_deg")
+	return bay
+
+
+static func _mutated_fixture(kind: String) -> Dictionary:
+	var fixture := _fixture_copy()
+	match kind:
+		"missing_coordinate_frame":
+			fixture.erase("coordinate_frame")
+		"wrong_type_geometry":
+			fixture["geometry"] = "geometry"
+		"missing_geometry_segments":
+			(fixture["geometry"] as Dictionary).erase("segments")
+		"missing_fixture_width_m":
+			((fixture["geometry"]["segments"] as Array)[0] as Dictionary).erase(
+				"width_m"
+			)
+		"nan_fixture_width_m":
+			(fixture["geometry"]["segments"][0] as Dictionary)["width_m"] = NAN
+		"missing_fixture_length_m":
+			((fixture["geometry"]["segments"] as Array)[0] as Dictionary).erase(
+				"length_m"
+			)
+		"missing_fixture_radius_m":
+			((fixture["geometry"]["segments"] as Array)[1] as Dictionary).erase(
+				"radius_m"
+			)
+		"missing_fixture_angle_deg":
+			((fixture["geometry"]["segments"] as Array)[1] as Dictionary).erase(
+				"angle_deg"
+			)
+		"missing_timing_gates":
+			fixture.erase("timing_gates")
+		"missing_gate_arc_start":
+			(_gate_by_id(fixture, "start") as Dictionary).erase("arc_length_m")
+		"missing_gate_arc_entry":
+			(_gate_by_id(fixture, "corner_entry") as Dictionary).erase("arc_length_m")
+		"missing_gate_arc_exit":
+			(_gate_by_id(fixture, "corner_exit") as Dictionary).erase("arc_length_m")
+		"missing_gate_arc_finish":
+			(_gate_by_id(fixture, "finish") as Dictionary).erase("arc_length_m")
+		"missing_all_gate_arc_lengths":
+			for gate: Dictionary in fixture["timing_gates"]:
+				gate.erase("arc_length_m")
+		"nan_gate_arc_exit":
+			_gate_by_id(fixture, "corner_exit")["arc_length_m"] = NAN
+		"missing_gate_segment_index":
+			(_gate_by_id(fixture, "finish") as Dictionary).erase("segment_index")
+		"nan_gate_segment_index":
+			_gate_by_id(fixture, "start")["segment_index"] = NAN
+		"missing_primary_velocity":
+			(_run_by_id(fixture, "drift_entry")["initial_state"] as Dictionary).erase(
+				"velocity_m_s"
+			)
+		"nan_primary_velocity":
+			_run_by_id(fixture, "drift_entry")["initial_state"]["velocity_m_s"] = NAN
+		"inf_primary_velocity":
+			_run_by_id(fixture, "drift_entry")["initial_state"]["velocity_m_s"] = INF
+		"string_primary_heading":
+			_run_by_id(fixture, "drift_entry")["initial_state"]["heading_deg"] = "0"
+		"missing_grip_velocity":
+			(_run_by_id(fixture, "grip_entry")["initial_state"] as Dictionary).erase(
+				"velocity_m_s"
+			)
+		"grip_speed_40":
+			_run_by_id(fixture, "grip_entry")["initial_state"]["velocity_m_s"] = 40.0
+		"nan_grip_velocity":
+			_run_by_id(fixture, "grip_entry")["initial_state"]["velocity_m_s"] = NAN
+		"missing_grip_initial_state":
+			(_run_by_id(fixture, "grip_entry") as Dictionary).erase("initial_state")
+		"missing_grip_run":
+			var kept: Array = []
+			for run: Dictionary in fixture["runs"]:
+				if String(run.get("run_id", "")) != "grip_entry":
+					kept.append(run)
+			fixture["runs"] = kept
+	return fixture
+
+
+static func _mutated_samples(kind: String) -> Dictionary:
+	var raw := _live_raw_sample()
+	var samples: Array = raw["samples"]
+	var sections: Array = raw["sections"]
+	match kind:
+		"missing_section_start":
+			for rec: Dictionary in sections:
+				rec.erase("start_s_m")
+		"missing_section_end":
+			for rec: Dictionary in sections:
+				rec.erase("end_s_m")
+		"missing_section_length":
+			for rec: Dictionary in sections:
+				rec.erase("length_m")
+		"nan_section_start":
+			sections[0]["start_s_m"] = NAN
+		"string_section_end":
+			sections[1]["end_s_m"] = "124.2478"
+		"nan_section_width":
+			sections[2]["width_m"] = NAN
+		"missing_section_surface":
+			(sections[0] as Dictionary).erase("surface_id")
+		"missing_sample_s":
+			(samples[1] as Dictionary).erase("s")
+		"nan_sample_s":
+			samples[1]["s"] = NAN
+		"wrong_type_sample_pos":
+			samples[1]["pos"] = "pos"
+		"relabel_interior_section":
+			samples[1]["section_id"] = "hairpin.exit"
+		"relabel_interior_surface":
+			samples[1]["surface_id"] = "gravel"
+		"relabel_interior_both":
+			samples[1]["section_id"] = "hairpin.exit"
+			samples[1]["surface_id"] = "gravel"
+		"relabel_arc_interior":
+			samples[50]["section_id"] = "hairpin.approach"
+	return {"samples": samples, "sections": sections}
 
 
 static func _sample_at_station(
