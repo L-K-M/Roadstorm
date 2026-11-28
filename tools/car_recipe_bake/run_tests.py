@@ -2,7 +2,8 @@
 """Bounded private tests for the M0.2 handling bake CLI.
 
 Runs the real command-line path against the committed checker and the pinned
-Godot build under the shared coordinator lock:
+Godot build under an exclusive portable lock (BSD ``lockf`` or util-linux
+``flock``) selected per runner workspace:
 
 * positive finite-yaw source fixture;
 * positive unlimited-yaw source fixture;
@@ -63,6 +64,9 @@ class Runner:
         self.timeout = timeout
         self.godot_bin = godot_bin
         self.workspace = workspace
+        # One explicit lock file per runner workspace keeps the suite independent
+        # of any live checkout and of concurrent workers.
+        self.lock_path = workspace / "godot-test.lock"
         self.passed = 0
         self.failed = 0
         self.failures: list[str] = []
@@ -102,6 +106,7 @@ class Runner:
         selected_godot = godot_bin if godot_bin is not None else self.godot_bin
         if selected_godot:
             command += ["--godot-bin", selected_godot]
+        command += ["--lock-path", str(self.lock_path)]
         print("  $ " + " ".join(command))
         environment = None
         if extra_env:
@@ -141,7 +146,7 @@ def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _run_checker(recipe: Path) -> subprocess.CompletedProcess[str]:
+def _run_checker(recipe: Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     command = [
         sys.executable,
         str(CHECKER_CLI),
@@ -152,7 +157,13 @@ def _run_checker(recipe: Path) -> subprocess.CompletedProcess[str]:
         str(recipe),
     ]
     print("  $ " + " ".join(command))
-    return subprocess.run(command, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=max(timeout, 30),
+    )
 
 
 def _load_bake_cli() -> Any:
@@ -186,11 +197,34 @@ def _check_positive(
 ) -> None:
     fixture = FIXTURE_DIR / "positive" / fixture_name
     output_dir = runner.workspace / f"out-{case_name}"
+    caller_home = runner.workspace / (
+        "caller-home-" + "".join(c if c.isalnum() else "-" for c in case_name)
+    )
+    caller_home.mkdir(parents=True, exist_ok=True)
+    sentinel = caller_home / "sentinel.txt"
+    sentinel.write_text("caller-home-sentinel\n", encoding="utf-8")
 
     def body() -> None:
-        process = runner.bake(fixture, output_dir, expect_success=True)
+        # Point the caller's HOME at a private sentinel directory. The CLI must
+        # override HOME for every engine call, so the sentinel has to survive
+        # byte-for-byte; any engine artifact written through the inherited HOME
+        # would add or change entries here and fail the case.
+        process = runner.bake(
+            fixture,
+            output_dir,
+            expect_success=True,
+            extra_env={"HOME": str(caller_home)},
+        )
         _require(process.returncode == 0, "bake did not exit 0")
         _require(output_dir.is_dir(), "success did not create the new output directory")
+        _require(
+            sorted(entry.name for entry in caller_home.iterdir()) == ["sentinel.txt"],
+            "engine wrote into the caller's HOME despite isolation",
+        )
+        _require(
+            sentinel.read_text(encoding="utf-8") == "caller-home-sentinel\n",
+            "caller HOME sentinel was modified",
+        )
 
         manifest_path = output_dir / "bake_manifest.json"
         resource_path = output_dir / "handling.tres"
@@ -307,7 +341,7 @@ def _check_subnormal_fixture_is_checker_accepted(runner: Runner) -> None:
     fixture = FIXTURE_DIR / "negative" / "subnormal_reverse_acceleration.json"
 
     def body() -> None:
-        process = _run_checker(fixture)
+        process = _run_checker(fixture, timeout=runner.timeout)
         output = (process.stdout or "") + "\n" + (process.stderr or "")
         _require(
             process.returncode == 0,

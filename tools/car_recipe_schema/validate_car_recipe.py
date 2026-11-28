@@ -24,9 +24,12 @@ Modes:
   passes even though it cannot supply the five motor inputs.
 * ``motor-ready`` (default) additionally refuses a recipe whose required motor
   inputs are missing, ``null`` or listed in ``unknowns``, naming their dotted
-  paths, and runs the two typed-resource preflight checks a baker will make
-  (revision triplet and derived handling identity). A ``1.0.0`` recipe is
-  always refused here.
+  paths; requires a version ``1.1.0`` recipe's authored
+  ``provenance.source_contract`` to be exactly the versioned contract token
+  ``roadstorm.handling_config.1.1.0``, so the future bake manifest's claim
+  agrees with the accepted source; and runs the two typed-resource preflight
+  checks a baker will make (revision triplet and derived handling identity).
+  A ``1.0.0`` recipe is always refused here.
 
 Number handling
 ---------------
@@ -116,6 +119,14 @@ from typing import Any, Mapping, Sequence
 SUPPORTED_VERSIONS = ("1.0.0", "1.1.0")
 DEFAULT_MODE = "motor-ready"
 MODES = ("schema", "motor-ready")
+
+# The versioned provenance token a motor-ready 1.1.0 recipe must carry. A bake
+# manifest records this token for the schema it validated against, so the
+# checker refuses a source whose authored provenance contradicts it. The rule
+# is deliberately 1.1.0-only: 1.0.0 can never pass motor-ready because its
+# five motor inputs are absent, and schema mode keeps the historical optional
+# design/benchmark-document meaning.
+MOTOR_READY_SOURCE_CONTRACTS = {"1.1.0": "roadstorm.handling_config.1.1.0"}
 
 # Maximum JSON container nesting accepted by the checker. Parsing, traversal,
 # canonicalization and hashing all stop at this depth so a pathological file is
@@ -1837,6 +1848,47 @@ def _validate_motor_ready(document: Mapping[str, Any], findings: list[Finding]) 
                     )
                 )
             previous_speed = speed
+
+    _validate_motor_ready_source_contract(document, findings)
+
+
+def _validate_motor_ready_source_contract(
+    document: Mapping[str, Any], findings: list[Finding]
+) -> None:
+    """Motor-ready gate: authored provenance must name the accepted contract.
+
+    A bake manifest claims ``roadstorm.handling_config.<schema_version>`` for
+    the recipe it validated. Requiring a version 1.1.0 source to carry that
+    same token keeps the claim tied to the authored source instead of silently
+    overriding a null or contradictory value. ``schema`` mode leaves the
+    historical optional meaning alone; unsupported versions are already
+    reported by version dispatch.
+    """
+    expected = MOTOR_READY_SOURCE_CONTRACTS.get(document.get("schema_version"))
+    if expected is None:
+        return
+    provenance = document.get("provenance")
+    if not isinstance(provenance, dict):
+        return  # bad-provenance already reports the structural defect
+    value = provenance.get("source_contract")
+    if value is None:
+        findings.append(
+            Finding(
+                "provenance.source_contract",
+                "source-contract-missing",
+                f"motor-ready recipes must record the versioned source contract "
+                f"{expected!r} so the bake manifest claim agrees with the authored source",
+            )
+        )
+    elif value != expected:
+        findings.append(
+            Finding(
+                "provenance.source_contract",
+                "source-contract-mismatch",
+                f"authored source contract {value!r} disagrees with the declared "
+                f"schema_version {document['schema_version']!r}; expected {expected!r}",
+            )
+        )
 
 
 def _validate_bake_preflight(document: Mapping[str, Any], findings: list[Finding]) -> None:

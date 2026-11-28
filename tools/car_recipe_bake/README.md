@@ -45,21 +45,35 @@ is intentionally wrong.
 
 * Python 3 standard library.
 * The pinned Godot build. By default the tool uses `$GODOT_BIN`, then `godot`
-  on `PATH`, and verifies that `--version` contains the
+  on `PATH`, and verifies that the last `--version` line equals the
   `version_string=` recorded in `tools/toolchain/pin/engine.txt`.
-* `timeout` and `lockf` on `PATH` (present on this macOS host). `timeout` wraps
-  every engine call; `lockf` takes the shared coordinator lock.
-* Writable `work/agents/coordinator/` for the existing
-  `work/agents/coordinator/godot-test.lock`.
+* `timeout` and one exclusive lock utility on `PATH`: BSD `lockf` (macOS) or
+  util-linux `flock` (Linux). On macOS the tool prefers `lockf`; elsewhere it
+  prefers `flock`, falling back to the other when present. Both use
+  flock(2)-style advisory locks, so they interoperate on the same inode.
+  `timeout` wraps every engine call, and the lock wrapper bounds the wait as
+  well. If neither utility exists the tool refuses before invoking the engine;
+  it never runs Godot unlocked.
+* `--lock-path FILE` selects an explicit lock file. Without it, the
+  `ROADSTORM_GODOT_LOCK` environment variable is used, and otherwise the
+  invocation locks a private file inside its own scratch directory. An
+  explicit lock path must have an existing parent directory; the lock utility
+  creates the leaf. The default therefore never creates or writes through a
+  live unrelated checkout's `work/agents/coordinator/` tree.
 
 The tool first freezes the input recipe bytes into private scratch, then
 checks, hashes and maps that exact copy. It refuses if the original path's
 bytes changed before publication. The manifest records the original path and
 the accepted byte snapshot's SHA-256. The tool stages a private project copy (`project.godot`, `src/`, `scenes/`,
-`tools/car_recipe_bake/`) into a fresh temporary directory and points
+`tools/car_recipe_bake/`) into a fresh temporary directory and points `HOME`,
 `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `TMPDIR` at private
-directories under it. It never imports into or writes through the shared
-checkout `.godot/` cache and never modifies `project.godot`.
+directories under it, using normalized real absolute paths (`Path.resolve()`)
+so the pinned editor's settings, `app_userdata` (including
+`objectdb_snapshots`) and cache writes stay in the per-invocation scratch tree.
+It never imports into or writes through the shared checkout `.godot/` cache
+and never modifies `project.godot`. The positive suite cases point the
+caller's `HOME` at a sentinel directory and assert it is unchanged after the
+bake, which fails if any engine artifact escapes the private home.
 
 ## Bake command
 
@@ -71,14 +85,17 @@ python3 tools/car_recipe_bake/bake_handling_recipe.py \
     --output-dir /tmp/roadstorm-bake-demo
 ```
 
-`--output-dir` must name a directory that does not already exist. The command
-creates it only after every check and the engine round trip has passed.
+`--output-dir` must name a new directory whose parent already exists. The
+command creates only the leaf (`os.mkdir`) and does so only after every check
+and the engine round trip has passed, so a failed publication cannot leave a
+missing parent or partial-directory debris behind.
 
 Useful options:
 
 ```sh
 --godot-bin /path/to/Godot   # override $GODOT_BIN / PATH resolution
 --timeout 300                # outer seconds per engine invocation (default 300)
+--lock-path /path/to/lock    # explicit lock file (default: private scratch lock)
 ```
 
 Exit codes: `0` success, `1` checker/mapper/engine/round-trip/hash/output
@@ -98,9 +115,8 @@ failure or refusal, `2` command-line usage error.
    the committed checker's own `content_hash_of` and require it to equal the
    recipe's recorded hash.
 4. Verify the selected Godot is the pinned build.
-5. Stage a private project copy, then under
-   `timeout ... lockf -k -w -t <timeout> work/agents/coordinator/godot-test.lock`
-   run, with isolated XDG/TMP directories:
+5. Stage a private project copy, then under `timeout ... <exclusive lock>`
+   with isolated `HOME`/XDG/TMP directories run:
    * `godot --headless --path <private-project> --import`;
    * `godot --headless --path <private-project> --script
      res://tools/car_recipe_bake/bake_handling.gd -- --recipe <frozen-checked-recipe>`.
@@ -177,10 +193,11 @@ Manifest keys:
 | --- | --- |
 | `manifest_version` | Manifest format version (`1.0`). |
 | `tool` | Entry-point path. |
-| `source_contract` | Exact source contract spelling, `roadstorm.handling_config.1.1.0`. |
+| `source_contract` | Contract this bake validated against (`roadstorm.handling_config.` plus the report's schema version); validator-assigned, not copied from the recipe's optional `provenance.source_contract`. |
 | `source_schema_version` | Declared source recipe version (`1.1.0`), copied from the mapper result. |
 | `source_checker` | Committed checker invocation used. |
-| `source_recipe` | Absolute path of the checked source file. |
+| `source_recipe` | Absolute path of the checked source file, exactly as submitted. |
+| `source_resolved_target` | What that path resolved to just before publication, following symlinks at that moment. |
 | `source_content_hash` | Canonical `sha256:` hash of the source with `content_hash` removed, from the committed checker. |
 | `source_file_sha256` | `sha256:` hash of the raw source file bytes. |
 | `handling_definition_id` | Stable derived ID `<car_id>.handling`. |
@@ -211,15 +228,20 @@ python3 tools/car_recipe_bake/run_tests.py --keep-workspace   # inspect temp out
 ```
 
 Options: `--timeout SECONDS` (default 300), `--godot-bin PATH`,
-`--keep-workspace`.
+`--keep-workspace`. Each run passes an explicit private `--lock-path` inside
+its own temporary workspace, so the suite never takes a live checkout's
+coordinator lock.
 
 Cases:
 
 1. `finite source bakes and round-trips` - positive finite fixture; asserts
    exit 0, manifest and `.tres` hashes, identity/revision/status, pinned engine
-   version, mapping summary and `round_trip.ok/validated`.
+   version, mapping summary and `round_trip.ok/validated`. Runs with the
+   caller's `HOME` pointed at a sentinel directory and asserts that directory
+   is unchanged, proving the engine wrote only under its private home.
 2. `unlimited source bakes and round-trips` - positive `{"unlimited": true}`
-   fixture; asserts the mapped yaw kind is `INF` and the reload round trips it.
+   fixture; asserts the mapped yaw kind is `INF`, the reload round trips it,
+   and the same caller-`HOME` sentinel stays clean.
 3. `null motor input is refused` - nonzero exit, no output directory.
 4. `historical 1.0.0 recipe is refused` - nonzero exit, no output directory,
    `motor-input-missing` diagnostic.
@@ -239,6 +261,24 @@ Cases:
    manifest or `.tres`.
 10. `existing dangling destination symlink is refused` - the link survives and
    its absent target is not created.
+11. `symlinked source path bakes and records both spellings` - success through
+    a stable source symlink; manifest records the submitted spelling and the
+    resolved target.
+12. `input symlink retargeted during the bake is refused` - a test-only
+    `--godot-bin` wrapper retargets the source link after the snapshot;
+    refusal names the path and leaves no output.
+13. `dangling input symlink is refused` - unreadable source, no output.
+14. `input parent symlink retargeted during the bake is refused` - same seam
+    against a symlinked parent directory; refusal names the submitted path.
+
+Positive cases 1, 2 and 11 exercise the `ResourceSaver`/`ResourceLoader` round
+trip and the exact numeric-bit gate; negative cases cover checker refusals,
+the deliberate hash control, the fidelity boundary and destination/source-path
+trust. Case 8 is unit-level and needs no engine.
+
+Hosted CI runs this same suite on clean Ubuntu against the digest-verified
+pinned editor, which is where the util-linux `flock` lock path is exercised;
+see `.github/workflows/ci.yml`. The macOS host uses BSD `lockf`.
 
 Run the suite with the pinned editor and a bounded outer timeout:
 
@@ -271,5 +311,10 @@ The runner exits `0` only when every case passes.
 * The private tests prove this CLI slice against synthetic fixtures. They do
   not replace source-to-runtime conversion review, production-content review,
   M0.2 acceptance or release-rights clearance.
+* The default lock is per invocation. A host that wants cross-tool
+  serialization passes `--lock-path` (or `ROADSTORM_GODOT_LOCK`) pointing at
+  the shared coordinator lock; the tool itself never assumes one exists.
+* Linux `flock` behaviour is proven by the hosted CI step, not by this macOS
+  host; see the job report for the local static command proof.
 
 Original project code under the Unlicense.

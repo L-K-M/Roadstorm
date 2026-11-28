@@ -35,7 +35,12 @@ usage. The tool only validates; it writes no artifacts.
   preflight checks, a `revision` that is
   not `MAJOR.MINOR.PATCH` (`bad-revision-format`) and a derived
   `<car_id>.handling` identity that would fail `DefinitionIdentity`'s
-  whole-string stable-ID match (`bad-handling-id`). A `1.0.0` recipe is always
+  whole-string stable-ID match (`bad-handling-id`). For a version `1.1.0`
+  recipe it also requires the authored `provenance.source_contract` to be
+  exactly `roadstorm.handling_config.1.1.0`, so the future bake manifest claim
+  agrees with the accepted source: null or absent is `source-contract-missing`
+  and any other value is `source-contract-mismatch`, both reported at
+  `provenance.source_contract`. A `1.0.0` recipe is always
   refused here, naming all five `handling.<field>` paths.
 
 `motor-ready` is a necessary gate, not a complete typed bake. Passing it means
@@ -152,7 +157,8 @@ ranges, the five added `1.1.0` fields, the reverse cross-field rule, the
 null/`unknowns` honesty rule in both directions, strict JSON parsing (duplicate
 members and `Infinity`/`NaN` literals rejected), whole-string unknowns paths
 with bounded indices, number representability, the nesting-depth limit and
-UTF-8 encodability, and the canonical `content_hash`.
+UTF-8 encodability, the canonical `content_hash`, and the motor-ready
+`provenance.source_contract` agreement for version `1.1.0`.
 
 ## Deliberate limitations
 
@@ -167,10 +173,12 @@ UTF-8 encodability, and the canonical `content_hash`.
 * `motor-ready` is a necessary gate, not a complete typed bake (see Modes).
 * It cannot make unknown facts known. Missing or null values are reported,
   never filled in and never guessed.
-* `provenance.source_contract` is not compared with `schema_version`; the
-  checker deliberately leaves provenance honest-but-unverified. The versioned
-  token spelling is fixed by the contract note and fixtures as
-  `roadstorm.handling_config.1.1.0`; validating it belongs to the future
-  producer/bake-manifest boundary, not to this checker.
+* `provenance.source_contract` keeps its historical optional meaning in
+  `schema` mode, including honest null drafts. In `motor-ready` mode a
+  `1.1.0` recipe must name the exact versioned token
+  `roadstorm.handling_config.1.1.0`; null/absent and every other value are
+  refused at `provenance.source_contract`. This is a necessary consistency
+  gate only: the shared provenance vocabulary, producer-side recording and
+  rights review remain M0.3 work.
 
 Original project code under the Unlicense.

@@ -50,7 +50,7 @@
       "properties": {
         "source_contract": {
           "type": ["string", "null"],
-          "description": "Design/benchmark document this artifact was derived from."
+          "description": "Design/benchmark document this artifact was derived from, or a versioned contract identifier such as 'roadstorm.handling_config.1.1.0' when the artifact declares one. Observation, intent, scenario and handling fixtures use document paths; car-recipe files use the versioned token."
         },
         "author": {
           "type": ["string", "null"]

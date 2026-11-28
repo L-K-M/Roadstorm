@@ -1158,6 +1158,95 @@ class MotorReadyPreflightTests(unittest.TestCase):
         self.assertEqual(findings_for(document, mode="motor-ready"), [])
 
 
+class MotorReadySourceContractTests(unittest.TestCase):
+    """Motor-ready mode ties authored provenance to the accepted contract."""
+
+    PATH = "provenance.source_contract"
+    TOKEN = "roadstorm.handling_config.1.1.0"
+
+    def _document_with(self, value: Any) -> dict[str, Any]:
+        def apply(d: dict[str, Any]) -> None:
+            d["provenance"]["source_contract"] = value
+        return mutate(apply)
+
+    def test_exact_token_passes_both_modes(self) -> None:
+        self.assertEqual(base_document()["provenance"]["source_contract"], self.TOKEN)
+        self.assertEqual(findings_for(base_document()), [])
+        self.assertEqual(findings_for(base_document(), mode="motor-ready"), [])
+
+    def test_null_is_honest_in_schema_mode_only(self) -> None:
+        document = self._document_with(None)
+        self.assertEqual(findings_for(document), [])
+        self.assertIn(
+            ("source-contract-missing", self.PATH),
+            pairs(findings_for(document, mode="motor-ready")),
+        )
+
+    def test_absent_member_is_reported_as_missing(self) -> None:
+        def drop(d: dict[str, Any]) -> None:
+            del d["provenance"]["source_contract"]
+
+        document = mutate(drop)
+        self.assertEqual(findings_for(document), [])
+        self.assertIn(
+            ("source-contract-missing", self.PATH),
+            pairs(findings_for(document, mode="motor-ready")),
+        )
+
+    def test_historical_wrong_and_malformed_tokens_are_refused(self) -> None:
+        values = (
+            "roadstorm.handling_config.1.0.0",
+            "roadstorm.handling_config.1.1.1",
+            "roadstorm.handling_config.2.0.0",
+            "roadstorm.handling_config.1.1",
+            "roadstorm.handling_config.1.1.0\n",
+            "ROADSTORM.handling_config.1.1.0",
+        )
+        for value in values:
+            with self.subTest(value=value):
+                document = self._document_with(value)
+                self.assertEqual(findings_for(document), [])
+                self.assertIn(
+                    ("source-contract-mismatch", self.PATH),
+                    pairs(findings_for(document, mode="motor-ready")),
+                )
+
+    def test_non_string_value_keeps_type_diagnostic(self) -> None:
+        findings = findings_for(self._document_with(1.1), mode="motor-ready")
+        self.assertIn(("bad-provenance-field", self.PATH), pairs(findings))
+        self.assertIn(("source-contract-mismatch", self.PATH), pairs(findings))
+
+    def test_rehashed_file_finding_is_independent_of_content_hash(self) -> None:
+        for value in (None, "roadstorm.handling_config.1.0.0"):
+            with self.subTest(value=value):
+                document = self._document_with(value)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "recipe.json"
+                    path.write_text(json.dumps(document), encoding="utf-8")
+                    findings = vcr.validate_recipe_file(path, mode="motor-ready")
+                self.assertNotIn("content-hash-mismatch", codes(findings))
+                expected = (
+                    "source-contract-missing" if value is None else "source-contract-mismatch"
+                )
+                self.assertIn((expected, self.PATH), pairs(findings))
+
+    def test_rehashed_correct_token_file_passes(self) -> None:
+        document = base_document()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recipe.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            self.assertEqual(vcr.validate_recipe_file(path, mode="motor-ready"), [])
+
+    def test_v1_0_0_null_draft_stays_historical_and_unaffected_by_this_rule(self) -> None:
+        document = base_document("1.0.0")
+        document["provenance"]["source_contract"] = None
+        document["content_hash"] = vcr.content_hash_of(document)
+        self.assertEqual(findings_for(document), [])
+        findings = findings_for(document, mode="motor-ready")
+        self.assertIn("motor-input-missing", codes(findings))
+        self.assertNotIn("source-contract-missing", codes(findings))
+
+
 class PresentationNullPathTests(unittest.TestCase):
     """The open presentation subtree and the null/unknowns path policy."""
 

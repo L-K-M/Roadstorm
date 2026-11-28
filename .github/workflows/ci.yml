@@ -136,6 +136,63 @@ jobs:
             --project "$PWD" --godot "${{ steps.godot.outputs.bin }}" \
             --timeout 120 --log "$RUNNER_TEMP/data-lab.log"
 
+      # The handling bake CLI has its own bounded behaviour suite
+      # (tools/car_recipe_bake/run_tests.py): real pinned-Godot bakes of the
+      # finite and unlimited fixtures with ResourceLoader round trips, checker
+      # refusals, numeric-bit fidelity controls and symlink retarget controls.
+      # It drives the production CLI directly rather than a staged project, so
+      # it is a separate step from `ci.sh test`. Run it against the editor this
+      # job already resolved and digest-verified above, under an outer bound:
+      # each engine invocation is also bounded by the runner's --timeout.
+      - name: Handling bake CLI behaviour suite (M0.2)
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -uo pipefail
+
+          command -v python3 >/dev/null 2>&1 || {
+            echo "::error::python3 is unavailable; the bake behaviour suite cannot run"
+            exit 1
+          }
+          # The CLI selects util-linux flock on Linux (BSD lockf on macOS). Check
+          # for the portable pair so a missing utility fails here with an
+          # actionable message instead of surfacing as a locked-engine case
+          # failure deep in the suite.
+          if ! command -v flock >/dev/null 2>&1 && ! command -v lockf >/dev/null 2>&1; then
+            echo "::error::no exclusive lock utility found (need util-linux flock on Linux or BSD lockf); refusing to run the pinned engine unlocked"
+            exit 1
+          fi
+
+          # Private output: the suite writes only to its own temporary workspace;
+          # keep its log there too, never in the checkout.
+          private_root="$RUNNER_TEMP/car-recipe-bake-tests"
+          mkdir -p "$private_root/tmp"
+          export TMPDIR="$private_root/tmp"
+          log="$private_root/run.log"
+
+          echo "Running the handling bake CLI behaviour suite against the verified pinned editor."
+          if timeout --kill-after=15s 900 python3 tools/car_recipe_bake/run_tests.py \
+            --godot-bin "${{ steps.godot.outputs.bin }}" \
+            --timeout 180 >"$log" 2>&1; then
+            tail -n 12 "$log"
+          else
+            rc=$?
+            cat "$log"
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              echo "::error::handling bake CLI behaviour suite exceeded the 900s outer bound"
+            else
+              echo "::error::handling bake CLI behaviour suite failed (exit $rc)"
+            fi
+            exit 1
+          fi
+
+          if ! grep -Eq '^\[tests\] passed=[0-9]+ failed=0$' "$log"; then
+            cat "$log"
+            echo "::error::the handling bake suite did not report every case passing"
+            exit 1
+          fi
+
       # Regression proof for that gate (N1), and for the warning handling behind
       # R7'. It runs the same engine against throwaway snapshot copies in a
       # private temporary directory, injects the defects there, and checks the

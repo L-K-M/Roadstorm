@@ -15,8 +15,9 @@ Pipeline, in order:
    preflight).
 3. Hash that same accepted copy and bind its bytes to the manifest.
 4. Verify the selected engine is the pinned Godot build.
-5. Stage a private copy of the project, run the pinned engine headlessly under
-   the shared coordinator Godot lock, load the checked recipe, call
+5. Stage a private copy of the project, run the pinned engine headlessly
+   under an exclusive portable lock (BSD ``lockf`` or util-linux ``flock``)
+   with private ``HOME``/XDG/TMP directories, load the checked recipe, call
    ``HandlingRecipeMapper.map_handling``, run ``HandlingDefinition.validate()``,
    serialize the ``.tres`` and reload it through ``ResourceLoader``.
 6. Re-read the submitted lexical ``--recipe`` path, following any symlinked
@@ -58,7 +59,11 @@ TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parents[1]
 CHECKER_PATH = REPO_ROOT / "tools" / "car_recipe_schema" / "validate_car_recipe.py"
 ENGINE_PIN_PATH = REPO_ROOT / "tools" / "toolchain" / "pin" / "engine.txt"
-LOCK_PATH = REPO_ROOT / "work" / "agents" / "coordinator" / "godot-test.lock"
+DEFAULT_LOCK_ENV = "ROADSTORM_GODOT_LOCK"
+## The committed checker is fast, but it is an external process over untrusted
+## input and must still be bounded. This floor keeps a tiny ``--timeout`` from
+## making the checker bound uselessly tight.
+CHECKER_TIMEOUT_FLOOR = 30
 BAKE_SCRIPT_RES = "res://tools/car_recipe_bake/bake_handling.gd"
 PROJECT_WORK_RES = "car_recipe_bake_work"
 
@@ -144,6 +149,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=300,
         help="outer seconds per pinned-engine invocation (default: 300)",
     )
+    parser.add_argument(
+        "--lock-path",
+        default=None,
+        help=(
+            "exclusive Godot lock file (default: $%s, then a private lock "
+            "inside this invocation's scratch directory)" % DEFAULT_LOCK_ENV
+        ),
+    )
     return parser
 
 
@@ -174,7 +187,7 @@ def _run(args: argparse.Namespace) -> int:
     if not os.path.lexists(recipe_path):
         raise BakeError(f"source recipe does not exist: {recipe_path}")
 
-    scratch = Path(tempfile.mkdtemp(prefix="car-recipe-bake-"))
+    scratch = Path(tempfile.mkdtemp(prefix="car-recipe-bake-")).resolve()
     try:
         # One private byte snapshot is the input to every checker, mapper and
         # hash step. A mutable original path cannot change the accepted recipe
@@ -196,6 +209,7 @@ def _run(args: argparse.Namespace) -> int:
             capture_output=True,
             text=True,
             check=False,
+            timeout=max(args.timeout, CHECKER_TIMEOUT_FLOOR),
         )
         if checker.stdout:
             sys.stdout.write(checker.stdout)
@@ -211,10 +225,13 @@ def _run(args: argparse.Namespace) -> int:
         )
         expected_numeric_bits = _expected_numeric_bits(converted_document)
         godot_bin = _resolve_godot(args.godot_bin)
-        engine_version = _verify_engine(godot_bin, args.timeout)
+        lock_path = _resolve_lock_path(args, scratch)
+        engine_version = _verify_engine(godot_bin, args.timeout, lock_path)
         project_dir, cache_env = _prepare_private_project(scratch)
-        _run_engine_import(godot_bin, project_dir, cache_env, args.timeout)
-        _run_engine_bake(godot_bin, project_dir, cache_env, args.timeout, frozen_recipe)
+        _run_engine_import(godot_bin, project_dir, cache_env, args.timeout, lock_path)
+        _run_engine_bake(
+            godot_bin, project_dir, cache_env, args.timeout, frozen_recipe, lock_path
+        )
         _require_source_unchanged(frozen_recipe, source_file_sha256)
         report = _read_and_validate_report(project_dir, expected_numeric_bits)
         resource_bytes, resource_sha256 = _read_emitted_resource(project_dir)
@@ -442,33 +459,91 @@ def _pinned_version() -> str:
 
 
 def _isolated_env(cache_root: Path) -> dict[str, str]:
+    """Private HOME plus XDG/TMP dirs with normalized real absolute paths.
+
+    Godot reads ``HOME`` on macOS regardless of the XDG variables, so every
+    engine call gets a private home as well. ``Path.resolve()`` collapses the
+    platform's symlinked temporary roots (for example ``/var`` ->
+    ``/private/var`` on macOS) so the engine never sees two spellings of the
+    same scratch path when it builds its editor-state and ObjectDB snapshot
+    paths.
+    """
+    root = cache_root.resolve()
+    directories = {}
+    for name in ("home", "cache", "config", "data", "tmp"):
+        directory = root / name
+        directory.mkdir(parents=True, exist_ok=True)
+        directories[name] = str(directory.resolve())
+
     env = os.environ.copy()
-    env["XDG_CACHE_HOME"] = str(cache_root / "cache")
-    env["XDG_CONFIG_HOME"] = str(cache_root / "config")
-    env["XDG_DATA_HOME"] = str(cache_root / "data")
-    env["TMPDIR"] = str(cache_root / "tmp")
+    env["HOME"] = directories["home"]
+    env["XDG_CACHE_HOME"] = directories["cache"]
+    env["XDG_CONFIG_HOME"] = directories["config"]
+    env["XDG_DATA_HOME"] = directories["data"]
+    env["TMPDIR"] = directories["tmp"]
     return env
 
 
+def _resolve_lock_path(args: argparse.Namespace, scratch: Path) -> Path:
+    """Select the exclusive Godot lock file for this invocation.
+
+    An explicit ``--lock-path`` wins, then ``ROADSTORM_GODOT_LOCK``. Without
+    either, the lock lives inside this invocation's private scratch directory,
+    so a staged or clean-checkout run never creates or writes through another
+    checkout's ``work/agents/coordinator`` tree. An explicit path must have an
+    existing parent directory; the lock utility creates the leaf itself.
+    """
+    selected = args.lock_path or os.environ.get(DEFAULT_LOCK_ENV)
+    if selected:
+        lock_path = _absolute_lexical(Path(selected).expanduser())
+        parent = lock_path.parent
+        if not parent.is_dir():
+            raise BakeError(
+                f"lock path parent directory does not exist: {parent}"
+            )
+        return lock_path
+    return scratch / "godot.lock"
+
+
+def _locked_command(lock_path: Path, timeout: int) -> list[str]:
+    """Build the exclusive lock prefix for one engine invocation.
+
+    BSD ``lockf`` (macOS) and util-linux ``flock`` (Linux) both implement
+    flock(2)-style advisory locks, so they interoperate on the same inode.
+    ``lockf -k -w -t N`` keeps the lock file, opens it writable (required on
+    some network filesystems) and bounds the wait. ``flock -x -w N --verbose``
+    is exclusive, wait-bounded, and reports contention instead of failing
+    silently. If neither tool exists the engine is refused rather than run
+    unlocked.
+    """
+    candidates = ("lockf", "flock") if sys.platform == "darwin" else ("flock", "lockf")
+    for tool in candidates:
+        binary = shutil.which(tool)
+        if not binary:
+            continue
+        if tool == "lockf":
+            return [binary, "-k", "-w", "-t", str(timeout), str(lock_path)]
+        return [binary, "-x", "-w", str(timeout), "--verbose", str(lock_path)]
+    raise BakeError(
+        "no exclusive lock utility found (need BSD lockf or util-linux flock); "
+        "refusing to run the pinned engine unlocked"
+    )
+
+
 def _run_locked_godot(
-    godot_bin: str, godot_args: Sequence[str], timeout: int, env: dict[str, str]
+    godot_bin: str,
+    godot_args: Sequence[str],
+    timeout: int,
+    env: dict[str, str],
+    lock_path: Path,
 ) -> subprocess.CompletedProcess[str]:
-    """Run one Godot invocation under the shared coordinator Godot lock."""
-    LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    """Run one Godot invocation under an exclusive portable lock."""
     command: list[str] = []
     timeout_binary = shutil.which("timeout")
     if timeout_binary:
         command += [timeout_binary, str(timeout)]
-    command += [
-        "lockf",
-        "-k",
-        "-w",
-        "-t",
-        str(timeout),
-        str(LOCK_PATH),
-        godot_bin,
-        *godot_args,
-    ]
+    command += _locked_command(lock_path, timeout)
+    command += [godot_bin, *godot_args]
     return subprocess.run(
         command,
         capture_output=True,
@@ -483,11 +558,11 @@ def _engine_output(process: subprocess.CompletedProcess[str]) -> str:
     return (process.stdout or "") + "\n" + (process.stderr or "")
 
 
-def _verify_engine(godot_bin: str, timeout: int) -> str:
-    probe_cache = Path(tempfile.mkdtemp(prefix="car-recipe-bake-version-"))
+def _verify_engine(godot_bin: str, timeout: int, lock_path: Path) -> str:
+    probe_cache = Path(tempfile.mkdtemp(prefix="car-recipe-bake-version-")).resolve()
     try:
         env = _isolated_env(probe_cache)
-        process = _run_locked_godot(godot_bin, ["--version"], timeout, env)
+        process = _run_locked_godot(godot_bin, ["--version"], timeout, env, lock_path)
     finally:
         shutil.rmtree(probe_cache, ignore_errors=True)
     output = _engine_output(process)
@@ -521,10 +596,7 @@ def _prepare_private_project(scratch: Path) -> tuple[Path, dict[str, str]]:
         else:
             shutil.copy2(source, destination)
 
-    cache_root = scratch / "cache"
-    for name in ("cache", "config", "data", "tmp"):
-        (cache_root / name).mkdir(parents=True, exist_ok=True)
-    return project_dir, _isolated_env(cache_root)
+    return project_dir, _isolated_env(scratch / "cache")
 
 
 def _check_engine_process(process: subprocess.CompletedProcess[str], stage: str) -> str:
@@ -538,13 +610,18 @@ def _check_engine_process(process: subprocess.CompletedProcess[str], stage: str)
 
 
 def _run_engine_import(
-    godot_bin: str, project_dir: Path, env: dict[str, str], timeout: int
+    godot_bin: str,
+    project_dir: Path,
+    env: dict[str, str],
+    timeout: int,
+    lock_path: Path,
 ) -> None:
     process = _run_locked_godot(
         godot_bin,
         ["--headless", "--path", str(project_dir), "--import"],
         timeout,
         env,
+        lock_path,
     )
     _check_engine_process(process, "private project import")
 
@@ -555,6 +632,7 @@ def _run_engine_bake(
     env: dict[str, str],
     timeout: int,
     recipe_path: Path,
+    lock_path: Path,
 ) -> None:
     process = _run_locked_godot(
         godot_bin,
@@ -570,6 +648,7 @@ def _run_engine_bake(
         ],
         timeout,
         env,
+        lock_path,
     )
     _check_engine_process(process, "handling bake")
 
@@ -703,11 +782,20 @@ def _build_manifest(
 def _publish_outputs(
     output_dir: Path, resource_bytes: bytes, manifest: dict[str, Any]
 ) -> None:
-    created = False
+    # Require an existing parent and create only the leaf. A failed publication
+    # then removes exactly what it created and cannot leave missing-parent or
+    # partial-directory debris behind.
+    parent = output_dir.parent
+    if not parent.is_dir():
+        raise BakeError(f"output parent directory does not exist: {parent}")
     try:
-        os.makedirs(output_dir)
-        created = True
-
+        os.mkdir(output_dir)
+    except FileExistsError as exc:
+        raise BakeError(
+            f"refusing to write to existing destination: {output_dir}"
+        ) from exc
+    created = True
+    try:
         resource_destination = output_dir / OUTPUT_RESOURCE_NAME
         resource_destination.write_bytes(resource_bytes)
         destination_hash = "sha256:" + hashlib.sha256(resource_destination.read_bytes()).hexdigest()

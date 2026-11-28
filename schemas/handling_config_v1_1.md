@@ -96,6 +96,17 @@ motor inputs are missing, `null` or listed in `unknowns`. A `1.0.0` recipe is
 always refused in motor-ready mode, naming all five missing
 `handling.<field>` paths.
 
+In motor-ready mode a version `1.1.0` recipe must also carry the exact
+versioned token `roadstorm.handling_config.1.1.0` in
+`provenance.source_contract`. A null or absent member is reported as
+`source-contract-missing`; any other value is `source-contract-mismatch`; both
+diagnostics are at `provenance.source_contract`. This keeps the future bake
+manifest's `source_contract` claim tied to the authored source instead of
+overriding a null or contradictory token. The rule is deliberately
+version-`1.1.0`-only: a `1.0.0` recipe is already refused for its five missing
+inputs, and `--mode schema` keeps the historical optional design/benchmark
+document meaning, including honest null drafts.
+
 ## Typed resource version stays 1.0.0
 
 `HandlingDefinition` and `DefinitionIdentity` remain at schema version
@@ -104,7 +115,10 @@ the typed resource contract version are separate namespaces. A future baker
 records the source contract `roadstorm.handling_config.1.1.0` separately in a
 bake-manifest sidecar and in `common.schema.json#/$defs/provenance`
 (`source_contract`), not by copying `1.1.0` into a typed resource's
-`schema_version`. The derived handling identity is `<car_id>.handling`, with
+`schema_version`. The motor-ready checker gate requires the recipe's own
+`provenance.source_contract` to carry that same token, so a manifest cannot
+assert a contract the authored source contradicts. The derived handling
+identity is `<car_id>.handling`, with
 the car recipe's `revision` and lifecycle `status` copied after validation.
 
 ## What remains
