@@ -11,8 +11,10 @@ ledger:
 
 - a committed wall witness produces a valid event with caller-assigned IDs;
 - all four regions classify from the collision-time local point against
-  normalized hull half-extents; a solver-near-tie corner uses the response
-  normal in that same frame to identify the struck face;
+  normalized hull half-extents; a contact within the measured 0.025 m corner
+  band on both axes uses the response normal in that same frame when its
+  dominant-axis sign borders the contacted quadrant, while diagonal or
+  sign-inconsistent normals use the deterministic point rule;
 - severity is only the stable norm of the witness pre/post velocity difference,
   for head-on and oblique contacts, including a large finite value;
 - a tilted raw normal publishes only its normalized road-plane projection, and
@@ -29,20 +31,30 @@ ledger:
   duplicate-perspective refusal and capacity behave through the real ledger;
 - producing twice mutates neither the synthetic result nor the config.
 
-The physical cases drive a pinned-Jolt head-on hit and mirrored steering
-contacts through `tools/body_lab/body_lab_world.gd`. In both steering directions,
-the old point-only rule labels 28 continuing front-corner witnesses as a side;
-the response-normal rule labels all 29 witnesses FRONT. The frozen local run
-passed 13 cases/906 checks and the deliberate failure exited 3.
+The physical cases drive a pinned-Jolt head-on hit, mirrored steering
+contacts and two nonzero-heading corner contacts through
+`tools/body_lab/body_lab_world.gd`. In both steering directions, the old
+point-only rule labels 28 continuing front-corner witnesses as a side; the
+response-normal rule labels all 29 witnesses FRONT. The speed 20 m/s,
+heading 0.9 rad, zero-throttle continuing contact produces 33 witnesses, all
+LEFT with a stable left-dominant local normal, including 27 outside the old
+0.01 normalized tie band. The speed 35 m/s, heading 1.1 rad, steer +1 first
+hit is LEFT with severity 26.346 m/s while the old point rule names FRONT.
+The frozen local run passed 14 cases/1094 checks and the deliberate failure
+exited 3.
 
 ## Authority label
 
 The Result fixtures are synthetic. They prove the producer's publication
 contract; they are not proof that a witness came from a real committed physics
 response. The pinned-Jolt cases add real witness paths but still do
-not establish general physical authority, full M1.8 or M1 acceptance. Car-car
-production, sustained-contact policy, presentation wiring and cosmetic damage
-remain later work.
+not establish general physical authority, full M1.8 or M1 acceptance. The
+0.025 m corner band is calibrated to this laboratory's 1.8 m x 3.8 m hull,
+flat straight box wall, pinned Jolt build and default 0.02 m orientation
+contact tolerance; other hulls, wall shapes or tolerances need fresh pinned
+measurements before reusing or widening it. Car-car production,
+sustained-contact policy, presentation wiring and cosmetic damage remain
+later work.
 
 ## Files
 

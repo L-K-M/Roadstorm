@@ -34,6 +34,7 @@ const CASE_IDS: Array[String] = [
 
 const JOLT_CASE_ID := "real_jolt_wall_integration"
 const STEERING_JOLT_CASE_ID := "real_jolt_steering_corner"
+const NONZERO_HEADING_JOLT_CASE_ID := "real_jolt_nonzero_heading_corner"
 
 ## Frames allowed for static colliders to reach the physics server.
 const SETTLE_FRAMES := 8
@@ -47,12 +48,17 @@ const JOLT_MAX_TICKS := 80
 ## Ticks for the steering-corner scenarios. Contact begins on tick 2 of the
 ## pinned probe scenario and persists through the end of the run.
 const STEERING_CORNER_TICKS := 30
+## Matches the reviewer sweep that exposed nonzero-heading corner noise.
+const NONZERO_HEADING_CORNER_TICKS := 40
 ## Wide wall so a steering car cannot leave the wall footprint mid-scenario.
 const STEERING_WALL_WIDTH_M := 60.0
-## Near-tie thresholds mirrored from the producer's published contract. Kept
-## as explicit literals so a silent threshold change is visible here.
-const LAB_REGION_TIE_MARGIN := 1e-2
+## Corner-band and normal-axis thresholds mirrored from the producer's
+## published contract. Kept as explicit literals so a silent threshold change
+## is visible here. The old normalized band is retained only as a negative
+## control for the regression coverage.
+const LAB_REGION_CORNER_BAND_M := 0.025
 const LAB_REGION_NORMAL_AXIS_MARGIN := 1e-3
+const OLD_NORMALIZED_REGION_TIE_MARGIN := 1e-2
 
 var d := ChecksScript.new()
 var measurements: Dictionary = {}
@@ -84,6 +90,7 @@ func _run() -> void:
 		_results.append(_run_case(case_id))
 	_results.append(await _case_real_jolt_wall_integration())
 	_results.append(await _case_real_jolt_steering_corner())
+	_results.append(await _case_real_jolt_nonzero_heading_corner())
 	for case_result in _results:
 		print("WALL_IMPACT_LAB_RESULT ", JSON.stringify(case_result))
 
@@ -97,7 +104,8 @@ func _run() -> void:
 		if not bool(result["pass"]):
 			failed_cases += 1
 		var case_name := String(result["case"])
-		if (case_name == JOLT_CASE_ID or case_name == STEERING_JOLT_CASE_ID) \
+		if (case_name == JOLT_CASE_ID or case_name == STEERING_JOLT_CASE_ID \
+				or case_name == NONZERO_HEADING_JOLT_CASE_ID) \
 				and bool(result["pass"]):
 			jolt_cases_passed += 1
 	var summary := {
@@ -969,6 +977,58 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.side_override.rightward_normal_resolves_right"
 		)
 
+	# The metre corner band covers the larger inset measured on pinned Jolt
+	# even when the old normalized near-tie difference is outside 0.01.
+	var wide_point := Vector3(-0.889209, 0.0, -1.896407)
+	var wide_normal := Vector3(0.934434, 0.0, 0.356136)
+	var wide := d.make_witness(
+		wide_point, -wide_normal * 20.0, Vector3.ZERO, wide_normal
+	)
+	var wide_outcome := _produce(wide, config)
+	d.check(wide_outcome.is_ok(), "near_tie.wide_solver_inset.published")
+	if wide_outcome.is_ok():
+		var wide_lateral := absf(wide_point.x) / half.x
+		var wide_longitudinal := absf(wide_point.z) / half.z
+		d.check(
+			absf(wide_lateral - wide_longitudinal)
+				> OLD_NORMALIZED_REGION_TIE_MARGIN,
+			"near_tie.wide_solver_inset.outside_old_normalized_band"
+		)
+		d.check(
+			half.x - absf(wide_point.x) <= LAB_REGION_CORNER_BAND_M
+				and half.z - absf(wide_point.z) <= LAB_REGION_CORNER_BAND_M,
+			"near_tie.wide_solver_inset.inside_metre_corner_band"
+		)
+		d.check(
+			_baseline_point_only_region(wide_point, config.hull_size_m)
+				== ImpactEvent.ContactRegion.FRONT,
+			"near_tie.wide_solver_inset.baseline_says_front"
+		)
+		d.check(
+			wide_outcome.event.region == ImpactEvent.ContactRegion.LEFT,
+			"near_tie.wide_solver_inset.consistent_normal_resolves_left"
+		)
+
+	# A malformed response normal must not publish the face opposite the
+	# contacted quadrant. This exact corner falls back to the deterministic
+	# point rule instead of accepting the side-inconsistent normal.
+	var malformed_normal := Vector3(-0.954346, 0.0, 0.298703)
+	var malformed := d.make_witness(
+		Vector3(-half.x, 0.0, -half.z),
+		-malformed_normal * 20.0, Vector3.ZERO, malformed_normal
+	)
+	var malformed_outcome := _produce(malformed, config)
+	d.check(malformed_outcome.is_ok(), "near_tie.malformed_sign.published")
+	if malformed_outcome.is_ok():
+		d.check(
+			malformed_outcome.event.region != ImpactEvent.ContactRegion.RIGHT,
+			"near_tie.malformed_sign.does_not_publish_opposite_face"
+		)
+		d.check(
+			malformed_outcome.event.region == ImpactEvent.ContactRegion.FRONT,
+			"near_tie.malformed_sign.falls_back_to_point_rule"
+		)
+
 	# A diagonal normal within the axis margin identifies no face; the
 	# deterministic point fallback applies instead.
 	var diagonal_normal := Vector3(0.7071067811865476, 0.0, 0.7071067811865476)
@@ -1024,8 +1084,9 @@ func _case_corner_near_tie_response_normal() -> void:
 
 	# The same near-tie must resolve through a rotated collision-time frame,
 	# proving the normal is transformed by that frame rather than read in
-	# world axes.
-	var heading := 0.3
+	# world axes. At 1.2 rad the untransformed world normal is side-dominant,
+	# so a world-axis implementation cannot accidentally pass this control.
+	var heading := 1.2
 	var frame_origin := Vector3(2.0, 0.5, -18.0)
 	var frame := Transform3D(
 		AdapterScript.basis_from_heading(heading), frame_origin
@@ -1052,9 +1113,15 @@ func _case_corner_near_tie_response_normal() -> void:
 			absf(rotated_local.z) > absf(rotated_local.x),
 			"near_tie.rotated_frame.local_normal_nose_facing"
 		)
+		var world_projected := _road_plane_unit_normal(world_normal)
+		d.check(
+			absf(world_projected.x)
+				> absf(world_projected.z) + LAB_REGION_NORMAL_AXIS_MARGIN,
+			"near_tie.rotated_frame.world_axes_would_name_side"
+		)
 
 	measurements["near_tie_cases"] = (
-		front_cases.size() + rear_cases.size() + unambiguous.size() + 3
+		front_cases.size() + rear_cases.size() + unambiguous.size() + 5
 	)
 
 
@@ -1546,7 +1613,165 @@ func _case_real_jolt_steering_corner() -> Dictionary:
 	}
 
 
+func _case_real_jolt_nonzero_heading_corner() -> Dictionary:
+	d = ChecksScript.new()
+	measurements = {}
+	var body_checks := BodyLabChecksScript.new()
+	var scenarios := [
+		{
+			"label": "v20_h0.900_s0_t0",
+			"speed": 20.0,
+			"heading": 0.9,
+			"steer": 0.0,
+			"throttle": 0.0,
+		},
+		{
+			"label": "v35_h1.100_s1_t0",
+			"speed": 35.0,
+			"heading": 1.1,
+			"steer": 1.0,
+			"throttle": 0.0,
+		},
+	]
+	for scenario in scenarios:
+		var label: String = scenario["label"]
+		var heading: float = scenario["heading"]
+		var report: Dictionary = await _run_steering_scenario(
+			label, _nonzero_heading_probe_start(heading),
+			Vector2(0.0, scenario["speed"]), heading,
+			body_checks.make_steer_command(
+				scenario["steer"], scenario["throttle"]
+			),
+			NONZERO_HEADING_CORNER_TICKS
+		)
+		var witnesses: Array = report["witnesses"]
+		var config: MotorBodyAdapter.Config = report["config"]
+		var half_extents := config.hull_size_m * 0.5
+		d.check(witnesses.size() >= 1, "%s.witness_stream_observed" % label)
+		var left_count := 0
+		var outside_old_band_count := 0
+		var baseline_front_count := 0
+		var first_normal := Vector3.ZERO
+		var have_first_normal := false
+		var first := {}
+		for witness_record in witnesses:
+			var result: MotorBodyAdapter.Result = witness_record["result"]
+			var tick_index: int = witness_record["index"]
+			var outcome := ProducerScript.produce(
+				result, config, "car-nonzero-" + label,
+				"evt-%s-%d" % [label, tick_index], "", tick_index
+			)
+			d.check(outcome.is_ok(), "%s.tick_%d.produced" % [label, tick_index])
+			if not outcome.is_ok():
+				continue
+			var event := outcome.event
+			var local_point := event.contact_point_local_m
+			var local_normal := _local_response_normal(result)
+			d.check(
+				local_point.x < 0.0 and local_point.z < 0.0,
+				"%s.tick_%d.contacts_front_left_quadrant" % [label, tick_index]
+			)
+			d.check(
+				local_normal.x > 0.0
+					and absf(local_normal.x)
+						> absf(local_normal.z) + LAB_REGION_NORMAL_AXIS_MARGIN,
+				"%s.tick_%d.local_normal_left_dominant" % [label, tick_index]
+			)
+			if not have_first_normal:
+				first_normal = local_normal
+				have_first_normal = true
+			else:
+				d.check_vector_close(
+					local_normal, first_normal, 1e-5,
+					"%s.tick_%d.local_normal_stable" % [label, tick_index]
+				)
+			d.check(
+				event.region == ImpactEvent.ContactRegion.LEFT,
+				"%s.tick_%d.region_is_left" % [label, tick_index]
+			)
+			if event.region == ImpactEvent.ContactRegion.LEFT:
+				left_count += 1
+			var lateral := absf(local_point.x) / half_extents.x
+			var longitudinal := absf(local_point.z) / half_extents.z
+			if absf(lateral - longitudinal) > OLD_NORMALIZED_REGION_TIE_MARGIN:
+				outside_old_band_count += 1
+			var baseline_region := _baseline_point_only_region(
+				local_point, config.hull_size_m
+			)
+			if baseline_region == ImpactEvent.ContactRegion.FRONT:
+				baseline_front_count += 1
+			if first.is_empty():
+				first = {
+					"tick_index": tick_index,
+					"severity_m_s": event.severity_m_s,
+					"local_point": local_point,
+					"local_normal": local_normal,
+					"baseline_region": ImpactEvent.REGION_NAMES[baseline_region],
+					"normalized_axis_difference": lateral - longitudinal,
+				}
+		d.check(
+			left_count == witnesses.size(),
+			"%s.every_witness_is_left" % label
+		)
+		d.check(
+			baseline_front_count >= 1,
+			"%s.old_point_rule_names_front" % label
+		)
+		d.check(
+			outside_old_band_count >= 1,
+			"%s.covers_outside_old_normalized_band" % label
+		)
+		if label == "v20_h0.900_s0_t0":
+			d.check(
+				witnesses.size() >= 2,
+				"%s.continuing_contact_stream_observed" % label
+			)
+		if not first.is_empty():
+			if label == "v35_h1.100_s1_t0":
+				d.check(
+					first["severity_m_s"] > 20.0,
+					"%s.first_hit_is_high_speed" % label
+				)
+				d.check(
+					first["baseline_region"] == "front",
+					"%s.first_hit_old_rule_names_front" % label
+				)
+			measurements[label + "_witnesses"] = witnesses.size()
+			measurements[label + "_left_witnesses"] = left_count
+			measurements[label + "_outside_old_band_witnesses"] = (
+				outside_old_band_count
+			)
+			measurements[label + "_first_tick"] = first["tick_index"]
+			measurements[label + "_first_severity_m_s"] = first["severity_m_s"]
+			measurements[label + "_first_local_point"] = first["local_point"]
+			measurements[label + "_first_local_normal"] = first["local_normal"]
+			measurements[label + "_first_baseline_region"] = (
+				first["baseline_region"]
+			)
+			measurements[label + "_first_normalized_axis_difference"] = (
+				first["normalized_axis_difference"]
+			)
+	return {
+		"case": NONZERO_HEADING_JOLT_CASE_ID,
+		"pass": d.failures.is_empty(),
+		"checks": d.checks,
+		"checks_failed": d.failures.size(),
+		"failures": d.failures.duplicate(),
+		"measurements": measurements.duplicate(),
+	}
+
+
 # --- Helpers --------------------------------------------------------------
+
+
+## Start one metre before the straight wall in the same road-plane forward
+## coordinate used by the reviewer sweep. `heading` rotates the rectangular
+## hull, so the clearance accounts for its forward-projected half-extent.
+func _nonzero_heading_probe_start(heading: float) -> Vector2:
+	var half := WallImpactLabChecks.HALF_EXTENTS_M
+	var forward_extent := half.z * cos(heading) + half.x * sin(heading)
+	var wall_front_y := absf(STRAIGHT_WALL_Z) - WALL_THICKNESS_M * 0.5
+	return Vector2(0.0, wall_front_y - forward_extent - 1.0)
 
 
 func _run_steering_scenario(

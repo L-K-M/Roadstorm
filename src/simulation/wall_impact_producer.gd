@@ -39,14 +39,16 @@ extends RefCounted
 ## post-yaw pose; the record describes the contact, and a consumer that needs
 ## the final pose must transform again. Region is classified from that local
 ## point against half the validated `Config.hull_size_m` extents (local -Z
-## forward, +X right). A box-wall contact lands on a hull vertex, so its two
-## normalized distances differ by solver noise rather than exactly zero; when
-## they are within `REGION_TIE_MARGIN` the collision-time response normal,
-## transformed by the same frame's inverse basis, identifies the struck face.
-## A normal whose X and Z components are too close to call identifies nothing
-## and classification falls back to the exact-point comparison, whose
-## deterministic corner tie resolves to FRONT/REAR. Unambiguous contacts
-## outside the margin stay point-classified.
+## forward, +X right). A box-wall contact lands on a hull vertex whose pinned
+## solver point can sit inside both face planes by centimetres; when both axes
+## are within `REGION_CORNER_BAND_M` of their half-extents the collision-time
+## response normal, transformed by the same frame's inverse basis, identifies
+## the struck face if its dominant-axis sign borders the contacted quadrant.
+## A normal whose X and Z components are too close to call, or whose sign is
+## inconsistent with that quadrant, identifies nothing and classification
+## falls back to the exact-point comparison, whose deterministic corner tie
+## resolves to FRONT/REAR. Contacts outside the corner band stay
+## point-classified.
 ##
 ## On this adapter path the wall response alters velocity after the sweep and
 ## performs no further body movement, so `imparted_motion_m` is exactly
@@ -60,13 +62,16 @@ extends RefCounted
 ## cosmetic damage remain later integration work; this module makes no M1
 ## acceptance claim.
 
-## Normalized half-extent margin within which a local contact point counts as
-## a corner near-tie. Pinned Godot 4.7.2/Jolt box-wall contacts land on a hull
-## vertex and their normalized lateral/longitudinal distances differed by up to
-## about 4.1e-3 across the steering corner probes; a face-centre contact
-## differs by orders of magnitude more. This band therefore admits the solver
-## noise while leaving clearly on-face contacts point-classified.
-const REGION_TIE_MARGIN := 1e-2
+## Metre band around both hull half-extents within which a local contact point
+## counts as a corner. The laboratory adapter's default orientation contact
+## tolerance is 0.02 m and pinned Godot 4.7.2/Jolt vertex witnesses were
+## measured inset by at most 0.0158 m in X and 0.0138 m in Z, so 0.025 m
+## covers the calibrated solver slop on the 1.8 m × 3.8 m laboratory hull
+## while true face-centre contacts remain far outside the band. This constant
+## is not a general hull contract: other hull dimensions, wall shapes or
+## orientation tolerances need their own pinned measurements before widening
+## or reusing it.
+const REGION_CORNER_BAND_M := 0.025
 ## Minimum difference between the absolute X and Z components of the local
 ## response normal for it to identify a face. A normal closer to diagonal than
 ## this cannot break a near-tie and the exact-point comparison is used.
@@ -247,14 +252,16 @@ static func _normalized_road_plane_normal(normal: Vector3) -> Vector3:
 
 ## FRONT/REAR/LEFT/RIGHT from a local contact point against half the hull
 ## extents. Local -Z is forward and +X is right. Coordinates are normalized by
-## their own half extent. When the point is a solver-near-tie corner contact
-## (`REGION_TIE_MARGIN`), the collision-time response normal in the same local
-## frame names the struck face: nose-facing normals (|local Z| dominant, +Z
-## pushing rearward) give FRONT, the opposite give REAR; side-facing normals
-## (+X pushing rightward from the left face) give LEFT, the opposite give RIGHT.
-## A normal too close to diagonal (`REGION_NORMAL_AXIS_MARGIN`) cannot name a
-## face, so the exact-point comparison below is the deterministic fallback and
-## resolves an exact corner tie to FRONT/REAR.
+## their own half extent for the deterministic point rule. When the point is
+## within `REGION_CORNER_BAND_M` of both face planes, the collision-time
+## response normal in the same local frame may name the struck face. The
+## normal is used only when one axis is clearly dominant and its sign borders
+## the contacted quadrant: front (local Z negative) expects +Z, rear expects
+## -Z, left (local X negative) expects +X and right expects -X. A diagonal or
+## sign-inconsistent normal falls back to the deterministic point comparison,
+## which resolves an exact corner tie to FRONT/REAR; fallback is deliberate
+## because a malformed opposite-sign normal must never publish the opposite
+## face.
 static func _classify_region(
 	local_point: Vector3,
 	hull_size_m: Vector3,
@@ -263,22 +270,25 @@ static func _classify_region(
 	var half_extents := hull_size_m * 0.5
 	var lateral := absf(local_point.x) / half_extents.x
 	var longitudinal := absf(local_point.z) / half_extents.z
-	if absf(lateral - longitudinal) <= REGION_TIE_MARGIN:
+	var near_side_face := absf(absf(local_point.x) - half_extents.x) \
+		<= REGION_CORNER_BAND_M
+	var near_end_face := absf(absf(local_point.z) - half_extents.z) \
+		<= REGION_CORNER_BAND_M
+	if near_side_face and near_end_face:
 		var lateral_normal := absf(local_normal.x)
 		var longitudinal_normal := absf(local_normal.z)
 		if absf(lateral_normal - longitudinal_normal) \
 				> REGION_NORMAL_AXIS_MARGIN:
 			if longitudinal_normal > lateral_normal:
-				return (
-					ImpactEvent.ContactRegion.FRONT
-					if local_normal.z > 0.0
-					else ImpactEvent.ContactRegion.REAR
-				)
-			return (
-				ImpactEvent.ContactRegion.LEFT
-				if local_normal.x > 0.0
-				else ImpactEvent.ContactRegion.RIGHT
-			)
+				if local_point.z < 0.0 and local_normal.z > 0.0:
+					return ImpactEvent.ContactRegion.FRONT
+				if local_point.z > 0.0 and local_normal.z < 0.0:
+					return ImpactEvent.ContactRegion.REAR
+			else:
+				if local_point.x < 0.0 and local_normal.x > 0.0:
+					return ImpactEvent.ContactRegion.LEFT
+				if local_point.x > 0.0 and local_normal.x < 0.0:
+					return ImpactEvent.ContactRegion.RIGHT
 	if longitudinal >= lateral:
 		return (
 			ImpactEvent.ContactRegion.FRONT
