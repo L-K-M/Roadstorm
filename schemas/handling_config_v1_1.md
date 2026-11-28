@@ -101,7 +101,7 @@ always refused in motor-ready mode, naming all five missing
 `HandlingDefinition` and `DefinitionIdentity` remain at schema version
 `1.0.0`; this job does not change them. The source recipe contract version and
 the typed resource contract version are separate namespaces. A future baker
-records the source contract `roadstorm.handling_config.v1.1.0` separately in a
+records the source contract `roadstorm.handling_config.1.1.0` separately in a
 bake-manifest sidecar and in `common.schema.json#/$defs/provenance`
 (`source_contract`), not by copying `1.1.0` into a typed resource's
 `schema_version`. The derived handling identity is `<car_id>.handling`, with

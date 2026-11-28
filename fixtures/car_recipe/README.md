@@ -26,12 +26,15 @@ measured production car data. Every positive recomputes its `content_hash`.
 ## Negatives
 
 One declared defect per file: missing each of the five fields, a `null` without
-its `unknowns` entry, a determined value listed as unknown, an unresolved
-`unknowns` path, yaw zero/negative/string/boolean/`Infinity`/`{"unlimited":
+its `unknowns` entry, a determined value listed as unknown,
+yaw zero/negative/string/boolean/`Infinity`/`{"unlimited":
 false}`/extra-key forms, trigger above `1`, hold below `0.3`, negative reverse
 acceleration or top speed, acceleration `> 0` with top speed `0`/`null`, a stale
 `content_hash`, unsupported versions (including `1.1.0\n`), a duplicate JSON
 member, a closed-shape violation and a boolean used as a number.
+
+An unresolved `unknowns` path is covered by a focused checker unit test; there
+is no separate JSON fixture for it.
 
 `stale_content_hash.json` intentionally carries a wrong hash. The other
 negatives carry correct hashes so their reported defect is the intended one.
