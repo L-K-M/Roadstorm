@@ -271,6 +271,51 @@ func _compare_float_array(
 # --- Reports -----------------------------------------------------------------
 
 
+## Exact little-endian binary64 byte image of every numeric field the mapper
+## consumed from the source recipe, keyed by dotted source path. This is the
+## checker-to-Godot conversion gate: the Python entry point derives the same
+## mapping from the frozen source bytes with the committed checker's parsing
+## policy and refuses any difference before publication. Raw bits, not JSON
+## decimal text, so a silently rounded or collapsed value cannot pass.
+func _numeric_source_bits(handling: HandlingDefinition) -> Dictionary:
+	var bits := {}
+	for index in range(handling.acceleration_curve_speeds_m_s.size()):
+		bits[
+			"handling.acceleration_curve[%d].speed_m_s" % index
+		] = _binary64_hex(handling.acceleration_curve_speeds_m_s[index])
+		bits[
+			"handling.acceleration_curve[%d].acceleration_m_s2" % index
+		] = _binary64_hex(handling.acceleration_curve_accelerations_m_s2[index])
+	bits["handling.braking_acceleration_m_s2"] = _binary64_hex(
+		handling.braking_acceleration_m_s2
+	)
+	bits["handling.drag.aerodynamic"] = _binary64_hex(handling.drag_aerodynamic)
+	bits["handling.drag.rolling"] = _binary64_hex(handling.drag_rolling)
+	bits["handling.yaw_gain.grip"] = _binary64_hex(handling.yaw_gain_grip)
+	bits["handling.max_yaw_rate_rad_s"] = _binary64_hex(handling.max_yaw_rate_rad_s)
+	bits["handling.lateral_damping.grip_per_s"] = _binary64_hex(
+		handling.lateral_damping_grip_per_s
+	)
+	bits["handling.reverse_trigger_speed_m_s"] = _binary64_hex(
+		handling.reverse_trigger_speed_m_s
+	)
+	bits["handling.reverse_hold_time_s"] = _binary64_hex(handling.reverse_hold_time_s)
+	bits["handling.reverse_acceleration_m_s2"] = _binary64_hex(
+		handling.reverse_acceleration_m_s2
+	)
+	bits["handling.reverse_top_speed_m_s"] = _binary64_hex(
+		handling.reverse_top_speed_m_s
+	)
+	return bits
+
+
+static func _binary64_hex(value: float) -> String:
+	var buffer := StreamPeerBuffer.new()
+	buffer.big_endian = false
+	buffer.put_double(value)
+	return buffer.data_array.hex_encode()
+
+
 func _success_report(
 	handling: HandlingDefinition, source_schema_version: String, fields_compared: int
 ) -> Dictionary:
@@ -290,6 +335,7 @@ func _success_report(
 			"curve_points": handling.acceleration_curve_speeds_m_s.size(),
 			"max_yaw_rate_rad_s": yaw_kind,
 		},
+		"numeric_source_bits": _numeric_source_bits(handling),
 		"round_trip": {
 			"ok": true,
 			"validated": true,

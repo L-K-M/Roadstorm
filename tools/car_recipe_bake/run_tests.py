@@ -10,11 +10,23 @@ Godot build under the shared coordinator lock:
 * negative historical 1.0.0 recipe (motor-ready dispatch refusal);
 * negative stale canonical content hash (the intentional failure control,
   asserting a nonzero exit and no success manifest);
-* refusal to write into an existing destination directory or dangling symlink.
+* refusal to write into an existing destination directory or dangling symlink;
+* a symlinked source path that bakes through to a stable target, recording
+  both the submitted spelling and the resolved target;
+* a submitted symlink retargeted to different bytes between the source
+  snapshot and the final recheck, refused with a path-specific diagnostic
+  and no output, using a test-only ``--godot-bin`` seam; the same seam also
+  retargets a symlinked parent directory of the submitted path;
+* a dangling input symlink, refused before any engine work.
 
 Every positive case also proves the pinned engine reloaded the emitted `.tres`
 through ``ResourceLoader`` and revalidated it, because that round trip is part
 of the CLI's engine step and its result is bound into the manifest.
+
+The retargeting seam is a wrapper script passed as ``--godot-bin``. The
+production CLI keeps no test hooks; the wrapper only substitutes the engine
+binary the CLI is told to run and fires inside the pinned-engine bake
+invocation, so no sleep-based race is involved.
 
 Standard library only. The runner writes only to its own temporary workspace
 and exits nonzero when any case fails.
@@ -24,7 +36,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -35,6 +49,7 @@ from typing import Any, Callable, Sequence
 TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parents[1]
 BAKE_CLI = TOOL_DIR / "bake_handling_recipe.py"
+CHECKER_CLI = REPO_ROOT / "tools" / "car_recipe_schema" / "validate_car_recipe.py"
 FIXTURE_DIR = TOOL_DIR / "fixtures"
 ENGINE_PIN_PATH = REPO_ROOT / "tools" / "toolchain" / "pin" / "engine.txt"
 
@@ -71,6 +86,8 @@ class Runner:
         output_dir: Path,
         *,
         expect_success: bool,
+        godot_bin: str | None = None,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             sys.executable,
@@ -82,15 +99,21 @@ class Runner:
             "--timeout",
             str(self.timeout),
         ]
-        if self.godot_bin:
-            command += ["--godot-bin", self.godot_bin]
+        selected_godot = godot_bin if godot_bin is not None else self.godot_bin
+        if selected_godot:
+            command += ["--godot-bin", selected_godot]
         print("  $ " + " ".join(command))
+        environment = None
+        if extra_env:
+            environment = dict(os.environ)
+            environment.update(extra_env)
         process = subprocess.run(
             command,
             capture_output=True,
             text=True,
             timeout=max(self.timeout * 3, 120),
             check=False,
+            env=environment,
         )
         output = (process.stdout or "") + "\n" + (process.stderr or "")
         if expect_success and process.returncode != 0:
@@ -116,6 +139,36 @@ def _pinned_version() -> str:
 
 def _sha256(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _run_checker(recipe: Path) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(CHECKER_CLI),
+        "--mode",
+        "motor-ready",
+        "--root",
+        str(REPO_ROOT),
+        str(recipe),
+    ]
+    print("  $ " + " ".join(command))
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def _load_bake_cli() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "_roadstorm_bake_cli_under_test", BAKE_CLI
+    )
+    if spec is None or spec.loader is None:
+        raise CaseFailure(f"could not load bake CLI module: {BAKE_CLI}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _flip_hex_digit(value: str) -> str:
+    replacement = "1" if value[0] != "1" else "2"
+    return replacement + value[1:]
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -250,6 +303,68 @@ def _check_negative(
     runner.run(case_name, body)
 
 
+def _check_subnormal_fixture_is_checker_accepted(runner: Runner) -> None:
+    fixture = FIXTURE_DIR / "negative" / "subnormal_reverse_acceleration.json"
+
+    def body() -> None:
+        process = _run_checker(fixture)
+        output = (process.stdout or "") + "\n" + (process.stderr or "")
+        _require(
+            process.returncode == 0,
+            "the subnormal fixture must pass the committed motor-ready checker:\n"
+            + output,
+        )
+
+    runner.run("subnormal reverse acceleration is accepted by the committed checker", body)
+
+
+def _check_corrupt_numeric_bit_control(runner: Runner) -> None:
+    finite = FIXTURE_DIR / "positive" / "finite.json"
+
+    def body() -> None:
+        module = _load_bake_cli()
+        checker = module._load_committed_checker()
+        document, findings = checker.load_json_document(finite)
+        _require(document is not None and not findings, f"finite fixture did not load: {findings}")
+        expected = module._expected_numeric_bits(checker.to_binary64(document))
+        _require(bool(expected), "finite fixture produced no expected numeric bits")
+        path = sorted(expected)[0]
+
+        def expect_refusal(report: dict[str, Any], needle: str) -> None:
+            try:
+                module._verify_numeric_fidelity(report, expected)
+            except module.BakeError as exc:
+                message = str(exc)
+                _require(
+                    needle in message,
+                    f"refusal {message!r} does not mention {needle!r}",
+                )
+            else:
+                raise CaseFailure(
+                    f"control was accepted; wanted a refusal mentioning {needle!r}"
+                )
+
+        corrupted = dict(expected)
+        corrupted[path] = _flip_hex_digit(corrupted[path])
+        expect_refusal({"numeric_source_bits": corrupted}, "numeric-conversion-mismatch")
+
+        missing = dict(expected)
+        missing.pop(path)
+        expect_refusal({"numeric_source_bits": missing}, "missing fields")
+
+        extra = dict(expected)
+        extra["handling.not_a_source_field"] = "0000000000000000"
+        expect_refusal({"numeric_source_bits": extra}, "unexpected fields")
+
+        malformed = dict(expected)
+        malformed[path] = "not-hex"
+        expect_refusal(
+            {"numeric_source_bits": malformed}, "malformed numeric bit encoding"
+        )
+
+    runner.run("control: deliberately wrong numeric report bit is refused", body)
+
+
 def _check_existing_destination_refusal(runner: Runner) -> None:
     fixture = FIXTURE_DIR / "positive" / "finite.json"
     output_dir = runner.workspace / "out-existing-destination"
@@ -284,6 +399,202 @@ def _check_existing_symlink_refusal(runner: Runner) -> None:
         _require(not target.exists(), "a dangling output symlink target was created")
 
     runner.run("existing dangling destination symlink is refused", body)
+
+
+def _check_symlinked_source_success(runner: Runner) -> None:
+    fixture = FIXTURE_DIR / "positive" / "finite.json"
+    source_link = runner.workspace / "stable-source-link.json"
+    source_link.symlink_to(fixture)
+    output_dir = runner.workspace / "out-symlinked-source"
+
+    def body() -> None:
+        runner.bake(source_link, output_dir, expect_success=True)
+        _require(output_dir.is_dir(), "success did not create the new output directory")
+        manifest = _load_json(output_dir / "bake_manifest.json")
+        _require(
+            manifest.get("source_recipe") == str(source_link),
+            f"manifest did not record the submitted lexical path: "
+            f"{manifest.get('source_recipe')!r}",
+        )
+        _require(
+            manifest.get("source_resolved_target") == str(fixture),
+            f"manifest resolved target is {manifest.get('source_resolved_target')!r}",
+        )
+        _require(
+            manifest.get("source_file_sha256") == _sha256(fixture),
+            "manifest raw source SHA-256 does not match the symlink target bytes",
+        )
+        _require(
+            manifest.get("source_content_hash") == _load_json(fixture).get("content_hash"),
+            "manifest content hash does not match the symlink target document",
+        )
+
+    runner.run("symlinked source path bakes and records both spellings", body)
+
+
+def _resolve_real_godot(explicit: str | None) -> str:
+    candidate = explicit or os.environ.get("GODOT_BIN") or shutil.which("godot")
+    if not candidate or not Path(candidate).is_file():
+        raise CaseFailure(
+            f"no Godot executable is available for the retargeting seam: {candidate!r}"
+        )
+    return candidate
+
+
+def _write_retargeting_godot_wrapper(
+    workspace: Path, link: Path, new_target: Path, real_godot: str
+) -> Path:
+    """Write a test-only ``--godot-bin`` seam that retargets the recipe link.
+
+    The wrapper fires only inside the pinned-engine bake invocation, which is
+    after the CLI froze its source snapshot and before the final recheck, and
+    then execs the real pinned editor unchanged. The production CLI has no
+    test hooks: this only substitutes the engine binary it is told to run.
+    """
+    wrapper = workspace / "godot-retarget-seam.sh"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "# Test-only seam for the bake source-path recheck, not part of the CLI.\n"
+        'case "$*" in\n'
+        "  *bake_handling.gd*)\n"
+        '    rm -f "$SEAM_LINK"\n'
+        '    ln -s "$SEAM_TARGET" "$SEAM_LINK"\n'
+        "    ;;\n"
+        "esac\n"
+        'exec "$SEAM_REAL_GODOT" "$@"\n',
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def _check_input_symlink_retarget_refusal(runner: Runner) -> None:
+    fixture = FIXTURE_DIR / "positive" / "finite.json"
+    source_link = runner.workspace / "retargeted-source-link.json"
+    source_link.symlink_to(fixture)
+    retargeted = runner.workspace / "retargeted-source.json"
+    retargeted.write_text('{"retargeted": true}\n', encoding="utf-8")
+    real_godot = _resolve_real_godot(runner.godot_bin)
+    wrapper = _write_retargeting_godot_wrapper(
+        runner.workspace, source_link, retargeted, real_godot
+    )
+    output_dir = runner.workspace / "out-retargeted-source"
+    seam_env = {
+        "SEAM_LINK": str(source_link),
+        "SEAM_TARGET": str(retargeted),
+        "SEAM_REAL_GODOT": real_godot,
+    }
+
+    def body() -> None:
+        process = runner.bake(
+            source_link,
+            output_dir,
+            expect_success=False,
+            godot_bin=str(wrapper),
+            extra_env=seam_env,
+        )
+        output = (process.stdout or "") + "\n" + (process.stderr or "")
+        _require(
+            "source recipe changed" in output,
+            f"refusal did not report a changed source recipe:\n{output}",
+        )
+        _require(
+            str(source_link) in output,
+            f"refusal did not name the submitted path:\n{output}",
+        )
+        _require(
+            source_link.resolve() == retargeted.resolve(),
+            "the test seam did not retarget the submitted symlink",
+        )
+        _require(
+            not output_dir.exists(),
+            "a refused bake left an output destination behind",
+        )
+        _require(
+            not (output_dir / "bake_manifest.json").exists(),
+            "a refused bake produced a success manifest",
+        )
+
+    runner.run("input symlink retargeted during the bake is refused", body)
+
+
+def _check_dangling_input_symlink_refusal(runner: Runner) -> None:
+    source_link = runner.workspace / "dangling-source-link.json"
+    source_link.symlink_to(runner.workspace / "absent-source-target.json")
+    output_dir = runner.workspace / "out-dangling-source"
+
+    def body() -> None:
+        process = runner.bake(source_link, output_dir, expect_success=False)
+        output = (process.stdout or "") + "\n" + (process.stderr or "")
+        _require(
+            str(source_link) in output,
+            f"refusal did not name the submitted path:\n{output}",
+        )
+        _require(
+            "could not read the source recipe" in output,
+            f"refusal did not report an unreadable source:\n{output}",
+        )
+        _require(
+            not output_dir.exists(),
+            "a refused bake left an output destination behind",
+        )
+
+    runner.run("dangling input symlink is refused", body)
+
+
+def _check_input_parent_symlink_retarget_refusal(runner: Runner) -> None:
+    fixture = FIXTURE_DIR / "positive" / "finite.json"
+    real_dir = runner.workspace / "real-source-dir"
+    real_dir.mkdir()
+    shutil.copy2(fixture, real_dir / "recipe.json")
+    other_dir = runner.workspace / "other-source-dir"
+    other_dir.mkdir()
+    (other_dir / "recipe.json").write_text('{"retargeted": true}\n', encoding="utf-8")
+    parent_link = runner.workspace / "linked-source-dir"
+    parent_link.symlink_to(real_dir, target_is_directory=True)
+    submitted = parent_link / "recipe.json"
+    real_godot = _resolve_real_godot(runner.godot_bin)
+    wrapper = _write_retargeting_godot_wrapper(
+        runner.workspace, parent_link, other_dir, real_godot
+    )
+    output_dir = runner.workspace / "out-parent-retargeted-source"
+    seam_env = {
+        "SEAM_LINK": str(parent_link),
+        "SEAM_TARGET": str(other_dir),
+        "SEAM_REAL_GODOT": real_godot,
+    }
+
+    def body() -> None:
+        process = runner.bake(
+            submitted,
+            output_dir,
+            expect_success=False,
+            godot_bin=str(wrapper),
+            extra_env=seam_env,
+        )
+        output = (process.stdout or "") + "\n" + (process.stderr or "")
+        _require(
+            "source recipe changed" in output,
+            f"refusal did not report a changed source recipe:\n{output}",
+        )
+        _require(
+            str(submitted) in output,
+            f"refusal did not name the submitted path:\n{output}",
+        )
+        _require(
+            parent_link.resolve() == other_dir.resolve(),
+            "the test seam did not retarget the submitted parent symlink",
+        )
+        _require(
+            not output_dir.exists(),
+            "a refused bake left an output destination behind",
+        )
+        _require(
+            not (output_dir / "bake_manifest.json").exists(),
+            "a refused bake produced a success manifest",
+        )
+
+    runner.run("input parent symlink retargeted during the bake is refused", body)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -344,8 +655,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "content-hash-mismatch",
             failure_control=True,
         )
+        _check_subnormal_fixture_is_checker_accepted(runner)
+        _check_negative(
+            runner,
+            "subnormal_reverse_acceleration.json",
+            "subnormal reverse acceleration is refused at its exact source path",
+            "handling.reverse_acceleration_m_s2: numeric-conversion-mismatch",
+            failure_control=True,
+        )
+        _check_corrupt_numeric_bit_control(runner)
         _check_existing_destination_refusal(runner)
         _check_existing_symlink_refusal(runner)
+        _check_symlinked_source_success(runner)
+        _check_input_symlink_retarget_refusal(runner)
+        _check_dangling_input_symlink_refusal(runner)
+        _check_input_parent_symlink_retarget_refusal(runner)
     finally:
         if args.keep_workspace:
             print(f"[tests] workspace kept at {workspace}")

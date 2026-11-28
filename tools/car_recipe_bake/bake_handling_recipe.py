@@ -19,8 +19,17 @@ Pipeline, in order:
    the shared coordinator Godot lock, load the checked recipe, call
    ``HandlingRecipeMapper.map_handling``, run ``HandlingDefinition.validate()``,
    serialize the ``.tres`` and reload it through ``ResourceLoader``.
-6. Copy the verified ``.tres`` into the new output directory and write the
+6. Re-read the submitted lexical ``--recipe`` path, following any symlinked
+   leaf or parent at that moment, and require the frozen source bytes. The
+   manifest records the submitted path and the target it resolved to, so a
+   link retargeted during the bake can never be published under the old bytes.
+7. Copy the verified ``.tres`` into the new output directory and write the
    manifest last. Any failure leaves no output directory or manifest.
+
+The submitted ``--recipe`` path is kept absolute but unresolved. Symlinks in
+the leaf or in a parent directory are followed when bytes are read, both for
+the private snapshot and for the final pre-publication recheck, so what gets
+published is always bound to the bytes the submitted path holds at that moment.
 
 Standard library only. This does not build a ``CarDefinition``, does not add
 game import/cache state, does not author production content and does not claim
@@ -33,9 +42,11 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -65,6 +76,25 @@ STAGE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store")
 
 OUTPUT_RESOURCE_NAME = "handling.tres"
 OUTPUT_MANIFEST_NAME = "bake_manifest.json"
+
+## Every numeric scalar `HandlingDefinition` field the committed mapper
+## consumes, as dotted source paths. The two acceleration-curve arrays are
+## handled separately because their length is dynamic.
+NUMERIC_SCALAR_PATHS = (
+    "handling.braking_acceleration_m_s2",
+    "handling.drag.aerodynamic",
+    "handling.drag.rolling",
+    "handling.yaw_gain.grip",
+    "handling.max_yaw_rate_rad_s",
+    "handling.lateral_damping.grip_per_s",
+    "handling.reverse_trigger_speed_m_s",
+    "handling.reverse_hold_time_s",
+    "handling.reverse_acceleration_m_s2",
+    "handling.reverse_top_speed_m_s",
+)
+UNLIMITED_YAW_PATH = "handling.max_yaw_rate_rad_s"
+BINARY64_HEX_LENGTH = 16
+BINARY64_HEX_RE = re.compile(r"[0-9a-f]{%d}" % BINARY64_HEX_LENGTH)
 
 ERROR_SCAN = ("SCRIPT ERROR", "Parse Error", "Failed to load script")
 
@@ -125,7 +155,11 @@ def _positive_int(value: str) -> int:
 
 
 def _run(args: argparse.Namespace) -> int:
-    recipe_path = Path(args.recipe).expanduser().resolve()
+    # Keep the submitted lexical path absolute but unresolved: a symlinked
+    # leaf or parent must still be re-read exactly as the user named it at the
+    # final recheck, and the manifest must not silently substitute a canonical
+    # target for the --recipe argument.
+    recipe_path = _absolute_lexical(Path(args.recipe).expanduser())
     # Do not resolve the leaf: an existing symlink, including a dangling one,
     # is an existing destination and must be refused.
     output_dir = Path(args.output_dir).expanduser().absolute()
@@ -137,14 +171,18 @@ def _run(args: argparse.Namespace) -> int:
     if not CHECKER_PATH.is_file():
         raise BakeError(f"committed checker is missing: {CHECKER_PATH}")
 
+    if not os.path.lexists(recipe_path):
+        raise BakeError(f"source recipe does not exist: {recipe_path}")
+
     scratch = Path(tempfile.mkdtemp(prefix="car-recipe-bake-"))
     try:
         # One private byte snapshot is the input to every checker, mapper and
         # hash step. A mutable original path cannot change the accepted recipe
-        # between the Python checker and Godot. Recheck the original before
-        # publication so a changed path is also reported as a refusal.
+        # between the Python checker and Godot. The submitted lexical path is
+        # re-read just before publication so a retargeted link is also
+        # reported as a refusal.
         frozen_recipe = scratch / "checked_recipe.json"
-        frozen_recipe.write_bytes(recipe_path.read_bytes())
+        frozen_recipe.write_bytes(_read_submitted_source(recipe_path))
         checker = subprocess.run(
             [
                 sys.executable,
@@ -168,19 +206,25 @@ def _run(args: argparse.Namespace) -> int:
                 f"source checker refused the recipe (exit {checker.returncode})"
             )
 
-        source_content_hash, source_file_sha256 = _hash_source_with_committed_tool(frozen_recipe)
+        source_content_hash, source_file_sha256, converted_document = (
+            _hash_source_with_committed_tool(frozen_recipe)
+        )
+        expected_numeric_bits = _expected_numeric_bits(converted_document)
         godot_bin = _resolve_godot(args.godot_bin)
         engine_version = _verify_engine(godot_bin, args.timeout)
         project_dir, cache_env = _prepare_private_project(scratch)
         _run_engine_import(godot_bin, project_dir, cache_env, args.timeout)
         _run_engine_bake(godot_bin, project_dir, cache_env, args.timeout, frozen_recipe)
         _require_source_unchanged(frozen_recipe, source_file_sha256)
-        _require_source_unchanged(recipe_path, source_file_sha256)
-        report = _read_and_validate_report(project_dir)
+        report = _read_and_validate_report(project_dir, expected_numeric_bits)
         resource_bytes, resource_sha256 = _read_emitted_resource(project_dir)
+        # Final trust boundary: re-read exactly what the user submitted,
+        # following any symlinked leaf or parent at this moment, and require
+        # the frozen bytes before anything is published.
+        resolved_target = _require_source_unchanged(recipe_path, source_file_sha256)
         manifest = _build_manifest(
-            args, recipe_path, source_content_hash, source_file_sha256,
-            engine_version, report, resource_sha256,
+            args, recipe_path, resolved_target, source_content_hash,
+            source_file_sha256, engine_version, report, resource_sha256,
         )
         _publish_outputs(output_dir, resource_bytes, manifest)
         print(
@@ -206,17 +250,25 @@ def _load_committed_checker() -> Any:
     return module
 
 
-def _hash_source_with_committed_tool(recipe_path: Path) -> tuple[str, str]:
-    """Return (canonical contract content hash, raw-file SHA-256)."""
+def _hash_source_with_committed_tool(
+    recipe_path: Path,
+) -> tuple[str, str, dict[str, Any]]:
+    """Return (content hash, raw SHA-256, binary64-converted document).
+
+    The converted document uses the committed checker's ``to_binary64``
+    policy, so the expected-value derivation below sees exactly the binary64
+    values the checker accepts. The raw hash still binds the frozen bytes.
+    """
     checker = _load_committed_checker()
     document, findings = checker.load_json_document(recipe_path)
     if document is None:
         detail = "; ".join(str(finding) for finding in findings) or "unreadable"
         raise BakeError(f"committed checker could not load recipe: {detail}")
     try:
+        converted = checker.to_binary64(document)
         computed = checker.content_hash_of(document)
     except Exception as exc:  # CanonicalizationError and parse helpers
-        raise BakeError(f"could not compute canonical source content hash: {exc}") from exc
+        raise BakeError(f"could not convert/hash the source recipe: {exc}") from exc
     recorded = document.get("content_hash")
     if recorded != computed:
         raise BakeError(
@@ -224,22 +276,149 @@ def _hash_source_with_committed_tool(recipe_path: Path) -> tuple[str, str]:
             f"{computed} != {recorded!r}"
         )
     raw = recipe_path.read_bytes()
-    return computed, "sha256:" + hashlib.sha256(raw).hexdigest()
+    return computed, "sha256:" + hashlib.sha256(raw).hexdigest(), converted
+
+
+# --- Checker-to-Godot numeric fidelity --------------------------------------
+
+
+def _binary64_hex(value: float) -> str:
+    """Little-endian binary64 byte image as lowercase hex."""
+    if math.isnan(value):
+        raise BakeError("checked recipe produced NaN for a consumed numeric field")
+    return struct.pack("<d", value).hex()
+
+
+def _expected_numeric_bits(document: dict[str, Any]) -> dict[str, str]:
+    """Derive the consumed numeric values from the frozen source document.
+
+    Paths mirror the committed mapper's source contract. Acceleration-curve
+    entries carry both array members; ``{"unlimited": true}`` yaw is binary64
+    positive infinity. The result is compared bit-for-bit with the pinned
+    engine's report before anything is published.
+    """
+    handling = document.get("handling")
+    if not isinstance(handling, dict):
+        raise BakeError("checked recipe has no handling object")
+
+    bits: dict[str, str] = {}
+    curve = handling.get("acceleration_curve")
+    if not isinstance(curve, list):
+        raise BakeError("checked recipe has no acceleration_curve array")
+    for index, point in enumerate(curve):
+        if not isinstance(point, dict):
+            raise BakeError(f"handling.acceleration_curve[{index}] is not an object")
+        for member in ("speed_m_s", "acceleration_m_s2"):
+            path = f"handling.acceleration_curve[{index}].{member}"
+            if member not in point:
+                raise BakeError(f"checked recipe is missing {path}")
+            bits[path] = _binary64_hex(float(point[member]))
+
+    for dotted in NUMERIC_SCALAR_PATHS:
+        node: Any = document
+        for segment in dotted.split("."):
+            if not isinstance(node, dict) or segment not in node:
+                raise BakeError(f"checked recipe is missing {dotted}")
+            node = node[segment]
+        if dotted == UNLIMITED_YAW_PATH and isinstance(node, dict):
+            if set(node.keys()) != {"unlimited"} or node["unlimited"] is not True:
+                raise BakeError(f"{dotted}: unsupported unlimited-yaw encoding")
+            value = math.inf
+        else:
+            value = float(node)
+        bits[dotted] = _binary64_hex(value)
+    return bits
+
+
+def _verify_numeric_fidelity(
+    report: dict[str, Any], expected_bits: dict[str, str]
+) -> None:
+    """Refuse unless the engine report's numeric bits match the source exactly.
+
+    Equality is between exact little-endian binary64 byte images at each
+    dotted path. Missing fields, extra fields, malformed hex and any differing
+    bit pattern all refuse with a diagnostic naming the path.
+    """
+    actual = report.get("numeric_source_bits")
+    if not isinstance(actual, dict):
+        raise BakeError("engine report has no numeric_source_bits mapping")
+
+    expected_paths = set(expected_bits)
+    actual_paths = set(actual)
+    missing = sorted(expected_paths - actual_paths)
+    if missing:
+        raise BakeError(
+            "engine report numeric_source_bits is missing fields: " + ", ".join(missing)
+        )
+    extra = sorted(actual_paths - expected_paths)
+    if extra:
+        raise BakeError(
+            "engine report numeric_source_bits has unexpected fields: " + ", ".join(extra)
+        )
+
+    for path in sorted(expected_paths):
+        encoded = actual[path]
+        if not isinstance(encoded, str) or BINARY64_HEX_RE.fullmatch(encoded) is None:
+            raise BakeError(f"{path}: malformed numeric bit encoding: {encoded!r}")
+        if encoded != expected_bits[path]:
+            raise BakeError(
+                f"{path}: numeric-conversion-mismatch: expected source binary64 "
+                f"{expected_bits[path]}, engine reported {encoded}"
+            )
 
 
 # --- Engine ------------------------------------------------------------------
 
 
-def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> None:
-    """Fail when the source bytes moved between checking/baking and binding."""
+def _absolute_lexical(path: Path) -> Path:
+    """Absolute form of a submitted path without resolving any symlink."""
+    if path.is_absolute():
+        return path
+    return Path.cwd() / path
+
+
+def _read_submitted_source(recipe_path: Path) -> bytes:
+    """Read the submitted lexical path, following symlinks at this moment."""
     try:
-        actual = "sha256:" + hashlib.sha256(recipe_path.read_bytes()).hexdigest()
+        return recipe_path.read_bytes()
+    except OSError as exc:
+        detail = str(exc)
+        if recipe_path.is_symlink():
+            try:
+                detail += f" (symlink target: {os.readlink(recipe_path)})"
+            except OSError:
+                pass
+        raise BakeError(
+            f"could not read the source recipe at {recipe_path}: {detail}"
+        ) from exc
+
+
+def _resolved_target(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except OSError:
+        return str(path)
+
+
+def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Path:
+    """Fail when the source bytes moved between checking/baking and binding.
+
+    ``recipe_path`` is read exactly as named, so a symlinked leaf or parent is
+    followed at this moment rather than at snapshot time. The returned path is
+    what it resolved to, which the manifest records next to the submitted
+    spelling so provenance stays truthful.
+    """
+    try:
+        raw = recipe_path.read_bytes()
     except OSError as exc:
         raise BakeError(f"could not re-read the source recipe after baking: {exc}") from exc
+    actual = "sha256:" + hashlib.sha256(raw).hexdigest()
     if actual != expected_raw_sha256:
         raise BakeError(
-            "source recipe changed during the bake; refusing to bind the old hash"
+            "source recipe changed during the bake; refusing to bind the old hash: "
+            f"{recipe_path} (resolved to {_resolved_target(recipe_path)})"
         )
+    return recipe_path.resolve()
 
 
 def _resolve_godot(explicit: str | None) -> str:
@@ -398,7 +577,9 @@ def _run_engine_bake(
 # --- Engine artifacts --------------------------------------------------------
 
 
-def _read_and_validate_report(project_dir: Path) -> dict[str, Any]:
+def _read_and_validate_report(
+    project_dir: Path, expected_numeric_bits: dict[str, str]
+) -> dict[str, Any]:
     report_path = project_dir / PROJECT_WORK_RES / "bake_report.json"
     if not report_path.is_file():
         raise BakeError(f"engine did not write its bake report: {report_path}")
@@ -464,6 +645,8 @@ def _read_and_validate_report(project_dir: Path) -> dict[str, Any]:
     diagnostics = report.get("diagnostics")
     if not isinstance(diagnostics, list) or diagnostics:
         raise BakeError("engine report success carries diagnostics")
+
+    _verify_numeric_fidelity(report, expected_numeric_bits)
     return report
 
 
@@ -485,6 +668,7 @@ def _read_emitted_resource(project_dir: Path) -> tuple[bytes, str]:
 def _build_manifest(
     args: argparse.Namespace,
     recipe_path: Path,
+    resolved_target: Path,
     source_content_hash: str,
     source_file_sha256: str,
     engine_version: str,
@@ -499,6 +683,7 @@ def _build_manifest(
         "source_schema_version": source_version,
         "source_checker": "tools/car_recipe_schema/validate_car_recipe.py --mode motor-ready",
         "source_recipe": str(recipe_path),
+        "source_resolved_target": str(resolved_target),
         "source_content_hash": source_content_hash,
         "source_file_sha256": source_file_sha256,
         "handling_definition_id": report["definition_id"],

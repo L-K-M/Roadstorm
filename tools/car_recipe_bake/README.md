@@ -33,6 +33,7 @@ rewritten.
 | `fixtures/negative/null_motor_input.json` | Required input `null` with matching `unknowns` entry. |
 | `fixtures/negative/version_1_0_0.json` | Schema-valid historical `1.0.0` recipe. |
 | `fixtures/negative/stale_content_hash.json` | Wrong canonical content hash. |
+| `fixtures/negative/subnormal_reverse_acceleration.json` | Checker-accepted `reverse_acceleration_m_s2` literal `5e-324`; the pinned engine rounds it to zero and the fidelity gate refuses. |
 
 Fixture values are explicit synthetic placeholders (`example`/`provisional`),
 not measured production handling. The positive fixtures are adapted from
@@ -108,11 +109,58 @@ failure or refusal, `2` command-line usage error.
    `.tres` with `ResourceSaver.save`, reloads it with
    `ResourceLoader.load(..., CACHE_MODE_IGNORE)`, revalidates it, compares all
    18 serialized identity/handling fields, and writes a private JSON report.
-   The entry point then re-hashes the frozen and original raw source bytes and
-   refuses if either moved while the engine was running.
+   That report carries `numeric_source_bits`, the little-endian binary64 byte
+   image of every consumed numeric field keyed by dotted source path. Before
+   anything is published, the entry point derives the same mapping from the
+   frozen source bytes with the committed checker's parsing/representability
+   policy and requires exact path-to-hex equality; a mismatch, missing or
+   extra field, or malformed hex refuses with a diagnostic naming the path.
+   It then re-hashes the frozen and original raw source bytes and refuses if
+   either moved while the engine was running.
 7. Copy the verified `.tres` into the new output directory and write the
    manifest last. A failure before publication leaves no destination; a
    failure during publication removes the files it created and the directory.
+
+## Numeric conversion gate
+
+The pinned Godot 4.7.2 JSON parser rounds some accepted literals before the
+mapper sees them: `5e-324` becomes `0.0`. The committed checker accepts that
+literal because it is the shortest decimal for the smallest positive binary64
+value. Without an explicit boundary check, the bake compared the already
+mapped value with itself and reported a validated round trip of the changed
+number.
+
+The gate closes that gap without replacing the checker or reparsing in Godot:
+
+* `bake_handling.gd` writes the mapped definition's numeric fields as raw
+  little-endian binary64 bytes (`StreamPeerBuffer.new()`, `big_endian =
+  false`, `put_double(value)`, `data_array.hex_encode()`) under
+  `numeric_source_bits`, keyed by dotted source path. Covered paths are both
+  members of every `handling.acceleration_curve[i]` point plus
+  `handling.braking_acceleration_m_s2`, `handling.drag.aerodynamic`,
+  `handling.drag.rolling`, `handling.yaw_gain.grip`,
+  `handling.max_yaw_rate_rad_s` (finite, or `{"unlimited": true}` encoded as
+  binary64 `+inf`), `handling.lateral_damping.grip_per_s`,
+  `handling.reverse_trigger_speed_m_s`, `handling.reverse_hold_time_s`,
+  `handling.reverse_acceleration_m_s2` and `handling.reverse_top_speed_m_s`.
+* From the same frozen bytes, `bake_handling_recipe.py` parses with the
+  committed checker's `load_json_document`, converts with its `to_binary64`
+  representability policy, and encodes each expected value with
+  `struct.pack('<d', value).hex()`.
+* The two mappings must have exactly the same keys and equal lowercase
+  16-character hex values. Any mismatch, missing field, extra field or
+  malformed hex refuses before publication, so no output directory or
+  manifest is created.
+
+Example refusal for the subnormal fixture:
+
+```text
+[car-recipe-bake] error: handling.reverse_acceleration_m_s2: numeric-conversion-mismatch: expected source binary64 0100000000000000, engine reported 0000000000000000
+```
+
+This gate covers the checker-to-Godot boundary for the fields the committed
+mapper consumes. It does not repair the pinned parser, and it does not make
+Godot's number parsing correctly rounded.
 
 ## Output contract
 
@@ -178,10 +226,26 @@ Cases:
 5. `failure control: stale content hash` - intentional failing case; asserts
    nonzero exit, `content-hash-mismatch`, no output directory and no success
    manifest.
-6. `existing destination is not written` - sentinel directory survives with no
+6. `subnormal reverse acceleration is accepted by the committed checker` -
+   the committed `motor-ready` checker accepts the new fixture, proving it
+   reaches the checker-to-Godot boundary.
+7. `subnormal reverse acceleration is refused at its exact source path` -
+   nonzero exit, `handling.reverse_acceleration_m_s2:
+   numeric-conversion-mismatch`, no output directory and no manifest.
+8. `control: deliberately wrong numeric report bit is refused` - unit-level
+   control against the real gate: a flipped bit, a missing field, an extra
+   field and malformed hex each refuse with a specific diagnostic.
+9. `existing destination is not written` - sentinel directory survives with no
    manifest or `.tres`.
-7. `existing dangling destination symlink is refused` - the link survives and
+10. `existing dangling destination symlink is refused` - the link survives and
    its absent target is not created.
+
+Run the suite with the pinned editor and a bounded outer timeout:
+
+```sh
+python3 tools/car_recipe_bake/run_tests.py --timeout 60 \
+    --godot-bin /opt/homebrew/bin/godot
+```
 
 The published `.tres` is byte-identical to the reloaded engine artifact: the
 CLI compares SHA-256 before and after publication.
@@ -201,6 +265,9 @@ The runner exits `0` only when every case passes.
 * The `.tres` bytes include a generated engine resource id, so the SHA-256 is
   evidence for the artifact from this run, not a canonical content hash across
   independent engine processes.
+* The numeric gate proves binary64 equality only for the fields the committed
+  mapper consumes. It does not repair the pinned JSON parser, cover deferred
+  `CarDefinition` fields, or make Godot's number parsing correctly rounded.
 * The private tests prove this CLI slice against synthetic fixtures. They do
   not replace source-to-runtime conversion review, production-content review,
   M0.2 acceptance or release-rights clearance.
