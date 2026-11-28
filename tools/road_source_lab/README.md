@@ -15,7 +15,7 @@ full geometric course contract, or claim M2.1 or milestone acceptance.
 | --- | --- |
 | `fixtures/road_source_open_tiny.json` | original three-knot open fixture with two spans |
 | `fixtures/road_source_closed_tiny.json` | original four-knot closed fixture with four wrapping spans and one authored bank exception |
-| `road_source_checks.gd` | positive, round-trip, immutability, span-semantics and malformed-mutation checks |
+| `road_source_checks.gd` | positive, round-trip, immutability, span-semantics, strict-JSON, numeric-conversion and malformed-mutation checks |
 | `validate_road_source_lab.gd` | headless `SceneTree` validator entry point |
 | `failure_probe.gd` | deliberate failing-check control; exits 3 when detection works |
 | `run_validation.sh` | frozen-source, private-cache, shared-lock runner |
@@ -42,10 +42,15 @@ Each knot has exactly:
   [1, 100] metres;
 - `bank_deg`: finite authored bank in degrees.
 
-Vector components must be finite JSON numbers. The width band is only a guard
-against implausible data entry. It is not the course-authoring width gate. No
-universal grade or bank limit is enforced here: the design targets and their
-reviewed exceptions belong to the later geometry-validation gate.
+Vector components must be finite JSON numbers whose converted engine `Vector3`
+components also remain finite. A finite source scalar outside the engine
+vector's representable range, such as `1e40`, is therefore refused with its
+field and component index. Large values that remain finite after conversion,
+such as `1e30`, are valid source data even though later geometric gates may
+reject their course. The width band is only a guard against implausible data
+entry. It is not the course-authoring width gate. No universal grade or bank
+limit is enforced here: the design targets and their reviewed exceptions
+belong to the later geometry-validation gate.
 
 An open source with N knots has N-1 spans and needs at least two knots. A
 closed source with N knots has N spans, with the final span wrapping to knot 0,
@@ -62,8 +67,12 @@ order. Optional `exception` metadata is an object with required non-empty
 `kind` and optional string `detail`; it is carried verbatim for the later
 geometry gate. Section order is meaningful and is never sorted or re-derived.
 
-The schema refuses exactly coincident adjacent span anchors and a handle that
-coincides with its own knot anchor, because such a span has no usable tangent.
+The schema refuses exactly coincident adjacent span anchors and a
+span-participating handle that coincides with its own knot anchor, because
+such a span has no usable tangent. In an open source the first knot's
+`handle_in` and the last knot's `handle_out` participate in no span; they are
+carried as authored data but are not tangent-checked by this schema. In a
+closed source every incoming and outgoing handle participates in a span.
 Near-coincident geometry, curvature, grade, bank targets, clearance,
 self-intersection and all other geometric course rules remain outside this
 slice.
@@ -85,8 +94,21 @@ or:
 ```
 
 `RoadSourceDocument.parse_json(text)` is the JSON-text convenience wrapper. It
-uses the same structured refusal contract and rejects malformed JSON and
-non-finite literals rather than accepting them.
+first runs an iterative lexical/structural preflight for the strict JSON text
+grammar: only the four JSON whitespace bytes, strict number forms, lowercase
+literals, properly closed objects and arrays without trailing commas, and
+valid quoted strings with valid escapes. The scanner is not a regex stripper;
+it tracks nested object/array state while treating commas, braces and brackets
+inside strings as content. Object member names are canonicalized after escape
+decoding, including `\uXXXX` sequences and surrogate pairs, and duplicate
+member names are refused in every object before Godot's permissive JSON reader
+constructs a `Dictionary`. As additional contract constraints, unpaired
+surrogate escapes are refused rather than being interpreted as
+implementation-defined text, and NUL escapes are refused because the pinned
+engine decoder lossily replaces them. Only after those checks does the wrapper
+decode the text and apply `parse_document`, using the same structured refusal
+contract. Malformed JSON and non-finite literals are rejected rather than
+accepted.
 
 A successful document exposes read-only `schema`, `course_id`, `revision`,
 `closed`, `knot_count`, `section_count`, `span_count`, `knots`, `sections` and
@@ -165,9 +187,14 @@ The laboratory currently covers:
 - exact schema/course/revision/closure identity and unknown/missing keys;
 - open N-1 and closed N ordered span-count semantics, including closure wrap;
 - ordered section/surface/feature/exception metadata and stable unique IDs;
-- finite vector, width and bank values;
-- malformed JSON and non-finite JSON literals;
-- degenerate adjacent anchors and degenerate tangent handles;
+- finite vector, width and bank values, including finite source scalars that
+  overflow converted engine vector components and a large finite representable
+  coordinate;
+- malformed JSON and non-finite JSON literals, strict trailing-comma and
+  duplicate-member refusals, nested structural scanning, escaped-key duplicate
+  equivalence, and valid escaped string content;
+- degenerate adjacent anchors and degenerate span-participating tangent
+  handles, with explicit coverage of the two unused open-endpoint handles;
 - canonical round-trip, repeated parsing, accessor copies and read-only public
   properties;
 - authored-order preservation and representative malformed mutations;

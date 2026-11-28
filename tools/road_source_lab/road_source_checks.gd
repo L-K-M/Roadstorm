@@ -128,6 +128,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_round_trip_and_immutability"),
 		Callable(self, "_case_identity_and_structure_refusals"),
 		Callable(self, "_case_numeric_and_geometry_refusals"),
+		Callable(self, "_case_strict_json_text_preflight"),
 		Callable(self, "_case_mutation_controls"),
 		Callable(self, "_case_span_semantics"),
 	]:
@@ -426,6 +427,18 @@ func _case_round_trip_and_immutability() -> Dictionary:
 	if reparsed != null:
 		c.equal(
 			JSON.stringify(reparsed.summary()), before, "re-parsed canonical summary is identical"
+		)
+
+	# The strict JSON-text path also accepts the canonical serialization.
+	var canonical_text := JSON.stringify(document.to_dictionary())
+	var reparsed_json := c.accepts(
+		RoadSourceDocument.parse_json(canonical_text),
+		"canonical JSON text re-parses through the strict wrapper"
+	)
+	if reparsed_json != null:
+		c.equal(
+			JSON.stringify(reparsed_json.summary()), before,
+			"strictly parsed canonical summary is identical"
 		)
 	return c.result()
 
@@ -728,6 +741,46 @@ func _case_numeric_and_geometry_refusals() -> Dictionary:
 		"nonfinite handle component refused",
 		"knots[2].handle_out"
 	)
+
+	# Finite double-precision scalars can still overflow the engine's stored
+	# Vector3 components. The converted vector, not merely the source scalar,
+	# must be finite for positions and both handle roles.
+	var overflow_anchor := fixture_copy(OPEN_FIXTURE_PATH)
+	overflow_anchor["knots"][1]["anchor"][1] = 1e40
+	c.refuses(
+		RoadSourceDocument.parse_document(overflow_anchor),
+		RoadSourceDocument.Refusal.NONFINITE_COMPONENT,
+		"finite-but-unrepresentable anchor component refused",
+		"knots[1].anchor[1]"
+	)
+	var overflow_handle_in := fixture_copy(OPEN_FIXTURE_PATH)
+	overflow_handle_in["knots"][2]["handle_in"][2] = 1e40
+	c.refuses(
+		RoadSourceDocument.parse_document(overflow_handle_in),
+		RoadSourceDocument.Refusal.NONFINITE_COMPONENT,
+		"finite-but-unrepresentable handle_in component refused",
+		"knots[2].handle_in[2]"
+	)
+	var overflow_handle_out := fixture_copy(OPEN_FIXTURE_PATH)
+	overflow_handle_out["knots"][0]["handle_out"][0] = 1e40
+	c.refuses(
+		RoadSourceDocument.parse_document(overflow_handle_out),
+		RoadSourceDocument.Refusal.NONFINITE_COMPONENT,
+		"finite-but-unrepresentable handle_out component refused",
+		"knots[0].handle_out[0]"
+	)
+	var large_representable := fixture_copy(OPEN_FIXTURE_PATH)
+	large_representable["knots"][1]["anchor"][0] = 1e30
+	var large_document := c.accepts(
+		RoadSourceDocument.parse_document(large_representable),
+		"large but representable coordinate accepted"
+	)
+	if large_document != null:
+		c.check(
+			large_document.knot(1).anchor.is_finite(),
+			"large representable coordinate remains finite after conversion"
+		)
+
 	var short_vector := fixture_copy(OPEN_FIXTURE_PATH)
 	short_vector["knots"][0]["anchor"] = [0.0, 0.0]
 	c.refuses(
@@ -819,6 +872,26 @@ func _case_numeric_and_geometry_refusals() -> Dictionary:
 		"handle_in on its own anchor refused",
 		"knot 2"
 	)
+
+	# The first incoming and last outgoing handle of an open source participate
+	# in no span. They are carried as authored data but are not tangent-checked.
+	var unused_first_handle := fixture_copy(OPEN_FIXTURE_PATH)
+	unused_first_handle["knots"][0]["handle_in"] = (
+		unused_first_handle["knots"][0]["anchor"] as Array
+	).duplicate()
+	c.accepts(
+		RoadSourceDocument.parse_document(unused_first_handle),
+		"unused first open endpoint handle_in is not tangent-checked"
+	)
+	var unused_last_handle := fixture_copy(OPEN_FIXTURE_PATH)
+	unused_last_handle["knots"][2]["handle_out"] = (
+		unused_last_handle["knots"][2]["anchor"] as Array
+	).duplicate()
+	c.accepts(
+		RoadSourceDocument.parse_document(unused_last_handle),
+		"unused last open endpoint handle_out is not tangent-checked"
+	)
+
 	var closure_coincident := fixture_copy(CLOSED_FIXTURE_PATH)
 	closure_coincident["knots"][3]["anchor"] = (closure_coincident["knots"][0]["anchor"] as Array).duplicate()
 	c.refuses(
@@ -853,6 +926,166 @@ func _case_numeric_and_geometry_refusals() -> Dictionary:
 		"open records closed refuse on span count",
 		"closed"
 	)
+	return c.result()
+
+
+func _case_strict_json_text_preflight() -> Dictionary:
+	var c := Case.new()
+	c.name = "strict_json_text_preflight"
+
+	var open_text := read_fixture_text(OPEN_FIXTURE_PATH)
+	var closed_text := read_fixture_text(CLOSED_FIXTURE_PATH)
+	var trimmed := open_text.strip_edges()
+
+	# Sol counterexamples: Godot's permissive reader accepted both of these
+	# before the preflight. The duplicate first value is invalid but hidden by
+	# the later valid boolean unless members are checked before Dictionary
+	# construction.
+	c.refuses(
+		RoadSourceDocument.parse_json(trimmed.left(-1) + ",}"),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"trailing comma before the final document brace refused",
+		"trailing comma"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json("{\"closed\":123," + trimmed.substr(1)),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"duplicate closed member refused before later valid value can hide the first",
+		"duplicate object member name 'closed'"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json("{\"cl\\u006fsed\":false," + trimmed.substr(1)),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"escaped duplicate closed member refused",
+		"duplicate object member name 'closed'"
+	)
+
+	# Unicode escapes canonicalize to the same member names as their raw UTF-8
+	# spellings, including surrogate pairs, so they cannot bypass duplicate
+	# detection.
+	var emoji := PackedByteArray([0xf0, 0x9f, 0x98, 0x80]).get_string_from_utf8()
+	c.refuses(
+		RoadSourceDocument.parse_json(
+			"{\"\\uD83D\\uDE00\":0,\"" + emoji + "\":1}"
+		),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"surrogate-pair escaped duplicate member refused",
+		"duplicate object member name"
+	)
+	var accented := PackedByteArray([0xc3, 0xa9]).get_string_from_utf8()
+	c.refuses(
+		RoadSourceDocument.parse_json(
+			"{\"\\u00e9\":0,\"" + accented + "\":1}"
+		),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"BMP Unicode escaped duplicate member refused",
+		"duplicate object member name"
+	)
+
+	# Duplicate and trailing-comma detection applies inside nested objects and
+	# arrays, not only at the document root.
+	var nested_duplicate_text := closed_text.replace(
+		"\"kind\": \"bank_deg_above_target\"",
+		"\"kind\": \"bank_deg_above_target\", \"kind\": \"other\""
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json(nested_duplicate_text),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"duplicate member inside a nested exception object refused",
+		"duplicate object member name"
+	)
+	var nested_trailing_text := closed_text.replace(
+		"\"feature_tags\": [\"straight\"]",
+		"\"feature_tags\": [\"straight\",]"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json(nested_trailing_text),
+		RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+		"trailing comma inside a nested array refused",
+		"trailing comma"
+	)
+
+	# Commas, braces, escaped quotes, escaped backslashes and Unicode escapes
+	# inside strings are string content, not structure. This positive control
+	# remains a valid road source and checks the decoded free-text detail.
+	var backslash := "\\"
+	var quote := "\""
+	var detail_json := (
+		"quoted " + backslash + quote
+		+ " comma, braces { } "
+		+ backslash + backslash
+		+ " unicode "
+		+ backslash + "u263A end"
+	)
+	var original_detail := (
+		"Knot 2 authors -14 degrees of bank, outside the approximately +/-12 degree "
+		+ "design target; the later geometry gate reviews this exception."
+	)
+	var escaped_text := closed_text.replace(original_detail, detail_json)
+	var escaped_document := c.accepts(
+		RoadSourceDocument.parse_json(escaped_text),
+		"valid string escapes and structural characters inside strings accepted"
+	)
+	if escaped_document != null:
+		var smiley := PackedByteArray([0xe2, 0x98, 0xba]).get_string_from_utf8()
+		var expected_detail := (
+			"quoted " + quote + " comma, braces { } " + backslash
+			+ " unicode " + smiley + " end"
+		)
+		c.equal(
+			escaped_document.section(1).exception.get("detail"),
+			expected_detail,
+			"escaped free-text detail decoded exactly"
+		)
+
+	# Syntactically valid JSON that is not a road-source object must reach the
+	# document validator rather than being misreported as malformed JSON text.
+	c.refuses(
+		RoadSourceDocument.parse_json("{}"),
+		RoadSourceDocument.Refusal.MISSING_KEY,
+		"valid empty object reaches document validation",
+		"schema"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json("[null,true,false,0,-1.25e+2,\"x\"]"),
+		RoadSourceDocument.Refusal.NOT_AN_OBJECT,
+		"valid scalar and array grammar reaches document validation"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json("{\"x\":[{\"y\":[true,null,{\"z\":\"nested\"}]}]}"),
+		RoadSourceDocument.Refusal.UNKNOWN_KEY,
+		"valid nested objects and arrays reach document validation",
+		"x"
+	)
+	c.refuses(
+		RoadSourceDocument.parse_json(
+			"{\"x\":[{\"same\":1},{\"same\":2}],\"y\":{\"same\":3}}"
+		),
+		RoadSourceDocument.Refusal.UNKNOWN_KEY,
+		"same member name in separate objects remains valid JSON and reaches validation",
+		"x"
+	)
+
+	# Representative strict-grammar controls. Several are also rejected by
+	# Godot; they pin the boundary at INVALID_JSON_TEXT rather than any later
+	# schema refusal.
+	for control in [
+		["missing object comma", "{\"schema\":1 \"closed\":false}"],
+		["missing object colon", "{\"schema\" 1}"],
+		["trailing array comma", "[1,]"],
+		["leading zero", "{\"schema\":01}"],
+		["invalid string escape", "{\"schema\":\"\\q\"}"],
+		["unescaped string control", "{\"schema\":\"a\nb\"}"],
+		["unpaired Unicode surrogate", "{\"schema\":\"\\uD800\"}"],
+		["engine-unrepresentable NUL escape", "{\"schema\":\"\\u0000\"}"],
+		["trailing root data", "{\"schema\":1} null"],
+		["single-quoted member name", "{'schema':1}"],
+	]:
+		c.refuses(
+			RoadSourceDocument.parse_json(control[1]),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"strict grammar control refused: %s" % str(control[0])
+		)
 	return c.result()
 
 

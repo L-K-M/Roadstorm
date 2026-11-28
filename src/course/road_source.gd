@@ -46,10 +46,11 @@ extends RefCounted
 ## the same frame as the handling fixtures and CarState.
 ##
 ## What this slice validates, and what it deliberately does not:
-##   * schema, course/revision identity, stable unique section IDs, finite
-##     components, minimum knot counts, the exact ordered span count,
-##     nondegenerate adjacent anchors and of each handle against its own knot
-##     anchor, and a plausible authored width band;
+##   * schema, course/revision identity, stable unique section IDs, components
+##     finite after engine-vector conversion, minimum knot counts, the exact
+##     ordered span count, nondegenerate adjacent anchors and of each
+##     span-participating handle against its own knot anchor, and a plausible
+##     authored width band;
 ##   * no universal bank or grade limit is encoded. The design's 12% grade and
 ##     approximately +/-12 degree bank targets, and the exceptions that exceed
 ##     them, belong to the later geometry-validation gate (M2.3/T09), so bank
@@ -402,6 +403,457 @@ class Span extends RefCounted:
 		return [p_vector.x, p_vector.y, p_vector.z]
 
 
+# --- Strict JSON text preflight ----------------------------------------------
+
+## Lexical and structural JSON validator used before Godot's permissive reader
+## constructs a Dictionary. It implements the RFC 8259 value, object, array,
+## number, string and whitespace grammar with an explicit iterative container
+## stack, so nesting uses memory linear in the input rather than call-stack
+## recursion. Object member names are canonicalized after JSON string escapes,
+## including Unicode surrogate pairs, and duplicates are refused in every
+## object. Unpaired surrogate escapes are also refused as a contract constraint
+## rather than interpreted as implementation-defined text. NUL escapes are
+## refused because the pinned engine decoder lossily replaces them. The scanner
+## validates only; Godot performs the final value decode.
+class _StrictJsonPreflight extends RefCounted:
+	const KIND_ROOT := 0
+	const KIND_OBJECT := 1
+	const KIND_ARRAY := 2
+
+	const STATE_ROOT_VALUE := 0
+	const STATE_ROOT_END := 1
+	const STATE_OBJECT_KEY_OR_END := 0
+	const STATE_OBJECT_KEY := 1
+	const STATE_OBJECT_COLON := 2
+	const STATE_OBJECT_VALUE := 3
+	const STATE_OBJECT_COMMA_OR_END := 4
+	const STATE_ARRAY_VALUE_OR_END := 0
+	const STATE_ARRAY_VALUE := 1
+	const STATE_ARRAY_COMMA_OR_END := 2
+
+	const BYTE_TAB := 0x09
+	const BYTE_LINE_FEED := 0x0a
+	const BYTE_CARRIAGE_RETURN := 0x0d
+	const BYTE_SPACE := 0x20
+	const BYTE_QUOTE := 0x22
+	const BYTE_PLUS := 0x2b
+	const BYTE_COMMA := 0x2c
+	const BYTE_MINUS := 0x2d
+	const BYTE_DECIMAL_POINT := 0x2e
+	const BYTE_SLASH := 0x2f
+	const BYTE_ZERO := 0x30
+	const BYTE_NINE := 0x39
+	const BYTE_COLON := 0x3a
+	const BYTE_UPPER_E := 0x45
+	const BYTE_BACKSLASH := 0x5c
+	const BYTE_BEGIN_ARRAY := 0x5b
+	const BYTE_END_ARRAY := 0x5d
+	const BYTE_LOWER_B := 0x62
+	const BYTE_LOWER_E := 0x65
+	const BYTE_LOWER_F := 0x66
+	const BYTE_LOWER_N := 0x6e
+	const BYTE_LOWER_R := 0x72
+	const BYTE_LOWER_T := 0x74
+	const BYTE_LOWER_U := 0x75
+	const BYTE_BEGIN_OBJECT := 0x7b
+	const BYTE_END_OBJECT := 0x7d
+
+	var _bytes := PackedByteArray()
+	var _position := 0
+	var _error := ""
+	var _error_position := 0
+
+
+	func validate(p_text: String) -> Dictionary:
+		_bytes = p_text.to_utf8_buffer()
+		_position = 0
+		_error = ""
+		_error_position = 0
+		var stack: Array = [_make_frame(KIND_ROOT, STATE_ROOT_VALUE)]
+		while not stack.is_empty():
+			_skip_whitespace()
+			var frame: Dictionary = stack[stack.size() - 1]
+			if int(frame["kind"]) == KIND_ROOT and int(frame["state"]) == STATE_ROOT_END:
+				if _at_end():
+					return {"ok": true, "error": ""}
+				_set_error("unexpected trailing data after the root JSON value")
+				return _failure_result()
+			if _at_end():
+				_set_error(_unexpected_end_message(frame))
+				return _failure_result()
+
+			match int(frame["kind"]):
+				KIND_ROOT:
+					if not _consume_value(stack):
+						return _failure_result()
+				KIND_OBJECT:
+					if not _consume_object_frame(stack, frame):
+						return _failure_result()
+				KIND_ARRAY:
+					if not _consume_array_frame(stack, frame):
+						return _failure_result()
+		_set_error("internal JSON preflight stack ended before the root value completed")
+		return _failure_result()
+
+
+	func _make_frame(p_kind: int, p_state: int) -> Dictionary:
+		var frame := {"kind": p_kind, "state": p_state}
+		if p_kind == KIND_OBJECT:
+			frame["keys"] = {}
+		return frame
+
+
+	func _failure_result() -> Dictionary:
+		return {
+			"ok": false,
+			"error": "%s at byte %d" % [_error, _error_position],
+		}
+
+
+	func _set_error(p_message: String, p_position: int = -1) -> bool:
+		if _error.is_empty():
+			_error = p_message
+			_error_position = _position if p_position < 0 else p_position
+		return false
+
+
+	func _unexpected_end_message(p_frame: Dictionary) -> String:
+		if int(p_frame["kind"]) == KIND_ROOT:
+			return "empty JSON text"
+		if int(p_frame["kind"]) == KIND_OBJECT:
+			return "unexpected end of JSON text inside an object"
+		return "unexpected end of JSON text inside an array"
+
+
+	func _at_end() -> bool:
+		return _position >= _bytes.size()
+
+
+	func _peek() -> int:
+		if _at_end():
+			return -1
+		return _bytes[_position]
+
+
+	func _skip_whitespace() -> void:
+		while not _at_end():
+			var byte := _bytes[_position]
+			if byte != BYTE_SPACE and byte != BYTE_TAB \
+					and byte != BYTE_LINE_FEED and byte != BYTE_CARRIAGE_RETURN:
+				return
+			_position += 1
+
+
+	func _consume_object_frame(p_stack: Array, p_frame: Dictionary) -> bool:
+		match int(p_frame["state"]):
+			STATE_OBJECT_KEY_OR_END:
+				if _peek() == BYTE_END_OBJECT:
+					_position += 1
+					p_stack.pop_back()
+					return true
+				if _peek() != BYTE_QUOTE:
+					return _set_error("expected an object member name or closing brace")
+				return _read_object_key(p_frame)
+			STATE_OBJECT_KEY:
+				if _peek() == BYTE_END_OBJECT:
+					return _set_error("trailing comma in object")
+				if _peek() != BYTE_QUOTE:
+					return _set_error("expected an object member name after a comma")
+				return _read_object_key(p_frame)
+			STATE_OBJECT_COLON:
+				if _peek() != BYTE_COLON:
+					return _set_error("expected ':' after an object member name")
+				_position += 1
+				p_frame["state"] = STATE_OBJECT_VALUE
+				return true
+			STATE_OBJECT_VALUE:
+				return _consume_value(p_stack)
+			STATE_OBJECT_COMMA_OR_END:
+				if _peek() == BYTE_END_OBJECT:
+					_position += 1
+					p_stack.pop_back()
+					return true
+				if _peek() == BYTE_COMMA:
+					_position += 1
+					p_frame["state"] = STATE_OBJECT_KEY
+					return true
+				return _set_error("expected ',' or closing brace after an object member")
+		return _set_error("internal invalid object scanner state")
+
+
+	func _consume_array_frame(p_stack: Array, p_frame: Dictionary) -> bool:
+		match int(p_frame["state"]):
+			STATE_ARRAY_VALUE_OR_END:
+				if _peek() == BYTE_END_ARRAY:
+					_position += 1
+					p_stack.pop_back()
+					return true
+				return _consume_value(p_stack)
+			STATE_ARRAY_VALUE:
+				if _peek() == BYTE_END_ARRAY:
+					return _set_error("trailing comma in array")
+				return _consume_value(p_stack)
+			STATE_ARRAY_COMMA_OR_END:
+				if _peek() == BYTE_END_ARRAY:
+					_position += 1
+					p_stack.pop_back()
+					return true
+				if _peek() == BYTE_COMMA:
+					_position += 1
+					p_frame["state"] = STATE_ARRAY_VALUE
+					return true
+				return _set_error("expected ',' or closing bracket after an array element")
+		return _set_error("internal invalid array scanner state")
+
+
+	func _read_object_key(p_frame: Dictionary) -> bool:
+		var parsed := _parse_string()
+		if not bool(parsed["ok"]):
+			return false
+		var keys: Dictionary = p_frame["keys"]
+		var canonical := str(parsed["canonical"])
+		if keys.has(canonical):
+			return _set_error(
+				"duplicate object member name '%s'" % str(parsed["display"]),
+				int(parsed["start"])
+			)
+		keys[canonical] = true
+		p_frame["state"] = STATE_OBJECT_COLON
+		return true
+
+
+	func _consume_value(p_stack: Array) -> bool:
+		var byte := _peek()
+		if byte == BYTE_BEGIN_OBJECT:
+			_position += 1
+			_mark_value_started(p_stack)
+			p_stack.append(_make_frame(KIND_OBJECT, STATE_OBJECT_KEY_OR_END))
+			return true
+		if byte == BYTE_BEGIN_ARRAY:
+			_position += 1
+			_mark_value_started(p_stack)
+			p_stack.append(_make_frame(KIND_ARRAY, STATE_ARRAY_VALUE_OR_END))
+			return true
+		if byte == BYTE_QUOTE:
+			var parsed := _parse_string()
+			if not bool(parsed["ok"]):
+				return false
+			_mark_value_started(p_stack)
+			return true
+		if byte == BYTE_LOWER_T:
+			if not _consume_literal("true"):
+				return false
+			_mark_value_started(p_stack)
+			return true
+		if byte == BYTE_LOWER_F:
+			if not _consume_literal("false"):
+				return false
+			_mark_value_started(p_stack)
+			return true
+		if byte == BYTE_LOWER_N:
+			if not _consume_literal("null"):
+				return false
+			_mark_value_started(p_stack)
+			return true
+		if byte == BYTE_MINUS or _is_digit(byte):
+			if not _parse_number():
+				return false
+			_mark_value_started(p_stack)
+			return true
+		return _set_error("expected a JSON value")
+
+
+	func _mark_value_started(p_stack: Array) -> void:
+		var frame: Dictionary = p_stack[p_stack.size() - 1]
+		match int(frame["kind"]):
+			KIND_ROOT:
+				frame["state"] = STATE_ROOT_END
+			KIND_OBJECT:
+				frame["state"] = STATE_OBJECT_COMMA_OR_END
+			KIND_ARRAY:
+				frame["state"] = STATE_ARRAY_COMMA_OR_END
+
+
+	func _consume_literal(p_literal: String) -> bool:
+		var literal_bytes := p_literal.to_utf8_buffer()
+		if _position + literal_bytes.size() > _bytes.size():
+			return _set_error("invalid or truncated JSON literal")
+		for index in range(literal_bytes.size()):
+			if _bytes[_position + index] != literal_bytes[index]:
+				return _set_error("invalid JSON literal")
+		_position += literal_bytes.size()
+		return true
+
+
+	func _parse_number() -> bool:
+		if _peek() == BYTE_MINUS:
+			_position += 1
+		if _at_end():
+			return _set_error("unterminated number")
+		var byte := _peek()
+		if byte == BYTE_ZERO:
+			_position += 1
+			if not _at_end() and _is_digit(_peek()):
+				return _set_error("leading zeroes are not valid JSON numbers")
+		elif byte > BYTE_ZERO and byte <= BYTE_NINE:
+			while not _at_end() and _is_digit(_peek()):
+				_position += 1
+		else:
+			return _set_error("a number needs a digit after any minus sign")
+
+		if not _at_end() and _peek() == BYTE_DECIMAL_POINT:
+			_position += 1
+			if _at_end() or not _is_digit(_peek()):
+				return _set_error("a fractional number needs at least one digit")
+			while not _at_end() and _is_digit(_peek()):
+				_position += 1
+
+		if not _at_end() and (_peek() == BYTE_LOWER_E or _peek() == BYTE_UPPER_E):
+			_position += 1
+			if not _at_end() and (_peek() == BYTE_MINUS or _peek() == BYTE_PLUS):
+				_position += 1
+			if _at_end() or not _is_digit(_peek()):
+				return _set_error("a number exponent needs at least one digit")
+			while not _at_end() and _is_digit(_peek()):
+				_position += 1
+		return true
+
+
+	func _is_digit(p_byte: int) -> bool:
+		return p_byte >= BYTE_ZERO and p_byte <= BYTE_NINE
+
+
+	func _parse_string() -> Dictionary:
+		var start := _position
+		if _peek() != BYTE_QUOTE:
+			_set_error("expected a string")
+			return {"ok": false}
+		_position += 1
+		var decoded := PackedByteArray()
+		while not _at_end():
+			var byte := _bytes[_position]
+			if byte == BYTE_QUOTE:
+				_position += 1
+				return {
+					"ok": true,
+					"canonical": decoded.hex_encode(),
+					"display": decoded.get_string_from_utf8(),
+					"start": start,
+				}
+			if byte == BYTE_BACKSLASH:
+				if not _parse_escape(decoded, start):
+					return {"ok": false}
+				continue
+			if byte < BYTE_SPACE:
+				_set_error("unescaped control character in a string")
+				return {"ok": false}
+			decoded.append(byte)
+			_position += 1
+		_set_error("unterminated string", start)
+		return {"ok": false}
+
+
+	func _parse_escape(p_decoded: PackedByteArray, p_string_start: int) -> bool:
+		_position += 1
+		if _at_end():
+			return _set_error("unterminated string escape", p_string_start)
+		var escape := _bytes[_position]
+		if escape == BYTE_QUOTE or escape == BYTE_BACKSLASH or escape == BYTE_SLASH:
+			p_decoded.append(escape)
+			_position += 1
+			return true
+		if escape == BYTE_LOWER_B:
+			p_decoded.append(0x08)
+			_position += 1
+			return true
+		if escape == BYTE_LOWER_F:
+			p_decoded.append(0x0c)
+			_position += 1
+			return true
+		if escape == BYTE_LOWER_N:
+			p_decoded.append(0x0a)
+			_position += 1
+			return true
+		if escape == BYTE_LOWER_R:
+			p_decoded.append(0x0d)
+			_position += 1
+			return true
+		if escape == BYTE_LOWER_T:
+			p_decoded.append(0x09)
+			_position += 1
+			return true
+		if escape != BYTE_LOWER_U:
+			return _set_error("invalid string escape 0x%02x" % escape)
+		_position += 1
+		var first := _read_hex_quad()
+		if first < 0:
+			return false
+		var codepoint := first
+		if first >= 0xd800 and first <= 0xdbff:
+			if _position + 1 >= _bytes.size() \
+					or _bytes[_position] != BYTE_BACKSLASH \
+					or _bytes[_position + 1] != BYTE_LOWER_U:
+				return _set_error("a high-surrogate Unicode escape needs a low-surrogate escape")
+			_position += 2
+			var low := _read_hex_quad()
+			if low < 0:
+				return false
+			if low < 0xdc00 or low > 0xdfff:
+				return _set_error("a high-surrogate Unicode escape needs a low-surrogate escape")
+			codepoint = 0x10000 + ((first - 0xd800) << 10) + (low - 0xdc00)
+		elif first >= 0xdc00 and first <= 0xdfff:
+			return _set_error("unpaired low-surrogate Unicode escape")
+		if codepoint == 0:
+			return _set_error("NUL Unicode escapes cannot be represented by the engine JSON decoder")
+		for encoded in _codepoint_utf8(codepoint):
+			p_decoded.append(encoded)
+		return true
+
+
+	func _read_hex_quad() -> int:
+		if _position + 4 > _bytes.size():
+			_set_error("truncated Unicode escape")
+			return -1
+		var value := 0
+		for offset in range(4):
+			var digit := _hex_digit_value(_bytes[_position + offset])
+			if digit < 0:
+				_set_error("invalid hexadecimal digit in a Unicode escape", _position + offset)
+				return -1
+			value = (value << 4) | digit
+		_position += 4
+		return value
+
+
+	func _hex_digit_value(p_byte: int) -> int:
+		if p_byte >= 0x30 and p_byte <= 0x39:
+			return p_byte - 0x30
+		if p_byte >= 0x41 and p_byte <= 0x46:
+			return p_byte - 0x41 + 10
+		if p_byte >= 0x61 and p_byte <= 0x66:
+			return p_byte - 0x61 + 10
+		return -1
+
+
+	func _codepoint_utf8(p_codepoint: int) -> PackedByteArray:
+		var encoded := PackedByteArray()
+		if p_codepoint <= 0x7f:
+			encoded.append(p_codepoint)
+		elif p_codepoint <= 0x7ff:
+			encoded.append(0xc0 | (p_codepoint >> 6))
+			encoded.append(0x80 | (p_codepoint & 0x3f))
+		elif p_codepoint <= 0xffff:
+			encoded.append(0xe0 | (p_codepoint >> 12))
+			encoded.append(0x80 | ((p_codepoint >> 6) & 0x3f))
+			encoded.append(0x80 | (p_codepoint & 0x3f))
+		else:
+			encoded.append(0xf0 | (p_codepoint >> 18))
+			encoded.append(0x80 | ((p_codepoint >> 12) & 0x3f))
+			encoded.append(0x80 | ((p_codepoint >> 6) & 0x3f))
+			encoded.append(0x80 | (p_codepoint & 0x3f))
+		return encoded
+
+
 # --- Document ----------------------------------------------------------------
 
 
@@ -678,16 +1130,24 @@ static func parse_document(p_source: Variant) -> Dictionary:
 	return {"ok": true, "code": Refusal.NONE, "error": "", "document": document}
 
 
-## JSON text convenience wrapper around `parse_document`. Invalid JSON, and
-## the non-finite literals some writers emit, are refused instead of parsed.
+## JSON text convenience wrapper around `parse_document`. A strict lexical and
+## structural preflight rejects malformed grammar and duplicate member names
+## before Godot's permissive JSON reader constructs a Dictionary.
 static func parse_json(p_text: Variant) -> Dictionary:
 	if typeof(p_text) != TYPE_STRING:
 		return _refuse(Refusal.INVALID_JSON_TEXT, "JSON text must be a string")
-	var json := JSON.new()
-	if json.parse(str(p_text)) != OK:
+	var text := str(p_text)
+	var preflight := _StrictJsonPreflight.new().validate(text)
+	if not bool(preflight["ok"]):
 		return _refuse(
 			Refusal.INVALID_JSON_TEXT,
-			"text is not valid JSON at line %d: %s (NaN/Infinity literals are not accepted)"
+			"text is not valid strict JSON: %s" % str(preflight["error"])
+		)
+	var json := JSON.new()
+	if json.parse(text) != OK:
+		return _refuse(
+			Refusal.INVALID_JSON_TEXT,
+			"strict JSON text failed engine decoding at line %d: %s"
 				% [json.get_error_line(), json.get_error_message()]
 		)
 	return parse_document(json.data)
@@ -717,10 +1177,13 @@ static func _build_spans(p_knots: Array, p_sections: Array, p_closed: bool) -> A
 
 
 ## Closure-aware degeneracy check. "Coincident" means exactly equal: a span
-## whose two anchors are the same point, or whose control point sits exactly on
-## its own knot anchor, has no usable tangent and is refused. Near-coincident
-## anchors and all curvature, grade, bank and self-intersection limits are the
-## later geometry gate, not this schema.
+## whose two anchors are the same point, or whose participating control point
+## sits exactly on its own knot anchor, has no usable tangent and is refused.
+## In an open source the first knot's incoming handle and the last knot's
+## outgoing handle participate in no span, so they are carried but not checked
+## here; in a closed source every handle participates. Near-coincident anchors
+## and all curvature, grade, bank and self-intersection limits are the later
+## geometry gate, not this schema.
 static func _validate_span_geometry(p_knots: Array, p_closed: bool) -> Dictionary:
 	var count := p_knots.size()
 	for index in range(count):
@@ -884,8 +1347,9 @@ static func _parse_section(p_entry: Variant, p_index: int) -> Dictionary:
 	}
 
 
-## Reads a 3-component finite vector. Arrays only: a Vector3 value cannot
-## round-trip through the JSON contract, so it is refused with that reason.
+## Reads a 3-component vector whose scalar inputs and converted engine Vector3
+## components are finite. Arrays only: a Vector3 value cannot round-trip
+## through the JSON contract, so it is refused with that reason.
 static func _read_vector(p_value: Variant, p_label: String) -> Dictionary:
 	if typeof(p_value) != TYPE_ARRAY:
 		return _refuse(
@@ -906,12 +1370,21 @@ static func _read_vector(p_value: Variant, p_label: String) -> Dictionary:
 				"%s[%d] is not a finite number (%s)" % [p_label, axis, str(components[axis])]
 			)
 		values.append(component)
+	var vector := Vector3(values[0], values[1], values[2])
+	var converted_components := [vector.x, vector.y, vector.z]
+	for axis in range(3):
+		if not is_finite(float(converted_components[axis])):
+			return _refuse(
+				Refusal.NONFINITE_COMPONENT,
+				"%s[%d] is finite as a JSON number but cannot be represented as a finite engine vector component (%s)"
+					% [p_label, axis, str(components[axis])]
+			)
 	return {
 		"ok": true,
 		"code": Refusal.NONE,
 		"error": "",
 		"document": null,
-		"value": Vector3(values[0], values[1], values[2]),
+		"value": vector,
 	}
 
 
