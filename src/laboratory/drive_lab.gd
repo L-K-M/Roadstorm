@@ -106,10 +106,20 @@ const SpeedHudScript := preload("res://src/presentation/speed_hud.gd")
 const SpeedHudScene := preload("res://scenes/ui/speed_hud.tscn")
 const VehicleFeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
 const GearboxScript := preload("res://src/simulation/automatic_gearbox.gd")
+const WallImpactProducerScript := preload("res://src/simulation/wall_impact_producer.gd")
+const ImpactEventScript := preload("res://src/simulation/impact_event.gd")
 
 ## Hard cap on recorded gearbox shift events. Further events are counted as
 ## dropped instead of growing without bound.
 const MAX_GEAR_SHIFT_EVENTS := 128
+## Stable primary car identity for every laboratory wall impact event. One
+## car, one identity; reconfiguration and new runs never change it.
+const WALL_EVENT_PRIMARY_CAR_ID := "drive_lab.primary_car"
+## Prefix of caller-owned wall event IDs. A full ID also carries the lab event
+## scope generation, the committed tick index and a per-tick collision
+## sequence, so a later tick cannot reuse an earlier ID even if the bounded
+## ledger has already pruned that tick.
+const WALL_EVENT_ID_PREFIX := "drive_lab.wall"
 ## Halt reason used after a state-only drive restore, which cannot advance the
 ## simulation until a body-pose reconciliation operation exists.
 const DRIVE_STATE_ONLY_HALT := "state-only drive restore awaits body pose reconciliation"
@@ -197,6 +207,26 @@ var gearbox_failure_reason := ""
 var drive_restores := 0
 var drive_restore_refusals := 0
 var drive_restore_refusal_reason := ""
+## M1.8 wall-impact publication scope. The ledger is laboratory-owned and is
+## never exposed mutably; tests read it through the surface below. A witness
+## is published only after the adapter COMMITTED tick and the canonical
+## gearbox/CarState pair were both accepted and published. A publication
+## refusal records a diagnostic and never alters simulation or presentation.
+var wall_event_ledger: ImpactEvent.Ledger = null
+## Last published or coalesced retained record; read-only copies are returned.
+var last_wall_event: ImpactEvent = null
+var wall_events_published := 0
+var wall_events_coalesced := 0
+var wall_events_refused := 0
+var wall_event_missed_witnesses := 0
+var wall_event_diagnostic := ""
+var _wall_event_scope_generation := 0
+var _wall_event_tick_sequence := {}
+var _wall_event_ids_by_fingerprint := {}
+## Set only after the physical result and canonical gearbox/CarState pair are
+## published. A direct caller cannot publish an adapter-only or stale result.
+var _wall_event_accepted_result: MotorBodyAdapter.Result = null
+var _wall_event_accepted_tick := -1
 ## True after a state-only drive restore or a post-commit gearbox failure.
 ## Cleared only by a future body-pose reconciliation operation, which this
 ## slice deliberately does not implement.
@@ -254,6 +284,7 @@ func _init() -> void:
 	adapter_config = make_laboratory_config()
 	state = CarStateScript.new()
 	gearbox = AutomaticGearbox.create(make_laboratory_gearbox_config())
+	wall_event_ledger = ImpactEventScript.Ledger.new()
 
 
 func _ready() -> void:
@@ -727,6 +758,199 @@ func get_drive_restore_error() -> String:
 	return drive_restore_refusal_reason
 
 
+# --- M1.8 wall-impact publication surface ----------------------------------
+
+
+## Retires the laboratory wall-event scope: clears the lab-owned ledger,
+## counters, diagnostics and per-tick ID maps, and advances the scope
+## generation so no retired ID can be regenerated. It never touches the
+## committed CarState, the canonical gearbox or the physical body pose.
+## `configure()` calls this on every new configuration/run.
+func retire_wall_event_scope() -> void:
+	_wall_event_scope_generation += 1
+	if wall_event_ledger != null:
+		wall_event_ledger.reset()
+	last_wall_event = null
+	wall_events_published = 0
+	wall_events_coalesced = 0
+	wall_events_refused = 0
+	wall_event_missed_witnesses = 0
+	wall_event_diagnostic = ""
+	_wall_event_tick_sequence = {}
+	_wall_event_ids_by_fingerprint = {}
+	_wall_event_accepted_result = null
+	_wall_event_accepted_tick = -1
+
+
+## Read-only copy of the last published or coalesced retained wall event, or
+## null when the current scope has none. Mutating the copy cannot change the
+## laboratory.
+func get_last_wall_event() -> ImpactEvent:
+	if last_wall_event == null:
+		return null
+	return last_wall_event.copy()
+
+
+## Number of events currently retained by the lab-owned ledger. This is a
+## bounded retention count, not the all-time published total; the telemetry
+## dictionary carries both.
+func get_wall_event_count() -> int:
+	if wall_event_ledger == null:
+		return 0
+	return wall_event_ledger.event_count()
+
+
+## Last wall-event diagnostic, empty after a successful publication or an
+## explicit scope retirement. A diagnostic never gates or halts the run.
+func get_wall_event_diagnostic() -> String:
+	return wall_event_diagnostic
+
+
+## Read-only wall-event telemetry for validation and reports.
+func get_wall_event_telemetry() -> Dictionary:
+	var last_id := ""
+	if last_wall_event != null:
+		last_id = last_wall_event.event_id
+	return {
+		"primary_car_id": WALL_EVENT_PRIMARY_CAR_ID,
+		"scope_generation": _wall_event_scope_generation,
+		"published": wall_events_published,
+		"coalesced": wall_events_coalesced,
+		"refused": wall_events_refused,
+		"missed_witnesses": wall_event_missed_witnesses,
+		"retained": get_wall_event_count(),
+		"identity_tick_slots": _wall_event_ids_by_fingerprint.size(),
+		"last_event_id": last_id,
+		"diagnostic": wall_event_diagnostic,
+	}
+
+
+## Retained copy of one event by caller-owned ID, or null when absent/pruned.
+func find_wall_event(event_id: String) -> ImpactEvent:
+	if wall_event_ledger == null:
+		return null
+	return wall_event_ledger.find_by_id(event_id)
+
+
+## Copies of the retained events for one committed tick, oldest first.
+func get_wall_events_for_tick(tick_index: int) -> Array[ImpactEvent]:
+	if wall_event_ledger == null:
+		return []
+	return wall_event_ledger.events_for_tick(tick_index)
+
+
+func has_wall_event_id(event_id: String) -> bool:
+	if wall_event_ledger == null:
+		return false
+	return wall_event_ledger.has_event_id(event_id)
+
+
+## Deterministic fingerprint of the retained wall records only.
+func get_wall_event_content_digest() -> String:
+	if wall_event_ledger == null:
+		return ""
+	return wall_event_ledger.content_digest()
+
+
+## Publishes one committed wall witness through `WallImpactProducer` into the
+## laboratory-owned ledger. The caller (this laboratory) owns identity: the
+## event ID is deterministic per (scope generation, committed tick index,
+## collision fingerprint, per-tick sequence), so a later tick can never reuse
+## an earlier ID. An identical retry within one tick reuses its ID and the real
+## ledger coalesces it; a different witness in the same tick gets a new ID.
+## Returns true only when the record is represented in the ledger (published
+## or coalesced). Every failure is recorded as a diagnostic and leaves motor
+## state, body pose, RNG, progress and presentation untouched.
+func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
+	if result == null:
+		return false
+	if result != _wall_event_accepted_result \
+			or ticks_committed != _wall_event_accepted_tick \
+			or failed or halted or _drive_body_pose_stale:
+		wall_events_refused += 1
+		wall_event_diagnostic = (
+			"tick %d wall event refused: result is not the current accepted canonical pair"
+			% ticks_committed
+		)
+		return false
+	if not result.has_wall_response_witness \
+			or not result.has_wall_contact_point:
+		if result.wall_contact:
+			wall_event_missed_witnesses += 1
+			wall_event_diagnostic = (
+				"tick %d wall contact had no publishable response/contact-point witness"
+				% ticks_committed
+			)
+		return false
+	var tick := ticks_committed
+	var fingerprint := _wall_witness_fingerprint(result)
+	var ids_for_tick: Dictionary = {}
+	if _wall_event_ids_by_fingerprint.has(tick):
+		ids_for_tick = _wall_event_ids_by_fingerprint[tick]
+	var event_id: String = String(ids_for_tick.get(fingerprint, ""))
+	if event_id.is_empty():
+		var sequence := int(_wall_event_tick_sequence.get(tick, 0))
+		event_id = "%s.%d.%d.%d" % [
+			WALL_EVENT_ID_PREFIX, _wall_event_scope_generation, tick, sequence
+		]
+		_wall_event_tick_sequence[tick] = sequence + 1
+		ids_for_tick[fingerprint] = event_id
+		_wall_event_ids_by_fingerprint[tick] = ids_for_tick
+	var outcome := WallImpactProducerScript.produce(
+		result, adapter_config, WALL_EVENT_PRIMARY_CAR_ID, event_id, "", tick
+	)
+	if outcome.is_refused():
+		wall_events_refused += 1
+		wall_event_diagnostic = "tick %d producer refused wall event %s: %s" % [
+			tick, event_id, outcome.reason
+		]
+		return false
+	var published := WallImpactProducerScript.publish(
+		outcome.event, wall_event_ledger
+	)
+	if published.is_published():
+		wall_events_published += 1
+		last_wall_event = published.event.copy()
+		wall_event_diagnostic = ""
+		return true
+	if published.is_coalesced():
+		wall_events_coalesced += 1
+		last_wall_event = published.event.copy()
+		wall_event_diagnostic = ""
+		return true
+	wall_events_refused += 1
+	wall_event_diagnostic = "tick %d ledger refused wall event %s: %s" % [
+		tick, event_id, published.reason
+	]
+	return false
+
+
+## Deterministic witness fingerprint covering every authoritative field the
+## producer rebuilds. Equal fingerprints are exact retries of one collision;
+## different fingerprints are distinct collisions even inside one tick.
+static func _wall_witness_fingerprint(
+	result: MotorBodyAdapter.Result
+) -> String:
+	var parts := [
+		ImpactEventScript.encode_for_digest(result.wall_contact_point),
+		ImpactEventScript.encode_for_digest(result.wall_contact_normal),
+		ImpactEventScript.encode_for_digest(
+			result.wall_pre_response_velocity_world_m_s
+		),
+		ImpactEventScript.encode_for_digest(
+			result.wall_post_response_velocity_world_m_s
+		),
+		ImpactEventScript.encode_for_digest(result.wall_contact_transform.origin),
+		ImpactEventScript.encode_for_digest(result.wall_contact_transform.basis),
+	]
+	var joined := ""
+	for index in range(parts.size()):
+		if index > 0:
+			joined += "|"
+		joined += parts[index]
+	return joined
+
+
 ## Presentation-side counters for validation reporting. These describe
 ## presentation activity only; they never gate or alter the simulation run.
 func get_presentation_telemetry() -> Dictionary:
@@ -812,6 +1036,17 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		state = published
 		ticks_committed += 1
 		_record_shift_event(proposal)
+		# Retry IDs only belong to the current accepted tick. The event ID itself
+		# includes the tick, so old maps are never needed and cannot grow with a
+		# long laboratory run.
+		_wall_event_tick_sequence.clear()
+		_wall_event_ids_by_fingerprint.clear()
+		_wall_event_accepted_result = result
+		_wall_event_accepted_tick = ticks_committed
+		# The physical tick and the mirrored canonical pair are both published
+		# now. Only this committed path may publish a wall event; every earlier
+		# refusal, stale-pose block and post-commit gearbox failure returns first.
+		publish_wall_event(result)
 		_update_telemetry(result)
 		_append_tick_log(result)
 		_update_presentation()
@@ -1170,6 +1405,7 @@ func _clear_keyboard_lifecycle_state() -> void:
 
 
 func _reset_run_state() -> void:
+	retire_wall_event_scope()
 	failed = false
 	failure_reason = ""
 	halted = false
@@ -1218,6 +1454,9 @@ func _reset_run_state() -> void:
 	last_committed_physical = null
 	if gearbox != null:
 		gearbox.reset()
+		# The gear mirror below changes only the published gear field; wall
+		# event retirement above deliberately leaves position, velocity,
+		# heading and the physical body untouched.
 		if state != null:
 			state.gear_index = gearbox.get_state().gear_index
 	if _material != null:
@@ -1293,6 +1532,13 @@ func _halt_for_pose_block() -> bool:
 func _reject_gearbox_step(reason: String) -> void:
 	gearbox_refusals += 1
 	gearbox_failure_reason = reason
+	# A wall witness on this irreversible physical tick must not be published
+	# because the canonical pair it would have accompanied was not published.
+	if last_result != null and last_result.has_wall_response_witness \
+			and last_result.has_wall_contact_point:
+		wall_event_diagnostic = (
+			"wall witness withheld: canonical gearbox pair was not published"
+		)
 	_mark_body_pose_stale(DRIVE_BODY_POSE_STALE_HALT)
 	_fail(reason)
 

@@ -19,6 +19,7 @@ const HandlingLabBuilderScript := preload("res://src/laboratory/handling_lab_bui
 const FeedbackScript := preload("res://src/audio/vehicle_feedback_player.gd")
 const SynthScript := preload("res://src/audio/vehicle_feedback_synth.gd")
 const GearboxScript := preload("res://src/simulation/automatic_gearbox.gd")
+const ImpactEventScript := preload("res://src/simulation/impact_event.gd")
 
 const DRIVE_LAB_SCENE_PATH := "res://scenes/laboratory/drive_lab.tscn"
 const SETTLE_FRAMES := 10
@@ -104,6 +105,20 @@ const ROTATED_SPAWN_TICKS := 30
 const ROTATED_SPAWN_FORWARD_STATION_M := 12.5
 const ROTATED_SPAWN_REVERSE_STATION_M := -4.0
 const ROTATED_SPAWN_LIMIT_EPSILON_M := 1e-3
+## M1.8 wall-impact regression fixture. The authored handling-lab contact bay
+## is a 500 m straight whose frontal barrier stands at s=480 m (near face at
+## 479.75 m). The fixture relocates the laboratory spawn onto that bay's
+## approach and stages a longer course specification so the 40 m course-end
+## margin cannot halt the car before the authored wall.
+const WALL_BAY_ORIGIN := Vector3(-200.0, 0.0, 60.0)
+const WALL_FACE_ROAD_Y_M := 419.75
+const WALL_SPAWN_ROAD_POSITION := Vector2(-200.0, 390.0)
+const WALL_COURSE_LENGTH_M := 600.0
+const WALL_MAX_TICKS := 600
+const WALL_VECTOR_TOLERANCE_M := 1e-5
+const WALL_LOCAL_TOLERANCE_M := 1e-5
+const WALL_NORMAL_TOLERANCE := 1e-5
+const WALL_SEVERITY_TOLERANCE_M_S := 1e-5
 
 const CASE_IDS: Array[String] = [
 	"scene_and_manifest",
@@ -121,6 +136,7 @@ const CASE_IDS: Array[String] = [
 	"reconfigure_presentation_counters",
 	"audio_feedback_integration",
 	"gearbox_integration",
+	"wall_impact_integration",
 ]
 
 var d := DriveLabChecks.new()
@@ -171,6 +187,31 @@ class GearboxFaultInjector extends AutomaticGearbox:
 		if fault == "mirror_refused":
 			return null
 		return super.mirror_gear(car_state)
+
+
+## Test-only gearbox that refuses a proposal once the committed road-y pose
+## reaches a threshold. The wall-impact case arms it on the tick that must
+## reach the authored barrier, proving no event is published when the
+## canonical gearbox/CarState pair cannot be published.
+class GearboxPositionFaultInjector extends AutomaticGearbox:
+	var _position_y_threshold_m := INF
+
+	func _init(
+		config: AutomaticGearbox.GearboxConfig, position_y_threshold_m: float
+	) -> void:
+		_forward_gear_count = config.forward_gear_count
+		_upshifts = config.upshift_speeds_m_s.duplicate()
+		_downshifts = config.downshift_speeds_m_s.duplicate()
+		_min_shift_dwell_s = config.min_shift_dwell_s
+		_reverse_exit_forward_speed_m_s = config.reverse_exit_forward_speed_m_s
+		_top_reference_speed_m_s = config.top_reference_speed_m_s
+		reset()
+		_position_y_threshold_m = position_y_threshold_m
+
+	func propose(car_state, dt: float = 1.0 / 60.0):
+		if car_state != null and car_state.position_m.y >= _position_y_threshold_m:
+			return null
+		return super.propose(car_state, dt)
 
 
 func _ready() -> void:
@@ -244,6 +285,8 @@ func _run_case(case_id: String) -> Dictionary:
 			await _case_audio_feedback_integration()
 		"gearbox_integration":
 			await _case_gearbox_integration()
+		"wall_impact_integration":
+			await _case_wall_impact_integration()
 		_:
 			d.check(false, "unknown case %s" % case_id)
 	var result := {
@@ -629,6 +672,57 @@ func _make_real_geometry_lab(yaw_deg: float, use_marker: bool, commands: Array):
 	lab.add_child(handling)
 	_holder.add_child(lab)
 	return lab
+
+
+## Builds a DriveLab on the authored contact bay's 500 m straight so its
+## frontal wall can be reached under the laboratory's own tick path. The
+## handling-lab builder output is real and unchanged except for two explicit
+## test-fixture fields: the staged straight-bay origin points at the contact
+## approach (the car otherwise spawns on the disjoint plain straight), and the
+## staged straight length is extended so the 40 m course-end margin does not
+## halt the car before the authored barrier. No wall, road or collider is
+## invented; the collision is the committed Jolt response against the built
+## `wall_frontal` body.
+func _make_wall_hit_lab(commands: Array):
+	var lab = DriveLabScript.new()
+	lab.name = "DriveLab"
+	var handling := Node3D.new()
+	handling.name = "HandlingLab"
+	var manifest: Dictionary = HandlingLabBuilderScript.build(handling)
+	for bay in manifest.get("bays", []):
+		if String(bay.get("bay_id", "")) == "straight":
+			bay["origin"] = WALL_BAY_ORIGIN
+			bay["yaw_deg"] = 0.0
+			for section in bay.get("sections", []):
+				if String(section.get("section_id", "")) == "straight.main":
+					section["length_m"] = WALL_COURSE_LENGTH_M
+	# Remove the builder's authored straight marker so the manifest fallback
+	# above is the only spawn input; leaving it would pin the car to the plain
+	# straight 160 m away from this wall.
+	var marker := handling.get_node_or_null("Spawn_straight")
+	if marker != null:
+		handling.remove_child(marker)
+		marker.free()
+	handling.set_meta("lab_manifest", manifest)
+	var configured: bool = lab.configure(d.make_tuning(), d.make_config(), commands)
+	d.check(configured, "wall.fixture.configure_accepted")
+	lab.add_child(handling)
+	_holder.add_child(lab)
+	return lab
+
+
+## Places the staged car at the fixture spawn station, preserving the support
+## height already resolved by the laboratory pose. Road y maps to world -z at
+## zero heading.
+func _place_wall_lab_at_spawn(lab) -> void:
+	var support_y: float = lab.body.global_transform.origin.y
+	var spawn := WALL_SPAWN_ROAD_POSITION
+	lab.start_position_m = spawn
+	lab.state.position_m = spawn
+	lab.body.global_transform = Transform3D(
+		AdapterScript.basis_from_heading(0.0),
+		Vector3(spawn.x, support_y, -spawn.y)
+	)
 
 
 func _rotated_spawn_zero_control() -> void:
@@ -3586,6 +3680,367 @@ func _gearbox_mirror_refusal_checks() -> void:
 	)
 	_gearbox_assert_pose_block_survives_configure(lab, "gearbox.failure.mirror")
 	await _gearbox_assert_auto_tick_refused(lab, "gearbox.failure.mirror")
+	await _teardown_lab(lab)
+
+
+# --- M1.8 wall-impact integration ----------------------------------------
+
+
+func _case_wall_impact_integration() -> void:
+	await _wall_hit_publication_and_retry_checks()
+	await _wall_refusal_paths_emit_no_event_checks()
+	await _wall_postcommit_gearbox_failure_withholds_witness_checks()
+	await _wall_scope_retirement_keeps_car_state_checks()
+
+
+## Drives one real pinned-Jolt head-on hit against the authored contact-bay
+## frontal wall through the laboratory's own tick path, then proves the event
+## was published on that committed tick and coalesces identical retries.
+func _wall_hit_publication_and_retry_checks() -> void:
+	var lab = _make_wall_hit_lab([])
+	if lab == null:
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	_place_wall_lab_at_spawn(lab)
+	await _settle()
+	d.check_exact_float(lab.state.heading_rad, 0.0, "wall.spawn.heading_is_zero")
+	d.check(not lab.is_course_limit_reached(), "wall.spawn.inside_course_limits")
+	var committed_before := int(lab.ticks_committed)
+	var witness = null
+	var hit_index := -1
+	for index in range(WALL_MAX_TICKS):
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null:
+			d.check(false, "wall.run.tick_%d_returned_null: %s" % [index, lab.failure_reason])
+			break
+		if result.has_wall_response_witness and result.has_wall_contact_point:
+			witness = result
+			hit_index = index
+			break
+	if witness == null:
+		d.check(false, "wall.run.committed_wall_witness_occurred")
+		await _teardown_lab(lab)
+		return
+	d.check(
+		int(witness.status) == int(AdapterScript.Status.COMMITTED),
+		"wall.run.witness_status_committed"
+	)
+	d.check(
+		int(lab.ticks_committed) == committed_before + hit_index + 1,
+		"wall.run.one_commit_per_tick_up_to_witness"
+	)
+	d.check(not lab.failed and not lab.halted, "wall.run.laboratory_not_failed_or_halted")
+	var telemetry: Dictionary = lab.get_wall_event_telemetry()
+	d.check(int(telemetry["published"]) == 1, "wall.pub.exactly_one_event_published")
+	d.check(int(telemetry["coalesced"]) == 0, "wall.pub.no_coalesce_on_first_publication")
+	d.check(int(telemetry["refused"]) == 0, "wall.pub.no_refusal_on_first_publication")
+	d.check(int(telemetry["identity_tick_slots"]) <= 1, "wall.pub.retry_id_map_is_bounded")
+	d.check(str(telemetry["diagnostic"]) == "", "wall.pub.no_diagnostic_on_success")
+	d.check(lab.get_wall_event_count() == 1, "wall.pub.ledger_retains_one_event")
+	var event := lab.get_last_wall_event()
+	d.check(event != null, "wall.pub.last_event_present")
+	if event == null:
+		await _teardown_lab(lab)
+		return
+	d.check(
+		event.event_id.begins_with(DriveLabScript.WALL_EVENT_ID_PREFIX + "."),
+		"wall.pub.caller_owned_event_id_prefix"
+	)
+	d.check(
+		event.primary_car_id == DriveLabScript.WALL_EVENT_PRIMARY_CAR_ID,
+		"wall.pub.stable_primary_car_id"
+	)
+	d.check(
+		int(event.tick_index) == int(lab.ticks_committed),
+		"wall.pub.event_matches_published_tick"
+	)
+	d.check(event.committed, "wall.pub.event_marked_committed")
+	d.check(str(event.contact_id) == "", "wall.pub.wall_event_has_no_contact_link")
+	var expected_severity := ImpactEventScript.stable_norm(
+		witness.wall_pre_response_velocity_world_m_s
+		- witness.wall_post_response_velocity_world_m_s
+	)
+	d.check_close(
+		event.severity_m_s, expected_severity, WALL_SEVERITY_TOLERANCE_M_S,
+		"wall.pub.severity_is_witness_change"
+	)
+	d.check_vector_close(
+		event.post_contact_velocity_world_m_s,
+		witness.wall_post_response_velocity_world_m_s,
+		WALL_VECTOR_TOLERANCE_M,
+		"wall.pub.post_velocity_is_witness_value"
+	)
+	d.check_vector_close(
+		event.contact_point_world_m, witness.wall_contact_point,
+		WALL_VECTOR_TOLERANCE_M, "wall.pub.world_point_is_witness_value"
+	)
+	var expected_local: Vector3 = (
+		witness.wall_contact_transform.affine_inverse() * witness.wall_contact_point
+	)
+	d.check_vector_close(
+		event.contact_point_local_m, expected_local, WALL_LOCAL_TOLERANCE_M,
+		"wall.pub.local_point_is_collision_time_inverse"
+	)
+	d.check(event.imparted_motion_m == Vector3.ZERO, "wall.pub.imparted_motion_zero")
+	d.check(
+		event.region == ImpactEventScript.ContactRegion.FRONT,
+		"wall.pub.head_on_front_region"
+	)
+	d.check_vector_close(
+		event.contact_normal_world_m, Vector3(0.0, 0.0, 1.0),
+		WALL_NORMAL_TOLERANCE, "wall.pub.frontal_normal_projects_to_plus_z"
+	)
+	d.check_exact_float(
+		event.contact_normal_world_m.y, 0.0,
+		"wall.pub.normal_road_plane_projected"
+	)
+	d.check(event.is_valid(), "wall.pub.event_is_valid")
+	d.check(event.severity_m_s > 15.0, "wall.pub.real_hit_exceeds_15_m_s")
+	d.check(
+		event.post_contact_velocity_world_m_s.length()
+			< witness.wall_pre_response_velocity_world_m_s.length() * 0.2,
+		"wall.pub.real_hit_loses_most_inward_speed"
+	)
+	measurements["wall_hit_tick"] = hit_index
+	measurements["wall_event_id"] = event.event_id
+	measurements["wall_severity_m_s"] = event.severity_m_s
+	measurements["wall_region"] = event.region_name()
+	var state_snapshot := d.snapshot_state(lab.state)
+	var body_snapshot: Transform3D = lab.body.global_transform
+	var first_retry: bool = lab.publish_wall_event(witness)
+	d.check(first_retry, "wall.retry.first_returns_represented")
+	var telemetry_after_first: Dictionary = lab.get_wall_event_telemetry()
+	d.check(int(telemetry_after_first["coalesced"]) == 1, "wall.retry.first_coalesced")
+	d.check(
+		int(telemetry_after_first["published"]) == 1,
+		"wall.retry.first_does_not_publish_twice"
+	)
+	d.check(lab.get_wall_event_count() == 1, "wall.retry.ledger_still_one_event")
+	var retried := lab.get_last_wall_event()
+	d.check(
+		retried != null and retried.event_id == event.event_id,
+		"wall.retry.same_caller_owned_id"
+	)
+	d.check(
+		lab.find_wall_event(event.event_id) != null,
+		"wall.retry.retained_by_original_id"
+	)
+	var second_retry: bool = lab.publish_wall_event(witness)
+	d.check(second_retry, "wall.retry.second_returns_represented")
+	d.check(
+		int(lab.get_wall_event_telemetry()["coalesced"]) == 2,
+		"wall.retry.second_coalesced"
+	)
+	d.check(
+		lab.get_wall_event_count() == 1,
+		"wall.retry.ledger_still_one_event_after_second"
+	)
+	d.check(
+		d.snapshot_state(lab.state) == state_snapshot,
+		"wall.retry.publication_leaves_car_state_unchanged"
+	)
+	d.check(
+		lab.body.global_transform == body_snapshot,
+		"wall.retry.publication_leaves_body_pose_unchanged"
+	)
+	lab.retire_wall_event_scope()
+	d.check(
+		not lab.publish_wall_event(witness),
+		"wall.retry.retired_witness_cannot_republish_in_new_scope"
+	)
+	d.check(lab.get_wall_event_count() == 0, "wall.retry.retired_scope_stays_empty")
+	await _teardown_lab(lab)
+
+
+## Adapter refusal, post-commit gearbox failure and the resulting stale-pose
+## block must all emit no wall event.
+func _wall_refusal_paths_emit_no_event_checks() -> void:
+	var lab = _make_lab([])
+	if lab != null:
+		lab.set_auto_tick(false)
+		await _settle()
+		var result = lab.step_once(null)
+		d.check(
+			result != null
+			and int(result.status) != int(AdapterScript.Status.COMMITTED),
+			"wall.refusal.adapter_refusal_returned"
+		)
+		d.check(lab.failed, "wall.refusal.lab_failed")
+		d.check(
+			lab.get_wall_event_count() == 0,
+			"wall.refusal.no_event_on_adapter_refusal"
+		)
+		var refusal_telemetry: Dictionary = lab.get_wall_event_telemetry()
+		d.check(
+			int(refusal_telemetry["published"]) == 0
+			and int(refusal_telemetry["refused"]) == 0,
+			"wall.refusal.no_publication_counters"
+		)
+		await _teardown_lab(lab)
+	var lab2 = _make_lab([])
+	if lab2 == null:
+		return
+	lab2.set_auto_tick(false)
+	await _settle()
+	await _gearbox_manual_run(lab2, _throttle_commands(20))
+	var injector := GearboxFaultInjector.new(
+		lab2.make_laboratory_gearbox_config(), "proposal_refused"
+	)
+	injector.restore_state(lab2.gearbox.get_state())
+	lab2.gearbox = injector
+	var failed = lab2.step_once(d.throttle_command(1.0))
+	d.check(failed != null, "wall.refusal.gearbox_failure_result_present")
+	d.check(
+		lab2.failed and lab2.is_drive_replay_blocked(),
+		"wall.refusal.pose_blocked"
+	)
+	d.check(
+		lab2.get_wall_event_count() == 0,
+		"wall.refusal.no_event_on_gearbox_failure"
+	)
+	var blocked = lab2.step_once(d.throttle_command(1.0))
+	d.check(blocked == null, "wall.refusal.stale_pose_tick_returns_null")
+	d.check(
+		lab2.get_wall_event_count() == 0,
+		"wall.refusal.no_event_on_stale_pose_block"
+	)
+	await _teardown_lab(lab2)
+
+
+## Arms a position-gated gearbox refusal on the exact tick that reaches the
+## authored wall. The physical tick carries a real wall witness, but the
+## canonical pair is not published, so the laboratory must withhold the event
+## and record why.
+func _wall_postcommit_gearbox_failure_withholds_witness_checks() -> void:
+	var lab = _make_wall_hit_lab([])
+	if lab == null:
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	_place_wall_lab_at_spawn(lab)
+	await _settle()
+	var half_length: float = lab.hull_shape.size.z * 0.5
+	var expected_stop_y: float = WALL_FACE_ROAD_Y_M - half_length
+	var gap := INF
+	var armed := false
+	var guard := 0
+	while guard < WALL_MAX_TICKS:
+		var front_y: float = lab.state.position_m.y + half_length
+		gap = WALL_FACE_ROAD_Y_M - front_y
+		var step_m: float = maxf(lab.state.speed_m_s() * DriveLabScript.DT, 0.02)
+		if gap <= step_m * 1.2:
+			armed = true
+			break
+		var result = lab.step_once(d.throttle_command(1.0))
+		if result == null:
+			break
+		guard += 1
+	d.check(armed, "wall.withheld.car_reached_one_tick_of_wall (guard=%d)" % guard)
+	if not armed:
+		await _teardown_lab(lab)
+		return
+	var committed_before := int(lab.ticks_committed)
+	var threshold: float = expected_stop_y - gap * 0.25
+	var injector := GearboxPositionFaultInjector.new(
+		lab.make_laboratory_gearbox_config(), threshold
+	)
+	injector.restore_state(lab.gearbox.get_state())
+	lab.gearbox = injector
+	var failing = lab.step_once(d.throttle_command(1.0))
+	d.check(failing != null, "wall.withheld.failing_tick_returned_result")
+	if failing != null:
+		d.check(
+			int(failing.status) == int(AdapterScript.Status.COMMITTED),
+			"wall.withheld.physical_tick_committed"
+		)
+		d.check(
+			failing.has_wall_response_witness and failing.has_wall_contact_point,
+			"wall.withheld.real_wall_witness_present"
+		)
+	d.check(lab.failed and lab.halted, "wall.withheld.lab_failed_and_halted")
+	d.check(lab.is_drive_replay_blocked(), "wall.withheld.pose_blocked")
+	d.check(
+		int(lab.ticks_committed) == committed_before,
+		"wall.withheld.no_pair_published_for_witness_tick"
+	)
+	d.check(lab.get_wall_event_count() == 0, "wall.withheld.no_event_emitted")
+	var withheld_telemetry: Dictionary = lab.get_wall_event_telemetry()
+	d.check(int(withheld_telemetry["published"]) == 0, "wall.withheld.no_publish_counter")
+	d.check(
+		not str(withheld_telemetry["diagnostic"]).is_empty(),
+		"wall.withheld.diagnostic_recorded"
+	)
+	d.check(
+		str(withheld_telemetry["diagnostic"]).contains("withheld"),
+		"wall.withheld.diagnostic_explains_withheld_witness"
+	)
+	var blocked = lab.step_once(d.throttle_command(1.0))
+	d.check(blocked == null, "wall.withheld.stale_tick_returns_null")
+	d.check(lab.get_wall_event_count() == 0, "wall.withheld.still_no_event")
+	if failing != null:
+		d.check(
+			not lab.publish_wall_event(failing),
+			"wall.withheld.direct_adapter_result_is_not_an_accepted_pair"
+		)
+		d.check(
+			lab.get_wall_event_count() == 0,
+			"wall.withheld.direct_retry_leaves_ledger_empty"
+		)
+	await _teardown_lab(lab)
+
+
+## Reconfiguration and explicit retirement clear the event scope and advance
+## its generation without moving the committed car or the physical body.
+func _wall_scope_retirement_keeps_car_state_checks() -> void:
+	var lab = _make_lab(_throttle_commands(5))
+	if lab == null:
+		return
+	lab.set_auto_tick(false)
+	await _settle()
+	await _gearbox_manual_run(lab, _throttle_commands(3))
+	var telemetry_before: Dictionary = lab.get_wall_event_telemetry()
+	var generation_before := int(telemetry_before["scope_generation"])
+	var state_before := d.snapshot_state(lab.state)
+	var body_before: Transform3D = lab.body.global_transform
+	var reconfigured: bool = lab.configure(d.make_tuning(), d.make_config(), [])
+	d.check(reconfigured, "wall.reset.configure_accepted")
+	var telemetry_after: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(telemetry_after["scope_generation"]) == generation_before + 1,
+		"wall.reset.scope_generation_advanced"
+	)
+	d.check(lab.get_wall_event_count() == 0, "wall.reset.ledger_empty")
+	d.check(
+		int(telemetry_after["published"]) == 0
+			and int(telemetry_after["coalesced"]) == 0
+			and int(telemetry_after["refused"]) == 0,
+		"wall.reset.counters_zero"
+	)
+	d.check(str(telemetry_after["diagnostic"]) == "", "wall.reset.diagnostic_clear")
+	d.check(int(telemetry_after["identity_tick_slots"]) == 0, "wall.reset.retry_id_map_clear")
+	d.check(
+		d.snapshot_state(lab.state) == state_before,
+		"wall.reset.car_state_unchanged"
+	)
+	d.check(
+		lab.body.global_transform == body_before,
+		"wall.reset.body_pose_unchanged"
+	)
+	lab.retire_wall_event_scope()
+	var telemetry_retired: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(telemetry_retired["scope_generation"]) == generation_before + 2,
+		"wall.reset.explicit_retire_advances_generation"
+	)
+	d.check(
+		d.snapshot_state(lab.state) == state_before,
+		"wall.reset.explicit_retire_car_state_unchanged"
+	)
+	d.check(
+		lab.body.global_transform == body_before,
+		"wall.reset.explicit_retire_body_unchanged"
+	)
 	await _teardown_lab(lab)
 
 
