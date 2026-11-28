@@ -34,6 +34,7 @@ rewritten.
 | `fixtures/negative/version_1_0_0.json` | Schema-valid historical `1.0.0` recipe. |
 | `fixtures/negative/stale_content_hash.json` | Wrong canonical content hash. |
 | `fixtures/negative/subnormal_reverse_acceleration.json` | Checker-accepted `reverse_acceleration_m_s2` literal `5e-324`; the pinned engine rounds it to zero and the fidelity gate refuses. |
+| `fixtures/negative/negative_zero_drag_rolling.json` | Checker-accepted `handling.drag.rolling` literal `-0.0`; `ResourceSaver` drops it as the `+0.0` script default, the reloaded resource has the opposite sign, and the fidelity gate refuses. |
 
 Fixture values are explicit synthetic placeholders (`example`/`provisional`),
 not measured production handling. The positive fixtures are adapted from
@@ -132,7 +133,11 @@ failure or refusal, `2` command-line usage error.
    policy and requires exact path-to-hex equality; a mismatch, missing or
    extra field, or malformed hex refuses with a diagnostic naming the path.
    It then re-hashes the frozen and original raw source bytes and refuses if
-   either moved while the engine was running.
+   either moved while the engine was running. For the original submitted path
+   the bytes are read through one descriptor that stays open across the read,
+   a before/after `fstat` stability check, the lexical resolution and a final
+   `stat` of the resolved target; device, inode, size and mtime must match the
+   opened file, or the bake refuses instead of publishing a mismatched label.
 7. Copy the verified `.tres` into the new output directory and write the
    manifest last. A failure before publication leaves no destination; a
    failure during publication removes the files it created and the directory.
@@ -148,7 +153,7 @@ number.
 
 The gate closes that gap without replacing the checker or reparsing in Godot:
 
-* `bake_handling.gd` writes the mapped definition's numeric fields as raw
+* `bake_handling.gd` writes the reloaded definition's numeric fields as raw
   little-endian binary64 bytes (`StreamPeerBuffer.new()`, `big_endian =
   false`, `put_double(value)`, `data_array.hex_encode()`) under
   `numeric_source_bits`, keyed by dotted source path. Covered paths are both
@@ -174,9 +179,21 @@ Example refusal for the subnormal fixture:
 [car-recipe-bake] error: handling.reverse_acceleration_m_s2: numeric-conversion-mismatch: expected source binary64 0100000000000000, engine reported 0000000000000000
 ```
 
+```text
+[car-recipe-bake] error: handling.drag.rolling: numeric-conversion-mismatch: expected source binary64 0000000000000080, engine reported 0000000000000000
+```
+
 This gate covers the checker-to-Godot boundary for the fields the committed
 mapper consumes. It does not repair the pinned parser, and it does not make
 Godot's number parsing correctly rounded.
+
+`numeric_source_bits` is taken from the `ResourceLoader` result, not from the
+in-memory mapped definition. `ResourceSaver` omits properties equal to their
+script defaults, so a mapped value can differ from what the published `.tres`
+holds while still comparing equal numerically. The negative-zero fixture
+exercises exactly that: the checker accepts `handling.drag.rolling = -0.0`,
+the mapper keeps `-0.0` in memory, serialization drops it in favour of the
+`+0.0` default, and the gate sees the sign flip and refuses.
 
 ## Output contract
 
@@ -197,7 +214,7 @@ Manifest keys:
 | `source_schema_version` | Declared source recipe version (`1.1.0`), copied from the mapper result. |
 | `source_checker` | Committed checker invocation used. |
 | `source_recipe` | Absolute path of the checked source file, exactly as submitted. |
-| `source_resolved_target` | What that path resolved to just before publication, following symlinks at that moment. |
+| `source_resolved_target` | The path the submitted spelling resolved to during the final recheck, bound by device/inode/size/mtime to the descriptor the accepted bytes were read from. |
 | `source_content_hash` | Canonical `sha256:` hash of the source with `content_hash` removed, from the committed checker. |
 | `source_file_sha256` | `sha256:` hash of the raw source file bytes. |
 | `handling_definition_id` | Stable derived ID `<car_id>.handling`. |
@@ -270,11 +287,21 @@ Cases:
 13. `dangling input symlink is refused` - unreadable source, no output.
 14. `input parent symlink retargeted during the bake is refused` - same seam
     against a symlinked parent directory; refusal names the submitted path.
+15. `negative zero drag rolling is refused at its exact source path` - the
+    committed checker accepts the `-0.0` fixture, the pinned engine reloads
+    `+0.0`, and the bake exits nonzero with `handling.drag.rolling:
+    numeric-conversion-mismatch` (source bits `0000000000000080`, reloaded
+    `0000000000000000`), leaving no output directory or manifest.
+16. `source symlink retargeted inside the final recheck window is refused` -
+    unit-level helper control: a stable symlink returns its opened target,
+    then a test-only seam retargets the link after the final recheck opened
+    and read it but before it resolved the target; the helper refuses and
+    names both spellings instead of returning the new path.
 
 Positive cases 1, 2 and 11 exercise the `ResourceSaver`/`ResourceLoader` round
 trip and the exact numeric-bit gate; negative cases cover checker refusals,
 the deliberate hash control, the fidelity boundary and destination/source-path
-trust. Case 8 is unit-level and needs no engine.
+trust. Cases 8 and 16 are unit-level and need no engine.
 
 Hosted CI runs this same suite on clean Ubuntu against the digest-verified
 pinned editor, which is where the util-linux `flock` lock path is exercised;
@@ -308,6 +335,18 @@ The runner exits `0` only when every case passes.
 * The numeric gate proves binary64 equality only for the fields the committed
   mapper consumes. It does not repair the pinned JSON parser, cover deferred
   `CarDefinition` fields, or make Godot's number parsing correctly rounded.
+* `ResourceSaver` omits properties equal to their declared script defaults
+  (`revision = "0.1.0"`, `schema_version`, `notes`, an `INF` yaw cap and
+  others). A baked `.tres` therefore reloads through the current defaults of
+  `src/data/handling_definition.gd` and `src/data/definition_identity.gd`;
+  changing one silently changes what an existing artifact means without
+  changing its `resource_sha256`. The numeric gate checks source values against
+  the resource reloaded under the current script defaults, including the
+  negative-zero fixture; it does not bind future versions of those defaults.
+* The final source recheck binds `source_resolved_target` to the identity
+  (device, inode, size, mtime) observed while the accepted bytes were being
+  read. It narrows the read-to-label window but does not prevent arbitrary
+  mutation of the submitted path after that check or after publication.
 * The private tests prove this CLI slice against synthetic fixtures. They do
   not replace source-to-runtime conversion review, production-content review,
   M0.2 acceptance or release-rights clearance.

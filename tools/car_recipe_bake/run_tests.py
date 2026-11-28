@@ -14,6 +14,12 @@ Godot build under an exclusive portable lock (BSD ``lockf`` or util-linux
 * refusal to write into an existing destination directory or dangling symlink;
 * a symlinked source path that bakes through to a stable target, recording
   both the submitted spelling and the resolved target;
+* a checker-accepted negative-zero `handling.drag.rolling` literal that the
+  committed engine round trips through `ResourceSaver`/`ResourceLoader` with
+  the opposite sign, refused at its exact source path with no output;
+* a deterministic module-boundary seam that retargets a lexical source symlink
+  after the final recheck opened and read it but before it resolved the target,
+  asserting refusal and the bound target for a stable symlink;
 * a submitted symlink retargeted to different bytes between the source
   snapshot and the final recheck, refused with a path-specific diagnostic
   and no output, using a test-only ``--godot-bin`` seam; the same seam also
@@ -24,10 +30,11 @@ Every positive case also proves the pinned engine reloaded the emitted `.tres`
 through ``ResourceLoader`` and revalidated it, because that round trip is part
 of the CLI's engine step and its result is bound into the manifest.
 
-The retargeting seam is a wrapper script passed as ``--godot-bin``. The
-production CLI keeps no test hooks; the wrapper only substitutes the engine
-binary the CLI is told to run and fires inside the pinned-engine bake
-invocation, so no sleep-based race is involved.
+The end-to-end retargeting seam is a wrapper script passed as ``--godot-bin``;
+it only substitutes the engine binary the CLI is told to run and fires inside
+the pinned-engine bake invocation, so no sleep-based race is involved. The
+in-helper recheck control uses the module-level ``_SOURCE_RECHECK_SEAM`` seam,
+which production runs leave unset. No case relies on a sleep race.
 
 Standard library only. The runner writes only to its own temporary workspace
 and exits nonzero when any case fails.
@@ -352,6 +359,50 @@ def _check_subnormal_fixture_is_checker_accepted(runner: Runner) -> None:
     runner.run("subnormal reverse acceleration is accepted by the committed checker", body)
 
 
+def _check_negative_zero_drag_rolling_refusal(runner: Runner) -> None:
+    """The checker accepts `-0.0`; the published artifact must not.
+
+    `ResourceSaver` omits a property equal to its script default, so the
+    reloaded `.tres` carries the default `+0.0`. The report must come from the
+    reloaded resource so the bit gate sees that sign flip and refuses before
+    publication. A build that still reports only the in-memory mapping exits 0
+    here and fails this case.
+    """
+    fixture = FIXTURE_DIR / "negative" / "negative_zero_drag_rolling.json"
+    output_dir = runner.workspace / "out-negative-zero-drag-rolling"
+
+    def body() -> None:
+        accepted = _run_checker(fixture, timeout=runner.timeout)
+        accepted_output = (accepted.stdout or "") + "\n" + (accepted.stderr or "")
+        _require(
+            accepted.returncode == 0,
+            "the negative-zero fixture must pass the committed motor-ready "
+            "checker:\n" + accepted_output,
+        )
+
+        process = runner.bake(fixture, output_dir, expect_success=False)
+        output = (process.stdout or "") + "\n" + (process.stderr or "")
+        _require(process.returncode != 0, "refusal exit code must be nonzero")
+        _require(
+            "handling.drag.rolling: numeric-conversion-mismatch" in output,
+            f"refusal did not name handling.drag.rolling:\n{output}",
+        )
+        _require(
+            "0000000000000080" in output and "0000000000000000" in output,
+            f"refusal did not report the sign-flipped binary64 bits:\n{output}",
+        )
+        _require(
+            not output_dir.exists(),
+            "a refused bake left an output destination behind",
+        )
+        _require(
+            not (output_dir / "bake_manifest.json").exists(),
+            "a refused bake produced a success manifest",
+        )
+
+    runner.run("negative zero drag rolling is refused at its exact source path", body)
+
+
 def _check_corrupt_numeric_bit_control(runner: Runner) -> None:
     finite = FIXTURE_DIR / "positive" / "finite.json"
 
@@ -552,6 +603,76 @@ def _check_input_symlink_retarget_refusal(runner: Runner) -> None:
     runner.run("input symlink retargeted during the bake is refused", body)
 
 
+def _check_recheck_window_symlink_control(runner: Runner) -> None:
+    """Deterministic control for the final source recheck's identity binding.
+
+    The helper exposes a test-only seam invoked after the submitted path is
+    opened, read and fstat'd but before the lexical path is resolved. A stable
+    symlink must return the opened target; a seam that retargets the link to a
+    different file inside that window must refuse rather than return the new
+    path next to the old bytes' hash.
+    """
+    module = _load_bake_cli()
+    workspace = runner.workspace / "recheck-window"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target_a = workspace / "recheck-a.json"
+    target_b = workspace / "recheck-b.json"
+    target_a.write_bytes(b'{"a": true}\n')
+    target_b.write_bytes(b'{"b": true}\n')
+    link = workspace / "recheck-link.json"
+    link.symlink_to(target_a)
+    expected = "sha256:" + hashlib.sha256(target_a.read_bytes()).hexdigest()
+
+    def body() -> None:
+        returned = module._require_source_unchanged(link, expected)
+        _require(
+            returned == target_a.resolve(),
+            f"stable symlink returned {returned!r}, expected {target_a.resolve()!r}",
+        )
+
+        fired: list[Path] = []
+        original_seam = module._SOURCE_RECHECK_SEAM
+
+        def seam(path: Path) -> None:
+            fired.append(path)
+            link.unlink()
+            link.symlink_to(target_b)
+
+        module._SOURCE_RECHECK_SEAM = seam
+        try:
+            try:
+                module._require_source_unchanged(link, expected)
+            except module.BakeError as exc:
+                message = str(exc)
+                _require(
+                    "source recipe target changed" in message,
+                    f"refusal did not report a changed target: {message!r}",
+                )
+                _require(
+                    str(link) in message,
+                    f"refusal did not name the submitted path: {message!r}",
+                )
+                _require(
+                    str(target_b.resolve()) in message,
+                    f"refusal did not name the retargeted destination: {message!r}",
+                )
+            else:
+                raise CaseFailure(
+                    "helper accepted a source symlink retargeted inside the "
+                    "final recheck window"
+                )
+        finally:
+            module._SOURCE_RECHECK_SEAM = original_seam
+
+        _require(fired == [link], f"seam fired with unexpected paths: {fired!r}")
+        _require(
+            link.resolve() == target_b.resolve(),
+            "the test seam did not retarget the submitted symlink",
+        )
+
+    runner.run("source symlink retargeted inside the final recheck window is refused", body)
+
+
 def _check_dangling_input_symlink_refusal(runner: Runner) -> None:
     source_link = runner.workspace / "dangling-source-link.json"
     source_link.symlink_to(runner.workspace / "absent-source-target.json")
@@ -697,6 +818,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "handling.reverse_acceleration_m_s2: numeric-conversion-mismatch",
             failure_control=True,
         )
+        _check_negative_zero_drag_rolling_refusal(runner)
         _check_corrupt_numeric_bit_control(runner)
         _check_existing_destination_refusal(runner)
         _check_existing_symlink_refusal(runner)
@@ -704,6 +826,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _check_input_symlink_retarget_refusal(runner)
         _check_dangling_input_symlink_refusal(runner)
         _check_input_parent_symlink_retarget_refusal(runner)
+        _check_recheck_window_symlink_control(runner)
     finally:
         if args.keep_workspace:
             print(f"[tests] workspace kept at {workspace}")

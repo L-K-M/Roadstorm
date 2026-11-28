@@ -22,8 +22,12 @@ Pipeline, in order:
    serialize the ``.tres`` and reload it through ``ResourceLoader``.
 6. Re-read the submitted lexical ``--recipe`` path, following any symlinked
    leaf or parent at that moment, and require the frozen source bytes. The
-   manifest records the submitted path and the target it resolved to, so a
-   link retargeted during the bake can never be published under the old bytes.
+   path is opened once and its descriptor stays open through the read, the
+   fstat stability check, the lexical resolution and a final stat of the
+   resolved target; device, inode, size and mtime must identify the same file
+   the bytes were read from. The manifest records the submitted path and
+   that bound target, so a link retargeted during the bake can never be
+   published under the old bytes.
 7. Copy the verified ``.tres`` into the new output directory and write the
    manifest last. Any failure leaves no output directory or manifest.
 
@@ -53,7 +57,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 TOOL_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOL_DIR.parents[1]
@@ -102,6 +106,13 @@ BINARY64_HEX_LENGTH = 16
 BINARY64_HEX_RE = re.compile(r"[0-9a-f]{%d}" % BINARY64_HEX_LENGTH)
 
 ERROR_SCAN = ("SCRIPT ERROR", "Parse Error", "Failed to load script")
+
+## Test-only seam for the final source recheck. It runs after the submitted
+## path has been opened, read and fstat'd but before the lexical path is
+## resolved, so a deterministic test can retarget a symlink inside that exact
+## window without a sleep race. Production runs leave it ``None``; the CLI
+## takes no test argument.
+_SOURCE_RECHECK_SEAM: Callable[[Path], None] | None = None
 
 
 class BakeError(RuntimeError):
@@ -410,32 +421,111 @@ def _read_submitted_source(recipe_path: Path) -> bytes:
         ) from exc
 
 
-def _resolved_target(path: Path) -> str:
-    try:
-        return str(path.resolve())
-    except OSError:
-        return str(path)
+def _read_fd_bytes(descriptor: int) -> bytes:
+    """Read an open descriptor to EOF without reopening the path."""
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(descriptor, 1 << 20)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _stat_identity(stat_result: os.stat_result) -> tuple[int, int, int, int]:
+    """Return the identity and stability fields used by the source recheck."""
+    return (
+        getattr(stat_result, "st_dev", 0),
+        getattr(stat_result, "st_ino", 0),
+        getattr(stat_result, "st_size", -1),
+        getattr(stat_result, "st_mtime_ns", -1),
+    )
+
+
+def _same_open_file(opened: os.stat_result, resolved: os.stat_result) -> bool:
+    """Require the resolved path to name the file the descriptor opened.
+
+    Device and inode identify the open file on POSIX. Size and modification
+    time must agree too, so a recreated target that happens to reuse the same
+    numbers is still caught. A platform that reports no usable inode number
+    refuses rather than publish an unverified target label.
+    """
+    opened_identity = _stat_identity(opened)
+    resolved_identity = _stat_identity(resolved)
+    if opened_identity[:2] != resolved_identity[:2]:
+        return False
+    if opened_identity[2:] != resolved_identity[2:]:
+        return False
+    return bool(opened_identity[1]) or bool(resolved_identity[1])
 
 
 def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Path:
-    """Fail when the source bytes moved between checking/baking and binding.
+    """Fail unless the source target still names the opened, hashed bytes.
 
-    ``recipe_path`` is read exactly as named, so a symlinked leaf or parent is
-    followed at this moment rather than at snapshot time. The returned path is
-    what it resolved to, which the manifest records next to the submitted
-    spelling so provenance stays truthful.
+    The submitted path is opened once and its descriptor stays open through
+    the read, the fstat stability check, the lexical resolution and the final
+    stat. The returned path must be the file that descriptor refers to, so a
+    symlink retargeted between the read and the resolution cannot label bytes
+    from one file with another file's path. A changed byte image, a changed
+    target identity or a disappeared target each refuses with the submitted
+    path named and leaves no output.
     """
+    descriptor: int | None = None
     try:
-        raw = recipe_path.read_bytes()
-    except OSError as exc:
-        raise BakeError(f"could not re-read the source recipe after baking: {exc}") from exc
+        try:
+            descriptor = os.open(recipe_path, os.O_RDONLY)
+        except OSError as exc:
+            raise BakeError(
+                f"could not re-read the source recipe after baking: {exc}"
+            ) from exc
+
+        opened_before = os.fstat(descriptor)
+        raw = _read_fd_bytes(descriptor)
+        opened_after = os.fstat(descriptor)
+        if _stat_identity(opened_before) != _stat_identity(opened_after):
+            raise BakeError(
+                "source recipe changed while it was being read; refusing to "
+                f"bind it: {recipe_path}"
+            )
+
+        # Test-only seam: production code never sets this. It fires here so a
+        # deterministic test can retarget a symlink after the bytes were
+        # opened and read but before the lexical path is resolved.
+        if _SOURCE_RECHECK_SEAM is not None:
+            _SOURCE_RECHECK_SEAM(recipe_path)
+
+        try:
+            resolved_text = str(recipe_path.resolve(strict=True))
+        except (OSError, RuntimeError) as exc:
+            raise BakeError(
+                "source recipe target disappeared during the bake; refusing "
+                f"to bind it: {recipe_path} ({exc})"
+            ) from exc
+        try:
+            resolved_stat = os.stat(resolved_text)
+        except OSError as exc:
+            raise BakeError(
+                "source recipe target could not be inspected during the bake; "
+                f"refusing to bind it: {recipe_path} (resolved to "
+                f"{resolved_text}: {exc})"
+            ) from exc
+        if not _same_open_file(opened_after, resolved_stat):
+            raise BakeError(
+                "source recipe target changed during the bake; refusing to "
+                "bind the opened source to a different file: "
+                f"{recipe_path} (resolved to {resolved_text})"
+            )
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
     actual = "sha256:" + hashlib.sha256(raw).hexdigest()
     if actual != expected_raw_sha256:
         raise BakeError(
             "source recipe changed during the bake; refusing to bind the old hash: "
-            f"{recipe_path} (resolved to {_resolved_target(recipe_path)})"
+            f"{recipe_path} (resolved to {resolved_text})"
         )
-    return recipe_path.resolve()
+    return Path(resolved_text)
 
 
 def _resolve_godot(explicit: str | None) -> str:
