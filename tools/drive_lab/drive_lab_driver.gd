@@ -3844,6 +3844,148 @@ func _wall_hit_publication_and_retry_checks() -> void:
 		lab.body.global_transform == body_snapshot,
 		"wall.retry.publication_leaves_body_pose_unchanged"
 	)
+	# The accepted Result is caller-owned and mutable. Mutating any
+	# authoritative witness field after the first publication must be refused
+	# before an ID, event or ledger entry appears; an exact restore must still
+	# coalesce as the same event.
+	var saved_witness := _saved_wall_witness_state(witness)
+	var base_telemetry: Dictionary = lab.get_wall_event_telemetry()
+	var base_digest := lab.get_wall_event_content_digest()
+	var base_last_id := lab.get_last_wall_event().event_id
+	for entry in [
+		{"key": "contact_point", "field": "point", "token": "contact point"},
+		{"key": "contact_normal", "field": "normal", "token": "contact normal"},
+		{"key": "pre_response_velocity", "field": "pre_velocity", "token": "pre-response velocity"},
+		{"key": "post_response_velocity", "field": "post_velocity", "token": "post-response velocity"},
+		{"key": "collision_frame_origin", "field": "frame_origin", "token": "collision frame"},
+		{"key": "collision_frame_basis", "field": "frame_basis", "token": "collision frame"},
+		{"key": "response_witness_flag", "field": "response_flag", "token": "wall response witness flag"},
+		{"key": "contact_point_witness_flag", "field": "contact_flag", "token": "wall contact point witness flag"},
+		{"key": "adapter_status", "field": "status", "token": "adapter result status"},
+	]:
+		_apply_wall_witness_mutation(witness, str(entry["field"]))
+		var iteration_base: Dictionary = lab.get_wall_event_telemetry()
+		var mutated_retry: bool = lab.publish_wall_event(witness)
+		var key := str(entry["key"])
+		d.check(not mutated_retry, "wall.mutant.%s_refused" % key)
+		var mutant_telemetry: Dictionary = lab.get_wall_event_telemetry()
+		d.check(
+			int(mutant_telemetry["published"]) == int(base_telemetry["published"]),
+			"wall.mutant.%s_no_new_publication" % key
+		)
+		d.check(
+			int(mutant_telemetry["coalesced"]) == int(base_telemetry["coalesced"]),
+			"wall.mutant.%s_no_coalesce" % key
+		)
+		d.check(
+			int(mutant_telemetry["refused"]) == int(iteration_base["refused"]) + 1,
+			"wall.mutant.%s_counts_one_refusal" % key
+		)
+		d.check(
+			lab.get_wall_event_count() == 1,
+			"wall.mutant.%s_retains_one_event" % key
+		)
+		d.check(
+			int(mutant_telemetry["identity_tick_slots"]) <= 1,
+			"wall.mutant.%s_no_second_id_slot" % key
+		)
+		d.check(
+			lab.get_wall_event_content_digest() == base_digest,
+			"wall.mutant.%s_digest_unchanged" % key
+		)
+		var mutant_last := lab.get_last_wall_event()
+		d.check(
+			mutant_last != null and mutant_last.event_id == base_last_id,
+			"wall.mutant.%s_last_event_unchanged" % key
+		)
+		var mutant_diagnostic := str(lab.get_wall_event_diagnostic())
+		d.check(
+			mutant_diagnostic.contains("fingerprint mismatch")
+				and mutant_diagnostic.contains(str(entry["token"])),
+			"wall.mutant.%s_specific_diagnostic" % key
+		)
+		_restore_wall_witness_state(witness, saved_witness)
+	var restored_retry: bool = lab.publish_wall_event(witness)
+	d.check(restored_retry, "wall.mutant.restored_witness_still_coalesces")
+	d.check(
+		int(lab.get_wall_event_telemetry()["coalesced"])
+			== int(base_telemetry["coalesced"]) + 1,
+		"wall.mutant.restore_does_not_forge_a_second_event"
+	)
+	# A fresh Result carrying identical authoritative values is still foreign:
+	# identity belongs to the accepted object, not merely to its contents.
+	var foreign := MotorBodyAdapter.Result.new()
+	foreign.status = witness.status
+	foreign.committed_state = witness.committed_state
+	foreign.has_wall_response_witness = witness.has_wall_response_witness
+	foreign.has_wall_contact_point = witness.has_wall_contact_point
+	foreign.wall_contact = witness.wall_contact
+	foreign.wall_contact_point = witness.wall_contact_point
+	foreign.wall_contact_normal = witness.wall_contact_normal
+	foreign.wall_pre_response_velocity_world_m_s = (
+		witness.wall_pre_response_velocity_world_m_s
+	)
+	foreign.wall_post_response_velocity_world_m_s = (
+		witness.wall_post_response_velocity_world_m_s
+	)
+	foreign.wall_contact_transform = witness.wall_contact_transform
+	var before_foreign: Dictionary = lab.get_wall_event_telemetry()
+	var foreign_digest := lab.get_wall_event_content_digest()
+	var foreign_result: bool = lab.publish_wall_event(foreign)
+	d.check(not foreign_result, "wall.foreign_identical_result_refused")
+	var foreign_telemetry: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(foreign_telemetry["refused"]) == int(before_foreign["refused"]) + 1,
+		"wall.foreign_identical_result_counts_refusal"
+	)
+	d.check(
+		int(foreign_telemetry["published"]) == int(before_foreign["published"]),
+		"wall.foreign_identical_result_no_publication"
+	)
+	d.check(
+		lab.get_wall_event_content_digest() == foreign_digest,
+		"wall.foreign_identical_result_digest_unchanged"
+	)
+	d.check(
+		str(lab.get_wall_event_diagnostic()).contains(
+			"not the current accepted canonical pair"
+		),
+		"wall.foreign_identical_result_identity_diagnostic"
+	)
+	# A stale later tick must not republish the earlier tick's witness either.
+	var later_tick = lab.step_once(d.throttle_command(1.0))
+	d.check(
+		later_tick != null and not lab.failed and not lab.halted,
+		"wall.stale.later_tick_committed"
+	)
+	var before_stale: Dictionary = lab.get_wall_event_telemetry()
+	var stale_digest := lab.get_wall_event_content_digest()
+	var stale_last_id := lab.get_last_wall_event().event_id
+	var stale_retry: bool = lab.publish_wall_event(witness)
+	d.check(not stale_retry, "wall.stale.old_witness_refused")
+	var stale_telemetry: Dictionary = lab.get_wall_event_telemetry()
+	d.check(
+		int(stale_telemetry["refused"]) == int(before_stale["refused"]) + 1,
+		"wall.stale.counts_one_refusal"
+	)
+	d.check(
+		int(stale_telemetry["published"]) == int(before_stale["published"]),
+		"wall.stale.no_new_publication"
+	)
+	d.check(
+		lab.get_wall_event_content_digest() == stale_digest,
+		"wall.stale.digest_unchanged"
+	)
+	d.check(
+		lab.get_last_wall_event().event_id == stale_last_id,
+		"wall.stale.last_event_unchanged"
+	)
+	d.check(
+		str(lab.get_wall_event_diagnostic()).contains(
+			"not the current accepted canonical pair"
+		),
+		"wall.stale.tick_diagnostic"
+	)
 	lab.retire_wall_event_scope()
 	d.check(
 		not lab.publish_wall_event(witness),
@@ -3851,6 +3993,64 @@ func _wall_hit_publication_and_retry_checks() -> void:
 	)
 	d.check(lab.get_wall_event_count() == 0, "wall.retry.retired_scope_stays_empty")
 	await _teardown_lab(lab)
+
+
+## Saves every authoritative witness field the accepted-state fingerprint
+## covers, by value, so the mutation regression can restore the real witness.
+func _saved_wall_witness_state(witness) -> Dictionary:
+	return {
+		"status": witness.status,
+		"has_response_witness": witness.has_wall_response_witness,
+		"has_contact_point": witness.has_wall_contact_point,
+		"point": witness.wall_contact_point,
+		"normal": witness.wall_contact_normal,
+		"pre_velocity": witness.wall_pre_response_velocity_world_m_s,
+		"post_velocity": witness.wall_post_response_velocity_world_m_s,
+		"frame": witness.wall_contact_transform,
+	}
+
+
+## Restores a saved witness snapshot exactly. Value-type fields copy, so the
+## accepted Result becomes byte-identical to its state at acceptance.
+func _restore_wall_witness_state(witness, saved: Dictionary) -> void:
+	witness.status = saved["status"]
+	witness.has_wall_response_witness = saved["has_response_witness"]
+	witness.has_wall_contact_point = saved["has_contact_point"]
+	witness.wall_contact_point = saved["point"]
+	witness.wall_contact_normal = saved["normal"]
+	witness.wall_pre_response_velocity_world_m_s = saved["pre_velocity"]
+	witness.wall_post_response_velocity_world_m_s = saved["post_velocity"]
+	witness.wall_contact_transform = saved["frame"]
+
+
+## Applies one bounded mutation to the accepted witness for the retry-gate
+## regression. Only Result fields are touched; motor and body state stay put.
+func _apply_wall_witness_mutation(witness, field: String) -> void:
+	match field:
+		"point":
+			witness.wall_contact_point += Vector3(0.05, 0.0, 0.0)
+		"normal":
+			witness.wall_contact_normal += Vector3(0.01, 0.0, 0.0)
+		"pre_velocity":
+			witness.wall_pre_response_velocity_world_m_s += Vector3(0.1, 0.0, 0.0)
+		"post_velocity":
+			witness.wall_post_response_velocity_world_m_s += Vector3(0.1, 0.0, 0.0)
+		"frame_origin":
+			var moved: Transform3D = witness.wall_contact_transform
+			moved.origin += Vector3(0.01, 0.0, 0.0)
+			witness.wall_contact_transform = moved
+		"frame_basis":
+			var rotated: Transform3D = witness.wall_contact_transform
+			rotated.basis = rotated.basis.rotated(Vector3.RIGHT, 0.01)
+			witness.wall_contact_transform = rotated
+		"response_flag":
+			witness.has_wall_response_witness = false
+		"contact_flag":
+			witness.has_wall_contact_point = false
+		"status":
+			witness.status = MotorBodyAdapter.Status.REFUSED_MOTION_BOUND
+		"committed_velocity":
+			witness.committed_state.velocity_m_s.x += 0.1
 
 
 ## Adapter refusal, post-commit gearbox failure and the resulting stale-pose

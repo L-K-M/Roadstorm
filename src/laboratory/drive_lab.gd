@@ -221,8 +221,14 @@ var wall_events_refused := 0
 var wall_event_missed_witnesses := 0
 var wall_event_diagnostic := ""
 var _wall_event_scope_generation := 0
-var _wall_event_tick_sequence := {}
 var _wall_event_ids_by_fingerprint := {}
+## Full authoritative snapshot and fingerprint of the one wall witness state
+## accepted with the current committed tick. The accepted Result itself stays
+## caller-owned and mutable, so retries are checked against this immutable
+## snapshot rather than against the live object. Empty when no tick is
+## accepted; a new tick or an explicit retirement replaces or clears it.
+var _wall_event_accepted_fingerprint := ""
+var _wall_event_accepted_snapshot := {}
 ## Set only after the physical result and canonical gearbox/CarState pair are
 ## published. A direct caller cannot publish an adapter-only or stale result.
 var _wall_event_accepted_result: MotorBodyAdapter.Result = null
@@ -776,10 +782,11 @@ func retire_wall_event_scope() -> void:
 	wall_events_refused = 0
 	wall_event_missed_witnesses = 0
 	wall_event_diagnostic = ""
-	_wall_event_tick_sequence = {}
 	_wall_event_ids_by_fingerprint = {}
 	_wall_event_accepted_result = null
 	_wall_event_accepted_tick = -1
+	_wall_event_accepted_fingerprint = ""
+	_wall_event_accepted_snapshot = {}
 
 
 ## Read-only copy of the last published or coalesced retained wall event, or
@@ -853,11 +860,13 @@ func get_wall_event_content_digest() -> String:
 
 
 ## Publishes one committed wall witness through `WallImpactProducer` into the
-## laboratory-owned ledger. The caller (this laboratory) owns identity: the
-## event ID is deterministic per (scope generation, committed tick index,
-## collision fingerprint, per-tick sequence), so a later tick can never reuse
-## an earlier ID. An identical retry within one tick reuses its ID and the real
-## ledger coalesces it; a different witness in the same tick gets a new ID.
+## laboratory-owned ledger. Identity belongs to this laboratory and is pinned
+## to one accepted witness state per committed tick: the adapter exposes a
+## single selected wall witness, so the first publication assigns the
+## deterministic ID `<prefix>.<generation>.<tick>.0`, and an identical retry of
+## that exact state reuses it while the real ledger coalesces it. Any changed
+## witness field, a foreign Result object, a stale tick or a retired scope is
+## refused before an ID, event, ledger entry or motor state can change.
 ## Returns true only when the record is represented in the ledger (published
 ## or coalesced). Every failure is recorded as a diagnostic and leaves motor
 ## state, body pose, RNG, progress and presentation untouched.
@@ -873,6 +882,18 @@ func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 			% ticks_committed
 		)
 		return false
+	var snapshot := _wall_witness_snapshot(result)
+	var fingerprint := _wall_witness_fingerprint(snapshot)
+	if fingerprint != _wall_event_accepted_fingerprint:
+		wall_events_refused += 1
+		wall_event_diagnostic = (
+			"tick %d wall event refused: accepted witness fingerprint mismatch (%s)"
+			% [
+				ticks_committed,
+				_wall_witness_mismatch_field(snapshot, _wall_event_accepted_snapshot),
+			]
+		)
+		return false
 	if not result.has_wall_response_witness \
 			or not result.has_wall_contact_point:
 		if result.wall_contact:
@@ -883,17 +904,14 @@ func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 			)
 		return false
 	var tick := ticks_committed
-	var fingerprint := _wall_witness_fingerprint(result)
 	var ids_for_tick: Dictionary = {}
 	if _wall_event_ids_by_fingerprint.has(tick):
 		ids_for_tick = _wall_event_ids_by_fingerprint[tick]
 	var event_id: String = String(ids_for_tick.get(fingerprint, ""))
 	if event_id.is_empty():
-		var sequence := int(_wall_event_tick_sequence.get(tick, 0))
-		event_id = "%s.%d.%d.%d" % [
-			WALL_EVENT_ID_PREFIX, _wall_event_scope_generation, tick, sequence
+		event_id = "%s.%d.%d.0" % [
+			WALL_EVENT_ID_PREFIX, _wall_event_scope_generation, tick
 		]
-		_wall_event_tick_sequence[tick] = sequence + 1
 		ids_for_tick[fingerprint] = event_id
 		_wall_event_ids_by_fingerprint[tick] = ids_for_tick
 	var outcome := WallImpactProducerScript.produce(
@@ -925,23 +943,49 @@ func publish_wall_event(result: MotorBodyAdapter.Result) -> bool:
 	return false
 
 
-## Deterministic witness fingerprint covering every authoritative field the
-## producer rebuilds. Equal fingerprints are exact retries of one collision;
-## different fingerprints are distinct collisions even inside one tick.
-static func _wall_witness_fingerprint(
+## Full authoritative witness snapshot at acceptance time. Stored by value
+## because the accepted Result remains caller-owned and mutable. Every field
+## the producer rebuilds, plus the status and witness flags that gate it, is
+## captured so no mutation can pass as the accepted state.
+static func _wall_witness_snapshot(
 	result: MotorBodyAdapter.Result
-) -> String:
+) -> Dictionary:
+	var committed_velocity := Vector3.ZERO
+	if result.committed_state != null:
+		committed_velocity = MotorBodyAdapter.road_vector_to_world(
+			result.committed_state.velocity_m_s
+		)
+	return {
+		"status": int(result.status),
+		"has_response_witness": result.has_wall_response_witness,
+		"has_contact_point": result.has_wall_contact_point,
+		"point": result.wall_contact_point,
+		"normal": result.wall_contact_normal,
+		"pre_velocity": result.wall_pre_response_velocity_world_m_s,
+		"post_velocity": result.wall_post_response_velocity_world_m_s,
+		"frame_origin": result.wall_contact_transform.origin,
+		"frame_basis": result.wall_contact_transform.basis,
+		"committed_velocity": committed_velocity,
+	}
+
+
+## Deterministic fingerprint of one full witness snapshot. Equal fingerprints
+## are exact retries of the same accepted state; any difference refuses the
+## retry instead of issuing another per-tick ID.
+static func _wall_witness_fingerprint(snapshot: Dictionary) -> String:
 	var parts := [
-		ImpactEventScript.encode_for_digest(result.wall_contact_point),
-		ImpactEventScript.encode_for_digest(result.wall_contact_normal),
+		ImpactEventScript.encode_for_digest(int(snapshot["status"])),
 		ImpactEventScript.encode_for_digest(
-			result.wall_pre_response_velocity_world_m_s
+			bool(snapshot["has_response_witness"])
 		),
-		ImpactEventScript.encode_for_digest(
-			result.wall_post_response_velocity_world_m_s
-		),
-		ImpactEventScript.encode_for_digest(result.wall_contact_transform.origin),
-		ImpactEventScript.encode_for_digest(result.wall_contact_transform.basis),
+		ImpactEventScript.encode_for_digest(bool(snapshot["has_contact_point"])),
+		ImpactEventScript.encode_for_digest(snapshot["point"]),
+		ImpactEventScript.encode_for_digest(snapshot["normal"]),
+		ImpactEventScript.encode_for_digest(snapshot["pre_velocity"]),
+		ImpactEventScript.encode_for_digest(snapshot["post_velocity"]),
+		ImpactEventScript.encode_for_digest(snapshot["frame_origin"]),
+		ImpactEventScript.encode_for_digest(snapshot["frame_basis"]),
+		ImpactEventScript.encode_for_digest(snapshot["committed_velocity"]),
 	]
 	var joined := ""
 	for index in range(parts.size()):
@@ -949,6 +993,33 @@ static func _wall_witness_fingerprint(
 			joined += "|"
 		joined += parts[index]
 	return joined
+
+
+## Names the first authoritative witness field that differs from the accepted
+## snapshot, for a specific refusal diagnostic.
+func _wall_witness_mismatch_field(
+	snapshot: Dictionary, accepted: Dictionary
+) -> String:
+	if int(snapshot["status"]) != int(accepted["status"]):
+		return "adapter result status"
+	if bool(snapshot["has_response_witness"]) != bool(accepted["has_response_witness"]):
+		return "wall response witness flag"
+	if bool(snapshot["has_contact_point"]) != bool(accepted["has_contact_point"]):
+		return "wall contact point witness flag"
+	if snapshot["point"] != accepted["point"]:
+		return "contact point"
+	if snapshot["normal"] != accepted["normal"]:
+		return "contact normal"
+	if snapshot["pre_velocity"] != accepted["pre_velocity"]:
+		return "pre-response velocity"
+	if snapshot["post_velocity"] != accepted["post_velocity"]:
+		return "post-response velocity"
+	if snapshot["frame_origin"] != accepted["frame_origin"] \
+			or snapshot["frame_basis"] != accepted["frame_basis"]:
+		return "collision frame"
+	if snapshot["committed_velocity"] != accepted["committed_velocity"]:
+		return "committed planar velocity"
+	return "witness state"
 
 
 ## Presentation-side counters for validation reporting. These describe
@@ -1036,13 +1107,17 @@ func step_once(command) -> MotorBodyAdapter.Result:
 		state = published
 		ticks_committed += 1
 		_record_shift_event(proposal)
-		# Retry IDs only belong to the current accepted tick. The event ID itself
-		# includes the tick, so old maps are never needed and cannot grow with a
-		# long laboratory run.
-		_wall_event_tick_sequence.clear()
+		# Only one selected wall witness exists per committed tick. Snapshot its
+		# full authoritative state now, before the first publication; retries of
+		# this exact tick must match this snapshot, and old maps are cleared so
+		# they cannot grow with a long laboratory run.
 		_wall_event_ids_by_fingerprint.clear()
 		_wall_event_accepted_result = result
 		_wall_event_accepted_tick = ticks_committed
+		_wall_event_accepted_snapshot = _wall_witness_snapshot(result)
+		_wall_event_accepted_fingerprint = _wall_witness_fingerprint(
+			_wall_event_accepted_snapshot
+		)
 		# The physical tick and the mirrored canonical pair are both published
 		# now. Only this committed path may publish a wall event; every earlier
 		# refusal, stale-pose block and post-commit gearbox failure returns first.
