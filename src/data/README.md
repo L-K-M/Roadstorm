@@ -17,6 +17,7 @@ closure claim beyond the typed resource contracts below.
 | `definition_identity.gd` | `DefinitionIdentity` base `Resource`: schema version, stable semantic ID, revision, display name, lifecycle status, documented units/frame constants, identity diagnostics. |
 | `handling_definition.gd` | `HandlingDefinition extends DefinitionIdentity`: piecewise acceleration, braking, drag, grip yaw/lateral damping, reverse bounds, validation, code-facing curve helpers and a motor-tuning field projection. |
 | `car_definition.gd` | `CarDefinition extends DefinitionIdentity`: dimensional/contact envelope, intact mass, contact proxy, typed handling reference, draft/completeness semantics, validation. |
+| `handling_recipe_mapper.gd` | `HandlingRecipeMapper`: pure, in-memory source-recipe (1.1.0) to typed `HandlingDefinition` mapping with exact version dispatch, path-level refusal diagnostics and no file/scene mutation. |
 
 `tools/data_lab/` contains the pinned-Godot validation laboratory and runner.
 
@@ -194,38 +195,64 @@ that provenance/unknowns are resolved, or that the content is production
 complete. Source recipes may legitimately carry `null`/unknown coefficients;
 see the runtime/source mapping below.
 
-## Runtime/source mapping (no importer yet)
+## Runtime/source mapping
 
 `schemas/handling_config.schema.json` is the historical 1.0.0 editable source
 recipe; `schemas/handling_config_v1_1.schema.json` is the separate version 1.1.0
 source contract. Their nullable coefficients and `unknowns` lists preserve values
 that have not been measured. `HandlingDefinition` is a runtime-ready core subset
 and requires resolved values for every field used by `ArcadeMotor.MotorTuning`.
-A future baker must refuse to emit a motor-ready `HandlingDefinition` when a
-required source coefficient is absent, `null`, invalid or listed as unknown,
-report the missing paths and
-preserve the source `null`/`unknowns`; it must never silently substitute the
-resource's inert zero. A draft `CarDefinition` can exist for structural editing,
-but its validation alone does not authorize a motor, a measured status or
-product-complete content.
+A baker must refuse to emit a motor-ready `HandlingDefinition` when a required
+source coefficient is absent, `null`, invalid or listed as unknown, report the
+missing paths and preserve the source `null`/`unknowns`; it must never silently
+substitute the resource's inert zero. A draft `CarDefinition` can exist for
+structural editing, but its validation alone does not authorize a motor, a
+measured status or product-complete content.
+
+`HandlingRecipeMapper` implements this refusal and mapping contract as a pure
+interface:
+
+```gdscript
+var result := HandlingRecipeMapper.map_handling(recipe)
+if result.ok:
+    var handling := result.handling  # fully validated HandlingDefinition
+else:
+    for diagnostic in result.diagnostics:  # "<path>: <code>: <message>"
+        ...
+```
+
+`recipe` is an authored Dictionary matching the 1.1.0 source contract. The
+mapper reads it without mutating it or any nested member, writes no files and
+touches no scene tree. Version dispatch is exact: `"1.0.0"` is refused with the
+five missing `handling.*` paths added by 1.1.0, and every other `schema_version`
+value (including absent, non-string or trailing-newline forms) is refused as
+unsupported. For `1.1.0` all eleven motor inputs must be present, non-null,
+valid and absent from `unknowns`; the five added fields are required rather than
+defaulted. The exact sole-member object `{"unlimited": true}` maps to Godot
+`INF`; a finite positive yaw number maps through unchanged. The source declares
+`units.angle = deg`, but `max_yaw_rate_rad_s` is the documented field-level
+rad/s exception and is never converted. The mapped acceleration curve keeps
+authored order and fails closed on unordered, empty or malformed points.
+
+A refusal returns `ok == false`, `handling == null` and at least one
+path-level diagnostic. A success runs the resulting definition's full
+`validate()` and returns `ok == true` with an empty diagnostic list; a
+definition that cannot validate is never returned as a half-valid resource.
+Identity is derived as `<car_id>.handling` with display name
+`<car display_name> handling`; the car recipe's triplet `revision` and
+lifecycle `status` are copied after validation, and the typed `schema_version`
+stays `1.0.0`. The source version belongs in the future bake manifest and
+provenance `source_contract`, never in the typed resource. Full JSON
+Schema/strict-parse/content-hash validation remains the external prerequisite
+owned by `tools/car_recipe_schema/validate_car_recipe.py`; the mapper defends
+only against malformed dictionaries reaching it directly. It writes no `.tres`,
+bake manifest or provenance sidecar.
 
 The closed 1.0.0 schema has **no** source property for five required fields:
 `max_yaw_rate_rad_s` (rad/s), `reverse_trigger_speed_m_s` (m/s),
 `reverse_hold_time_s` (s), `reverse_acceleration_m_s2` (m/s²) and
 `reverse_top_speed_m_s` (m/s); the uncapped-yaw choice is likewise unsourced.
-Version 1.1.0 adds all five as required but nullable properties while keeping
-the closed shape. It represents authored uncapped yaw only as the exact object
-`{"unlimited": true}`, mapped to Godot `INF`; `null` remains unresolved. A
-future baker must refuse every 1.0.0 recipe as not motor-ready, naming all five
-missing paths, and refuse any unresolved or invalid 1.1.0 coefficient. It must
-never emit the typed defaults as if authored. This is a mapping decision, not
-implemented artifact-writing refusal code. See
-`docs/evidence/m02-typed-runtime-mapping-20261127.md`.
-
-Only directly authored typed resources are usable today: `HandlingDefinition`
-and `CarDefinition` validate and round-trip from hand-authored `.tres`, but they
-cannot yet be derived from either source recipe version. This slice remains
-provisional and does not complete M0.2.
+See `docs/evidence/m02-typed-runtime-mapping-20261127.md` for the decision.
 
 For this first runtime mapping the nested source `handling` has no independent
 identity: derive `HandlingDefinition.definition_id` as `<car_id>.handling` and
@@ -237,10 +264,8 @@ resource. The car's typed `handling` reference points to that derived identity,
 so changing a
 car's inline handling requires a car revision change. A future reusable handling
 recipe needs its own versioned contract and must not invent an identity from a
-display name. No importer is implemented in this slice.
-
-The overall authoring unit for angles is degrees; `max_yaw_rate_rad_s` is an
-explicit field-level rad/s exception required by the motor.
+display name. Only directly authored typed resources and in-memory mapper
+results exist today; no derived `.tres` artifact is written by this slice.
 
 ## Explicitly deferred work
 
@@ -255,8 +280,9 @@ No closure is claimed for content or systems beyond this slice.
 - **Other definitions:** Track, Event, Upgrade, AI profile, Ghost, Model,
   AIObservation/TacticalIntent, ReferenceRun/Scenario resources. The existing
   `schemas/` text contracts remain the source contracts.
-- **Systems:** motor integration/adapter, `.tres` importer/recipe tooling,
-  content-hash/provenance computation, baking and validation wiring.
+- **Systems:** motor integration/adapter, `.tres` artifact writer and bake
+  manifest/provenance recording for mapped recipes, content-hash computation,
+  baking and validation wiring.
 - **Product:** no authored cars, tracks, events, tunes, measures or
   milestones are produced or frozen by this slice.
 

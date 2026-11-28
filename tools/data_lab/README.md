@@ -1,10 +1,11 @@
 # M0.2 typed-resource data lab
 
 Pinned-Godot checks for `src/data/definition_identity.gd`,
-`src/data/handling_definition.gd` and `src/data/car_definition.gd`. The lab
-exercises in-memory validation, `.tres` save/load round trips, negative and
-nonfinite physical controls, dimensional bounds, identity rules, completeness
-semantics and a deliberate failing assertion.
+`src/data/handling_definition.gd`, `src/data/car_definition.gd` and the pure
+source-recipe mapper `src/data/handling_recipe_mapper.gd`. The lab exercises
+in-memory validation, `.tres` save/load round trips, source-to-typed handling
+mapping, negative and nonfinite physical controls, dimensional bounds, identity
+rules, completeness semantics and a deliberate failing assertion.
 
 ## Run
 
@@ -45,6 +46,10 @@ Exit codes:
 | `missing_handling_and_curve` | missing handling reference, empty referenced curve, minimal one-point handling |
 | `completeness_semantics` | draft/incomplete notes and deferred lists, refusal of false `COMPLETE` in this partial slice, complete-with-deferred contradiction, blank entries |
 | `curve_accessor_safety` | mismatched curve arrays refuse a truncated point view; atomic refusal of null point input |
+| `source_handling_mapping_finite` | valid 1.1.0 finite recipe maps to derived identity, copied revision/status, typed version 1.0.0, boundary reverse values, rad/s yaw exception and source-dictionary nonmutation |
+| `source_handling_mapping_unlimited` | exact `{"unlimited": true}` sole-member encoding maps to positive Godot `INF`; lower-bound trigger and nonzero reverse drive validate; source nonmutation |
+| `source_handling_mapping_refusals` | 1.0.0 refusal naming all five missing paths, unsupported/mistyped versions, missing/null/unknown motor inputs (including an unknown ancestor), missing parent/path, empty/unordered/duplicate/non-object/missing-member curves, invalid revision, bad status/identity/display name and wrong angle unit; refusals return no half-valid resource |
+| `source_handling_mapping_numeric_honesty` | NaN/infinity/overflow, boolean and numeric-string inputs refused, range bounds enforced after float conversion, rejected yaw encodings, reverse cross-field rule, non-finite curve points, exact int-to-float conversion and refusal-time source nonmutation |
 
 `--case intentional_failure` clears a curve and asserts that it remains valid;
 that assertion must fail. The runner requires the
@@ -92,8 +97,11 @@ captured log inspection is authoritative.
 
 ## Limits
 
-Pure resource checks only: no scene, body, physics query, clock, rendering,
-audio, input routing, motor integration or gameplay claim. Fixtures are
+Pure in-memory mapping and resource checks only: no scene, body, physics query,
+clock, rendering, audio, input routing, motor integration or gameplay claim.
+The mapper writes no `.tres`, bake manifest or provenance sidecar, and full JSON
+Schema/strict-parse/content-hash validation remains an external prerequisite
+owned by `tools/car_recipe_schema/validate_car_recipe.py`. Fixtures are
 synthetic `example.data_lab.*` EXAMPLE resources with arbitrary authored
 numbers, not measured handling or production content. The default handling
 fixture uses the documented derivation `example.data_lab.car.handling`; the

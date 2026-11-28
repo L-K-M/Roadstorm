@@ -23,6 +23,7 @@ const DriverScript = preload("res://tools/data_lab/data_lab_checks.gd")
 const IdentityScript = preload("res://src/data/definition_identity.gd")
 const HandlingScript = preload("res://src/data/handling_definition.gd")
 const CarScript = preload("res://src/data/car_definition.gd")
+const MapperScript = preload("res://src/data/handling_recipe_mapper.gd")
 
 const CASE_IDS := [
 	"valid_in_memory_definition",
@@ -38,6 +39,10 @@ const CASE_IDS := [
 	"missing_handling_and_curve",
 	"completeness_semantics",
 	"curve_accessor_safety",
+	"source_handling_mapping_finite",
+	"source_handling_mapping_unlimited",
+	"source_handling_mapping_refusals",
+	"source_handling_mapping_numeric_honesty",
 ]
 
 ## Fixed basenames that earlier lab revisions wrote at `res://`. The validator
@@ -149,6 +154,14 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_completeness_semantics(driver)
 		"curve_accessor_safety":
 			_case_curve_accessor_safety(driver)
+		"source_handling_mapping_finite":
+			_case_source_handling_mapping_finite(driver)
+		"source_handling_mapping_unlimited":
+			_case_source_handling_mapping_unlimited(driver)
+		"source_handling_mapping_refusals":
+			_case_source_handling_mapping_refusals(driver)
+		"source_handling_mapping_numeric_honesty":
+			_case_source_handling_mapping_numeric_honesty(driver)
 	_checks += driver.checks
 	for failure in driver.failures:
 		_failures.append("%s: %s" % [case_id, failure])
@@ -1681,6 +1694,581 @@ func _case_curve_accessor_safety(driver) -> void:
 	)
 
 
+# --- Source-recipe mapper cases ---------------------------------------------
+
+## Shared success gate for the source-recipe mapper cases. A refusal never
+## yields a usable definition, so every acceptance case funnels through here.
+func _expect_mapping_success(
+	driver: DataLabDriver, result, label: String
+) -> HandlingDefinition:
+	driver.check(bool(result.ok), "%s maps successfully" % label)
+	driver.check_eq(
+		result.diagnostics.size(), 0, "%s reports no diagnostics" % label
+	)
+	var handling = result.handling
+	driver.check(handling != null, "%s returns a HandlingDefinition" % label)
+	if handling == null:
+		return null
+	driver.check_eq(
+		handling.validate().size(),
+		0,
+		"%s result passes its own full validation" % label
+	)
+	return handling
+
+
+func _assert_refused_with(
+	driver: DataLabDriver, result, token: String, label: String
+) -> void:
+	driver.check(not bool(result.ok), "%s is refused" % label)
+	driver.check(
+		result.handling == null, "%s returns no half-valid resource" % label
+	)
+	driver.check(
+		result.diagnostics.size() > 0, "%s reports at least one diagnostic" % label
+	)
+	driver.check(
+		driver.count_diagnostics(token, result.diagnostics) > 0,
+		"%s diagnostic mentions '%s'" % [label, token]
+	)
+
+
+func _case_source_handling_mapping_finite(driver: DataLabDriver) -> void:
+	var recipe := driver.source_handling_recipe()
+	var snapshot := recipe.duplicate(true)
+	var result = MapperScript.map_handling(recipe)
+	var handling := _expect_mapping_success(driver, result, "finite 1.1.0 recipe")
+	if handling == null:
+		return
+
+	driver.check_eq(
+		result.source_schema_version, "1.1.0", "dispatched source version is reported"
+	)
+	driver.check_eq(
+		handling.definition_id,
+		"car.data_lab_mapper.handling",
+		"derived handling identity follows <car_id>.handling"
+	)
+	driver.check_eq(
+		handling.display_name,
+		"Data Lab Mapper Car handling",
+		"derived display name follows '<display_name> handling'"
+	)
+	driver.check_eq(handling.revision, "1.2.3", "triplet revision is copied unchanged")
+	driver.check_eq(
+		handling.status,
+		IdentityScript.Status.EXAMPLE,
+		"source lifecycle status maps one-to-one to the typed enum"
+	)
+	driver.check_eq(
+		handling.schema_version,
+		"1.0.0",
+		"typed schema version stays 1.0.0"
+	)
+
+	driver.check_eq(
+		handling.acceleration_curve_speeds_m_s.size(),
+		2,
+		"finite mapping keeps both authored curve points"
+	)
+	driver.check_float_eq(
+		handling.acceleration_curve_speeds_m_s[1],
+		25.0,
+		0.0,
+		"curve speed copied as authored"
+	)
+	driver.check_float_eq(
+		handling.acceleration_curve_accelerations_m_s2[1],
+		3.0,
+		0.0,
+		"curve acceleration copied as authored"
+	)
+	driver.check_float_eq(
+		handling.braking_acceleration_m_s2, 8.0, 0.0, "braking copied as authored"
+	)
+	driver.check_float_eq(
+		handling.drag_aerodynamic, 0.003, 0.0, "aerodynamic drag copied as authored"
+	)
+	driver.check_float_eq(
+		handling.drag_rolling, 0.3, 0.0, "rolling drag copied as authored"
+	)
+	driver.check_float_eq(
+		handling.yaw_gain_grip, 1.5, 0.0, "grip yaw gain copied as authored"
+	)
+	driver.check_float_eq(
+		handling.lateral_damping_grip_per_s, 5.0, 0.0, "lateral damping copied as authored"
+	)
+	# units.angle is degrees in the source, but this field is the documented
+	# rad/s exception: copy it without any degree-to-radian conversion.
+	driver.check_float_eq(
+		handling.max_yaw_rate_rad_s,
+		3.0,
+		0.0,
+		"yaw cap copied as authored rad/s despite units.angle=deg"
+	)
+
+	# Boundary reverse values from the contract: trigger at the design ceiling,
+	# hold at the design minimum, and zero reverse drive with zero top speed.
+	driver.check_float_eq(
+		handling.reverse_trigger_speed_m_s, 1.0, 0.0, "boundary reverse trigger accepted"
+	)
+	driver.check_float_eq(
+		handling.reverse_hold_time_s, 0.3, 0.0, "boundary reverse hold accepted"
+	)
+	driver.check_float_eq(
+		handling.reverse_acceleration_m_s2,
+		0.0,
+		0.0,
+		"zero reverse acceleration accepted"
+	)
+	driver.check_float_eq(
+		handling.reverse_top_speed_m_s,
+		0.0,
+		0.0,
+		"zero reverse top speed accepted with zero reverse acceleration"
+	)
+
+	driver.check(
+		recipe == snapshot,
+		"finite mapping leaves the authored source dictionary byte-for-value unchanged"
+	)
+
+	driver.measure("mapper_curve_points", handling.get_acceleration_points().size())
+	driver.measure("mapper_ok", bool(result.ok))
+
+	# The source checker rejects malformed unknowns entries before baking. A
+	# direct mapper caller still must not crash on an entry lacking `path`.
+	var malformed_unknowns := driver.source_handling_recipe()
+	malformed_unknowns["unknowns"] = [{}]
+	var malformed_result = MapperScript.map_handling(malformed_unknowns)
+	driver.check(
+		bool(malformed_result.ok),
+		"malformed unknowns entry contributes no motor path and does not crash"
+	)
+
+
+func _case_source_handling_mapping_unlimited(driver: DataLabDriver) -> void:
+	var recipe := driver.source_handling_recipe()
+	recipe["handling"]["max_yaw_rate_rad_s"] = {"unlimited": true}
+	recipe["handling"]["reverse_trigger_speed_m_s"] = 0.0
+	recipe["handling"]["reverse_hold_time_s"] = 0.3
+	recipe["handling"]["reverse_acceleration_m_s2"] = 2.0
+	recipe["handling"]["reverse_top_speed_m_s"] = 5.0
+	var snapshot := recipe.duplicate(true)
+	var result = MapperScript.map_handling(recipe)
+	var handling := _expect_mapping_success(driver, result, "unlimited-yaw recipe")
+	if handling == null:
+		return
+
+	driver.check(
+		is_inf(handling.max_yaw_rate_rad_s),
+		"exact {\"unlimited\": true} maps to Godot INF"
+	)
+	driver.check(
+		handling.max_yaw_rate_rad_s > 0.0, "mapped uncapped yaw rate is positive infinity"
+	)
+	driver.check_float_eq(
+		handling.reverse_trigger_speed_m_s,
+		0.0,
+		0.0,
+		"lower boundary reverse trigger accepted"
+	)
+	driver.check_float_eq(
+		handling.reverse_acceleration_m_s2,
+		2.0,
+		0.0,
+		"positive reverse acceleration copied"
+	)
+	driver.check_float_eq(
+		handling.reverse_top_speed_m_s,
+		5.0,
+		0.0,
+		"positive reverse top speed copied"
+	)
+	driver.check(
+		recipe == snapshot,
+		"unlimited mapping leaves the authored source dictionary unchanged"
+	)
+
+
+func _case_source_handling_mapping_refusals(driver: DataLabDriver) -> void:
+	# Version dispatch: a 1.0.0 recipe is refused by naming the five properties
+	# added in 1.1.0, independent of the rest of the document.
+	var old := driver.source_handling_recipe()
+	old["schema_version"] = "1.0.0"
+	var old_result = MapperScript.map_handling(old)
+	driver.check(not bool(old_result.ok), "1.0.0 recipe is refused")
+	driver.check_eq(
+		driver.count_diagnostics(": missing-field:", old_result.diagnostics),
+		5,
+		"1.0.0 refusal names exactly five missing paths"
+	)
+	for token in [
+		"handling.max_yaw_rate_rad_s",
+		"handling.reverse_trigger_speed_m_s",
+		"handling.reverse_hold_time_s",
+		"handling.reverse_acceleration_m_s2",
+		"handling.reverse_top_speed_m_s",
+	]:
+		driver.check(
+			driver.count_diagnostics(token, old_result.diagnostics) > 0,
+			"1.0.0 refusal names %s" % token
+		)
+
+	# Every other version is unsupported, including mistyped/absent values.
+	for candidate in ["2.0.0", "1.2", "1.1.0\n"]:
+		var versioned := driver.source_handling_recipe()
+		versioned["schema_version"] = candidate
+		_assert_refused_with(
+			driver,
+			MapperScript.map_handling(versioned),
+			"unsupported-schema-version",
+			"version %s" % candidate
+		)
+	var absent := driver.source_handling_recipe()
+	absent.erase("schema_version")
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(absent),
+		"unsupported-schema-version",
+		"absent version"
+	)
+	var mistyped := driver.source_handling_recipe()
+	mistyped["schema_version"] = 1
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(mistyped),
+		"unsupported-schema-version",
+		"non-string version"
+	)
+
+	# Missing, null and unknown motor inputs each fail closed.
+	var missing := driver.source_handling_recipe()
+	missing["handling"].erase("braking_acceleration_m_s2")
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(missing),
+		"handling.braking_acceleration_m_s2: missing-field",
+		"missing braking input"
+	)
+
+	var null_input := driver.source_handling_recipe()
+	null_input["handling"]["braking_acceleration_m_s2"] = null
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(null_input),
+		"handling.braking_acceleration_m_s2: motor-input-unresolved",
+		"null braking input"
+	)
+
+	var unknown_input := driver.source_handling_recipe()
+	unknown_input["unknowns"].append(
+		{"path": "handling.drag.aerodynamic", "reason": "listed by the test"}
+	)
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(unknown_input),
+		"handling.drag.aerodynamic: motor-input-unknown",
+		"resolved value listed in unknowns"
+	)
+
+	var ancestor_unknown := driver.source_handling_recipe()
+	ancestor_unknown["unknowns"].append(
+		{"path": "handling", "reason": "whole-section placeholder"}
+	)
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(ancestor_unknown),
+		"handling.braking_acceleration_m_s2: motor-input-unknown",
+		"unknown ancestor covering a required input"
+	)
+
+	var missing_parent := driver.source_handling_recipe()
+	missing_parent["handling"].erase("drag")
+	var missing_parent_result = MapperScript.map_handling(missing_parent)
+	driver.check(not bool(missing_parent_result.ok), "missing drag parent is refused")
+	driver.check(
+		driver.count_diagnostics(
+			"handling.drag.aerodynamic: missing-field", missing_parent_result.diagnostics
+		) > 0,
+		"missing drag parent reports the aerodynamic path"
+	)
+	driver.check(
+		driver.count_diagnostics(
+			"handling.drag.rolling: missing-field", missing_parent_result.diagnostics
+		) > 0,
+		"missing drag parent reports the rolling path"
+	)
+
+	var no_handling := driver.source_handling_recipe()
+	no_handling.erase("handling")
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(no_handling),
+		"handling: bad-handling",
+		"missing handling object"
+	)
+
+	# Acceleration-curve structure and ordering.
+	var empty_curve := driver.source_handling_recipe()
+	empty_curve["handling"]["acceleration_curve"] = []
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(empty_curve),
+		"handling.acceleration_curve: motor-input-empty",
+		"empty acceleration curve"
+	)
+
+	var unordered := driver.source_handling_recipe()
+	unordered["handling"]["acceleration_curve"] = [
+		{"speed_m_s": 25.0, "acceleration_m_s2": 3.0},
+		{"speed_m_s": 0.0, "acceleration_m_s2": 7.0},
+	]
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(unordered),
+		"handling.acceleration_curve[1].speed_m_s: motor-input-order",
+		"decreasing curve speeds"
+	)
+
+	var duplicate_speed := driver.source_handling_recipe()
+	duplicate_speed["handling"]["acceleration_curve"] = [
+		{"speed_m_s": 10.0, "acceleration_m_s2": 7.0},
+		{"speed_m_s": 10.0, "acceleration_m_s2": 6.0},
+	]
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(duplicate_speed),
+		"does not strictly exceed previous speed",
+		"equal curve speeds"
+	)
+
+	var bad_point := driver.source_handling_recipe()
+	bad_point["handling"]["acceleration_curve"][0].erase("acceleration_m_s2")
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(bad_point),
+		"handling.acceleration_curve[0].acceleration_m_s2: missing-field",
+		"curve point missing a required member"
+	)
+
+	var scalar_point := driver.source_handling_recipe()
+	scalar_point["handling"]["acceleration_curve"][0] = 7.0
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(scalar_point),
+		"handling.acceleration_curve[0]: bad-acceleration-point",
+		"curve point that is not an object"
+	)
+
+	# Invalid identity, revision, status and unit context.
+	var bad_revision := driver.source_handling_recipe()
+	bad_revision["revision"] = "1.0"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(bad_revision),
+		"revision: invalid-revision",
+		"two-component revision"
+	)
+	var leading_zero_revision := driver.source_handling_recipe()
+	leading_zero_revision["revision"] = "01.0.0"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(leading_zero_revision),
+		"revision: invalid-revision",
+		"leading-zero revision"
+	)
+
+	var bad_status := driver.source_handling_recipe()
+	bad_status["status"] = "Example"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(bad_status),
+		"status: bad-status",
+		"wrong-case status"
+	)
+	var bad_car_id := driver.source_handling_recipe()
+	bad_car_id["car_id"] = "Bad ID"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(bad_car_id),
+		"car_id: bad-car-id",
+		"malformed car id"
+	)
+	var leading_digit_id := driver.source_handling_recipe()
+	leading_digit_id["car_id"] = "1car"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(leading_digit_id),
+		"car_id: bad-car-id",
+		"leading-digit car id"
+	)
+	var blank_display := driver.source_handling_recipe()
+	blank_display["display_name"] = ""
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(blank_display),
+		"display_name: bad-display-name",
+		"empty display name"
+	)
+
+	var wrong_angle_unit := driver.source_handling_recipe()
+	wrong_angle_unit["units"]["angle"] = "rad"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(wrong_angle_unit),
+		"units.angle: bad-unit",
+		"unexpected angle unit"
+	)
+
+	driver.measure("mapper_refusal_checks", 1)
+
+
+func _case_source_handling_mapping_numeric_honesty(driver: DataLabDriver) -> void:
+	# Non-finite runtime values are refused, never clamped.
+	var nan_braking := driver.source_handling_recipe()
+	nan_braking["handling"]["braking_acceleration_m_s2"] = NAN
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(nan_braking),
+		"handling.braking_acceleration_m_s2: bad-number: non-finite",
+		"NaN braking input"
+	)
+
+	var inf_drag := driver.source_handling_recipe()
+	inf_drag["handling"]["drag"]["rolling"] = INF
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(inf_drag),
+		"handling.drag.rolling: bad-number: non-finite",
+		"infinite drag input"
+	)
+
+	# A float overflow expression becomes infinity and must be refused rather
+	# than silently accepted as a huge finite coefficient.
+	var overflow := driver.source_handling_recipe()
+	overflow["handling"]["braking_acceleration_m_s2"] = 1e308 * 10.0
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(overflow),
+		"non-finite number",
+		"overflowing numeric input"
+	)
+
+	# Booleans and numeric strings are not numbers.
+	var bool_braking := driver.source_handling_recipe()
+	bool_braking["handling"]["braking_acceleration_m_s2"] = true
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(bool_braking),
+		"expected a finite number, got bool",
+		"boolean used as a number"
+	)
+	var string_braking := driver.source_handling_recipe()
+	string_braking["handling"]["braking_acceleration_m_s2"] = "9.0"
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(string_braking),
+		"expected a finite number, got String",
+		"numeric string used as a number"
+	)
+
+	# Range bounds are enforced after honest float conversion.
+	var negative_braking := driver.source_handling_recipe()
+	negative_braking["handling"]["braking_acceleration_m_s2"] = -1.0
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(negative_braking),
+		"handling.braking_acceleration_m_s2: bad-number: -1.0 is below the minimum 0.0",
+		"negative braking input"
+	)
+	var high_trigger := driver.source_handling_recipe()
+	high_trigger["handling"]["reverse_trigger_speed_m_s"] = 1.5
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(high_trigger),
+		"handling.reverse_trigger_speed_m_s: bad-number: 1.5 is above the maximum 1.0",
+		"reverse trigger above the design ceiling"
+	)
+	var low_hold := driver.source_handling_recipe()
+	low_hold["handling"]["reverse_hold_time_s"] = 0.1
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(low_hold),
+		"handling.reverse_hold_time_s: bad-number: 0.1 is below the minimum 0.3",
+		"reverse hold below the design minimum"
+	)
+
+	# Yaw encoding: only finite positive numbers and the exact sole-member
+	# unlimited object are accepted.
+	for rejected in [0.0, -1.0, -INF, NAN, true, "Infinity", {}, {"unlimited": false}, {"unlimited": true, "extra": 1}]:
+		var rejected_recipe := driver.source_handling_recipe()
+		rejected_recipe["handling"]["max_yaw_rate_rad_s"] = rejected
+		var rejected_result = MapperScript.map_handling(rejected_recipe)
+		driver.check(
+			not bool(rejected_result.ok),
+			"yaw encoding %s is refused" % str(rejected)
+		)
+		driver.check(
+			driver.count_diagnostics("handling.max_yaw_rate_rad_s", rejected_result.diagnostics) > 0,
+			"yaw encoding %s reports the yaw path" % str(rejected)
+		)
+
+	# Reverse cross-field consistency.
+	var bad_reverse := driver.source_handling_recipe()
+	bad_reverse["handling"]["reverse_acceleration_m_s2"] = 2.0
+	bad_reverse["handling"]["reverse_top_speed_m_s"] = 0.0
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(bad_reverse),
+		"handling.reverse_top_speed_m_s: reverse-cross-field",
+		"reverse drive without a positive top speed"
+	)
+
+	# Curve points carry the same honest number rules.
+	var nan_curve := driver.source_handling_recipe()
+	nan_curve["handling"]["acceleration_curve"][0]["speed_m_s"] = NAN
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(nan_curve),
+		"handling.acceleration_curve[0].speed_m_s: bad-number: non-finite",
+		"NaN curve speed"
+	)
+	var inf_curve := driver.source_handling_recipe()
+	inf_curve["handling"]["acceleration_curve"][1]["acceleration_m_s2"] = INF
+	_assert_refused_with(
+		driver,
+		MapperScript.map_handling(inf_curve),
+		"handling.acceleration_curve[1].acceleration_m_s2: bad-number: non-finite",
+		"infinite curve acceleration"
+	)
+
+	# Honest integer conversion: an int source value maps to the exact float.
+	var integer_input := driver.source_handling_recipe()
+	integer_input["handling"]["braking_acceleration_m_s2"] = 8
+	var integer_result = MapperScript.map_handling(integer_input)
+	var integer_handling := _expect_mapping_success(driver, integer_result, "integer braking input")
+	if integer_handling != null:
+		driver.check_float_eq(
+			integer_handling.braking_acceleration_m_s2,
+			8.0,
+			0.0,
+			"integer source value converts exactly to a float"
+		)
+
+	# Refusals leave the source untouched as well.
+	var refusal_source := driver.source_handling_recipe()
+	refusal_source["handling"]["braking_acceleration_m_s2"] = -1.0
+	var refusal_snapshot := refusal_source.duplicate(true)
+	MapperScript.map_handling(refusal_source)
+	driver.check(
+		refusal_source == refusal_snapshot,
+		"refusal leaves the authored source dictionary unchanged"
+	)
+
+	driver.measure("mapper_numeric_honesty_checks", 1)
+
+
 # --- Deliberate failure proof ----------------------------------------------
 
 
@@ -1714,6 +2302,7 @@ const LIMITATIONS := [
 	"The fixtures are synthetic EXAMPLE resources with arbitrary authored numbers; no value is measured, frozen product handling or a Roadstorm vehicle.",
 	"The car and handling definitions are not integrated with ArcadeMotor: no motor proposal, world step, gear selection, surface transition, contact or race state is run.",
 	"Only the M0.2 core MotorTuning overlap is typed; drift, surge, drafting, airborne, contact caps, surfaces, engine top speed, presentation, upgrades and detachable parts are deferred fields, not absent features.",
+	"HandlingRecipeMapper is pure and in-memory: it writes no .tres, bake manifest or provenance sidecar, and full JSON Schema/strict-parse/content-hash validation remains the external source-recipe checker prerequisite.",
 	"No track, event, upgrade, AI profile, ghost, model, observation or scenario resource is defined here; those remain later slices.",
 	"Tres round-trip coverage is limited to the M0.2 fields; it does not establish importer/cache behavior across Godot versions or exported templates.",
 	"Headless engine dummy display/audio drivers; no platform, controller, visual or release claim.",

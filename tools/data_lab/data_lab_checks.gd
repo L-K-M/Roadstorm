@@ -56,6 +56,16 @@ func measure(key: String, value) -> void:
 	measured[key] = value
 
 
+## Count diagnostics containing `token`. Used by the source-recipe mapping
+## cases to assert that a specific dotted path or code was reported.
+func count_diagnostics(token: String, diagnostics: Array[String]) -> int:
+	var count := 0
+	for entry in diagnostics:
+		if token in entry:
+			count += 1
+	return count
+
+
 ## Synthetic valid handling fixture. Values are explicit test inputs chosen to
 ## exercise every validated field, not handling coefficients. Its ID follows
 ## the documented baker derivation `<car_id>.handling` for the matching
@@ -118,6 +128,138 @@ func valid_car(handling = null) -> CarDefinition:
 	)
 	car.deferred_fields = PackedStringArray(CarDefinition.DEFERRED_FIELDS_V1)
 	return car
+
+
+## Synthetic version-1.1.0 source-recipe fixture for the handling mapper.
+## Values are explicit test inputs chosen to exercise every mapped field, not
+## measured handling coefficients. The shape follows
+## schemas/handling_config_v1_1.schema.json; the mapper under test consumes only
+## the motor-ready subset and never writes to the returned Dictionary. Pass a
+## Dictionary as `max_yaw_rate_rad_s` to author the exact unlimited encoding.
+func source_handling_recipe(
+	schema_version: String = "1.1.0",
+	car_id: String = "car.data_lab_mapper",
+	display_name: String = "Data Lab Mapper Car",
+	revision: String = "1.2.3",
+	status: String = "example",
+	max_yaw_rate_rad_s = 3.0,
+	reverse_trigger_speed_m_s := 1.0,
+	reverse_hold_time_s := 0.3,
+	reverse_acceleration_m_s2 := 0.0,
+	reverse_top_speed_m_s := 0.0
+) -> Dictionary:
+	var curve := [
+		{"speed_m_s": 0.0, "acceleration_m_s2": 7.0},
+		{"speed_m_s": 25.0, "acceleration_m_s2": 3.0},
+	]
+	return {
+		"schema_version": schema_version,
+		"car_id": car_id,
+		"display_name": display_name,
+		"revision": revision,
+		"status": status,
+		"units": {"length": "m", "mass": "kg", "time": "s", "angle": "deg"},
+		"coordinate_frame": {
+			"forward": "-Z",
+			"up": "+Y",
+			"origin": "ground_projection_of_axle_midpoint",
+		},
+		"dimensions": {
+			"length_m": 4.2,
+			"width_m": 1.9,
+			"height_m": 1.4,
+			"wheelbase_m": 2.6,
+			"ground_clearance_m": 0.12,
+			"jump_envelope_m": 0.4,
+		},
+		"mass_kg": 1100,
+		"contact_proxy": {
+			"shape": "rounded_box",
+			"derived_from": "declared_dimensions",
+			"roof": null,
+			"underside": null,
+		},
+		"engine": {"top_speed_kmh": 220, "acceleration_curve": curve.duplicate()},
+		"handling": {
+			"acceleration_curve": curve.duplicate(),
+			"braking_acceleration_m_s2": 8.0,
+			"drag": {"aerodynamic": 0.003, "rolling": 0.3},
+			"yaw_gain": {"grip": 1.5, "drift": 0.9},
+			"lateral_damping": {"grip_per_s": 5.0, "drift_per_s": 1.5},
+			"drift": {
+				"entry_min_speed_m_s": 12.0,
+				"entry_blend_s": 0.25,
+				"target_slip_deg_min": 8.0,
+				"target_slip_deg_max": 25.0,
+				"recovery_blend_s": 0.4,
+				"stability_assist_max_slip_deg": null,
+			},
+			"surge": {
+				"candidate_deltas_m_s": [0.5, 1.0, 1.5],
+				"duration_s": 1.5,
+				"cooldown_s": 8.0,
+				"stackable": false,
+				"selected_delta_m_s": null,
+			},
+			"drafting": {
+				"min_gap_m": 5.0,
+				"max_gap_m": 20.0,
+				"cone_deg": 10.0,
+				"lateral_separation_m": 1.5,
+				"eligible_s": 0.5,
+				"fade_s": 1.0,
+				"max_drag_reduction": 0.3,
+				"stackable": false,
+			},
+			"airborne": {"gravity_m_s2": null, "adhesion_bounds": null},
+			"contact_caps": {
+				"solver_iterations": 8,
+				"overlap_passes": 2,
+				"max_single_correction_m": 0.05,
+				"max_total_correction_m": 0.2,
+			},
+			"surfaces": [],
+			"max_yaw_rate_rad_s": max_yaw_rate_rad_s,
+			"reverse_trigger_speed_m_s": reverse_trigger_speed_m_s,
+			"reverse_hold_time_s": reverse_hold_time_s,
+			"reverse_acceleration_m_s2": reverse_acceleration_m_s2,
+			"reverse_top_speed_m_s": reverse_top_speed_m_s,
+		},
+		"upgrades": {
+			"levels": [0, 1, 2],
+			"engine": {
+				"acceleration_factors": [1.0, 1.1, 1.2],
+				"top_speed_factors": [1.0, 1.05, 1.1],
+			},
+			"tires": {
+				"grip_lateral_damping_factors": [1.0, 1.05, 1.1],
+				"drift_exit_blend_divisors": [1.0, 1.1, 1.2],
+			},
+			"chassis": {
+				"yaw_gain_factors": [1.0, 1.05, 1.1],
+				"impact_speed_loss_factors": [0.2, 0.15, 0.1],
+			},
+			"max_increase_percent": {"acceleration": 20.0, "top_speed": 10.0},
+		},
+		"detachable_parts": [],
+		"unknowns": [
+			{"path": "handling.drift.stability_assist_max_slip_deg", "reason": "Not measured; synthetic fixture."},
+			{"path": "handling.surge.selected_delta_m_s", "reason": "M1 selection pending."},
+			{"path": "handling.airborne.gravity_m_s2", "reason": "Not authored."},
+			{"path": "handling.airborne.adhesion_bounds", "reason": "Not authored."},
+			{"path": "contact_proxy.roof", "reason": "Not authored."},
+			{"path": "contact_proxy.underside", "reason": "Not authored."},
+		],
+		"provenance": {
+			"source_contract": "roadstorm.handling_config.1.1.0",
+			"author": "Data lab mapper fixture",
+			"model": null,
+			"provider": null,
+			"date_utc": "2026-11-28",
+			"note": "Synthetic fixture values; not measured handling.",
+		},
+		"content_hash": "sha256:%s" % ("0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef" + "0123456789abcdef"),
+	}
 
 
 func save_resource(resource: Resource, path: String) -> Error:
