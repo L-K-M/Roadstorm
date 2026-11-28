@@ -89,7 +89,13 @@ const EXPECTED_UNIQUE_SAMPLE_COUNT := 156
 const EXPECTED_JOIN_DUPLICATE_INDICES: Array = [31, 127]
 
 const FLOAT_TOLERANCE := 1e-6
-## Tolerance for matching a sample station to an ordered section interval.
+## Tolerance for matching a recorded section boundary or length against the
+## authored expected stations, and for matching adjacent section records at a
+## join. Per-sample tag ownership does not expand intervals by this tolerance:
+## a raw sample is owned by exactly one recorded section, except at a station
+## exactly equal to a shared boundary, where the recognized duplicate-join side
+## copies may each claim their own adjacent section. See
+## `_samples_ownership_error`.
 const SECTION_STATION_TOLERANCE := 1e-4
 
 
@@ -413,7 +419,12 @@ static func _validate_fixture(doc: Dictionary, bay: Dictionary) -> String:
 		if typeof(gate_raw) != TYPE_DICTIONARY:
 			return "a fixture timing gate is not an object"
 		var gate: Dictionary = gate_raw
-		gates[String(gate.get("gate_id", ""))] = gate
+		var gate_id := String(gate.get("gate_id", ""))
+		# Refuse repeated ids before any dictionary write. The last entry must
+		# never silently shadow an earlier one, whichever order they appear in.
+		if gates.has(gate_id):
+			return "fixture timing gate duplicate_id:%s" % gate_id
+		gates[gate_id] = gate
 	for gate_id in ["start", "corner_entry", "corner_exit", "finish"]:
 		if not gates.has(gate_id):
 			return "fixture timing gate %s missing" % gate_id
@@ -478,11 +489,18 @@ static func _validate_fixture(doc: Dictionary, bay: Dictionary) -> String:
 	var runs: Array = runs_check["value"]
 	var primary: Dictionary = {}
 	var comparison: Dictionary = {}
+	var seen_run_ids := {}
 	for run_raw in runs:
 		if typeof(run_raw) != TYPE_DICTIONARY:
 			return "a fixture run is not an object"
 		var run: Dictionary = run_raw
-		match String(run.get("run_id", "")):
+		var run_id := String(run.get("run_id", ""))
+		# Refuse repeated ids before any assignment. A changed run placed before
+		# the legitimate one must not be silently discarded in its favour.
+		if seen_run_ids.has(run_id):
+			return "fixture run duplicate_id:%s" % run_id
+		seen_run_ids[run_id] = true
+		match run_id:
 			"drift_entry":
 				primary = run
 			"grip_entry":
@@ -1016,17 +1034,21 @@ static func _samples_ownership_error(
 	samples: Array, sections: Array, section_starts: Array, section_ends: Array
 ) -> String:
 	## Every raw sample must carry the section id and surface id of a recorded
-	## section whose station interval actually contains its station. At an exact
-	## join both adjacent sections legitimately claim the same station (the two
-	## side copies of the shared cross-section); elsewhere exactly one section
-	## owns the sample.
+	## section whose station interval actually contains its station. Recorded
+	## intervals are closed and are NOT expanded by SECTION_STATION_TOLERANCE:
+	## a station strictly inside one interval has exactly one owner, so a sample
+	## near a join cannot claim the neighbouring section. The only multi-owner
+	## case is a station exactly equal to a shared boundary, where the two
+	## recognized duplicate-join side copies each carry one adjacent section id.
+	## The builder emits that boundary station only as that duplicate pair, so
+	## the exception cannot be used to relabel an ordinary interior sample.
 	for index in range(samples.size()):
 		var smp: Dictionary = samples[index]
 		var station := float(smp["s"])
 		var owners: Array = []
 		for section_index in range(sections.size()):
-			var lower := float(section_starts[section_index]) - SECTION_STATION_TOLERANCE
-			var upper := float(section_ends[section_index]) + SECTION_STATION_TOLERANCE
+			var lower := float(section_starts[section_index])
+			var upper := float(section_ends[section_index])
 			if station >= lower and station <= upper:
 				owners.append(section_index)
 		if owners.is_empty():

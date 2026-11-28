@@ -84,6 +84,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_changed_or_missing_source_refusal"),
 		Callable(self, "_case_provisional_labels_and_progress_policy"),
 		Callable(self, "_case_fail_closed_scalar_guards"),
+		Callable(self, "_case_duplicate_id_refusal"),
 		Callable(self, "_case_tag_ownership_refusal"),
 	]:
 		var result: Dictionary = call.call()
@@ -888,6 +889,106 @@ func _case_fail_closed_scalar_guards() -> Dictionary:
 	return c.result()
 
 
+func _case_duplicate_id_refusal() -> Dictionary:
+	var c := Case.new()
+	c.name = "duplicate_gate_and_run_ids"
+
+	var baseline := SourceScript.build()
+	c.check(bool(baseline["ok"]), "baseline fixture has unique gate and run ids")
+	if not bool(baseline["ok"]):
+		return c.result()
+
+	# A wrong corner-entry gate (segment 2, arc length 77 m) must be refused in
+	# either array position. Keying by id used to let the last entry win, so a
+	# bad gate placed before the legitimate one was silently ignored.
+	var gate_errors: Array = []
+	for order in ["before", "after"]:
+		var fixture := _fixture_copy()
+		c.check(not fixture.is_empty(), "test can read a live fixture copy")
+		if fixture.is_empty():
+			continue
+		var gates: Array = fixture["timing_gates"]
+		var wrong_gate := {
+			"gate_id": "corner_entry",
+			"kind": "intermediate",
+			"segment_index": 2,
+			"arc_length_m": 77.0,
+			"purpose": "duplicate control",
+		}
+		if order == "before":
+			gates.push_front(wrong_gate)
+		else:
+			gates.push_back(wrong_gate)
+		var refused := SourceScript.build({}, fixture)
+		gate_errors.append(String(refused["error"]))
+		c.check(
+			not bool(refused["ok"]),
+			"duplicate corner_entry gate placed %s the legitimate one is refused" % order
+		)
+		c.check(
+			String(refused["error"]).contains("duplicate_id:corner_entry"),
+			"duplicate corner_entry gate refusal is stable (order %s)" % order
+		)
+		c.check(refused["path"] == null, "duplicate gate returns no path")
+	c.equal(gate_errors[0], gate_errors[1], "duplicate gate refusal does not depend on array order")
+
+	# A changed drift_entry run (44 m/s) must likewise be refused before or
+	# after the legitimate run.
+	var run_errors: Array = []
+	for order in ["before", "after"]:
+		var fixture := _fixture_copy()
+		if fixture.is_empty():
+			continue
+		var runs: Array = fixture["runs"]
+		var wrong_run := _run_by_id(fixture, "drift_entry").duplicate(true)
+		wrong_run["initial_state"]["velocity_m_s"] = 44.0
+		if order == "before":
+			runs.push_front(wrong_run)
+		else:
+			runs.push_back(wrong_run)
+		var refused := SourceScript.build({}, fixture)
+		run_errors.append(String(refused["error"]))
+		c.check(
+			not bool(refused["ok"]),
+			"duplicate drift_entry run placed %s the legitimate one is refused" % order
+		)
+		c.check(
+			String(refused["error"]).contains("duplicate_id:drift_entry"),
+			"duplicate drift_entry run refusal is stable (order %s)" % order
+		)
+		c.check(refused["path"] == null, "duplicate run returns no path")
+	c.equal(run_errors[0], run_errors[1], "duplicate run refusal does not depend on array order")
+
+	# Identical duplicate entries are refused too: last-wins or first-wins would
+	# both hide which record is authoritative.
+	var identical := _fixture_copy()
+	if not identical.is_empty():
+		identical["timing_gates"].push_back(_gate_by_id(identical, "start").duplicate(true))
+		var identical_refused := SourceScript.build({}, identical)
+		c.check(not bool(identical_refused["ok"]), "identical duplicate start gate is refused")
+		c.check(
+			String(identical_refused["error"]).contains("duplicate_id:start"),
+			"identical duplicate gate refusal names the id"
+		)
+
+	# Duplicates outside the four required gates are refused as well.
+	var spare := _fixture_copy()
+	if not spare.is_empty():
+		spare["timing_gates"].push_back(
+			{"gate_id": "spare", "segment_index": 0, "arc_length_m": 0.0}
+		)
+		spare["timing_gates"].push_back(
+			{"gate_id": "spare", "segment_index": 0, "arc_length_m": 0.0}
+		)
+		var spare_refused := SourceScript.build({}, spare)
+		c.check(not bool(spare_refused["ok"]), "duplicate spare gate id is refused")
+		c.check(
+			String(spare_refused["error"]).contains("duplicate_id:spare"),
+			"duplicate spare gate refusal names the id"
+		)
+	return c.result()
+
+
 func _case_tag_ownership_refusal() -> Dictionary:
 	var c := Case.new()
 	c.name = "tag_ownership_refusal"
@@ -966,6 +1067,36 @@ func _case_tag_ownership_refusal() -> Dictionary:
 		relabelled_arc["samples"], relabelled_arc["sections"]
 	)
 	c.check(not arc_error.is_empty(), "mid-arc sample with approach tag is refused")
+
+	# Ordinary interior samples moved into the former 1e-4 m interval-expansion
+	# band cannot borrow the neighbouring section's tag. Ownership uses the
+	# recorded intervals exactly; the only multi-owner station is one exactly
+	# equal to the shared boundary, which is the recognized duplicate-join pair.
+	var band_before := _mutated_samples("band_before_join_arc_tag")
+	var band_before_error := SourceScript._validate_samples(
+		band_before["samples"], band_before["sections"]
+	)
+	c.check(
+		not band_before_error.is_empty(),
+		"interior sample inside the old boundary band with arc tag is refused"
+	)
+	c.check(
+		band_before_error.contains("does not own that station"),
+		"pre-join band refusal names ownership"
+	)
+
+	var band_after := _mutated_samples("band_after_join_exit_tag")
+	var band_after_error := SourceScript._validate_samples(
+		band_after["samples"], band_after["sections"]
+	)
+	c.check(
+		not band_after_error.is_empty(),
+		"interior sample inside the old boundary band with exit tag is refused"
+	)
+	c.check(
+		band_after_error.contains("does not own that station"),
+		"post-join band refusal names ownership"
+	)
 	return c.result()
 
 
@@ -1147,6 +1278,12 @@ static func _mutated_samples(kind: String) -> Dictionary:
 			samples[1]["surface_id"] = "gravel"
 		"relabel_arc_interior":
 			samples[50]["section_id"] = "hairpin.approach"
+		"band_before_join_arc_tag":
+			samples[29]["s"] = 30.0 - 5e-5
+			samples[29]["section_id"] = "hairpin.arc"
+		"band_after_join_exit_tag":
+			samples[125]["s"] = float(sections[1]["end_s_m"]) - 5e-5
+			samples[125]["section_id"] = "hairpin.exit"
 	return {"samples": samples, "sections": sections}
 
 

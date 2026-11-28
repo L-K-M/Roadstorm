@@ -61,6 +61,19 @@ identical world position at the recorded end/start station of adjacent sections
 and is marked `joined_prev` without `break_before`. Any other repeat, decrease,
 reorder, discontinuity or broken run is refused.
 
+Tag ownership uses the recorded section intervals exactly. A station strictly
+inside one interval belongs to that section alone; no interval is expanded by a
+tolerance for this check. The only multi-owner station is one exactly equal to a
+shared boundary, where the two recognized duplicate-join side copies each carry
+their own adjacent section id. An ordinary interior sample moved into the old
+1e-4 m boundary band therefore cannot borrow the neighbouring section's tag.
+The `SECTION_STATION_TOLERANCE` of 1e-4 m applies only to comparing recorded
+section boundary stations and lengths against the authored expected values and
+to matching adjacent section records at a join. Exact boundary ownership is a
+property of the recorded intervals; this lab does not prove that an
+independently re-authored stream cannot place a single sample exactly on a
+shared boundary.
+
 ## Route-progress policy
 
 The hairpin turns back alongside its approach: the exit leg runs parallel to the
@@ -136,6 +149,12 @@ summary JSON with `--summary-out=<path>`. The deliberate probe prints
   duplicates at raw indices 31 and 127;
 - distinct ordered section boundaries and their section/surface identity;
 - exact boundary duplicate semantics, including which copy survives;
+- refusal of duplicate `gate_id` and `run_id` entries in either array order,
+  including identical duplicates and ids outside the four required gates, with
+  a stable `duplicate_id:<id>` diagnostic;
+- ordered tag ownership by exact recorded intervals, including refusal of an
+  interior sample moved into the former 1e-4 m boundary band and retagged with
+  the neighbouring section, while both genuine join side copies still pass;
 - 30 m approach, 180-degree radius-30 m left arc, 30 m exit;
 - geometric turn (+pi about the derived arc center) and 180-degree heading
   reversal between approach and exit travel directions;
@@ -169,3 +188,7 @@ summary JSON with `--summary-out=<path>`. The deliberate probe prints
   station, ordering and duplicate checks remain much stricter.
 - No physical hairpin, lap-time, pace, fixture-performance or M1.7 acceptance
   claim is made. The 18 m/s profile is provisional and untuned.
+- Ownership is exact at recorded interval boundaries. A station exactly equal
+  to a shared boundary may be claimed by either adjacent section; the builder
+  emits that station only as the duplicate-join pair, and this lab does not
+  model a single non-duplicate sample placed exactly on a boundary.
