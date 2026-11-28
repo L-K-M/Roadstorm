@@ -551,7 +551,12 @@ def _validate_dimensions(document: Mapping[str, Any], findings: list[Finding]) -
         "jump_envelope_m": (None, None, True),
     }
     for key, (low, high, nullable) in bounds.items():
-        value = dimensions.get(key)
+        if key not in dimensions:
+            findings.append(
+                Finding(_child("dimensions", key), "missing-field", "required member is absent")
+            )
+            continue
+        value = dimensions[key]
         kwargs: dict[str, Any] = {"nullable": nullable}
         if low is not None:
             kwargs["minimum"] = low
@@ -589,7 +594,11 @@ def _validate_contact_proxy(document: Mapping[str, Any], findings: list[Finding]
             )
         )
     for key in ("roof", "underside"):
-        _check_string(proxy.get(key), _child("contact_proxy", key), findings, nullable=True)
+        child = _child("contact_proxy", key)
+        if key not in proxy:
+            findings.append(Finding(child, "missing-field", "required member is absent"))
+        else:
+            _check_string(proxy[key], child, findings, nullable=True, min_length=0)
 
 
 def _validate_speed_acceleration_point(point: Any, path: str, findings: list[Finding]) -> None:
@@ -650,7 +659,7 @@ def _validate_surface_modifier(item: Any, path: str, findings: list[Finding]) ->
         if key in item:
             _check_number(item[key], _child(path, key), findings, minimum=0.0, nullable=True)
     if "notes" in item:
-        _check_string(item["notes"], _child(path, "notes"), findings, nullable=True)
+        _check_string(item["notes"], _child(path, "notes"), findings, nullable=True, min_length=0)
 
 
 def _validate_two_member_numbers(
@@ -873,8 +882,6 @@ def _validate_max_yaw_rate(value: Any, path: str, findings: list[Finding]) -> No
         findings.append(Finding(path, "bad-yaw-rate", "booleans are not numbers"))
         return
     if isinstance(value, dict):
-        if value == {"unlimited": True}:
-            return
         if set(value) != {"unlimited"}:
             findings.append(
                 Finding(
@@ -883,16 +890,15 @@ def _validate_max_yaw_rate(value: Any, path: str, findings: list[Finding]) -> No
                     f"unlimited encoding must be exactly {{\"unlimited\": true}}; got keys {sorted(value)!r}",
                 )
             )
-        elif value["unlimited"] is not True:
+            return
+        if value["unlimited"] is not True:
             findings.append(
                 Finding(
                     path,
-                    "bad-unlimited-encoding",
-                    f"unlimited must be true (got {value['unlimited']!r})",
+                    "bad-yaw-rate",
+                    f"unlimited sentinel must be the JSON boolean true; got {value['unlimited']!r}",
                 )
             )
-        else:  # pragma: no cover - unreachable, kept for clarity
-            pass
         return
     if not _is_number(value):
         findings.append(Finding(path, "bad-yaw-rate", f"expected a number, null or an unlimited object, got {type(value).__name__}"))
@@ -1041,7 +1047,9 @@ def _validate_upgrades(document: Mapping[str, Any], findings: list[Finding]) -> 
         )
 
     engine = upgrades.get("engine")
-    if isinstance(engine, dict):
+    if "engine" in upgrades and not isinstance(engine, dict):
+        findings.append(Finding("upgrades.engine", "bad-upgrades-engine", "must be an object"))
+    elif isinstance(engine, dict):
         _check_closed(engine, "upgrades.engine", UPGRADE_ENGINE_MEMBERS, findings, RECIPE_SCHEMA_V1_0_0)
         for key in ("acceleration_factors", "top_speed_factors"):
             if key not in engine:
@@ -1057,7 +1065,9 @@ def _validate_upgrades(document: Mapping[str, Any], findings: list[Finding]) -> 
                 )
 
     tires = upgrades.get("tires")
-    if isinstance(tires, dict):
+    if "tires" in upgrades and not isinstance(tires, dict):
+        findings.append(Finding("upgrades.tires", "bad-upgrades-tires", "must be an object"))
+    elif isinstance(tires, dict):
         _check_closed(tires, "upgrades.tires", UPGRADE_TIRES_MEMBERS, findings, RECIPE_SCHEMA_V1_0_0)
         for key in ("grip_lateral_damping_factors", "drift_exit_blend_divisors"):
             if key not in tires:
@@ -1073,7 +1083,9 @@ def _validate_upgrades(document: Mapping[str, Any], findings: list[Finding]) -> 
                 )
 
     chassis = upgrades.get("chassis")
-    if isinstance(chassis, dict):
+    if "chassis" in upgrades and not isinstance(chassis, dict):
+        findings.append(Finding("upgrades.chassis", "bad-upgrades-chassis", "must be an object"))
+    elif isinstance(chassis, dict):
         _check_closed(chassis, "upgrades.chassis", UPGRADE_CHASSIS_MEMBERS, findings, RECIPE_SCHEMA_V1_0_0)
         for key in ("yaw_gain_factors", "impact_speed_loss_factors"):
             if key not in chassis:
@@ -1099,7 +1111,11 @@ def _validate_upgrades(document: Mapping[str, Any], findings: list[Finding]) -> 
                 )
 
     max_increase = upgrades.get("max_increase_percent")
-    if isinstance(max_increase, dict):
+    if "max_increase_percent" in upgrades and not isinstance(max_increase, dict):
+        findings.append(
+            Finding("upgrades.max_increase_percent", "bad-upgrades-max-increase", "must be an object")
+        )
+    elif isinstance(max_increase, dict):
         _check_closed(
             max_increase, "upgrades.max_increase_percent", UPGRADE_MAX_INCREASE_MEMBERS, findings,
             RECIPE_SCHEMA_V1_0_0,
@@ -1143,7 +1159,7 @@ def _validate_detachable_parts(document: Mapping[str, Any], findings: list[Findi
                 )
             )
         if "mesh_id" in part:
-            _check_string(part["mesh_id"], _child(path, "mesh_id"), findings, nullable=True)
+            _check_string(part["mesh_id"], _child(path, "mesh_id"), findings, nullable=True, min_length=0)
         if "lod_ids" in part:
             lods = part["lod_ids"]
             if not isinstance(lods, list):
@@ -1157,21 +1173,26 @@ def _validate_detachable_parts(document: Mapping[str, Any], findings: list[Findi
         for key in ("attachment_transform", "impact_region"):
             if key in part and part[key] is not None and not isinstance(part[key], dict):
                 findings.append(Finding(_child(path, key), f"bad-{key}", "must be an object or null"))
-        thresholds = part.get("thresholds")
-        if isinstance(thresholds, dict):
-            _check_closed(thresholds, _child(path, "thresholds"), THRESHOLD_MEMBERS, findings, RECIPE_SCHEMA_V1_0_0)
-            for key in ("loosen_m_s", "detach_single_m_s", "detach_accumulated_m_s"):
-                if key not in thresholds:
-                    findings.append(
-                        Finding(_child(_child(path, "thresholds"), key), "missing-field", "required member is absent")
-                    )
-                else:
-                    _check_number(
-                        thresholds[key],
-                        _child(_child(path, "thresholds"), key),
-                        findings,
-                        minimum=0.0,
-                    )
+        if "thresholds" in part:
+            thresholds = part["thresholds"]
+            if not isinstance(thresholds, dict):
+                findings.append(
+                    Finding(_child(path, "thresholds"), "bad-thresholds", "thresholds must be an object")
+                )
+            else:
+                _check_closed(thresholds, _child(path, "thresholds"), THRESHOLD_MEMBERS, findings, RECIPE_SCHEMA_V1_0_0)
+                for key in ("loosen_m_s", "detach_single_m_s", "detach_accumulated_m_s"):
+                    if key not in thresholds:
+                        findings.append(
+                            Finding(_child(_child(path, "thresholds"), key), "missing-field", "required member is absent")
+                        )
+                    else:
+                        _check_number(
+                            thresholds[key],
+                            _child(_child(path, "thresholds"), key),
+                            findings,
+                            minimum=0.0,
+                        )
 
 
 def _unknown_paths(document: Mapping[str, Any]) -> list[str]:
@@ -1319,10 +1340,29 @@ def _validate_motor_ready(document: Mapping[str, Any], findings: list[Finding]) 
                 Finding(path, "motor-input-unknown", "required typed motor input is listed in unknowns")
             )
             continue
-        if path == "handling.acceleration_curve" and isinstance(value, list) and not value:
+        if path != "handling.acceleration_curve" or not isinstance(value, list):
+            continue
+        if not value:
             findings.append(
                 Finding(path, "motor-input-empty", "acceleration curve needs at least one authored point")
             )
+            continue
+        previous_speed: float | None = None
+        for index, point in enumerate(value):
+            speed = point.get("speed_m_s") if isinstance(point, dict) else None
+            if not _is_finite_number(speed):
+                # Malformed points are already reported by schema validation;
+                # ordering compares the authored finite speeds only.
+                continue
+            if previous_speed is not None and speed <= previous_speed:
+                findings.append(
+                    Finding(
+                        f"{_index(path, index)}.speed_m_s",
+                        "motor-input-order",
+                        f"speed {speed!r} does not strictly exceed previous speed {previous_speed!r}",
+                    )
+                )
+            previous_speed = speed
 
 
 # ---------------------------------------------------------------------------

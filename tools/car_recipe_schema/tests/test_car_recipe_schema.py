@@ -90,6 +90,140 @@ def mutate(fn: Callable[[dict[str, Any]], None], version: str = "1.1.0") -> dict
     return document
 
 
+def detachable_part(**overrides: Any) -> dict[str, Any]:
+    """A complete detachable part; overrides inject one targeted defect."""
+    part: dict[str, Any] = {
+        "slot": "front_bumper",
+        "mesh_id": "body.front_bumper",
+        "lod_ids": ["body.front_bumper.lod0"],
+        "attachment_transform": {},
+        "impact_region": {},
+        "thresholds": {
+            "loosen_m_s": 5.0,
+            "detach_single_m_s": 8.0,
+            "detach_accumulated_m_s": 12.0,
+        },
+    }
+    part.update(overrides)
+    return part
+
+
+def drop_unknown_entry(document: dict[str, Any], path: str) -> None:
+    document["unknowns"] = [
+        entry for entry in document["unknowns"] if entry.get("path") != path
+    ]
+
+
+# (label, mutation, expected code, expected path) for inherited schema members
+# shared verbatim by 1.0.0 and 1.1.0.
+INHERITED_DEFECTS = [
+    (
+        "missing_dimensions_wheelbase_m",
+        lambda d: d["dimensions"].pop("wheelbase_m"),
+        "missing-field",
+        "dimensions.wheelbase_m",
+    ),
+    (
+        "missing_dimensions_ground_clearance_m",
+        lambda d: d["dimensions"].pop("ground_clearance_m"),
+        "missing-field",
+        "dimensions.ground_clearance_m",
+    ),
+    (
+        "missing_dimensions_jump_envelope_m",
+        lambda d: d["dimensions"].pop("jump_envelope_m"),
+        "missing-field",
+        "dimensions.jump_envelope_m",
+    ),
+    (
+        "missing_contact_proxy_roof",
+        lambda d: (
+            d["contact_proxy"].pop("roof"),
+            drop_unknown_entry(d, "contact_proxy.roof"),
+        ),
+        "missing-field",
+        "contact_proxy.roof",
+    ),
+    (
+        "missing_contact_proxy_underside",
+        lambda d: (
+            d["contact_proxy"].pop("underside"),
+            drop_unknown_entry(d, "contact_proxy.underside"),
+        ),
+        "missing-field",
+        "contact_proxy.underside",
+    ),
+    (
+        "wrong_type_upgrades_engine",
+        lambda d: d["upgrades"].__setitem__("engine", []),
+        "bad-upgrades-engine",
+        "upgrades.engine",
+    ),
+    (
+        "wrong_type_upgrades_tires",
+        lambda d: d["upgrades"].__setitem__("tires", []),
+        "bad-upgrades-tires",
+        "upgrades.tires",
+    ),
+    (
+        "wrong_type_upgrades_chassis",
+        lambda d: d["upgrades"].__setitem__("chassis", []),
+        "bad-upgrades-chassis",
+        "upgrades.chassis",
+    ),
+    (
+        "wrong_type_upgrades_max_increase",
+        lambda d: d["upgrades"].__setitem__("max_increase_percent", []),
+        "bad-upgrades-max-increase",
+        "upgrades.max_increase_percent",
+    ),
+    (
+        "wrong_type_detachable_thresholds",
+        lambda d: d["detachable_parts"].append(detachable_part(thresholds=[])),
+        "bad-thresholds",
+        "detachable_parts[0].thresholds",
+    ),
+]
+
+# (label, mutation, protected paths) for strings the schemas allow to be empty
+# because they carry no minLength; the checker must accept those empty strings.
+INHERITED_VALID = [
+    (
+        "empty_contact_proxy_roof",
+        lambda d: (
+            d["contact_proxy"].__setitem__("roof", ""),
+            drop_unknown_entry(d, "contact_proxy.roof"),
+        ),
+        {"contact_proxy.roof"},
+    ),
+    (
+        "empty_contact_proxy_underside",
+        lambda d: (
+            d["contact_proxy"].__setitem__("underside", ""),
+            drop_unknown_entry(d, "contact_proxy.underside"),
+        ),
+        {"contact_proxy.underside"},
+    ),
+    (
+        "empty_detachable_mesh_id",
+        lambda d: d["detachable_parts"].append(detachable_part(mesh_id="")),
+        {"detachable_parts[0].mesh_id"},
+    ),
+    (
+        "empty_surface_notes",
+        lambda d: d["handling"]["surfaces"].append(
+            {
+                "surface_id": "tarmac",
+                "lateral_grip_scale": 1.0,
+                "drag_scale": 1.0,
+                "notes": "",
+            }
+        ),
+        {"handling.surfaces[0].notes"},
+    ),
+]
+
+
 class DeepDiff:
     """Recursive structural diff producing shallowest divergence paths."""
 
@@ -298,6 +432,9 @@ class FiveFieldTests(unittest.TestCase):
             ("boolean", True),
             ("list", [1.0]),
             ("unlimited_false", {"unlimited": False}),
+            ("unlimited_numeric_int", {"unlimited": 1}),
+            ("unlimited_numeric_float", {"unlimited": 1.0}),
+            ("unlimited_string", {"unlimited": "true"}),
             ("unlimited_extra_key", {"unlimited": True, "note": "x"}),
             ("unlimited_empty", {}),
         ]
@@ -317,6 +454,49 @@ class FiveFieldTests(unittest.TestCase):
                             {"path": "handling.max_yaw_rate_rad_s", "reason": "not measured"}
                         )
                 self.assertEqual(findings_for(mutate(set_value)), [])
+
+    def test_numeric_unlimited_sentinels_report_the_yaw_path(self) -> None:
+        for value in ({"unlimited": 1}, {"unlimited": 1.0}):
+            with self.subTest(value=value):
+                document = mutate(
+                    lambda d, v=value: d["handling"].__setitem__("max_yaw_rate_rad_s", v)
+                )
+                for mode in ("schema", "motor-ready"):
+                    with self.subTest(mode=mode):
+                        findings = findings_for(document, mode=mode)
+                        yaw_findings = [
+                            f for f in findings if f.path == "handling.max_yaw_rate_rad_s"
+                        ]
+                        self.assertTrue(yaw_findings)
+                        self.assertIn("bad-yaw-rate", {f.code for f in yaw_findings})
+
+    def test_numeric_unlimited_sentinels_are_refused_from_rehashed_files(self) -> None:
+        for value in (1, 1.0, "true", False):
+            for mode in ("schema", "motor-ready"):
+                with self.subTest(value=value, mode=mode):
+                    document = base_document()
+                    document["handling"]["max_yaw_rate_rad_s"] = {"unlimited": value}
+                    document["content_hash"] = vcr.content_hash_of(document)
+                    with tempfile.TemporaryDirectory() as tmp:
+                        path = Path(tmp) / "recipe.json"
+                        path.write_text(json.dumps(document), encoding="utf-8")
+                        findings = vcr.validate_recipe_file(path, mode=mode)
+                    yaw_findings = [
+                        f for f in findings if f.path == "handling.max_yaw_rate_rad_s"
+                    ]
+                    self.assertTrue(yaw_findings)
+                    self.assertIn("bad-yaw-rate", {f.code for f in yaw_findings})
+
+    def test_exact_boolean_unlimited_sentinel_is_accepted_from_rehashed_file(self) -> None:
+        document = base_document()
+        document["handling"]["max_yaw_rate_rad_s"] = {"unlimited": True}
+        document["content_hash"] = vcr.content_hash_of(document)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "recipe.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            for mode in ("schema", "motor-ready"):
+                with self.subTest(mode=mode):
+                    self.assertEqual(vcr.validate_recipe_file(path, mode=mode), [])
 
     def test_non_finite_overflow_literal_is_rejected(self) -> None:
         document = base_document()
@@ -464,6 +644,61 @@ class MotorReadyTests(unittest.TestCase):
         document = mutate(lambda d: d["handling"].__setitem__("acceleration_curve", []))
         findings = findings_for(document, mode="motor-ready")
         self.assertIn("motor-input-empty", codes(findings))
+
+    def test_acceleration_curve_speed_ordering_regressions(self) -> None:
+        cases = [
+            (
+                "duplicate",
+                lambda d: d["handling"]["acceleration_curve"][1].__setitem__("speed_m_s", 0.0),
+            ),
+            (
+                "descending",
+                lambda d: d["handling"]["acceleration_curve"][0].__setitem__("speed_m_s", 40.0),
+            ),
+            (
+                "reversed",
+                lambda d: d["handling"]["acceleration_curve"].reverse(),
+            ),
+        ]
+        for label, apply in cases:
+            with self.subTest(case=label):
+                document = mutate(apply)
+                # Schema mode keeps the historical shape-only acceptance.
+                self.assertEqual(findings_for(document), [])
+                findings = findings_for(document, mode="motor-ready")
+                self.assertIn("motor-input-order", codes(findings))
+                self.assertIn(
+                    "handling.acceleration_curve[1].speed_m_s", paths(findings)
+                )
+
+
+class InheritedContractParityTests(unittest.TestCase):
+    """Both source versions inherit every pre-1.1.0 member constraint unchanged."""
+
+    VERSIONS = ("1.0.0", "1.1.0")
+    MODES = ("schema", "motor-ready")
+
+    def test_inherited_defects_are_rejected_in_every_version_and_mode(self) -> None:
+        for version in self.VERSIONS:
+            for label, apply, expected_code, expected_path in INHERITED_DEFECTS:
+                for mode in self.MODES:
+                    with self.subTest(version=version, mode=mode, case=label):
+                        findings = findings_for(mutate(apply, version), mode=mode)
+                        self.assertIn(expected_code, codes(findings))
+                        self.assertIn(expected_path, paths(findings))
+
+    def test_schema_consistent_empty_strings_are_valid_in_every_version(self) -> None:
+        for version in self.VERSIONS:
+            for label, apply, protected in INHERITED_VALID:
+                for mode in self.MODES:
+                    with self.subTest(version=version, mode=mode, case=label):
+                        findings = findings_for(mutate(apply, version), mode=mode)
+                        offenders = sorted(
+                            finding.path for finding in findings if finding.path in protected
+                        )
+                        self.assertEqual(offenders, [])
+                        if version == "1.1.0" or mode == "schema":
+                            self.assertEqual([str(f) for f in findings], [])
 
 
 class CommandLineTests(unittest.TestCase):
