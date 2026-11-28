@@ -35,6 +35,7 @@ const CASE_IDS: Array[String] = [
 const JOLT_CASE_ID := "real_jolt_wall_integration"
 const STEERING_JOLT_CASE_ID := "real_jolt_steering_corner"
 const NONZERO_HEADING_JOLT_CASE_ID := "real_jolt_nonzero_heading_corner"
+const NARROW_WALL_END_JOLT_CASE_ID := "real_jolt_narrow_wall_end"
 
 ## Frames allowed for static colliders to reach the physics server.
 const SETTLE_FRAMES := 8
@@ -52,11 +53,13 @@ const STEERING_CORNER_TICKS := 30
 const NONZERO_HEADING_CORNER_TICKS := 40
 ## Wide wall so a steering car cannot leave the wall footprint mid-scenario.
 const STEERING_WALL_WIDTH_M := 60.0
+## Narrow wall whose vertical convex end can slide along the car's side face.
+const NARROW_WALL_WIDTH_M := 0.6
 ## Corner-band and normal-axis thresholds mirrored from the producer's
 ## published contract. Kept as explicit literals so a silent threshold change
 ## is visible here. The old normalized band is retained only as a negative
 ## control for the regression coverage.
-const LAB_REGION_CORNER_BAND_M := 0.025
+const LAB_REGION_CORNER_BAND_M := 0.035
 const LAB_REGION_NORMAL_AXIS_MARGIN := 1e-3
 const OLD_NORMALIZED_REGION_TIE_MARGIN := 1e-2
 
@@ -91,6 +94,7 @@ func _run() -> void:
 	_results.append(await _case_real_jolt_wall_integration())
 	_results.append(await _case_real_jolt_steering_corner())
 	_results.append(await _case_real_jolt_nonzero_heading_corner())
+	_results.append(await _case_real_jolt_narrow_wall_end())
 	for case_result in _results:
 		print("WALL_IMPACT_LAB_RESULT ", JSON.stringify(case_result))
 
@@ -105,7 +109,8 @@ func _run() -> void:
 			failed_cases += 1
 		var case_name := String(result["case"])
 		if (case_name == JOLT_CASE_ID or case_name == STEERING_JOLT_CASE_ID \
-				or case_name == NONZERO_HEADING_JOLT_CASE_ID) \
+				or case_name == NONZERO_HEADING_JOLT_CASE_ID \
+				or case_name == NARROW_WALL_END_JOLT_CASE_ID) \
 				and bool(result["pass"]):
 			jolt_cases_passed += 1
 	var summary := {
@@ -1009,6 +1014,91 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.wide_solver_inset.consistent_normal_resolves_left"
 		)
 
+	# The narrow wall end measured by the independent pinned-Jolt probe was
+	# still a side-face contact when its point sat 0.0288 m inside the nose
+	# plane and 0.0160 m inside the side plane. Exercise that boundary in all
+	# quadrants with a clearly dominant, sign-compatible side normal.
+	var measured_side_inset_m := 0.0160
+	var measured_end_inset_m := 0.0288
+	var wall_end_normal := Vector3(0.914, 0.0, 0.406)
+	var wall_end_cases := {
+		"front_left": {
+			"point": Vector3(
+				-(half.x - measured_side_inset_m), 0.0,
+				-(half.z - measured_end_inset_m)
+			),
+			"normal": wall_end_normal,
+			"region": ImpactEvent.ContactRegion.LEFT,
+		},
+		"front_right": {
+			"point": Vector3(
+				half.x - measured_side_inset_m, 0.0,
+				-(half.z - measured_end_inset_m)
+			),
+			"normal": Vector3(
+				-wall_end_normal.x, wall_end_normal.y, wall_end_normal.z
+			),
+			"region": ImpactEvent.ContactRegion.RIGHT,
+		},
+		"rear_left": {
+			"point": Vector3(
+				-(half.x - measured_side_inset_m), 0.0,
+				half.z - measured_end_inset_m
+			),
+			"normal": Vector3(
+				wall_end_normal.x, wall_end_normal.y, -wall_end_normal.z
+			),
+			"region": ImpactEvent.ContactRegion.LEFT,
+		},
+		"rear_right": {
+			"point": Vector3(
+				half.x - measured_side_inset_m, 0.0,
+				half.z - measured_end_inset_m
+			),
+			"normal": Vector3(
+				-wall_end_normal.x, wall_end_normal.y, -wall_end_normal.z
+			),
+			"region": ImpactEvent.ContactRegion.RIGHT,
+		},
+	}
+	for label in wall_end_cases:
+		var point: Vector3 = wall_end_cases[label]["point"]
+		var normal: Vector3 = wall_end_cases[label]["normal"]
+		var outcome := _produce(
+			d.make_witness(point, -normal * 20.0, Vector3.ZERO, normal),
+			config
+		)
+		d.check(outcome.is_ok(), "near_tie.wall_end_%s.published" % label)
+		if not outcome.is_ok():
+			continue
+		var side_inset := half.x - absf(point.x)
+		var end_inset := half.z - absf(point.z)
+		d.check_close(
+			side_inset, measured_side_inset_m, 1e-7,
+			"near_tie.wall_end_%s.side_inset" % label
+		)
+		d.check_close(
+			end_inset, measured_end_inset_m, 1e-7,
+			"near_tie.wall_end_%s.end_inset" % label
+		)
+		d.check(
+			side_inset <= LAB_REGION_CORNER_BAND_M
+				and end_inset <= LAB_REGION_CORNER_BAND_M,
+			"near_tie.wall_end_%s.inside_measured_corner_band" % label
+		)
+		var baseline_region := _baseline_point_only_region(
+			point, config.hull_size_m
+		)
+		d.check(
+			baseline_region == ImpactEvent.ContactRegion.FRONT
+				or baseline_region == ImpactEvent.ContactRegion.REAR,
+			"near_tie.wall_end_%s.point_rule_names_end" % label
+		)
+		d.check(
+			outcome.event.region == wall_end_cases[label]["region"],
+			"near_tie.wall_end_%s.sign_compatible_normal_names_side" % label
+		)
+
 	# A malformed response normal must not publish the face opposite the
 	# contacted quadrant. This exact corner falls back to the deterministic
 	# point rule instead of accepting the side-inconsistent normal.
@@ -1051,6 +1141,47 @@ func _case_corner_near_tie_response_normal() -> void:
 			"near_tie.diagonal.normal_is_ambiguous"
 		)
 
+	# A near-diagonal normal just inside the declared axis margin is still
+	# ambiguous. If the margin were ignored, its small X advantage would name
+	# LEFT at this front-left wall-end point; the fallback must name FRONT.
+	var near_diagonal_point := Vector3(
+		-(half.x - measured_side_inset_m), 0.0,
+		-(half.z - measured_end_inset_m)
+	)
+	var diagonal_component := 0.7071067811865476
+	var near_diagonal_normal := Vector3(
+		diagonal_component + 5.0e-4, 0.0, diagonal_component
+	)
+	var near_diagonal := d.make_witness(
+		near_diagonal_point,
+		-near_diagonal_normal * 20.0,
+		Vector3.ZERO,
+		near_diagonal_normal
+	)
+	var near_diagonal_outcome := _produce(near_diagonal, config)
+	d.check(
+		near_diagonal_outcome.is_ok(), "near_tie.near_diagonal_margin.published"
+	)
+	if near_diagonal_outcome.is_ok():
+		var near_diagonal_local := _local_response_normal(near_diagonal)
+		var axis_difference := absf(
+			absf(near_diagonal_local.x) - absf(near_diagonal_local.z)
+		)
+		d.check(
+			axis_difference > 0.0
+				and axis_difference <= LAB_REGION_NORMAL_AXIS_MARGIN,
+			"near_tie.near_diagonal_margin.normal_is_inside_margin"
+		)
+		d.check(
+			_baseline_point_only_region(near_diagonal_point, config.hull_size_m)
+				== ImpactEvent.ContactRegion.FRONT,
+			"near_tie.near_diagonal_margin.point_rule_names_front"
+		)
+		d.check(
+			near_diagonal_outcome.event.region == ImpactEvent.ContactRegion.FRONT,
+			"near_tie.near_diagonal_margin.falls_back_to_point_rule"
+		)
+
 	# Outside the tie band the point alone classifies, whatever the normal.
 	var unambiguous := {
 		"front_face": {
@@ -1081,6 +1212,42 @@ func _case_corner_near_tie_response_normal() -> void:
 				outcome.event.region == unambiguous[label]["region"],
 				"near_tie.%s.point_classifies_outside_band" % label
 			)
+
+	# Just outside the chosen end-axis band the point rule still wins. This
+	# point uses the measured side inset but sits 0.040 m inside the nose
+	# plane; its clearly front-facing normal would win inside the band, so it
+	# brackets the upper edge instead of allowing unconditional normal-first
+	# classification or unbounded widening.
+	var outside_end_inset_m := 0.040
+	var outside_band_point := Vector3(
+		-(half.x - measured_side_inset_m), 0.0,
+		-(half.z - outside_end_inset_m)
+	)
+	var outside_band_normal := Vector3(0.2, 0.0, 0.98)
+	var outside_band := d.make_witness(
+		outside_band_point,
+		-outside_band_normal * 20.0,
+		Vector3.ZERO,
+		outside_band_normal
+	)
+	var outside_band_outcome := _produce(outside_band, config)
+	d.check(outside_band_outcome.is_ok(), "near_tie.outside_band.published")
+	if outside_band_outcome.is_ok():
+		d.check(
+			half.x - absf(outside_band_point.x) <= LAB_REGION_CORNER_BAND_M
+				and half.z - absf(outside_band_point.z)
+					> LAB_REGION_CORNER_BAND_M,
+			"near_tie.outside_band.only_one_axis_outside"
+		)
+		d.check(
+			_baseline_point_only_region(outside_band_point, config.hull_size_m)
+				== ImpactEvent.ContactRegion.LEFT,
+			"near_tie.outside_band.point_rule_names_left"
+		)
+		d.check(
+			outside_band_outcome.event.region == ImpactEvent.ContactRegion.LEFT,
+			"near_tie.outside_band.point_rule_wins"
+		)
 
 	# The same near-tie must resolve through a rotated collision-time frame,
 	# proving the normal is transformed by that frame rather than read in
@@ -1121,7 +1288,8 @@ func _case_corner_near_tie_response_normal() -> void:
 		)
 
 	measurements["near_tie_cases"] = (
-		front_cases.size() + rear_cases.size() + unambiguous.size() + 5
+		front_cases.size() + rear_cases.size() + unambiguous.size()
+		+ wall_end_cases.size() + 7
 	)
 
 
@@ -1761,6 +1929,246 @@ func _case_real_jolt_nonzero_heading_corner() -> Dictionary:
 	}
 
 
+func _case_real_jolt_narrow_wall_end() -> Dictionary:
+	d = ChecksScript.new()
+	measurements = {}
+	var body_checks := BodyLabChecksScript.new()
+	# The independent reviewer's two wall-centred narrow-wall witnesses. The
+	# vertical end of a 0.6 m wall slides along the left face, reaches the
+	# measured near-nose side contact, then transitions to a genuine front
+	# contact on the next tick.
+	var scenarios := [
+		{
+			"label": "v20_h0.785_s-1_t0",
+			"speed": 20.0,
+			"heading": 0.785398,
+			"steer": -1.0,
+			"throttle": 0.0,
+			"edge_tick": 27,
+			"edge_inset_x_m": 0.0159773,
+			"edge_inset_z_m": 0.0282234,
+			"edge_severity_m_s": 5.3809494,
+		},
+		{
+			"label": "v20_h0.785_s-1_t1",
+			"speed": 20.0,
+			"heading": 0.785398,
+			"steer": -1.0,
+			"throttle": 1.0,
+			"edge_tick": 30,
+			"edge_inset_x_m": 0.0157603,
+			"edge_inset_z_m": 0.0287956,
+			"edge_severity_m_s": 6.4013944,
+		},
+	]
+	for scenario in scenarios:
+		var label: String = scenario["label"]
+		var heading: float = scenario["heading"]
+		var report: Dictionary = await _run_steering_scenario(
+			label, _nonzero_heading_probe_start(heading),
+			Vector2(0.0, scenario["speed"]), heading,
+			body_checks.make_steer_command(
+				scenario["steer"], scenario["throttle"]
+			),
+			NONZERO_HEADING_CORNER_TICKS,
+			NARROW_WALL_WIDTH_M
+		)
+		var witnesses: Array = report["witnesses"]
+		var config: MotorBodyAdapter.Config = report["config"]
+		var half_extents := config.hull_size_m * 0.5
+		d.check(witnesses.size() >= 3, "%s.witness_stream_observed" % label)
+		var edge_count := 0
+		var edge_tick := -1
+		var edge := {}
+		var pre_edge_left_count := 0
+		var front_normal_after_count := 0
+		var first_front_tick := -1
+		var first_front := {}
+		var max_inset_x := -1.0e30
+		var max_inset_z := -1.0e30
+		var max_band_inset_x := 0.0
+		var max_band_inset_z := 0.0
+		for witness_record in witnesses:
+			var result: MotorBodyAdapter.Result = witness_record["result"]
+			var tick_index: int = witness_record["index"]
+			var outcome := ProducerScript.produce(
+				result, config, "car-narrow-end-" + label,
+				"evt-%s-%d" % [label, tick_index], "", tick_index
+			)
+			d.check(outcome.is_ok(), "%s.tick_%d.produced" % [label, tick_index])
+			if not outcome.is_ok():
+				continue
+			var event := outcome.event
+			var local_point := event.contact_point_local_m
+			var local_normal := _local_response_normal(result)
+			var inset_x := half_extents.x - absf(local_point.x)
+			var inset_z := half_extents.z - absf(local_point.z)
+			max_inset_x = maxf(max_inset_x, inset_x)
+			max_inset_z = maxf(max_inset_z, inset_z)
+			var in_corner_band := (
+				inset_x <= LAB_REGION_CORNER_BAND_M
+				and inset_z <= LAB_REGION_CORNER_BAND_M
+			)
+			if in_corner_band:
+				max_band_inset_x = maxf(max_band_inset_x, inset_x)
+				max_band_inset_z = maxf(max_band_inset_z, inset_z)
+			var x_dominance := absf(local_normal.x) - absf(local_normal.z)
+			var z_dominance := -x_dominance
+			var left_normal_clear := (
+				local_normal.x > 0.0
+				and x_dominance > LAB_REGION_NORMAL_AXIS_MARGIN
+			)
+			var front_normal_clear := (
+				local_normal.z > 0.0
+				and z_dominance > LAB_REGION_NORMAL_AXIS_MARGIN
+			)
+			var baseline_region := _baseline_point_only_region(
+				local_point, config.hull_size_m
+			)
+			var edge_candidate := (
+				in_corner_band
+				and baseline_region == ImpactEvent.ContactRegion.FRONT
+				and left_normal_clear
+			)
+			d.check(
+				local_point.x < 0.0 and local_point.z < 0.0,
+				"%s.tick_%d.contacts_front_left_quadrant" % [label, tick_index]
+			)
+			d.check(event.is_valid(), "%s.tick_%d.event_valid" % [label, tick_index])
+			if edge_candidate:
+				edge_count += 1
+				if edge_tick < 0:
+					edge_tick = tick_index
+					edge = {
+						"severity_m_s": event.severity_m_s,
+						"local_point": local_point,
+						"local_normal": local_normal,
+						"inset_x_m": inset_x,
+						"inset_z_m": inset_z,
+						"x_dominance": x_dominance,
+					}
+				d.check(
+					event.region == ImpactEvent.ContactRegion.LEFT,
+					"%s.tick_%d.wall_end_edge_is_left" % [label, tick_index]
+				)
+				d.check(
+					x_dominance > 0.25,
+					"%s.tick_%d.edge_normal_is_clearly_left" % [label, tick_index]
+				)
+			elif edge_tick < 0:
+				d.check(
+					event.region == ImpactEvent.ContactRegion.LEFT,
+					"%s.tick_%d.preceding_edge_contact_is_left" % [label, tick_index]
+				)
+				if event.region == ImpactEvent.ContactRegion.LEFT:
+					pre_edge_left_count += 1
+			if edge_tick >= 0 and tick_index > edge_tick and front_normal_clear:
+				front_normal_after_count += 1
+				if first_front_tick < 0:
+					first_front_tick = tick_index
+					first_front = {
+						"severity_m_s": event.severity_m_s,
+						"local_point": local_point,
+						"local_normal": local_normal,
+						"inset_x_m": inset_x,
+						"inset_z_m": inset_z,
+						"z_dominance": z_dominance,
+					}
+				d.check(
+					event.region == ImpactEvent.ContactRegion.FRONT,
+					"%s.tick_%d.later_front_transition_is_front" % [label, tick_index]
+				)
+				d.check(
+					z_dominance > 0.25,
+					"%s.tick_%d.front_normal_is_clearly_front" % [label, tick_index]
+				)
+		d.check(edge_count == 1, "%s.one_measured_wall_end_edge" % label)
+		d.check(
+			edge_tick == int(scenario["edge_tick"]),
+			"%s.measured_wall_end_edge_tick" % label
+		)
+		d.check(
+			pre_edge_left_count >= 3,
+			"%s.preceding_left_contact_run" % label
+		)
+		d.check(
+			front_normal_after_count >= 1,
+			"%s.later_genuine_front_observed" % label
+		)
+		d.check(
+			first_front_tick == edge_tick + 1,
+			"%s.front_transition_follows_edge" % label
+		)
+		if not edge.is_empty():
+			d.check(
+				float(edge["inset_z_m"]) > 0.025
+					and float(edge["inset_z_m"]) <= LAB_REGION_CORNER_BAND_M,
+				"%s.edge_outside_old_band_inside_new_band" % label
+			)
+			d.check_close(
+				float(edge["inset_x_m"]), float(scenario["edge_inset_x_m"]),
+				5.0e-4, "%s.edge_inset_x_matches_measurement" % label
+			)
+			d.check_close(
+				float(edge["inset_z_m"]), float(scenario["edge_inset_z_m"]),
+				5.0e-4, "%s.edge_inset_z_matches_measurement" % label
+			)
+			d.check_close(
+				float(edge["severity_m_s"]), float(scenario["edge_severity_m_s"]),
+				0.25, "%s.edge_severity_matches_measurement" % label
+			)
+			d.check(
+				float(edge["severity_m_s"]) > 1.0,
+				"%s.edge_severity_is_significant" % label
+			)
+		if not first_front.is_empty():
+			d.check(
+				float(first_front["severity_m_s"]) > 1.0,
+				"%s.front_transition_severity_is_significant" % label
+			)
+		measurements[label + "_scenario"] = {
+			"speed_m_s": scenario["speed"],
+			"heading_rad": heading,
+			"steer": scenario["steer"],
+			"throttle": scenario["throttle"],
+			"wall_width_m": NARROW_WALL_WIDTH_M,
+		}
+		measurements[label + "_witnesses"] = witnesses.size()
+		measurements[label + "_pre_edge_left_witnesses"] = pre_edge_left_count
+		measurements[label + "_edge_tick"] = edge_tick
+		measurements[label + "_first_front_tick"] = first_front_tick
+		measurements[label + "_front_normal_after_count"] = (
+			front_normal_after_count
+		)
+		measurements[label + "_max_inset_x_m"] = max_inset_x
+		measurements[label + "_max_inset_z_m"] = max_inset_z
+		measurements[label + "_max_band_inset_x_m"] = max_band_inset_x
+		measurements[label + "_max_band_inset_z_m"] = max_band_inset_z
+		if not edge.is_empty():
+			measurements[label + "_edge_severity_m_s"] = edge["severity_m_s"]
+			measurements[label + "_edge_inset_x_m"] = edge["inset_x_m"]
+			measurements[label + "_edge_inset_z_m"] = edge["inset_z_m"]
+			measurements[label + "_edge_local_point"] = edge["local_point"]
+			measurements[label + "_edge_local_normal"] = edge["local_normal"]
+		if not first_front.is_empty():
+			measurements[label + "_front_severity_m_s"] = (
+				first_front["severity_m_s"]
+			)
+			measurements[label + "_front_inset_x_m"] = first_front["inset_x_m"]
+			measurements[label + "_front_inset_z_m"] = first_front["inset_z_m"]
+			measurements[label + "_front_local_normal"] = (
+				first_front["local_normal"]
+			)
+	return {
+		"case": NARROW_WALL_END_JOLT_CASE_ID,
+		"pass": d.failures.is_empty(),
+		"checks": d.checks,
+		"checks_failed": d.failures.size(),
+		"failures": d.failures.duplicate(),
+		"measurements": measurements.duplicate(),
+	}
+
+
 # --- Helpers --------------------------------------------------------------
 
 
@@ -1780,7 +2188,8 @@ func _run_steering_scenario(
 	velocity: Vector2,
 	heading: float,
 	command,
-	ticks: int
+	ticks: int,
+	wall_width_m := STEERING_WALL_WIDTH_M
 ) -> Dictionary:
 	var config := d.make_config()
 	var body_checks := BodyLabChecksScript.new()
@@ -1789,7 +2198,7 @@ func _run_steering_scenario(
 		"point": Vector3(0.0, 2.0, STRAIGHT_WALL_Z),
 		"yaw_deg": 0.0,
 		"thickness_m": WALL_THICKNESS_M,
-		"width_m": STEERING_WALL_WIDTH_M,
+		"width_m": wall_width_m,
 	}
 	var world: BodyLabWorld = WorldScript.build(
 		get_tree().root, config, wall_spec

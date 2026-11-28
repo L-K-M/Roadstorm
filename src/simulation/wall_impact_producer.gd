@@ -63,15 +63,18 @@ extends RefCounted
 ## acceptance claim.
 
 ## Metre band around both hull half-extents within which a local contact point
-## counts as a corner. The laboratory adapter's default orientation contact
-## tolerance is 0.02 m and pinned Godot 4.7.2/Jolt vertex witnesses were
-## measured inset by at most 0.0158 m in X and 0.0138 m in Z, so 0.025 m
-## covers the calibrated solver slop on the 1.8 m × 3.8 m laboratory hull
+## counts as part of a corner. This is a classification capture width, not a
+## solver tolerance. Pinned Godot 4.7.2/Jolt flat straight box-wall vertex
+## witnesses were measured inset by at most 0.0160 m in X and 0.0139 m in Z
+## across 38,034 witnesses, independent of `orientation_contact_tolerance_m`
+## in its validated 0-0.1 m range. A 0.6 m wall end sliding along the side of
+## the same laboratory hull remained a side-face contact as close as 0.0288 m
+## to the nose plane, so 0.035 m covers that measured wall-end transition
 ## while true face-centre contacts remain far outside the band. This constant
 ## is not a general hull contract: other hull dimensions, wall shapes or
 ## orientation tolerances need their own pinned measurements before widening
 ## or reusing it.
-const REGION_CORNER_BAND_M := 0.025
+const REGION_CORNER_BAND_M := 0.035
 ## Minimum difference between the absolute X and Z components of the local
 ## response normal for it to identify a face. A normal closer to diagonal than
 ## this cannot break a near-tie and the exact-point comparison is used.
