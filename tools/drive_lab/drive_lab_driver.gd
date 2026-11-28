@@ -31,6 +31,12 @@ const ROAD_HALF_WIDTH_M := 6.0
 const LOG_BOUND := 1800
 ## Bounded scripted tick count for the M1.5 presentation case.
 const PRESENTATION_TICKS := 30
+## Bounded tick counts for the M1.5 gear-readout regression: enough throttle
+## to reach at least second gear, then enough brake to engage the reverse latch.
+const PRESENTATION_GEAR_THROTTLE_TICKS := 120
+const PRESENTATION_GEAR_BRAKE_TICKS := 150
+## Bounded wait for both the forward shift and the reverse latch.
+const PRESENTATION_GEAR_WAIT_FRAMES := 400
 ## Bounded tick counts for the M1.5 audio feedback integration case.
 const AUDIO_TICKS := 60
 const AUDIO_REFUSAL_HEAD_TICKS := 10
@@ -1074,6 +1080,7 @@ func _case_presentation_integration() -> void:
 	await _presentation_scripted_input_immunity_checks(lab)
 	await _presentation_teardown_checks(lab)
 	await _presentation_keyboard_checks()
+	await _presentation_gear_readout_checks()
 
 
 ## The laboratory must expose the presentation API this case exercises. A
@@ -1196,6 +1203,10 @@ func _presentation_committed_display_checks(lab) -> void:
 			% [d.hud_label_text(hud, "SpeedLabel"), expected]
 	)
 	d.check(expected != "0", "hud.speed_nonzero_after_throttle")
+	d.check(
+		d.hud_label_text(hud, "GearLabel") == str(int(lab.state.gear_index)),
+		"hud.gear_label_mirrors_committed_gear"
+	)
 	d.check(d.hud_label_text(hud, "DriftLabel") == "GRIP", "hud.committed_drift_text_still_grip")
 	d.check(
 		int(hud.get_last_phase()) == int(SpeedHudScript.DriftPhase.GRIP),
@@ -1409,6 +1420,67 @@ func _presentation_keyboard_checks() -> void:
 	)
 	measurements["keyboard_driven_ticks"] = driven
 	measurements["keyboard_speed_m_s"] = lab.state.speed_m_s()
+	await _teardown_lab(lab)
+
+
+## M1.5 gear-readout integration: the actual `Contents/GearLabel` text must
+## mirror the published `CarState.gear_index` after a real forward shift and
+## after the reverse latch. This reads the committed label node headlessly; it
+## proves behavior only, not rendered readability or layout.
+func _presentation_gear_readout_checks() -> void:
+	var commands: Array = []
+	for _index in range(PRESENTATION_GEAR_THROTTLE_TICKS):
+		commands.append(d.throttle_command(1.0))
+	for _index in range(PRESENTATION_GEAR_BRAKE_TICKS):
+		commands.append(d.brake_command(1.0))
+	var lab = _make_lab(commands)
+	if lab == null:
+		return
+	if not _presentation_api_available(lab):
+		await _teardown_lab(lab)
+		return
+	var hud: SpeedHud = lab.get_speed_hud()
+	if hud == null:
+		d.check(false, "hud.gear.instance_present")
+		await _teardown_lab(lab)
+		return
+	d.check(
+		d.hud_label_text(hud, "GearLabel") == "1",
+		"hud.gear.initial_first_gear"
+	)
+	lab.set_auto_tick(true)
+	lab.start()
+	var guard := 0
+	var forward_gear := 0
+	var saw_reverse_latch := false
+	while guard < PRESENTATION_GEAR_WAIT_FRAMES \
+			and not lab.failed and not lab.halted:
+		await get_tree().physics_frame
+		guard += 1
+		var gear := int(lab.state.gear_index)
+		if forward_gear == 0 and gear >= 2:
+			forward_gear = gear
+			d.check(
+				d.hud_label_text(hud, "GearLabel") == str(gear),
+				"hud.gear.forward_label_mirrors_committed_gear (gear=%d)" % gear
+			)
+			d.check(
+				d.hud_label_text(hud, "SpeedLabel")
+					== str(int(round(lab.state.speed_m_s() * KMH_PER_M_S))),
+				"hud.gear.forward_speed_still_mirrors_committed_state"
+			)
+		if lab.state.reverse_engaged:
+			saw_reverse_latch = true
+			d.check(gear == -1, "hud.gear.reverse_latch_publishes_reverse_gear")
+			d.check(
+				d.hud_label_text(hud, "GearLabel") == "R",
+				"hud.gear.reverse_label_mirrors_committed_gear"
+			)
+			break
+	d.check(forward_gear >= 2, "hud.gear.forward_shift_observed (gear=%d)" % forward_gear)
+	d.check(saw_reverse_latch, "hud.gear.reverse_latch_observed")
+	d.check(not lab.failed, "hud.gear.run_not_failed: " + str(lab.failure_reason))
+	measurements["hud_forward_gear"] = forward_gear
 	await _teardown_lab(lab)
 
 
@@ -2393,6 +2465,58 @@ func _gearbox_assert_pose_block_survives_configure(lab, label: String) -> void:
 		label + ".blocked_tick_makes_no_adapter_call"
 	)
 
+
+## Auto-tick regression shared by the post-commit failure and state-only
+## restore paths: after `configure()` clears the terminal flags but keeps the
+## pose block, `start()` and the automatic physics callback must halt with the
+## explicit replay block reason before consuming a scripted command, calling
+## the adapter or reporting completion. A repeated start attempt stays inert.
+func _gearbox_assert_auto_tick_refused(lab, label: String) -> void:
+	lab.set_auto_tick(true)
+	var steps_before := int(lab.steps_called)
+	var ticks_before := int(lab.ticks_committed)
+	var index_before := int(lab._script_index)
+	var events_before := int(lab.get_gear_shift_events().size())
+	var callbacks_before := int(lab.physics_callbacks)
+	var reason_before := str(lab.get_drive_replay_block_reason())
+	d.check(not reason_before.is_empty(), label + ".pose_block_reason_present")
+	lab.start()
+	d.check(lab.failed or lab.halted, label + ".auto_start_terminal_state")
+	d.check(
+		str(lab.halt_reason) == reason_before,
+		label + ".auto_start_explicit_halt_reason"
+	)
+	d.check(not lab.completed, label + ".auto_start_not_completed")
+	for _index in range(SETTLE_FRAMES):
+		await get_tree().physics_frame
+	d.check(
+		int(lab.physics_callbacks) > callbacks_before,
+		label + ".auto_physics_path_actually_ran"
+	)
+	d.check(
+		int(lab._script_index) == index_before,
+		label + ".auto_no_scripted_command_consumed"
+	)
+	d.check(int(lab.steps_called) == steps_before, label + ".auto_no_adapter_call")
+	d.check(int(lab.ticks_committed) == ticks_before, label + ".auto_no_committed_tick")
+	d.check(
+		int(lab.get_gear_shift_events().size()) == events_before,
+		label + ".auto_no_shift_event_side_effect"
+	)
+	d.check(not lab.completed, label + ".auto_still_not_completed")
+	# Repeated attempts stay inert: the halt is recorded once and no side effect
+	# repeats across further automatic callbacks.
+	lab.start()
+	for _index in range(3):
+		await get_tree().physics_frame
+	d.check(int(lab.steps_called) == steps_before, label + ".repeat_start_no_adapter_call")
+	d.check(
+		int(lab._script_index) == index_before,
+		label + ".repeat_start_no_script_progress"
+	)
+	d.check(not lab.completed, label + ".repeat_start_not_completed")
+	d.check(str(lab.halt_reason) == reason_before, label + ".halt_reason_stable")
+
 ## One canonical AutomaticGearbox per laboratory: initial pair agreement,
 ## natural shifts with bounded event telemetry and no dithering, reverse-latch
 ## entry and backward coast after latch clear, state-only snapshot/restore with
@@ -2986,6 +3110,22 @@ func _gearbox_snapshot_restore_checks() -> void:
 		await _teardown_lab(dest)
 	else:
 		await _teardown_lab(dest)
+
+	# State-only restore path: reconfiguration keeps the pose block, and a
+	# started automatic run must halt explicitly without scripted-index or
+	# adapter progress, completion, or repeated side effects. A separate
+	# destination keeps the determinism comparison above untouched.
+	var dest_auto = _make_lab([])
+	if dest_auto != null and _gearbox_api_available(dest_auto):
+		var auto_restored: bool = dest_auto.restore_drive_snapshot(snapshot)
+		d.check(auto_restored, "gearbox.restore.auto.valid_pair_accepted")
+		var restore_commands := _throttle_commands(5)
+		var dest_reconfigured: bool = dest_auto.configure(
+			dest_auto.tuning, dest_auto.adapter_config, restore_commands
+		)
+		d.check(dest_reconfigured, "gearbox.restore.auto.configure_accepted")
+		await _gearbox_assert_auto_tick_refused(dest_auto, "gearbox.restore.auto")
+		await _teardown_lab(dest_auto)
 	await _teardown_lab(lab)
 
 
@@ -3347,6 +3487,7 @@ func _gearbox_proposal_refusal_checks() -> void:
 		"gearbox.failure.failed_restore_keeps_pose_block"
 	)
 	_gearbox_assert_pose_block_survives_configure(lab, "gearbox.failure.proposal")
+	await _gearbox_assert_auto_tick_refused(lab, "gearbox.failure.proposal")
 	await _teardown_lab(lab)
 
 
@@ -3444,6 +3585,7 @@ func _gearbox_mirror_refusal_checks() -> void:
 		"gearbox.failure.mirror.nonzero_physical_travel (travel=%.6f)" % travel
 	)
 	_gearbox_assert_pose_block_survives_configure(lab, "gearbox.failure.mirror")
+	await _gearbox_assert_auto_tick_refused(lab, "gearbox.failure.mirror")
 	await _teardown_lab(lab)
 
 

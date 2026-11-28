@@ -19,6 +19,7 @@ const CameraRigScript := preload("res://src/presentation/camera_rig.gd")
 const HUD_LABEL_PATHS := {
 	"SpeedLabel": "Contents/SpeedLabel",
 	"UnitLabel": "Contents/UnitLabel",
+	"GearLabel": "Contents/GearLabel",
 	"ReverseLabel": "Contents/ReverseLabel",
 	"DriftLabel": "Contents/DriftLabel",
 	"QualifyingLabel": "Contents/QualifyingLabel",

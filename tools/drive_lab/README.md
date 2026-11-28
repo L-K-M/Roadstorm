@@ -44,6 +44,10 @@ real `scenes/laboratory/drive_lab.tscn` and checks that the committed
   throttle ticks shows the committed `CarState` speed in km/h (an independent
   conversion oracle), still `GRIP`, with one accepted update per commit plus the
   initial one and no rejected update;
+* the actual `Contents/GearLabel` text mirrors the published
+  `CarState.gear_index`: `1` initially, the forward gear after a real shift, and
+  `R` while the reverse latch holds, read headlessly as behavior only (not
+  rendered readability or layout);
 * `cycle_camera_mode()` walks CHASE -> NEAR_CHASE -> HOOD -> CHASE, and
   `set_rear_view_held()` turns the same camera backwards and restores it on
   release, with dot-product evidence against the car's forward axis;
@@ -157,6 +161,11 @@ into the laboratory and checks:
   mirror from the canonical gear, publishes both together, and then blocks all
   ticks because the body pose is not restored; reconfiguring does not clear
   that block;
+* after either a post-commit gearbox failure or a state-only restore,
+  reconfiguration keeps the pose block and a started automatic run halts with
+  `get_drive_replay_block_reason()` before consuming a scripted command, calling
+  the adapter, recording a shift event or setting `completed`; repeated start
+  attempts stay inert;
 * invalid or incomplete pairs (nonfinite car, null/missing record, bad gear,
   out-of-range/nonfinite dwell or rpm, plain dictionary, null) are refused
   atomically with both live records unchanged and no side effects.
@@ -174,9 +183,11 @@ the run. The laboratory retains the canonical gearbox state before proposing,
 restores it on refusal, and never publishes the unmirrored physical record as
 the committed pair. The body has already advanced, so the laboratory marks the
 body pose unreconciled: `configure()` clears the failure/halt flags but keeps
-`is_drive_replay_blocked()`, and no further adapter call is made. The physical
-body is never rolled back or teleported, and the last successfully published
-pair is deliberately not reconciled with the irreversibly advanced body.
+`is_drive_replay_blocked()`. `start()` and the automatic physics path then halt
+with `get_drive_replay_block_reason()` before they can consume a scripted
+command, call the adapter or report a zero-tick completion. The physical body
+is never rolled back or teleported, and the last successfully published pair
+is deliberately not reconciled with the irreversibly advanced body.
 Restoring a snapshot into a laboratory that has already failed is refused
 explicitly and leaves both live records untouched.
 
@@ -185,9 +196,12 @@ refusal and a mirror refusal on a real COMMITTED tick. They require nonzero
 physical travel, the retained pre-tick canonical gear/dwell/rpm back, the last
 published pair untouched, no shift event for the unpublished tick, and a
 body-pose block that survives `configure()` without consuming an adapter call.
+A separate state-only restore destination proves the same automatic-path
+refusal after a valid restore.
 
-Gear selection drives no audio or HUD display here. This slice wires neither
-shift sound nor a gear readout, and claims none.
+Gear selection drives no audio here. The only gear display is the committed
+`CarState.gear_index` mirror the speed HUD already renders; no dedicated shift
+sound or extra readout wiring is added.
 
 ## Negative control
 

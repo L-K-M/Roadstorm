@@ -86,9 +86,12 @@ extends Node3D
 ## gearbox, repairs the gear mirror, and publishes both together. It does not
 ## restore the body transform, so a restored laboratory blocks every tick
 ## (`is_drive_replay_blocked()`) until a future body-pose reconciliation
-## operation exists. Restoring a `CarState` alone is not offered: it cannot
-## reproduce shift dwell or canonical rpm. Gear selection drives no audio or
-## HUD display here; no shift sound or gear readout wiring is claimed.
+## operation exists. `start()` and the automatic physics path halt with
+## `get_drive_replay_block_reason()` before consuming a scripted command or
+## reporting completion, so a zero-tick run can never read as complete.
+## Restoring a `CarState` alone is not offered: it cannot reproduce shift
+## dwell or canonical rpm. Gear selection drives no audio here; the only gear
+## display is the committed `CarState.gear_index` mirror the speed HUD shows.
 ##
 ## Headless scripted mode never reads GUI input. Keyboard mode is a separate
 ## convenience path for interactive use.
@@ -308,6 +311,8 @@ func _physics_process(_delta: float) -> void:
 		return
 	if not _auto_tick:
 		return
+	if _halt_for_pose_block():
+		return
 	var command = null
 	if command_mode == CommandMode.KEYBOARD:
 		command = _sample_keyboard_command()
@@ -415,6 +420,8 @@ func configure(p_tuning, p_config, p_commands: Array = []) -> bool:
 
 func start() -> void:
 	if failed or halted:
+		return
+	if _halt_for_pose_block():
 		return
 	_running = true
 
@@ -1265,6 +1272,18 @@ func _rollback_pre_tick_gearbox(pre_tick) -> String:
 func _mark_body_pose_stale(reason: String) -> void:
 	_drive_body_pose_stale = true
 	_drive_body_pose_block_reason = reason
+
+
+## Stops an automatic run attempt while the body pose is unreconciled. Returns
+## true when the caller must not advance. `start()` and `_physics_process()`
+## use this before they could consume a scripted command or report completion,
+## so a stale-pose laboratory halts with its explicit replay block reason
+## instead of completing a zero-tick script.
+func _halt_for_pose_block() -> bool:
+	if not _drive_body_pose_stale:
+		return false
+	_halt(_drive_body_pose_block_reason)
+	return true
 
 
 ## Bounded explicit gearbox failure. The physical tick is already committed
