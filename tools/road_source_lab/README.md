@@ -97,21 +97,26 @@ or:
 first runs an iterative lexical/structural preflight for the strict JSON text
 grammar: only the four JSON whitespace bytes, strict number forms, lowercase
 literals, properly closed objects and arrays without trailing commas, and
-valid quoted strings with valid escapes. Numbers carry two deliberate
+valid quoted strings with valid escapes. Numbers carry three deliberate
 source-contract limits beyond RFC 8259: the decimal exponent must stay within
-[-308, +308] and use at most four digits, and the significand must use at most
+[-308, +308] and use at most four digits; the significand must use at most
 18 digit characters, counting the integer part's leading zero and fractional
-leading zeros but excluding sign and decimal point. The exponent limit exists
-because the pinned engine's JSON reader wraps an oversized exponent into a
-plausible finite value (`12e4294967296` decodes as `12.0`). The significand
-limit exists because the pinned decoder retains only the first 18 mantissa
-digit characters and then applies the exponent, so a longer spelling drops
-significant digits while still decoding to a plausible value
-(`0.000000000000000025e17`, true value 2.5, decodes as `2.0`). Both tokens are
-valid JSON; they are unsupported spellings under this contract, refused with
-`INVALID_JSON_TEXT` and a byte offset rather than described as malformed
-grammar. The limits are lexical and do not by themselves guarantee a finite
-decoded double, so decoded-value finiteness is still enforced downstream.
+leading zeros but excluding sign and decimal point; and the adjusted decimal
+exponent (explicit exponent minus fractional digit count) must be at least
+-308. The exponent limit exists because the pinned engine's JSON reader wraps
+an oversized exponent into a plausible finite value (`12e4294967296` decodes as
+`12.0`). The significand limit exists because the pinned decoder retains only
+the first 18 mantissa digit characters and then applies the exponent, so a
+longer spelling drops significant digits while still decoding to a plausible
+value (`0.000000000000000025e17`, true value 2.5, decodes as `2.0`). The
+adjusted-exponent limit exists because the pinned decoder uses that adjusted
+exponent to choose an intermediate power of ten; below -308 the divisor itself
+overflows, so valid JSON `1.0e-308` decodes as exact zero although its
+mathematical value is representable. These tokens are valid JSON; they are
+unsupported spellings under this contract, refused with `INVALID_JSON_TEXT` and
+a byte offset rather than described as malformed grammar. The limits are
+lexical and do not by themselves guarantee a finite decoded double, so
+decoded-value finiteness is still enforced downstream.
 The scanner is not a regex stripper; it tracks nested object/array state while
 treating commas, braces and brackets inside strings as content. Object member
 names are canonicalized after escape decoding, including `\uXXXX` sequences
@@ -220,6 +225,11 @@ The laboratory currently covers:
   refusal, positive controls `0.25e1`, `0.00000000025e10`, an exact 18-digit
   boundary spelling, `0.30000000000000004`, signed and uppercase exponent
   forms, and the direct-parse_document spelling-blindness control;
+- adjusted-exponent decoder bounds: the exact Sol follow-up spellings
+  `1.0e-308` and `1.00e-307` refused in bank and nested schema-unknown
+  positions, uppercase `E` forms, nonzero relative-value positive controls
+  `1e-308`, `0.1e-307` and `1.0e-307`, and ordinary signed/unsigned ratio
+  controls;
 - degenerate adjacent anchors and degenerate span-participating tangent
   handles, with explicit coverage of the two unused open-endpoint handles;
 - canonical round-trip, repeated parsing, accessor copies and read-only public
@@ -238,6 +248,7 @@ cross-version, cross-host, rendered or milestone acceptance claim.
 
 The accepted JSON number spellings are deliberately narrower than RFC 8259:
 exponents outside [-308, +308] or longer than four digits, significands longer
-than 18 digit characters, unpaired surrogates and NUL escapes are refused even
-though several of these are valid JSON. `parse_document` callers that decode
-text with another reader bypass these lexical limits and own that decode.
+than 18 digit characters, spellings whose adjusted decimal exponent is below
+-308, unpaired surrogates and NUL escapes are refused even though several of
+these are valid JSON. `parse_document` callers that decode text with another
+reader bypass these lexical limits and own that decode.

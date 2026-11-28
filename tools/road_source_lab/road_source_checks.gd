@@ -131,6 +131,7 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_strict_json_text_preflight"),
 		Callable(self, "_case_exponent_decoder_bounds"),
 		Callable(self, "_case_mantissa_window_bounds"),
+		Callable(self, "_case_adjusted_exponent_decoder_bounds"),
 		Callable(self, "_case_mutation_controls"),
 		Callable(self, "_case_span_semantics"),
 	]:
@@ -1444,6 +1445,125 @@ func _case_mantissa_window_bounds() -> Dictionary:
 		RoadSourceDocument.parse_document(decoded_width),
 		"direct parse_document accepts an already-decoded width and cannot see its spelling"
 	)
+	return c.result()
+
+
+func _case_adjusted_exponent_decoder_bounds() -> Dictionary:
+	var c := Case.new()
+	c.name = "adjusted_exponent_decoder_bounds"
+
+	var open_text := read_fixture_text(OPEN_FIXTURE_PATH)
+	var closed_text := read_fixture_text(CLOSED_FIXTURE_PATH)
+
+	# GPT-6.2 Sol follow-up: the pinned engine converter subtracts the
+	# fractional digit count from the explicit exponent when choosing its
+	# intermediate power of ten. These valid-JSON spellings therefore reach an
+	# adjusted exponent of -309 and decode as exact zero even though their
+	# mathematical values are representable. Refuse them before engine decode in
+	# an authored bank position and in nested schema-unknown positions alike.
+	for token in ["1.0e-308", "1.00e-307"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": " + token)
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"adjusted-exponent bank spelling %s refused before engine decode" % token,
+			"unsupported number spelling: adjusted decimal exponent"
+		)
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				"{\"unused\": {\"nested\": [1, {\"value\": " + token + "}]}}"
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"adjusted-exponent nested schema-unknown spelling %s refused" % token,
+			"unsupported number spelling: adjusted decimal exponent"
+		)
+	for token in ["1.0E-308", "1.00E-307"]:
+		c.refuses(
+			RoadSourceDocument.parse_json(
+				"{\"unused\": {\"nested\": [1, {\"value\": " + token + "}]}}"
+			),
+			RoadSourceDocument.Refusal.INVALID_JSON_TEXT,
+			"uppercase adjusted-exponent nested spelling %s refused" % token,
+			"unsupported number spelling: adjusted decimal exponent"
+		)
+
+	# Boundary-positive spellings must remain available. Their decoded values
+	# are compared relative to 1e-308 because absolute tolerances are meaningless
+	# at subnormal-scale magnitudes: 0.1e-307 is another spelling of 1e-308,
+	# while 1.0e-307 is ten times that value.
+	var tiny_base := 1e-308
+	for case_pair in [
+		["1e-308", 1.0],
+		["0.1e-307", 1.0],
+		["1.0e-307", 10.0],
+		["1E-308", 1.0],
+		["0.1E-307", 1.0],
+		["1.0E-307", 10.0],
+	]:
+		var document := c.accepts(
+			RoadSourceDocument.parse_json(
+				replace_once(
+					closed_text,
+					"\"bank_deg\": -14.0",
+					"\"bank_deg\": " + str(case_pair[0])
+				)
+			),
+			"boundary bank spelling %s accepted" % str(case_pair[0])
+		)
+		if document != null:
+			var bank := document.knot(2).bank_deg
+			c.check(is_finite(bank), "boundary bank %s remains finite" % str(case_pair[0]))
+			c.check(bank != 0.0, "boundary bank %s decodes nonzero" % str(case_pair[0]))
+			c.close(
+				bank / tiny_base,
+				float(case_pair[1]),
+				1e-8,
+				"boundary bank %s has the expected value relative to 1e-308" % str(case_pair[0])
+			)
+
+	# Ordinary decimal and exponent forms are far above the lower bound and must
+	# continue to decode to their authored values, including signed and uppercase
+	# forms. Ratio checks prove these are values rather than mere acceptances.
+	for ordinary_case in [
+		["12.0", 12.0],
+		["1.2e+1", 12.0],
+		["0.12E+2", 12.0],
+	]:
+		var ordinary_width := c.accepts(
+			RoadSourceDocument.parse_json(
+				replace_once(
+					open_text,
+					"\"width_m\": 12.0",
+					"\"width_m\": " + str(ordinary_case[0])
+				)
+			),
+			"ordinary width spelling %s accepted" % str(ordinary_case[0])
+		)
+		if ordinary_width != null:
+			var width := ordinary_width.knot(0).width_m
+			c.check(width != 0.0, "ordinary width %s decodes nonzero" % str(ordinary_case[0]))
+			c.close(
+				width / float(ordinary_case[1]),
+				1.0,
+				1e-12,
+				"ordinary width %s has the expected relative value" % str(ordinary_case[0])
+			)
+	var signed_bank := c.accepts(
+		RoadSourceDocument.parse_json(
+			replace_once(closed_text, "\"bank_deg\": -14.0", "\"bank_deg\": -1.2E+1")
+		),
+		"ordinary signed uppercase bank spelling accepted"
+	)
+	if signed_bank != null:
+		var ordinary_bank := signed_bank.knot(2).bank_deg
+		c.check(ordinary_bank != 0.0, "ordinary signed bank decodes nonzero")
+		c.close(
+			ordinary_bank / (-12.0),
+			1.0,
+			1e-12,
+			"ordinary signed bank has the expected relative value"
+		)
 	return c.result()
 
 

@@ -413,17 +413,20 @@ class Span extends RefCounted:
 ## including Unicode surrogate pairs, and duplicates are refused in every
 ## object. Unpaired surrogate escapes are also refused as a contract constraint
 ## rather than interpreted as implementation-defined text. NUL escapes are
-## refused because the pinned engine decoder lossily replaces them. Two numeric
+## refused because the pinned engine decoder lossily replaces them. Three numeric
 ## spelling limits are enforced before decoding because the pinned engine
 ## silently loses information: an exponent outside [-308, +308] wraps into a
-## plausible finite value (for example `12e4294967296` decodes as `12.0`), and
-## a significand longer than 18 digit characters drops significant digits once
-## a compensating exponent is applied (for example `0.000000000000000025e17`,
-## whose true value is 2.5, decodes as `2.0`). Both refusals are deliberate
-## narrowings of valid JSON spellings under this source contract, like the
-## surrogate and NUL limits; they are not claims that the tokens are malformed
-## RFC 8259 grammar. The scanner validates only; Godot performs the final
-## value decode.
+## plausible finite value (for example `12e4294967296` decodes as `12.0`), a
+## significand longer than 18 digit characters drops significant digits once a
+## compensating exponent is applied (for example `0.000000000000000025e17`,
+## whose true value is 2.5, decodes as `2.0`), and a fractional spelling whose
+## adjusted decimal exponent (explicit exponent minus fractional digit count)
+## falls below -308 makes the decoder's intermediate power-of-ten divisor
+## overflow, so valid JSON `1.0e-308` decodes as zero although its mathematical
+## value is representable. All three refusals are deliberate narrowings of valid
+## JSON spellings under this source contract, like the surrogate and NUL limits;
+## they are not claims that the tokens are malformed RFC 8259 grammar. The
+## scanner validates only; Godot performs the final value decode.
 class _StrictJsonPreflight extends RefCounted:
 	const KIND_ROOT := 0
 	const KIND_OBJECT := 1
@@ -490,6 +493,14 @@ class _StrictJsonPreflight extends RefCounted:
 	## and Unicode escape limits; the token is valid JSON, not malformed
 	## grammar.
 	const SUPPORTED_MANTISSA_DIGIT_MAX := 18
+	## Lowest adjusted decimal exponent accepted before decoding, where the
+	## adjusted exponent is the explicit exponent minus the number of fractional
+	## mantissa digits. The pinned decoder uses that adjusted exponent to choose
+	## an intermediate power of ten; at -309 the divisor itself overflows, so
+	## valid JSON `1.0e-308` decodes as exact zero even though 1e-308 is
+	## representable. This is a lexical fail-closed narrowing of the accepted
+	## spelling space, not a malformed-grammar claim.
+	const SUPPORTED_ADJUSTED_EXPONENT_MIN := -308
 
 	var _bytes := PackedByteArray()
 	var _position := 0
@@ -725,6 +736,8 @@ class _StrictJsonPreflight extends RefCounted:
 			return _set_error("unterminated number")
 		var mantissa_start := _position
 		var mantissa_digits := 0
+		var fractional_digits := 0
+		var explicit_exponent := 0
 		var byte := _peek()
 		if byte == BYTE_ZERO:
 			_position += 1
@@ -745,11 +758,14 @@ class _StrictJsonPreflight extends RefCounted:
 			while not _at_end() and _is_digit(_peek()):
 				_position += 1
 				mantissa_digits += 1
+				fractional_digits += 1
 
 		if not _at_end() and (_peek() == BYTE_LOWER_E or _peek() == BYTE_UPPER_E):
 			var exponent_start := _position
 			_position += 1
+			var exponent_negative := false
 			if not _at_end() and (_peek() == BYTE_MINUS or _peek() == BYTE_PLUS):
+				exponent_negative = _peek() == BYTE_MINUS
 				_position += 1
 			if _at_end() or not _is_digit(_peek()):
 				return _set_error("a number exponent needs at least one digit")
@@ -781,10 +797,18 @@ class _StrictJsonPreflight extends RefCounted:
 						% SUPPORTED_EXPONENT_DIGIT_MAX,
 					exponent_start
 				)
+			explicit_exponent = -exponent_magnitude if exponent_negative else exponent_magnitude
 		if mantissa_digits > SUPPORTED_MANTISSA_DIGIT_MAX:
 			return _set_error(
 				"number significand has more than %d digit characters"
 					% SUPPORTED_MANTISSA_DIGIT_MAX,
+				mantissa_start
+			)
+		var adjusted_exponent := explicit_exponent - fractional_digits
+		if adjusted_exponent < SUPPORTED_ADJUSTED_EXPONENT_MIN:
+			return _set_error(
+				"unsupported number spelling: adjusted decimal exponent %d is below the supported %d lower bound"
+					% [adjusted_exponent, SUPPORTED_ADJUSTED_EXPONENT_MIN],
 				mantissa_start
 			)
 		return true
