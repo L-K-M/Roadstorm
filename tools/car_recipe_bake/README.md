@@ -35,6 +35,7 @@ rewritten.
 | `fixtures/negative/stale_content_hash.json` | Wrong canonical content hash. |
 | `fixtures/negative/subnormal_reverse_acceleration.json` | Checker-accepted `reverse_acceleration_m_s2` literal `5e-324`; the pinned engine rounds it to zero and the fidelity gate refuses. |
 | `fixtures/negative/negative_zero_drag_rolling.json` | Checker-accepted `handling.drag.rolling` literal `-0.0`; `ResourceSaver` drops it as the `+0.0` script default, the reloaded resource has the opposite sign, and the fidelity gate refuses. |
+| `fixtures/negative/nul_display_name.json` | Checker-accepted `display_name` containing a JSON `\u0000`; the engine round trip rewrites it to U+FFFD, and the identity gate refuses at `display_name`. |
 
 Fixture values are explicit synthetic placeholders (`example`/`provisional`),
 not measured production handling. The positive fixtures are adapted from
@@ -132,12 +133,17 @@ failure or refusal, `2` command-line usage error.
    frozen source bytes with the committed checker's parsing/representability
    policy and requires exact path-to-hex equality; a mismatch, missing or
    extra field, or malformed hex refuses with a diagnostic naming the path.
+   The entry point also derives the expected handling identity from the
+   checker-parsed document (`car_id + ".handling"`, `display_name +
+   " handling"`, copied revision and status) and requires the reloaded
+   report's exact strings; see the identity gate below.
    It then re-hashes the frozen and original raw source bytes and refuses if
    either moved while the engine was running. For the original submitted path
    the bytes are read through one descriptor that stays open across the read,
-   a before/after `fstat` stability check, the lexical resolution and a final
-   `stat` of the resolved target; device, inode, size and mtime must match the
-   opened file, or the bake refuses instead of publishing a mismatched label.
+   a before/after `fstat` stability check, the lexical resolution, a final
+   `stat` of the resolved target and a second read of the same descriptor;
+   device, inode, size, mtime and ctime must match the opened file, or the
+   bake refuses instead of publishing a mismatched label.
 7. Copy the verified `.tres` into the new output directory and write the
    manifest last. A failure before publication leaves no destination; a
    failure during publication removes the files it created and the directory.
@@ -187,6 +193,29 @@ This gate covers the checker-to-Godot boundary for the fields the committed
 mapper consumes. It does not repair the pinned parser, and it does not make
 Godot's number parsing correctly rounded.
 
+## Handling identity gate
+
+The numeric gate cannot see a string change. A checker-accepted
+`display_name` may still be rewritten by the engine's JSON parser or by
+`ResourceSaver`/`ResourceLoader`; a JSON `\u0000` becomes U+FFFD in the
+published `.tres`, so a successful-looking round trip publishes a different
+name than the frozen source. The identity gate closes that gap:
+
+* From the checker-parsed frozen document, `bake_handling_recipe.py` derives
+  `definition_id = car_id + ".handling"`, `display_name = display_name +
+  " handling"`, and the copied `revision` and lifecycle `status`, matching
+  the committed mapper's documented derivation exactly.
+* The engine reports those four fields from the reloaded `HandlingDefinition`
+  (`bake_handling.gd`), not from the in-memory mapping.
+* Every value must compare equal as an exact string. Any difference refuses
+  before publication with `<source-path>: handling-identity-mismatch:`
+  naming the source member (`car_id`, `display_name`, `revision` or
+  `status`), leaving no output directory or manifest.
+
+The gate does not normalize the source text and does not weaken checker
+acceptance: a recipe the committed checker accepts can still be refused when
+the engine cannot reproduce its identity exactly.
+
 `numeric_source_bits` is taken from the `ResourceLoader` result, not from the
 in-memory mapped definition. `ResourceSaver` omits properties equal to their
 script defaults, so a mapped value can differ from what the published `.tres`
@@ -214,7 +243,7 @@ Manifest keys:
 | `source_schema_version` | Declared source recipe version (`1.1.0`), copied from the mapper result. |
 | `source_checker` | Committed checker invocation used. |
 | `source_recipe` | Absolute path of the checked source file, exactly as submitted. |
-| `source_resolved_target` | The path the submitted spelling resolved to during the final recheck, bound by device/inode/size/mtime to the descriptor the accepted bytes were read from. |
+| `source_resolved_target` | The path the submitted spelling resolved to during the final recheck, bound by device/inode/size/mtime/ctime to the descriptor the accepted bytes were read from, whose contents are read again after the final stat and hashed. |
 | `source_content_hash` | Canonical `sha256:` hash of the source with `content_hash` removed, from the committed checker. |
 | `source_file_sha256` | `sha256:` hash of the raw source file bytes. |
 | `handling_definition_id` | Stable derived ID `<car_id>.handling`. |
@@ -297,11 +326,22 @@ Cases:
     then a test-only seam retargets the link after the final recheck opened
     and read it but before it resolved the target; the helper refuses and
     names both spellings instead of returning the new path.
+17. `NUL display_name is refused at its exact source path` - end-to-end:
+    the committed checker accepts the `Alpha\u0000Omega` fixture, the engine
+    round trip produces a different name, and the bake exits nonzero with
+    `display_name: handling-identity-mismatch`, leaving no output directory or
+    manifest.
+18. `same-inode restored-mtime rewrite in the final recheck window is
+    refused` - unit-level helper control: a test-only seam overwrites the
+    same inode with equal-length different bytes and restores the original
+    mtime; the helper refuses instead of returning the path beside the old
+    digest.
 
 Positive cases 1, 2 and 11 exercise the `ResourceSaver`/`ResourceLoader` round
 trip and the exact numeric-bit gate; negative cases cover checker refusals,
-the deliberate hash control, the fidelity boundary and destination/source-path
-trust. Cases 8 and 16 are unit-level and need no engine.
+the deliberate hash control, the identity and fidelity boundaries and
+destination/source-path trust. Cases 8, 16 and 18 are unit-level and need no
+engine.
 
 Hosted CI runs this same suite on clean Ubuntu against the digest-verified
 pinned editor, which is where the util-linux `flock` lock path is exercised;
@@ -344,9 +384,12 @@ The runner exits `0` only when every case passes.
   the resource reloaded under the current script defaults, including the
   negative-zero fixture; it does not bind future versions of those defaults.
 * The final source recheck binds `source_resolved_target` to the identity
-  (device, inode, size, mtime) observed while the accepted bytes were being
-  read. It narrows the read-to-label window but does not prevent arbitrary
-  mutation of the submitted path after that check or after publication.
+  (device, inode, size, mtime, ctime) observed while the accepted bytes were
+  being read, then reads the still-open descriptor again and hashes what it
+  returns. It narrows the read-to-label window and catches a same-inode
+  equal-length rewrite with a restored mtime inside the seam. It does not
+  lock external writers and does not prevent arbitrary mutation of the
+  submitted path after the observation or after publication.
 * The private tests prove this CLI slice against synthetic fixtures. They do
   not replace source-to-runtime conversion review, production-content review,
   M0.2 acceptance or release-rights clearance.

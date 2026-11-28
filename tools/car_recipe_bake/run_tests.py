@@ -20,6 +20,12 @@ Godot build under an exclusive portable lock (BSD ``lockf`` or util-linux
 * a deterministic module-boundary seam that retargets a lexical source symlink
   after the final recheck opened and read it but before it resolved the target,
   asserting refusal and the bound target for a stable symlink;
+* a checker-accepted `display_name` containing a NUL character, which the
+  engine round trip rewrites; the bake refuses at `display_name` with no
+  output or manifest;
+* a deterministic same-inode equal-length rewrite with a restored mtime fired
+  inside the final recheck seam, asserted to refuse instead of labelling the
+  new bytes with the old digest;
 * a submitted symlink retargeted to different bytes between the source
   snapshot and the final recheck, refused with a path-specific diagnostic
   and no output, using a test-only ``--godot-bin`` seam; the same seam also
@@ -673,6 +679,109 @@ def _check_recheck_window_symlink_control(runner: Runner) -> None:
     runner.run("source symlink retargeted inside the final recheck window is refused", body)
 
 
+def _check_nul_display_name_refusal(runner: Runner) -> None:
+    """A checker-accepted NUL display name must not be silently rewritten.
+
+    Godot's JSON/ResourceSaver round trip replaces the NUL with U+FFFD while
+    keeping the recipe checker-accepted. The identity gate derives the exact
+    source strings from the checker-parsed document and refuses any reloaded
+    report difference at its source path before publication.
+    """
+    fixture = FIXTURE_DIR / "negative" / "nul_display_name.json"
+    output_dir = runner.workspace / "out-nul-display-name"
+
+    def body() -> None:
+        accepted = _run_checker(fixture, timeout=runner.timeout)
+        accepted_output = (accepted.stdout or "") + "\n" + (accepted.stderr or "")
+        _require(
+            accepted.returncode == 0,
+            "the NUL display_name fixture must pass the committed motor-ready "
+            "checker:\n" + accepted_output,
+        )
+
+        process = runner.bake(fixture, output_dir, expect_success=False)
+        output = (process.stdout or "") + "\n" + (process.stderr or "")
+        _require(process.returncode != 0, "refusal exit code must be nonzero")
+        _require(
+            "display_name: handling-identity-mismatch" in output,
+            f"refusal did not name the display_name source path:\n{output}",
+        )
+        _require(
+            "Alpha\\x00Omega handling" in output,
+            f"refusal did not report the source-derived display name:\n{output}",
+        )
+        _require(
+            not output_dir.exists(),
+            "a refused bake left an output destination behind",
+        )
+        _require(
+            not (output_dir / "bake_manifest.json").exists(),
+            "a refused bake produced a success manifest",
+        )
+
+    runner.run("NUL display_name is refused at its exact source path", body)
+
+
+def _check_recheck_window_same_inode_rewrite_control(runner: Runner) -> None:
+    """A same-inode restored-mtime rewrite inside the recheck seam refuses.
+
+    Equal-length bytes are written over the same inode and the original
+    mtime is restored, so only the change-time identity field or a fresh read
+    of the still-open descriptor can see the mutation. The helper must refuse
+    rather than return the path next to the frozen bytes' hash.
+    """
+    module = _load_bake_cli()
+    workspace = runner.workspace / "recheck-same-inode"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "recipe.json"
+    original = b'{"a": true}\n'
+    replacement = b'{"c": true}\n'
+    target.write_bytes(original)
+    stat_before = target.stat()
+    expected = "sha256:" + hashlib.sha256(original).hexdigest()
+
+    def body() -> None:
+        fired: list[Path] = []
+        original_seam = module._SOURCE_RECHECK_SEAM
+
+        def seam(path: Path) -> None:
+            fired.append(path)
+            with open(path, "r+b") as handle:
+                handle.write(replacement)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.utime(path, ns=(stat_before.st_atime_ns, stat_before.st_mtime_ns))
+
+        module._SOURCE_RECHECK_SEAM = seam
+        try:
+            try:
+                module._require_source_unchanged(target, expected)
+            except module.BakeError as exc:
+                message = str(exc)
+                _require(
+                    str(target) in message,
+                    f"refusal did not name the submitted path: {message!r}",
+                )
+            else:
+                raise CaseFailure(
+                    "helper accepted a same-inode equal-length rewrite with a "
+                    "restored mtime inside the final recheck window"
+                )
+        finally:
+            module._SOURCE_RECHECK_SEAM = original_seam
+
+        _require(fired == [target], f"seam fired with unexpected paths: {fired!r}")
+        _require(
+            target.read_bytes() == replacement,
+            "the test seam did not rewrite the source in place",
+        )
+
+    runner.run(
+        "same-inode restored-mtime rewrite in the final recheck window is refused",
+        body,
+    )
+
+
 def _check_dangling_input_symlink_refusal(runner: Runner) -> None:
     source_link = runner.workspace / "dangling-source-link.json"
     source_link.symlink_to(runner.workspace / "absent-source-target.json")
@@ -827,6 +936,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _check_dangling_input_symlink_refusal(runner)
         _check_input_parent_symlink_retarget_refusal(runner)
         _check_recheck_window_symlink_control(runner)
+        _check_nul_display_name_refusal(runner)
+        _check_recheck_window_same_inode_rewrite_control(runner)
     finally:
         if args.keep_workspace:
             print(f"[tests] workspace kept at {workspace}")

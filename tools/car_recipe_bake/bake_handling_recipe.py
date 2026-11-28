@@ -19,15 +19,21 @@ Pipeline, in order:
    under an exclusive portable lock (BSD ``lockf`` or util-linux ``flock``)
    with private ``HOME``/XDG/TMP directories, load the checked recipe, call
    ``HandlingRecipeMapper.map_handling``, run ``HandlingDefinition.validate()``,
-   serialize the ``.tres`` and reload it through ``ResourceLoader``.
+   serialize the ``.tres`` and reload it through ``ResourceLoader``. The
+   entry point derives the expected handling identity (``car_id + ".handling"``,
+   ``display_name + " handling"``, revision and status) from the
+   checker-parsed frozen document and requires the reloaded report's exact
+   strings, so a source value the engine's parser or serializer rewrites is
+   refused at its source path.
 6. Re-read the submitted lexical ``--recipe`` path, following any symlinked
    leaf or parent at that moment, and require the frozen source bytes. The
    path is opened once and its descriptor stays open through the read, the
-   fstat stability check, the lexical resolution and a final stat of the
-   resolved target; device, inode, size and mtime must identify the same file
-   the bytes were read from. The manifest records the submitted path and
-   that bound target, so a link retargeted during the bake can never be
-   published under the old bytes.
+   fstat stability check, the lexical resolution, a final stat of the
+   resolved target and a second read of the same descriptor; device, inode,
+   size, mtime and ctime must identify the same file the bytes were read from.
+   The manifest records the submitted path and that bound target, so a link
+   retargeted during the bake, or a same-inode rewrite with a restored mtime
+   inside the recheck window, can never be published under the old bytes.
 7. Copy the verified ``.tres`` into the new output directory and write the
    manifest last. Any failure leaves no output directory or manifest.
 
@@ -104,6 +110,19 @@ NUMERIC_SCALAR_PATHS = (
 UNLIMITED_YAW_PATH = "handling.max_yaw_rate_rad_s"
 BINARY64_HEX_LENGTH = 16
 BINARY64_HEX_RE = re.compile(r"[0-9a-f]{%d}" % BINARY64_HEX_LENGTH)
+
+## Engine report identity fields derived from the checker-parsed frozen
+## source document, paired with the dotted source path each one comes from.
+## Exact string comparison keeps the published resource from silently
+## rewriting a checker-accepted source value on the way through Godot's JSON
+## parser and `ResourceSaver` (for example a NUL display name becoming
+## U+FFFD).
+IDENTITY_FIELDS = (
+    ("definition_id", "car_id"),
+    ("display_name", "display_name"),
+    ("revision", "revision"),
+    ("status", "status"),
+)
 
 ERROR_SCAN = ("SCRIPT ERROR", "Parse Error", "Failed to load script")
 
@@ -235,6 +254,7 @@ def _run(args: argparse.Namespace) -> int:
             _hash_source_with_committed_tool(frozen_recipe)
         )
         expected_numeric_bits = _expected_numeric_bits(converted_document)
+        expected_identity = _expected_identity(converted_document)
         godot_bin = _resolve_godot(args.godot_bin)
         lock_path = _resolve_lock_path(args, scratch)
         engine_version = _verify_engine(godot_bin, args.timeout, lock_path)
@@ -244,7 +264,9 @@ def _run(args: argparse.Namespace) -> int:
             godot_bin, project_dir, cache_env, args.timeout, frozen_recipe, lock_path
         )
         _require_source_unchanged(frozen_recipe, source_file_sha256)
-        report = _read_and_validate_report(project_dir, expected_numeric_bits)
+        report = _read_and_validate_report(
+            project_dir, expected_numeric_bits, expected_identity
+        )
         resource_bytes, resource_sha256 = _read_emitted_resource(project_dir)
         # Final trust boundary: re-read exactly what the user submitted,
         # following any symlinked leaf or parent at this moment, and require
@@ -303,7 +325,12 @@ def _hash_source_with_committed_tool(
             "canonical source content hash disagrees with the recorded hash: "
             f"{computed} != {recorded!r}"
         )
-    raw = recipe_path.read_bytes()
+    try:
+        raw = recipe_path.read_bytes()
+    except OSError as exc:
+        raise BakeError(
+            f"could not read the frozen source recipe {recipe_path}: {exc}"
+        ) from exc
     return computed, "sha256:" + hashlib.sha256(raw).hexdigest(), converted
 
 
@@ -356,6 +383,51 @@ def _expected_numeric_bits(document: dict[str, Any]) -> dict[str, str]:
             value = float(node)
         bits[dotted] = _binary64_hex(value)
     return bits
+
+
+def _required_source_string(document: dict[str, Any], dotted: str) -> str:
+    value = document.get(dotted)
+    if not isinstance(value, str) or not value:
+        raise BakeError(
+            f"checked recipe has no usable {dotted} for identity derivation"
+        )
+    return value
+
+
+def _expected_identity(document: dict[str, Any]) -> dict[str, str]:
+    """Derive the handling identity from the checker-parsed frozen document.
+
+    This mirrors the committed mapper exactly: `definition_id` becomes
+    `<car_id>.handling`, `display_name` becomes `<display_name> handling`, and
+    the recipe's `revision` and lifecycle `status` are copied unchanged.
+    """
+    return {
+        "definition_id": _required_source_string(document, "car_id") + ".handling",
+        "display_name": _required_source_string(document, "display_name")
+        + " handling",
+        "revision": _required_source_string(document, "revision"),
+        "status": _required_source_string(document, "status"),
+    }
+
+
+def _verify_identity_fidelity(
+    report: dict[str, Any], expected: dict[str, str]
+) -> None:
+    """Refuse unless the reloaded report's identity equals the source identity.
+
+    Equality is between exact strings. A checker-accepted character that the
+    engine's JSON parser or `ResourceSaver`/`ResourceLoader` round trip
+    rewrites, such as a NUL in `display_name` becoming U+FFFD, therefore
+    refuses at its source path before anything is published.
+    """
+    for field, source_path in IDENTITY_FIELDS:
+        actual = report.get(field)
+        wanted = expected[field]
+        if actual != wanted:
+            raise BakeError(
+                f"{source_path}: handling-identity-mismatch: expected {field} "
+                f"{wanted!r}, engine reported {actual!r}"
+            )
 
 
 def _verify_numeric_fidelity(
@@ -432,23 +504,30 @@ def _read_fd_bytes(descriptor: int) -> bytes:
     return b"".join(chunks)
 
 
-def _stat_identity(stat_result: os.stat_result) -> tuple[int, int, int, int]:
-    """Return the identity and stability fields used by the source recheck."""
+def _stat_identity(stat_result: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Return the identity and stability fields used by the source recheck.
+
+    Change time is included because an in-place same-inode rewrite can restore
+    the original modification time; POSIX updates ctime on that metadata
+    restoration, which makes the evasion visible even before the descriptor
+    is re-read.
+    """
     return (
         getattr(stat_result, "st_dev", 0),
         getattr(stat_result, "st_ino", 0),
         getattr(stat_result, "st_size", -1),
         getattr(stat_result, "st_mtime_ns", -1),
+        getattr(stat_result, "st_ctime_ns", -1),
     )
 
 
 def _same_open_file(opened: os.stat_result, resolved: os.stat_result) -> bool:
     """Require the resolved path to name the file the descriptor opened.
 
-    Device and inode identify the open file on POSIX. Size and modification
-    time must agree too, so a recreated target that happens to reuse the same
-    numbers is still caught. A platform that reports no usable inode number
-    refuses rather than publish an unverified target label.
+    Device and inode identify the open file on POSIX. Size, modification time
+    and change time must agree too, so a recreated target that happens to
+    reuse the same numbers is still caught. A platform that reports no usable
+    inode number refuses rather than publish an unverified target label.
     """
     opened_identity = _stat_identity(opened)
     resolved_identity = _stat_identity(resolved)
@@ -463,12 +542,14 @@ def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Pa
     """Fail unless the source target still names the opened, hashed bytes.
 
     The submitted path is opened once and its descriptor stays open through
-    the read, the fstat stability check, the lexical resolution and the final
-    stat. The returned path must be the file that descriptor refers to, so a
-    symlink retargeted between the read and the resolution cannot label bytes
-    from one file with another file's path. A changed byte image, a changed
-    target identity or a disappeared target each refuses with the submitted
-    path named and leaves no output.
+    the read, the fstat stability check, the lexical resolution, the final
+    stat and a second read of the same descriptor. The returned path must be
+    the file that descriptor refers to, so a symlink retargeted between the
+    read and the resolution cannot label bytes from one file with another
+    file's path, and a same-inode equal-length rewrite whose mtime was
+    restored inside the seam cannot pass as the old bytes. A changed byte
+    image, a changed target identity or a disappeared target each refuses
+    with the submitted path named and leaves no output.
     """
     descriptor: int | None = None
     try:
@@ -479,9 +560,27 @@ def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Pa
                 f"could not re-read the source recipe after baking: {exc}"
             ) from exc
 
-        opened_before = os.fstat(descriptor)
-        raw = _read_fd_bytes(descriptor)
-        opened_after = os.fstat(descriptor)
+        try:
+            opened_before = os.fstat(descriptor)
+        except OSError as exc:
+            raise BakeError(
+                "could not inspect the source recipe while re-reading it; "
+                f"refusing to bind it: {recipe_path}: {exc}"
+            ) from exc
+        try:
+            raw = _read_fd_bytes(descriptor)
+        except OSError as exc:
+            raise BakeError(
+                "could not read the source recipe while re-reading it; "
+                f"refusing to bind it: {recipe_path}: {exc}"
+            ) from exc
+        try:
+            opened_after = os.fstat(descriptor)
+        except OSError as exc:
+            raise BakeError(
+                "could not inspect the source recipe after reading it; "
+                f"refusing to bind it: {recipe_path}: {exc}"
+            ) from exc
         if _stat_identity(opened_before) != _stat_identity(opened_after):
             raise BakeError(
                 "source recipe changed while it was being read; refusing to "
@@ -489,8 +588,9 @@ def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Pa
             )
 
         # Test-only seam: production code never sets this. It fires here so a
-        # deterministic test can retarget a symlink after the bytes were
-        # opened and read but before the lexical path is resolved.
+        # deterministic test can retarget a symlink, or rewrite the same
+        # inode, after the bytes were opened and read but before the lexical
+        # path is resolved.
         if _SOURCE_RECHECK_SEAM is not None:
             _SOURCE_RECHECK_SEAM(recipe_path)
 
@@ -515,6 +615,19 @@ def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Pa
                 "bind the opened source to a different file: "
                 f"{recipe_path} (resolved to {resolved_text})"
             )
+
+        # Metadata alone can be made to look stable, so re-read the
+        # still-open descriptor after the final stat and hash what it returns
+        # now. This catches a same-inode equal-length rewrite with a restored
+        # mtime even on a filesystem that does not expose a usable ctime.
+        try:
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            reread = _read_fd_bytes(descriptor)
+        except OSError as exc:
+            raise BakeError(
+                "could not re-read the source recipe after resolving it; "
+                f"refusing to bind it: {recipe_path}: {exc}"
+            ) from exc
     finally:
         if descriptor is not None:
             os.close(descriptor)
@@ -523,6 +636,13 @@ def _require_source_unchanged(recipe_path: Path, expected_raw_sha256: str) -> Pa
     if actual != expected_raw_sha256:
         raise BakeError(
             "source recipe changed during the bake; refusing to bind the old hash: "
+            f"{recipe_path} (resolved to {resolved_text})"
+        )
+    reread_actual = "sha256:" + hashlib.sha256(reread).hexdigest()
+    if reread_actual != expected_raw_sha256:
+        raise BakeError(
+            "source recipe changed during the bake; refusing to publish bytes "
+            "that differ from the frozen source: "
             f"{recipe_path} (resolved to {resolved_text})"
         )
     return Path(resolved_text)
@@ -540,7 +660,11 @@ def _resolve_godot(explicit: str | None) -> str:
 
 
 def _pinned_version() -> str:
-    for line in ENGINE_PIN_PATH.read_text(encoding="utf-8").splitlines():
+    try:
+        pin_text = ENGINE_PIN_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BakeError(f"could not read engine pin {ENGINE_PIN_PATH}: {exc}") from exc
+    for line in pin_text.splitlines():
         if line.startswith("version_string="):
             version = line.split("=", 1)[1].strip()
             if version:
@@ -747,7 +871,9 @@ def _run_engine_bake(
 
 
 def _read_and_validate_report(
-    project_dir: Path, expected_numeric_bits: dict[str, str]
+    project_dir: Path,
+    expected_numeric_bits: dict[str, str],
+    expected_identity: dict[str, str],
 ) -> dict[str, Any]:
     report_path = project_dir / PROJECT_WORK_RES / "bake_report.json"
     if not report_path.is_file():
@@ -794,6 +920,8 @@ def _read_and_validate_report(
     if report["status"] not in STATUSES:
         raise BakeError(f"engine report status is not a lifecycle name: {report['status']!r}")
 
+    _verify_identity_fidelity(report, expected_identity)
+
     mapping = report.get("mapping")
     if not isinstance(mapping, dict):
         raise BakeError("engine report has no mapping summary")
@@ -823,7 +951,10 @@ def _read_emitted_resource(project_dir: Path) -> tuple[bytes, str]:
     resource_path = project_dir / PROJECT_WORK_RES / OUTPUT_RESOURCE_NAME
     if not resource_path.is_file():
         raise BakeError(f"engine did not emit {OUTPUT_RESOURCE_NAME}: {resource_path}")
-    data = resource_path.read_bytes()
+    try:
+        data = resource_path.read_bytes()
+    except OSError as exc:
+        raise BakeError(f"could not read emitted resource {resource_path}: {exc}") from exc
     if not data:
         raise BakeError("engine emitted an empty .tres")
     if not data.lstrip().startswith(b"[gd_resource"):
