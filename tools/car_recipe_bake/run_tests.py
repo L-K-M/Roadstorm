@@ -29,6 +29,9 @@ Godot build under an exclusive portable lock (BSD ``lockf`` or util-linux
 * unit-level malformed identity-transport controls, proving non-schema hex,
   wrong byte lengths, invalid UTF-8 and missing/unexpected fields refuse
   before identity comparison or publication;
+* duplicate JSON member controls at the top level, at the nested identity
+  transport ``hex`` path, and through an escape spelling that decodes to the
+  same key, each refused while the identical clean report still validates;
 * a deterministic same-inode equal-length rewrite with a restored mtime fired
   inside the final recheck seam, asserted to refuse instead of labelling the
   new bytes with the old digest;
@@ -203,6 +206,43 @@ def _flip_hex_digit(value: str) -> str:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _valid_report_payload(
+    module: Any, checker: Any, fixture: Path
+) -> tuple[dict[str, Any], dict[str, str], dict[str, str]]:
+    """Build an otherwise-valid report and its expected gate inputs."""
+    document, findings = checker.load_json_document(fixture)
+    if document is None or findings:
+        raise CaseFailure(f"{fixture.name} did not load through the committed checker")
+    converted = checker.to_binary64(document)
+    identity = module._expected_identity(converted)
+    numeric_bits = module._expected_numeric_bits(converted)
+    fields = {
+        field: {
+            "hex": value.encode("utf-8").hex(),
+            "byte_length": len(value.encode("utf-8")),
+        }
+        for field, value in identity.items()
+    }
+    curve_points = len(converted["handling"]["acceleration_curve"])
+    payload = {
+        "ok": True,
+        "source_schema_version": module.EXPECTED_SOURCE_VERSION,
+        "typed_schema_version": module.TYPED_SCHEMA_VERSION,
+        "identity_transport": {
+            "format": module.IDENTITY_TRANSPORT_FORMAT,
+            "fields": fields,
+        },
+        "mapping": {
+            "curve_points": curve_points,
+            "max_yaw_rate_rad_s": "finite",
+        },
+        "round_trip": {"ok": True, "validated": True, "fields_compared": 18},
+        "diagnostics": [],
+        "numeric_source_bits": numeric_bits,
+    }
+    return payload, identity, numeric_bits
 
 
 def _check_positive(
@@ -873,6 +913,71 @@ def _check_malformed_identity_transport_refusal(runner: Runner) -> None:
     runner.run("control: malformed identity transport is refused", body)
 
 
+def _check_duplicate_report_member_refusals(runner: Runner) -> None:
+    """Duplicate report members must refuse at any depth before other gates.
+
+    Last-member-wins parsing accepted an invalid first member overwritten by a
+    correct later one. These controls put a bad duplicate next to a good one at
+    the nested identity-transport ``hex`` path and at the top level, plus an
+    escaped-key spelling of the same nested member, and require the production
+    reader to refuse. The identical clean report must still validate.
+    """
+    module = _load_bake_cli()
+    finite = FIXTURE_DIR / "positive" / "finite.json"
+
+    def body() -> None:
+        checker = module._load_committed_checker()
+        payload, identity, numeric_bits = _valid_report_payload(module, checker, finite)
+        workspace = runner.workspace / "duplicate-report"
+        report_path = workspace / module.PROJECT_WORK_RES / "bake_report.json"
+        report_path.parent.mkdir(parents=True)
+        clean = json.dumps(payload, indent=2)
+
+        report_path.write_text(clean, encoding="utf-8")
+        validated = module._read_and_validate_report(workspace, numeric_bits, identity)
+        _require(validated.get("ok") is True, "the clean control report was not accepted")
+
+        def expect_duplicate_refusal(raw_text: str, duplicated: str) -> None:
+            _require(raw_text != clean, "duplicate control did not alter the report text")
+            report_path.write_text(raw_text, encoding="utf-8")
+            try:
+                module._read_and_validate_report(workspace, numeric_bits, identity)
+            except module.BakeError as exc:
+                message = str(exc)
+                _require(
+                    "duplicate JSON member" in message,
+                    f"refusal did not report a duplicate member: {message!r}",
+                )
+                _require(
+                    repr(duplicated) in message,
+                    f"refusal did not name {duplicated!r}: {message!r}",
+                )
+            else:
+                raise CaseFailure(
+                    "a report with a duplicate JSON member was accepted instead of refused"
+                )
+
+        nested = clean.replace(
+            '"display_name": {',
+            '"display_name": {"hex": "ff", ',
+            1,
+        )
+        expect_duplicate_refusal(nested, "hex")
+
+        correct_hex = payload["identity_transport"]["fields"]["display_name"]["hex"]
+        escaped = clean.replace(
+            '"display_name": {',
+            '"display_name": {"hex": "ff", "\\u0068ex": "' + correct_hex + '", ',
+            1,
+        )
+        expect_duplicate_refusal(escaped, "hex")
+
+        top_level = '{"ok": false, ' + clean[1:]
+        expect_duplicate_refusal(top_level, "ok")
+
+    runner.run("control: duplicate JSON report members are refused", body)
+
+
 def _check_recheck_window_same_inode_rewrite_control(runner: Runner) -> None:
     """A same-inode restored-mtime rewrite inside the recheck seam refuses.
 
@@ -1095,6 +1200,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner, "control_u000b_display_name.json", 0x000B
         )
         _check_malformed_identity_transport_refusal(runner)
+        _check_duplicate_report_member_refusals(runner)
         _check_recheck_window_same_inode_rewrite_control(runner)
     finally:
         if args.keep_workspace:

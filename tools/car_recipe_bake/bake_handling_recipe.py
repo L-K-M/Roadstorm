@@ -950,6 +950,32 @@ def _run_engine_bake(
 # --- Engine artifacts --------------------------------------------------------
 
 
+class _DuplicateJSONMember(ValueError):
+    """Internal signal that one JSON object repeats a decoded member name."""
+
+
+def _json_object_without_duplicate_members(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    """Build one object while refusing a repeated member name.
+
+    ``object_pairs_hook`` receives decoded member names, so escape spellings
+    that normalize to the same key (for example ``hex`` and ``\u0068ex``) are
+    recognized as the same member at every nesting depth.
+    """
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJSONMember(key)
+        result[key] = value
+    return result
+
+
+def _loads_unique_json_members(text: str) -> Any:
+    """Parse JSON with duplicate object members rejected at any depth."""
+    return json.loads(text, object_pairs_hook=_json_object_without_duplicate_members)
+
+
 def _read_and_validate_report(
     project_dir: Path,
     expected_numeric_bits: dict[str, str],
@@ -959,8 +985,17 @@ def _read_and_validate_report(
     if not report_path.is_file():
         raise BakeError(f"engine did not write its bake report: {report_path}")
     try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        report_text = report_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BakeError(f"could not read engine bake report: {exc}") from exc
+    try:
+        report = _loads_unique_json_members(report_text)
+    except _DuplicateJSONMember as exc:
+        duplicated = exc.args[0] if exc.args else ""
+        raise BakeError(
+            f"engine bake report contains duplicate JSON member {duplicated!r}"
+        ) from exc
+    except json.JSONDecodeError as exc:
         raise BakeError(f"could not read engine bake report: {exc}") from exc
     if not isinstance(report, dict):
         raise BakeError("engine bake report is not a JSON object")
