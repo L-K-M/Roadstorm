@@ -66,6 +66,8 @@ func run_all() -> Dictionary:
 		Callable(self, "_case_effect_cooldown"),
 		Callable(self, "_case_reset"),
 		Callable(self, "_case_effects_toggle"),
+		Callable(self, "_case_coalesced_counter_increments_once"),
+		Callable(self, "_case_content_digest_contact_fifo_order"),
 	]:
 		var result: Dictionary = call.call()
 		case_results.append(result)
@@ -512,4 +514,179 @@ func _case_post_detach_no_overflow() -> Dictionary:
 	)
 	case.check(is_finite(retained3), "coalesced replay leaves accumulator finite")
 	case.equal(retained3, huge, "coalesced replay leaves accumulator unchanged")
+	return case.result()
+
+## One accepted coalescence must advance `diagnostics().coalesced_events`
+## exactly once. An exact event-id replay and a distinct-event same-contact
+## notification are two separate coalescences; a conflicting reuse of a retained
+## event id is a refusal and must leave the counter untouched.
+func _case_coalesced_counter_increments_once() -> Dictionary:
+	var case := Case.new()
+	case.name = "coalesced_counter_increments_once"
+	var r := CosmeticDamageState.new()
+	r.configure_car(CAR_A, false)
+	case.equal(
+		int(r.diagnostics()["coalesced_events"]),
+		0,
+		"fresh reducer starts with zero coalescences"
+	)
+
+	var first := _make_event(
+		"e1", CAR_A, 1, 2.0,
+		Vector3(0.0, 0.0, -1.5), ImpactEvent.ContactRegion.FRONT,
+		"contact-1",
+	)
+	var o1 := r.consume(first)
+	case.check(o1.is_accepted(), "first contact notification is accepted")
+	case.equal(
+		int(r.diagnostics()["coalesced_events"]),
+		0,
+		"an accepted hit is not a coalescence"
+	)
+	var before := r.content_digest()
+
+	var replay := _make_event(
+		"e1", CAR_A, 1, 2.0,
+		Vector3(0.0, 0.0, -1.5), ImpactEvent.ContactRegion.FRONT,
+		"contact-1",
+	)
+	var o2 := r.consume(replay)
+	case.check(o2.is_coalesced(), "exact event-id replay coalesces")
+	case.equal(
+		int(r.diagnostics()["coalesced_events"]),
+		1,
+		"exact replay increments the counter exactly once"
+	)
+	case.check(o2.action_count() == 0, "exact replay emits no cue")
+	case.check(r.content_digest() == before, "exact replay leaves state unchanged")
+
+	var same_contact := _make_event(
+		"e2", CAR_A, 1, 2.0,
+		Vector3(0.0, 0.0, -1.5), ImpactEvent.ContactRegion.FRONT,
+		"contact-1",
+	)
+	var o3 := r.consume(same_contact)
+	case.check(o3.is_coalesced(), "same contact under a new event id coalesces")
+	case.equal(
+		int(r.diagnostics()["coalesced_events"]),
+		2,
+		"same-contact coalescence increments the counter exactly once"
+	)
+	case.check(o3.action_count() == 0, "same-contact coalescence emits no cue")
+	case.check(r.content_digest() == before, "same-contact coalescence leaves state unchanged")
+
+	var conflict := _make_event(
+		"e1", CAR_A, 1, 2.5,
+		Vector3(0.0, 0.0, -1.5), ImpactEvent.ContactRegion.FRONT,
+		"contact-1",
+	)
+	var o4 := r.consume(conflict)
+	case.check(o4.is_refused(), "conflicting reuse of a retained event id is refused")
+	case.check(
+		o4.code == DUPLICATE_CONFLICT,
+		"conflict reports duplicate_event_conflict"
+	)
+	case.equal(
+		int(r.diagnostics()["coalesced_events"]),
+		2,
+		"rejected conflict leaves the coalesced counter unchanged"
+	)
+	case.check(r.content_digest() == before, "rejected conflict leaves state unchanged")
+	return case.result()
+
+## Retained FIFO contact order decides which contact id an eviction removes,
+## so it controls future coalescing. With event capacity 1 and contact
+## capacity 3, the sequences A/B/C and B/A/C hold identical visible state but
+## different retained order; after D evicts the oldest contact, retrying A is
+## accepted by one reducer and coalesced by the other. The digest must expose
+## that difference, and the difference must come from real retention order
+## rather than fabricated state.
+func _case_content_digest_contact_fifo_order() -> Dictionary:
+	var case := Case.new()
+	case.name = "content_digest_contact_fifo_order"
+	var r1 := CosmeticDamageState.new(1, 3)
+	r1.configure_car(CAR_A, false)
+	var r2 := CosmeticDamageState.new(1, 3)
+	r2.configure_car(CAR_A, false)
+	var point := Vector3(0.0, 0.0, -1.5)
+	var a := _make_event("A", CAR_A, 1, 0.25, point, ImpactEvent.ContactRegion.FRONT, "A")
+	var b := _make_event("B", CAR_A, 1, 0.25, point, ImpactEvent.ContactRegion.FRONT, "B")
+	var c := _make_event("C", CAR_A, 1, 0.25, point, ImpactEvent.ContactRegion.FRONT, "C")
+	var d := _make_event("D", CAR_A, 1, 0.25, point, ImpactEvent.ContactRegion.FRONT, "D")
+
+	case.check(r1.consume(a).is_accepted(), "ordered run accepts A")
+	case.check(r1.consume(b).is_accepted(), "ordered run accepts B")
+	case.check(r1.consume(c).is_accepted(), "ordered run accepts C")
+	case.check(r2.consume(b).is_accepted(), "permuted run accepts B")
+	case.check(r2.consume(a).is_accepted(), "permuted run accepts A")
+	case.check(r2.consume(c).is_accepted(), "permuted run accepts C")
+
+	var initial_digest_1 := r1.content_digest()
+	var initial_digest_2 := r2.content_digest()
+	case.check(
+		initial_digest_1 != initial_digest_2,
+		"different retained FIFO contact order changes the digest"
+	)
+	case.check(
+		r1.snapshot(CAR_A) == r2.snapshot(CAR_A),
+		"both runs keep identical visible part state"
+	)
+	case.equal(
+		int(r1.diagnostics()["accepted_events"]),
+		int(r2.diagnostics()["accepted_events"]),
+		"both runs accept the same number of events"
+	)
+
+	case.check(r1.consume(d).is_accepted(), "ordered run accepts D")
+	case.check(r2.consume(d).is_accepted(), "permuted run accepts D")
+	case.check(
+		r1.content_digest() != r2.content_digest(),
+		"FIFO order still differs after D"
+	)
+
+	var retry_1 := r1.consume(a)
+	var retry_2 := r2.consume(a)
+	case.check(
+		retry_1.is_accepted(),
+		"ordered run accepted evicted contact A after D"
+	)
+	case.check(
+		retry_2.is_coalesced(),
+		"permuted run coalesced retained contact A after D"
+	)
+	case.check(
+		r1.content_digest() != r2.content_digest(),
+		"continuation behavior keeps the digests different"
+	)
+	case.equal(
+		float(r1.snapshot(CAR_A)["parts"]["front_bumper"]["accumulated_severity_m_s"]),
+		1.25,
+		"accepted retry A accumulates on top of A/B/C/D in the ordered run"
+	)
+	case.equal(
+		float(r2.snapshot(CAR_A)["parts"]["front_bumper"]["accumulated_severity_m_s"]),
+		1.0,
+		"coalesced retry A leaves the permuted accumulator at A/B/C/D"
+	)
+
+	# Replaying the same construction must reproduce the same digests, proving
+	# the fingerprint follows the explicit FIFO array rather than hash order.
+	var r3 := CosmeticDamageState.new(1, 3)
+	r3.configure_car(CAR_A, false)
+	var r4 := CosmeticDamageState.new(1, 3)
+	r4.configure_car(CAR_A, false)
+	r3.consume(a)
+	r3.consume(b)
+	r3.consume(c)
+	r4.consume(b)
+	r4.consume(a)
+	r4.consume(c)
+	case.check(
+		r3.content_digest() == initial_digest_1,
+		"replayed ordered run reproduces the digest"
+	)
+	case.check(
+		r4.content_digest() == initial_digest_2,
+		"replayed permuted run reproduces the digest"
+	)
 	return case.result()

@@ -498,7 +498,6 @@ func consume(event: ImpactEvent) -> ConsumeOutcome:
 	if retained_events.has(event.event_id):
 		var retained: ImpactEvent = retained_events[event.event_id]
 		if retained != null and retained.same_payload(event):
-			coalesced_count += 1
 			return _coalesced(
 				car_id,
 				"duplicate event id %s" % event.event_id
@@ -521,7 +520,6 @@ func consume(event: ImpactEvent) -> ConsumeOutcome:
 	if event.has_contact_link():
 		var contacts: Dictionary = _contacts_by_car[car_id]
 		if contacts.has(event.contact_id):
-			coalesced_count += 1
 			return _coalesced(
 				car_id,
 				"duplicate physical contact %s" % event.contact_id
@@ -802,11 +800,14 @@ func _car_content_digest(car_id: String) -> String:
 	for event_id in event_order:
 		var event: ImpactEvent = retained_events[event_id]
 		parts.append("event=%s:%s" % [event_id, _event_content_digest(event)])
+	# FIFO retention order, not sorted id order: the order decides which
+	# contact id a later eviction removes, so two reducers with different
+	# insertion orders have different continuation behavior. Hash iteration
+	# would be nondeterministic across runs; the array is explicit.
 	var contact_order: Array = _contact_order_by_car[car_id]
 	var contact_ids: Array[String] = []
 	for contact_id in contact_order:
 		contact_ids.append(contact_id)
-	contact_ids.sort()
 	parts.append("contacts=%s" % encode_string_array(contact_ids))
 	return _join(parts)
 
