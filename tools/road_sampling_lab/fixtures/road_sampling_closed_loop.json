@@ -1,0 +1,58 @@
+{
+  "schema": "roadstorm.road_source.v1",
+  "course_id": "lab.sampling.closed_loop",
+  "revision": "0.1.0",
+  "closed": true,
+  "knots": [
+    {
+      "anchor": [0.0, 0.0, 0.0],
+      "handle_in": [10.0, 0.0, 0.0],
+      "handle_out": [0.0, 0.0, -10.0],
+      "width_m": 12.0,
+      "bank_deg": 0.0
+    },
+    {
+      "anchor": [0.0, 0.0, -30.0],
+      "handle_in": [0.0, 0.0, -20.0],
+      "handle_out": [10.0, 0.0, -30.0],
+      "width_m": 12.0,
+      "bank_deg": 0.0
+    },
+    {
+      "anchor": [30.0, 0.0, -30.0],
+      "handle_in": [20.0, 0.0, -30.0],
+      "handle_out": [30.0, 0.0, -20.0],
+      "width_m": 9.0,
+      "bank_deg": -8.0
+    },
+    {
+      "anchor": [30.0, 0.0, 0.0],
+      "handle_in": [30.0, 0.0, -10.0],
+      "handle_out": [20.0, 0.0, 0.0],
+      "width_m": 9.0,
+      "bank_deg": 0.0
+    }
+  ],
+  "sections": [
+    {
+      "section_id": "lab.sampling.loop.north",
+      "surface_id": "asphalt",
+      "feature_tags": ["straight"]
+    },
+    {
+      "section_id": "lab.sampling.loop.east",
+      "surface_id": "asphalt",
+      "feature_tags": ["straight", "width_narrowing"]
+    },
+    {
+      "section_id": "lab.sampling.loop.south",
+      "surface_id": "concrete",
+      "feature_tags": ["straight", "banked"]
+    },
+    {
+      "section_id": "lab.sampling.loop.west",
+      "surface_id": "asphalt",
+      "feature_tags": ["straight", "bank_return"]
+    }
+  ]
+}

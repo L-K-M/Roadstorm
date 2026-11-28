@@ -1,0 +1,29 @@
+{
+  "schema": "roadstorm.road_source.v1",
+  "course_id": "lab.sampling.open_curve",
+  "revision": "0.1.0",
+  "closed": false,
+  "knots": [
+    {
+      "anchor": [0.0, 0.0, 0.0],
+      "handle_in": [-4.0, -0.5, 6.0],
+      "handle_out": [0.0, 1.0, -10.0],
+      "width_m": 11.0,
+      "bank_deg": -3.0
+    },
+    {
+      "anchor": [20.0, 3.0, -30.0],
+      "handle_in": [20.0, 2.0, -10.0],
+      "handle_out": [24.0, 4.0, -38.0],
+      "width_m": 9.0,
+      "bank_deg": 8.0
+    }
+  ],
+  "sections": [
+    {
+      "section_id": "lab.sampling.curve.climb",
+      "surface_id": "asphalt",
+      "feature_tags": ["curve", "climb", "width_narrowing"]
+    }
+  ]
+}
