@@ -20,8 +20,8 @@ extends RefCounted
 ## Scope. Exactly one externally checked version 1.1.0 motor-ready source
 ## recipe and its already mapped `HandlingDefinition` are accepted. The mapper
 ## copies identity, status, dimensions including optional nulls, intact mass,
-## the contact shape/roof/underside description and the typed handling
-## reference. Presentation meshes/LODs/paints/icons, engine top speed,
+## the contact shape/roof/underside description and a deep copy of the
+## verified typed handling. Presentation meshes/LODs/paints/icons, engine top speed,
 ## upgrades, detachable parts and every deferred handling field stay absent
 ## exactly as `CarDefinition.DEFERRED_FIELDS_V1` declares them.
 ##
@@ -31,11 +31,12 @@ extends RefCounted
 ## owned by `tools/car_recipe_schema/validate_car_recipe.py`. This class does
 ## not re-implement those document-wide rules. It defensively refuses malformed
 ## dictionaries reaching it directly: unsupported or mistyped versions, a
-## missing/wrong/non-validating handling, missing or wrong units/coordinate
-## frame, missing/null/unknown required mapped dimensions, mass or contact
-## shape, resolved optional values that are also listed in `unknowns`,
-## non-finite or wrongly typed numbers, out-of-envelope dimensions and
-## malformed contact descriptions.
+## missing/wrong/non-validating handling, a handling whose content disagrees
+## with the source recipe, missing or wrong units/coordinate frame,
+## missing/null/unknown required mapped dimensions, mass or contact shape,
+## resolved optional values that are also listed in `unknowns`, non-finite or
+## wrongly typed numbers, out-of-envelope dimensions and malformed contact
+## descriptions.
 ##
 ## Version dispatch is exact. Only source `schema_version` `"1.1.0"` can
 ## produce a draft. `"1.0.0"` is refused with the five missing `handling.*`
@@ -45,10 +46,28 @@ extends RefCounted
 ##
 ## Handling agreement. The passed `handling` must exist and its derived ID
 ## (`<car_id>.handling`), revision, status and typed schema version must agree
-## with the source recipe; the constructed car runs the referenced handling's
-## full validation through `CarDefinition.validate()`, so a physically or
-## identity-invalid handling makes the draft invalid. Changing a car's inline
-## handling therefore requires a car revision change.
+## with the source recipe. The mapper then independently derives the expected
+## typed handling from the same recipe with the committed
+## `HandlingRecipeMapper.map_handling(recipe)` and requires that derivation to
+## succeed; a missing or invalid source handling block refuses the draft with
+## path-specific diagnostics instead of substituting typed defaults. Every
+## core exported handling field is compared exactly with the expected one:
+## the derived display name, both acceleration curve arrays element-by-element
+## in order, braking, aerodynamic/rolling drag, grip yaw, finite-or-unlimited
+## max yaw, lateral damping and all four reverse values. Comparison is exact
+## binary64 equality (signed zero included); no tolerance is applied and the
+## expected handling is never substituted for the passed one. Any difference
+## refuses with a path-specific `handling-content-mismatch` diagnostic.
+## The constructed car runs the referenced handling's full validation through
+## `CarDefinition.validate()`, so a physically or identity-invalid handling
+## makes the draft invalid. Changing a car's inline handling therefore requires
+## a car revision change.
+##
+## The attached handling is a deep copy of the now-verified passed handling,
+## so later caller mutation cannot invalidate an already returned draft. The
+## external checker remains the authority for whole-document JSON Schema,
+## strict-parse, duplicate-member, canonical content-hash and source
+## null/`unknowns` honesty rules; this class does not claim those guarantees.
 ##
 ## Completeness. Every draft is INCOMPLETE with a fixed honest note and the
 ## exact `CarDefinition.DEFERRED_FIELDS_V1` list. COMPLETE is never claimed and
@@ -167,6 +186,15 @@ static func map_draft(recipe: Dictionary, handling: HandlingDefinition) -> Resul
 		return result
 
 	_check_handling_agreement(handling, identity, diagnostics)
+	var expected_handling_result := HandlingRecipeMapper.map_handling(recipe)
+	if not expected_handling_result.ok:
+		diagnostics.append(
+			"handling: handling-content-mismatch: the source recipe does not "
+			+ "derive the expected typed handling"
+		)
+		diagnostics.append_array(expected_handling_result.diagnostics)
+	else:
+		_check_handling_content(handling, expected_handling_result.handling, diagnostics)
 	_read_units(recipe, diagnostics)
 	_read_coordinate_frame(recipe, diagnostics)
 
@@ -312,6 +340,157 @@ static func _check_handling_agreement(
 
 
 # --- Units and coordinate frame ---------------------------------------------
+
+
+## Require every core exported handling field to agree exactly with the typed
+## handling derived from this same source recipe. Identity tags are checked
+## separately; a null passed handling is already diagnosed as missing.
+static func _check_handling_content(
+	handling: HandlingDefinition,
+	expected: HandlingDefinition,
+	diagnostics: Array[String]
+) -> void:
+	if handling == null:
+		return
+	if handling.display_name != expected.display_name:
+		_content_mismatch(
+			"handling.display_name",
+			"'%s'" % expected.display_name,
+			"'%s'" % handling.display_name,
+			diagnostics,
+		)
+	_compare_float_array(
+		"handling.acceleration_curve_speeds_m_s",
+		expected.acceleration_curve_speeds_m_s,
+		handling.acceleration_curve_speeds_m_s,
+		diagnostics,
+	)
+	_compare_float_array(
+		"handling.acceleration_curve_accelerations_m_s2",
+		expected.acceleration_curve_accelerations_m_s2,
+		handling.acceleration_curve_accelerations_m_s2,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.braking_acceleration_m_s2",
+		expected.braking_acceleration_m_s2,
+		handling.braking_acceleration_m_s2,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.drag_aerodynamic",
+		expected.drag_aerodynamic,
+		handling.drag_aerodynamic,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.drag_rolling",
+		expected.drag_rolling,
+		handling.drag_rolling,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.yaw_gain_grip",
+		expected.yaw_gain_grip,
+		handling.yaw_gain_grip,
+		diagnostics,
+	)
+	# INF is the authored unlimited-yaw encoding. Comparing it exactly keeps
+	# finite/unlimited distinct instead of treating both as "large enough".
+	_compare_float(
+		"handling.max_yaw_rate_rad_s",
+		expected.max_yaw_rate_rad_s,
+		handling.max_yaw_rate_rad_s,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.lateral_damping_grip_per_s",
+		expected.lateral_damping_grip_per_s,
+		handling.lateral_damping_grip_per_s,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.reverse_trigger_speed_m_s",
+		expected.reverse_trigger_speed_m_s,
+		handling.reverse_trigger_speed_m_s,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.reverse_hold_time_s",
+		expected.reverse_hold_time_s,
+		handling.reverse_hold_time_s,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.reverse_acceleration_m_s2",
+		expected.reverse_acceleration_m_s2,
+		handling.reverse_acceleration_m_s2,
+		diagnostics,
+	)
+	_compare_float(
+		"handling.reverse_top_speed_m_s",
+		expected.reverse_top_speed_m_s,
+		handling.reverse_top_speed_m_s,
+		diagnostics,
+	)
+
+
+## Exact binary64 equality for one mapped coefficient. NaN never agrees with
+## itself; +0.0 and -0.0 compare equal in GDScript but differ in sign bit, so
+## their reciprocals distinguish them without lossy string formatting or a
+## tolerance that could hide a one-bit difference.
+static func _same_float(expected: float, actual: float) -> bool:
+	if is_nan(expected) or is_nan(actual):
+		return false
+	if expected != actual:
+		return false
+	return (1.0 / expected) == (1.0 / actual)
+
+
+static func _compare_float(
+	path: String,
+	expected: float,
+	actual: float,
+	diagnostics: Array[String]
+) -> void:
+	if not _same_float(expected, actual):
+		_content_mismatch(path, str(expected), str(actual), diagnostics)
+
+
+static func _compare_float_array(
+	path: String,
+	expected: Array[float],
+	actual: Array[float],
+	diagnostics: Array[String]
+) -> void:
+	if expected.size() != actual.size():
+		_content_mismatch(
+			path,
+			"an array of %d entries" % expected.size(),
+			"an array of %d entries" % actual.size(),
+			diagnostics,
+		)
+		return
+	for index in range(expected.size()):
+		if not _same_float(expected[index], actual[index]):
+			_content_mismatch(
+				"%s[%d]" % [path, index],
+				str(expected[index]),
+				str(actual[index]),
+				diagnostics,
+			)
+
+
+static func _content_mismatch(
+	path: String,
+	expected: String,
+	actual: String,
+	diagnostics: Array[String]
+) -> void:
+	diagnostics.append(
+		"%s: handling-content-mismatch: expected %s, got %s"
+		% [path, expected, actual]
+	)
 
 
 static func _read_units(recipe: Dictionary, diagnostics: Array[String]) -> void:
@@ -644,10 +823,11 @@ static func _path_is_unknown(path: String, unknown_paths: Array[String]) -> bool
 # --- Draft construction -----------------------------------------------------
 
 
-## Build the partial car from only the read fields and the passed handling.
-## Optional undetermined dimensions/contact descriptions stay null; deferred
-## fields are declared exactly as `CarDefinition.DEFERRED_FIELDS_V1` lists
-## them; completeness is INCOMPLETE with the fixed honest note.
+## Build the partial car from only the read fields and a deep copy of the
+## verified passed handling. Optional undetermined dimensions/contact
+## descriptions stay null; deferred fields are declared exactly as
+## `CarDefinition.DEFERRED_FIELDS_V1` lists them; completeness is INCOMPLETE
+## with the fixed honest note.
 static func _build_car(
 	identity: _SourceIdentity,
 	fields: _DraftFields,
@@ -669,7 +849,7 @@ static func _build_car(
 	car.contact_proxy_shape = fields.contact_shape
 	car.contact_roof = fields.contact_roof
 	car.contact_underside = fields.contact_underside
-	car.handling = handling
+	car.handling = _copy_verified_handling(handling)
 	car.completeness = CarDefinition.Completeness.INCOMPLETE
 	car.completeness_note = DRAFT_COMPLETENESS_NOTE
 	var deferred := PackedStringArray()
@@ -677,6 +857,21 @@ static func _build_car(
 		deferred.append(String(path))
 	car.deferred_fields = deferred
 	return car
+
+
+## Attach an independent in-memory copy of the already content-verified
+## handling. Pinned Godot 4.7.2 duplicates the resource, its script and its
+## exported values, including the two typed float arrays; the explicit array
+## duplicates make that independence robust regardless of container sharing.
+## The original `.tres` export/reload contract is untouched: the copy has the
+## same script and exported property types as the supplied resource.
+static func _copy_verified_handling(handling: HandlingDefinition) -> HandlingDefinition:
+	var copy := handling.duplicate(true) as HandlingDefinition
+	copy.acceleration_curve_speeds_m_s = copy.acceleration_curve_speeds_m_s.duplicate()
+	copy.acceleration_curve_accelerations_m_s2 = (
+		copy.acceleration_curve_accelerations_m_s2.duplicate()
+	)
+	return copy
 
 
 # --- Diagnostic helpers ------------------------------------------------------

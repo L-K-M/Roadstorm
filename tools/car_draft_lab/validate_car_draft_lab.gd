@@ -38,6 +38,7 @@ const CASE_IDS := [
 	"optional_null_preservation",
 	"version_units_frame_refusals",
 	"handling_agreement_refusals",
+	"handling_content_agreement",
 	"required_mapped_field_refusals",
 	"invalid_dimensions_and_contact_refusals",
 	"no_half_mapped_result",
@@ -115,6 +116,8 @@ func _run_case(case_id: String) -> Dictionary:
 			_case_version_units_frame_refusals()
 		"handling_agreement_refusals":
 			_case_handling_agreement_refusals()
+		"handling_content_agreement":
+			_case_handling_content_agreement()
 		"required_mapped_field_refusals":
 			_case_required_mapped_field_refusals()
 		"invalid_dimensions_and_contact_refusals":
@@ -167,12 +170,80 @@ func check_float_eq(actual: float, expected: float, tolerance: float, message: S
 		)
 
 
+## Exact binary64 equality for lab comparisons: NaN never agrees, and a
+## signed-zero pair (equal under `==`) is distinguished by reciprocal sign.
+func assert_same_float(label: String, actual: float, expected: float) -> void:
+	_checks += 1
+	var matches := not (is_nan(actual) or is_nan(expected))
+	if matches and actual != expected:
+		matches = false
+	elif matches and actual == 0.0 and expected == 0.0:
+		matches = (1.0 / actual) == (1.0 / expected)
+	if not matches:
+		_failures.append(
+			"%s: actual=%s expected=%s" % [label, str(actual), str(expected)]
+		)
+
+
+func assert_float_array(
+	label: String, actual: Array[float], expected: Array[float]
+) -> void:
+	_checks += 1
+	if actual.size() != expected.size():
+		_failures.append(
+			"%s: actual size %d, expected size %d"
+			% [label, actual.size(), expected.size()]
+		)
+		return
+	for index in range(expected.size()):
+		assert_same_float("%s[%d]" % [label, index], actual[index], expected[index])
+
+
+func assert_handling_content_matches(
+	label: String, actual: HandlingDefinition, expected: HandlingDefinition
+) -> void:
+	if actual == null or expected == null:
+		check(false, "%s: missing handling for content comparison" % label)
+		return
+	check_eq(actual.definition_id, expected.definition_id, "%s: definition_id" % label)
+	check_eq(actual.revision, expected.revision, "%s: revision" % label)
+	check_eq(int(actual.status), int(expected.status), "%s: status" % label)
+	check_eq(actual.schema_version, expected.schema_version, "%s: schema_version" % label)
+	check_eq(actual.display_name, expected.display_name, "%s: display_name" % label)
+	assert_float_array(
+		"acceleration_curve_speeds_m_s",
+		actual.acceleration_curve_speeds_m_s,
+		expected.acceleration_curve_speeds_m_s,
+	)
+	assert_float_array(
+		"acceleration_curve_accelerations_m_s2",
+		actual.acceleration_curve_accelerations_m_s2,
+		expected.acceleration_curve_accelerations_m_s2,
+	)
+	assert_same_float("braking_acceleration_m_s2", actual.braking_acceleration_m_s2, expected.braking_acceleration_m_s2)
+	assert_same_float("drag_aerodynamic", actual.drag_aerodynamic, expected.drag_aerodynamic)
+	assert_same_float("drag_rolling", actual.drag_rolling, expected.drag_rolling)
+	assert_same_float("yaw_gain_grip", actual.yaw_gain_grip, expected.yaw_gain_grip)
+	assert_same_float("max_yaw_rate_rad_s", actual.max_yaw_rate_rad_s, expected.max_yaw_rate_rad_s)
+	assert_same_float("lateral_damping_grip_per_s", actual.lateral_damping_grip_per_s, expected.lateral_damping_grip_per_s)
+	assert_same_float("reverse_trigger_speed_m_s", actual.reverse_trigger_speed_m_s, expected.reverse_trigger_speed_m_s)
+	assert_same_float("reverse_hold_time_s", actual.reverse_hold_time_s, expected.reverse_hold_time_s)
+	assert_same_float("reverse_acceleration_m_s2", actual.reverse_acceleration_m_s2, expected.reverse_acceleration_m_s2)
+	assert_same_float("reverse_top_speed_m_s", actual.reverse_top_speed_m_s, expected.reverse_top_speed_m_s)
+
+
 func expect_diagnostic(token: String, diagnostics: Array[String], label: String) -> void:
 	_checks += 1
 	for entry in diagnostics:
 		if token in entry:
 			return
 	_failures.append("%s: no diagnostic contains '%s'" % [label, token])
+
+
+func expect_content_refusal(
+	recipe: Dictionary, handling: HandlingDefinition, token: String, label: String
+) -> void:
+	expect_refusal(CarMapperScript.map_draft(recipe, handling), token, label)
 
 
 func count_diagnostics(token: String, diagnostics: Array[String]) -> int:
@@ -292,13 +363,12 @@ func _case_positive_fixture_mapping() -> void:
 	check_eq(car.status, IdentityScript.Status.EXAMPLE, "mapped car lifecycle status")
 	check_eq(result.source_schema_version, "1.1.0", "source contract version recorded")
 
-	check(car.handling == handling, "car keeps the passed typed handling reference")
+	check(
+		car.handling != handling,
+		"draft attaches an independent deep copy of the verified handling"
+	)
 	if car.handling is HandlingDefinition:
-		check_eq(
-			car.handling.definition_id,
-			"car.example_rookie.handling",
-			"referenced handling uses the documented derived ID"
-		)
+		assert_handling_content_matches("finite draft handling copy", car.handling, handling)
 
 	check_float_eq(car.length_m, 4.2, 1e-9, "mapped length")
 	check_float_eq(car.width_m, 1.9, 1e-9, "mapped width")
@@ -388,7 +458,13 @@ func _case_positive_unlimited_fixture_mapping() -> void:
 		"unlimited draft completeness is INCOMPLETE"
 	)
 	check_eq(car.definition_id, "car.example_rookie", "unlimited draft maps the car ID")
-	check(car.handling == handling, "unlimited draft keeps its typed handling reference")
+	check(car.handling != handling, "unlimited draft does not alias the passed handling")
+	if car.handling is HandlingDefinition:
+		assert_handling_content_matches("unlimited draft handling copy", car.handling, handling)
+		check(
+			is_inf(car.handling.max_yaw_rate_rad_s) and car.handling.max_yaw_rate_rad_s > 0.0,
+			"unlimited draft keeps the infinite yaw cap"
+		)
 	check_eq(car.revision, "0.1.0", "unlimited draft copies the revision")
 	check_float_eq(car.mass_kg, 1200.0, 1e-9, "unlimited draft maps intact mass")
 
@@ -612,8 +688,348 @@ func _case_handling_agreement_refusals() -> void:
 	var invalid_result = CarMapperScript.map_draft(invalid_physical, invalid_physical_handling)
 	expect_refusal(
 		invalid_result,
-		"handling.braking_acceleration_m_s2: negative",
-		"physically invalid handling"
+		"handling.braking_acceleration_m_s2: handling-content-mismatch",
+		"physically invalid handling disagrees with the source"
+	)
+
+
+func _case_handling_content_agreement() -> void:
+	var recipe := _fixture_recipe()
+	if recipe.is_empty():
+		return
+	var expected_result = HandlingMapperScript.map_handling(recipe)
+	check(expected_result.ok, "content-agreement fixture derives its expected handling")
+	if not expected_result.ok:
+		return
+	var expected: HandlingDefinition = expected_result.handling
+	var baseline_braking := expected.braking_acceleration_m_s2
+	var baseline_display_name := expected.display_name
+	var baseline_yaw := expected.max_yaw_rate_rad_s
+	var baseline_speed_1 := expected.acceleration_curve_speeds_m_s[1]
+	var baseline_acceleration_0 := expected.acceleration_curve_accelerations_m_s2[0]
+
+	# Positive finite: the draft attaches an independent deep copy whose core
+	# fields exactly match the passed, already verified handling.
+	var finite_result = CarMapperScript.map_draft(recipe, expected)
+	check(finite_result.ok, "finite content-agreeing handling maps to a draft")
+	if not finite_result.ok:
+		for entry in finite_result.diagnostics:
+			print("REFUSAL_DIAGNOSTIC %s" % entry)
+		return
+	var finite_car: CarDefinition = finite_result.car
+	check(finite_car != null and finite_car.is_valid(), "finite content draft validates")
+	if finite_car == null:
+		return
+	check(
+		finite_car.handling != expected,
+		"finite draft does not alias the supplied handling"
+	)
+	assert_handling_content_matches("finite content draft", finite_car.handling, expected)
+
+	# Later caller mutation cannot invalidate the returned draft.
+	expected.braking_acceleration_m_s2 = baseline_braking + 11.0
+	expected.display_name = "Mutated handling"
+	expected.max_yaw_rate_rad_s = INF
+	expected.acceleration_curve_speeds_m_s[1] = baseline_speed_1 + 1.0
+	expected.acceleration_curve_accelerations_m_s2[0] = baseline_acceleration_0 + 1.0
+	assert_same_float(
+		"draft braking survives caller mutation",
+		finite_car.handling.braking_acceleration_m_s2,
+		baseline_braking,
+	)
+	check_eq(
+		finite_car.handling.display_name,
+		baseline_display_name,
+		"draft display name survives caller mutation"
+	)
+	assert_same_float(
+		"draft yaw survives caller mutation",
+		finite_car.handling.max_yaw_rate_rad_s,
+		baseline_yaw,
+	)
+	assert_same_float(
+		"draft curve speed survives caller mutation",
+		finite_car.handling.acceleration_curve_speeds_m_s[1],
+		baseline_speed_1,
+	)
+	assert_same_float(
+		"draft curve acceleration survives caller mutation",
+		finite_car.handling.acceleration_curve_accelerations_m_s2[0],
+		baseline_acceleration_0,
+	)
+	check(finite_car.is_valid(), "draft still validates after caller mutation")
+
+	# Opus F1 / Sol finding 2: matching identity tags, halved braking.
+	var braking_handling := _mapped_handling(recipe)
+	braking_handling.braking_acceleration_m_s2 = 5.5
+	expect_content_refusal(
+		recipe,
+		braking_handling,
+		"handling.braking_acceleration_m_s2: handling-content-mismatch",
+		"changed braking with matching identity tags"
+	)
+
+	# Derived display name.
+	var name_handling := _mapped_handling(recipe)
+	name_handling.display_name = "Unrelated handling"
+	expect_content_refusal(
+		recipe,
+		name_handling,
+		"handling.display_name: handling-content-mismatch",
+		"changed handling display name"
+	)
+
+	# One ULP above the authored 8.0 acceleration point.
+	var one_ulp_above := 8.0 + pow(2.0, -49.0)
+	check(one_ulp_above != 8.0, "one-ULP counterexample construction is real")
+	var one_ulp_handling := _mapped_handling(recipe)
+	one_ulp_handling.acceleration_curve_accelerations_m_s2[0] = one_ulp_above
+	expect_content_refusal(
+		recipe,
+		one_ulp_handling,
+		"handling.acceleration_curve_accelerations_m_s2[0]: handling-content-mismatch",
+		"one-bit acceleration curve difference"
+	)
+
+	# Exactly one representable step above 30.0.
+	var off_speed := 30.0 + pow(2.0, -48.0)
+	check(off_speed != 30.0, "off-speed counterexample construction is real")
+	var off_speed_handling := _mapped_handling(recipe)
+	off_speed_handling.acceleration_curve_speeds_m_s[1] = off_speed
+	expect_content_refusal(
+		recipe,
+		off_speed_handling,
+		"handling.acceleration_curve_speeds_m_s[1]: handling-content-mismatch",
+		"changed speed curve point"
+	)
+
+	# A complete extra curve point changes array length, not just a value.
+	var long_curve_handling := _mapped_handling(recipe)
+	long_curve_handling.acceleration_curve_speeds_m_s.append(50.0)
+	long_curve_handling.acceleration_curve_accelerations_m_s2.append(2.0)
+	expect_content_refusal(
+		recipe,
+		long_curve_handling,
+		"handling.acceleration_curve_speeds_m_s: handling-content-mismatch",
+		"longer acceleration curve"
+	)
+
+	# Signed zero differs only in the binary64 sign bit.
+	var signed_zero_handling := _mapped_handling(recipe)
+	signed_zero_handling.acceleration_curve_speeds_m_s[0] = -0.0
+	expect_content_refusal(
+		recipe,
+		signed_zero_handling,
+		"handling.acceleration_curve_speeds_m_s[0]: handling-content-mismatch",
+		"signed-zero curve point"
+	)
+
+	# Remaining core scalars, one counterexample each.
+	var drag_aero_handling := _mapped_handling(recipe)
+	drag_aero_handling.drag_aerodynamic = 0.6
+	expect_content_refusal(
+		recipe,
+		drag_aero_handling,
+		"handling.drag_aerodynamic: handling-content-mismatch",
+		"changed aerodynamic drag"
+	)
+
+	var drag_rolling_handling := _mapped_handling(recipe)
+	drag_rolling_handling.drag_rolling = 0.05
+	expect_content_refusal(
+		recipe,
+		drag_rolling_handling,
+		"handling.drag_rolling: handling-content-mismatch",
+		"changed rolling drag"
+	)
+
+	var yaw_gain_handling := _mapped_handling(recipe)
+	yaw_gain_handling.yaw_gain_grip = 2.5
+	expect_content_refusal(
+		recipe,
+		yaw_gain_handling,
+		"handling.yaw_gain_grip: handling-content-mismatch",
+		"changed grip yaw"
+	)
+
+	var infinite_for_finite_handling := _mapped_handling(recipe)
+	infinite_for_finite_handling.max_yaw_rate_rad_s = INF
+	expect_content_refusal(
+		recipe,
+		infinite_for_finite_handling,
+		"handling.max_yaw_rate_rad_s: handling-content-mismatch",
+		"unlimited yaw supplied for a finite source cap"
+	)
+
+	var damping_handling := _mapped_handling(recipe)
+	damping_handling.lateral_damping_grip_per_s = 5.0
+	expect_content_refusal(
+		recipe,
+		damping_handling,
+		"handling.lateral_damping_grip_per_s: handling-content-mismatch",
+		"changed lateral damping"
+	)
+
+	var trigger_handling := _mapped_handling(recipe)
+	trigger_handling.reverse_trigger_speed_m_s = 0.5
+	expect_content_refusal(
+		recipe,
+		trigger_handling,
+		"handling.reverse_trigger_speed_m_s: handling-content-mismatch",
+		"changed reverse trigger speed"
+	)
+
+	var hold_handling := _mapped_handling(recipe)
+	hold_handling.reverse_hold_time_s = 0.4
+	expect_content_refusal(
+		recipe,
+		hold_handling,
+		"handling.reverse_hold_time_s: handling-content-mismatch",
+		"changed reverse hold time"
+	)
+
+	var reverse_pair_handling := _mapped_handling(recipe)
+	reverse_pair_handling.reverse_acceleration_m_s2 = 1.0
+	reverse_pair_handling.reverse_top_speed_m_s = 5.0
+	expect_content_refusal(
+		recipe,
+		reverse_pair_handling,
+		"handling.reverse_acceleration_m_s2: handling-content-mismatch",
+		"changed reverse acceleration and top speed pair"
+	)
+	check(
+		count_diagnostics(
+			"handling.reverse_top_speed_m_s: handling-content-mismatch",
+			CarMapperScript.map_draft(recipe, reverse_pair_handling).diagnostics,
+		) > 0,
+		"reverse top speed counterexample also names its own path"
+	)
+
+	var reverse_top_handling := _mapped_handling(recipe)
+	reverse_top_handling.reverse_top_speed_m_s = 1.0
+	expect_content_refusal(
+		recipe,
+		reverse_top_handling,
+		"handling.reverse_top_speed_m_s: handling-content-mismatch",
+		"changed reverse top speed"
+	)
+
+	# The unlimited source must refuse a finite supplied cap.
+	var unlimited_recipe := _load_json(UNLIMITED_FIXTURE_PATH)
+	if unlimited_recipe.is_empty():
+		check(false, "unlimited fixture parsed into a non-empty Dictionary")
+		return
+	var unlimited_result = HandlingMapperScript.map_handling(unlimited_recipe)
+	check(unlimited_result.ok, "unlimited fixture derives its expected handling")
+	if not unlimited_result.ok:
+		return
+	var unlimited_expected: HandlingDefinition = unlimited_result.handling
+	check(
+		is_inf(unlimited_expected.max_yaw_rate_rad_s)
+		and unlimited_expected.max_yaw_rate_rad_s > 0.0,
+		"unlimited source derives positive INF"
+	)
+	var finite_supplied: HandlingDefinition = (
+		HandlingMapperScript.map_handling(unlimited_recipe).handling
+	)
+	finite_supplied.max_yaw_rate_rad_s = 2.5
+	expect_content_refusal(
+		unlimited_recipe,
+		finite_supplied,
+		"handling.max_yaw_rate_rad_s: handling-content-mismatch",
+		"finite yaw supplied for an unlimited source"
+	)
+
+	# Positive unlimited: exact INF agreement, independent copy, nonmutation.
+	var unlimited_map_result = CarMapperScript.map_draft(unlimited_recipe, unlimited_expected)
+	check(unlimited_map_result.ok, "unlimited content-agreeing handling maps to a draft")
+	if not unlimited_map_result.ok:
+		for entry in unlimited_map_result.diagnostics:
+			print("REFUSAL_DIAGNOSTIC %s" % entry)
+		return
+	var unlimited_car: CarDefinition = unlimited_map_result.car
+	check(unlimited_car != null and unlimited_car.is_valid(), "unlimited content draft validates")
+	if unlimited_car == null:
+		return
+	check(
+		unlimited_car.handling != unlimited_expected,
+		"unlimited draft does not alias the supplied handling"
+	)
+	assert_handling_content_matches(
+		"unlimited content draft", unlimited_car.handling, unlimited_expected
+	)
+	unlimited_expected.max_yaw_rate_rad_s = 2.5
+	unlimited_expected.acceleration_curve_speeds_m_s[1] = 99.0
+	assert_same_float(
+		"unlimited draft yaw survives caller mutation",
+		unlimited_car.handling.max_yaw_rate_rad_s,
+		INF,
+	)
+	assert_same_float(
+		"unlimited draft curve survives caller mutation",
+		unlimited_car.handling.acceleration_curve_speeds_m_s[1],
+		30.0,
+	)
+	check(unlimited_car.is_valid(), "unlimited draft still validates after caller mutation")
+
+	# A missing source handling block cannot derive an expected handling.
+	var missing_block_recipe := _copy_recipe(recipe)
+	missing_block_recipe.erase("handling")
+	var missing_block_handling := _mapped_handling(_fixture_recipe())
+	var missing_block_result = CarMapperScript.map_draft(
+		missing_block_recipe, missing_block_handling
+	)
+	expect_refusal(
+		missing_block_result,
+		"handling: handling-content-mismatch",
+		"missing source handling block"
+	)
+	expect_diagnostic(
+		"handling: bad-handling",
+		missing_block_result.diagnostics,
+	"missing source handling block detail"
+	)
+
+	# A structurally invalid source handling block cannot derive either.
+	var invalid_block_recipe := _copy_recipe(recipe)
+	invalid_block_recipe["handling"] = []
+	var invalid_block_result = CarMapperScript.map_draft(
+		invalid_block_recipe, _mapped_handling(_fixture_recipe())
+	)
+	expect_refusal(
+		invalid_block_result,
+		"handling: handling-content-mismatch",
+		"non-object source handling block"
+	)
+	expect_diagnostic(
+		"handling: bad-handling",
+		invalid_block_result.diagnostics,
+	"non-object source handling block detail"
+	)
+
+	# An invalid required coefficient cannot derive the expected typed value.
+	var invalid_coefficient_recipe := _copy_recipe(recipe)
+	(invalid_coefficient_recipe["handling"] as Dictionary)["braking_acceleration_m_s2"] = "loud"
+	var invalid_coefficient_result = CarMapperScript.map_draft(
+		invalid_coefficient_recipe, _mapped_handling(_fixture_recipe())
+	)
+	expect_refusal(
+		invalid_coefficient_result,
+		"handling.braking_acceleration_m_s2: bad-number",
+		"invalid source handling coefficient"
+	)
+
+	# An unknown required coefficient is refused by the derivation too; document
+	# that whole-document unknown honesty remains the external checker's job.
+	var unknown_input_recipe := _copy_recipe(recipe)
+	_add_unknown(unknown_input_recipe, "handling.drag.aerodynamic")
+	var unknown_input_result = CarMapperScript.map_draft(
+		unknown_input_recipe, _mapped_handling(_fixture_recipe())
+	)
+	expect_refusal(
+		unknown_input_result,
+		"handling.drag.aerodynamic: motor-input-unknown",
+		"unknown source handling coefficient"
 	)
 
 

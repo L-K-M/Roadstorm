@@ -3,7 +3,9 @@
 Pinned-Godot checks for `src/data/car_recipe_mapper.gd`. The lab parses the
 committed positive source recipe through Godot's JSON reader and the committed
 `HandlingRecipeMapper`, then maps it to a partial typed `CarDefinition` with
-`CarRecipeMapper.map_draft(recipe, handling)` and exercises refusals. It is a
+`CarRecipeMapper.map_draft(recipe, handling)`, exercises refusals and proves that
+the draft's handling is an independent deep copy of the verified supplied
+handling. It is a
 pure in-memory mapping check: no `.tres`, bake manifest or provenance artifact
 is written, and full JSON Schema/strict-parse/content-hash validation stays
 with `tools/car_recipe_schema/validate_car_recipe.py`.
@@ -56,6 +58,7 @@ exit nonzero with `INTENTIONAL_FAILURE_PROOF ... "pass":false` plus the
 | `optional_null_preservation` | authored null wheelbase/clearance/jump stay null and validate; a resolved optional dimension listed in `unknowns` is refused |
 | `version_units_frame_refusals` | 1.0.0 refusal naming the five missing handling paths, unsupported/mistyped/missing/trailing-newline versions, missing/wrong units, missing/wrong coordinate frame axes/origin |
 | `handling_agreement_refusals` | missing handling; wrong derived ID, revision, status or typed schema version; physically invalid referenced handling |
+| `handling_content_agreement` | exact core-field agreement with the independently derived handling; changed display name, braking, drag, grip yaw, damping, finite/unlimited yaw, both curve arrays (one ULP, signed zero, length), all four reverse values; missing/invalid/unknown source handling input; finite and unlimited nonmutation after caller edits |
 | `required_mapped_field_refusals` | missing/null/unknown required dimensions, mass and contact shape; unknown ancestor; malformed contact proxy/shape/derived_from; resolved optional text/number listed as unknown; missing optional member |
 | `invalid_dimensions_and_contact_refusals` | out-of-envelope/nonfinite/mistyped dimensions, zero/negative/nonfinite mass, inconsistent optional dimensions, mistyped contact roof/underside |
 | `no_half_mapped_result` | every refusal returns `ok=false`, no car and path-level diagnostics; success is fully valid, INCOMPLETE and honestly noted |
@@ -72,8 +75,14 @@ exit nonzero with `INTENTIONAL_FAILURE_PROOF ... "pass":false` plus the
   null/`unknowns` pairing; this lab defends only against direct malformed
   dictionaries reaching the mapper.
 - Only identity, dimensions including optional nulls, intact mass, contact
-  shape/roof/underside and the typed handling reference are mapped. Every
-  `DEFERRED_FIELDS_V1` field stays absent and no coefficient is guessed.
+  shape/roof/underside and a deep copy of the verified typed handling are
+  mapped. Every `DEFERRED_FIELDS_V1` field stays absent and no coefficient is
+  guessed.
+- Handling content agreement compares exact binary64 values with no tolerance,
+  including signed zero. It proves the paired handling equals the handling
+  derived from the same recipe; it does not validate the whole source document,
+  whose JSON Schema, strict-parse, duplicate-member, canonical hash and
+  null/`unknowns` honesty stay with the external checker.
 - The draft is always INCOMPLETE; validation alone does not authorize a motor,
   a measured status or product-complete content.
 - Headless pinned local engine only; no cross-version, exported-template,
