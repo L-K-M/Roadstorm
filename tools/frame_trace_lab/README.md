@@ -30,9 +30,14 @@ The comparator requires all three full traces to be present, parse cleanly,
 use the expected schema and be independently coherent: 1200 consumed commands,
 1200 adapter steps, 1200 committed ticks, 1200 tick records, no dropped
 records, consecutive ticks/callbacks, completion by `script complete`, no
-failure, constant zero-steer heading, fixed full-schedule command values, and a
-valid 100 m gate crossing. It compares exact tick counts, command sequences,
-per-tick discrete state, endpoint discrete state, and event/count fields.
+failure, constant zero-steer heading, fixed full-schedule command values, the
+pinned Godot 4.7.2/Jolt recording, matching host cohort fields, and a valid
+100 m gate crossing. The measured physics/process frame-counter ratio must
+match the nominal 30/60/120 cadence within an explicit +/-4 process-frame
+startup/drain tolerance, and the recorded gate tick must equal the first
+committed `tick_trace` row reaching 100 m. It compares exact tick counts,
+command sequences, per-tick discrete state, endpoint discrete state, and
+event/count fields.
 Continuous endpoint tolerances are the benchmark values:
 
 - position: at most 0.10 m
@@ -89,8 +94,22 @@ After the positive comparison, the runner verifies that
 - the real `short` trace relabeled as full: 1199 rather than 1200 committed
   ticks;
 - a deliberate 0.5 m forward displacement of the otherwise valid 60 Hz
-  trajectory.
+  trajectory, with its gate summary kept internally consistent;
+- an actual mismatched launch made with `--fixed-fps 30` while the environment
+  label and recorded argument claim 60;
+- committed rows 357/358 forced below 100 m while the summary still claims
+  tick 357;
+- the summary gate tick advanced by one while committed rows still cross at
+  tick 357;
+- `mode.nominal_fixed_fps` malformed as an array, which must produce the
+  structured `COMPARISON_RESULT ... "pass":false` and `COMPARISON FAIL`
+  markers rather than an exception;
+- a mutated host-cohort field;
+- a mutated pinned engine version field;
+- a mutated pinned physics backend.
 
+Every control must exit 1, emit the structured failed-comparison markers, and
+contain its expected failure reason; a nonzero exit alone is insufficient.
 These controls are evidence that the comparator is not vacuously green. They do
 not prove the production game is frame-rate independent.
 
@@ -100,10 +119,13 @@ The result schema identifier is `roadstorm.frame_trace.result.v1`. Important
 sections are:
 
 - `mode`: nominal fixed-FPS label and variant;
-- `engine`: engine version, configured/observed physics rate and fixed-FPS
-  argument;
-- `timing`: wall time plus engine process/physics frame counters, reported for
-  diagnostics rather than as presented-frame evidence;
+- `host`: OS, processor and headless display cohort fields that must match
+  across the three compared launches;
+- `engine`: pinned engine version, physics backend, configured/observed
+  physics rate and fixed-FPS argument;
+- `timing`: wall time plus engine process/physics frame counters. The counters
+  independently constrain the nominal cadence cohort; they are not
+  presented-frame evidence;
 - `schedule`: logical tick and command counts;
 - `run`: completion/failure state, counts and laboratory telemetry;
 - `endpoint`: final position, velocity, speed, heading and discrete state;

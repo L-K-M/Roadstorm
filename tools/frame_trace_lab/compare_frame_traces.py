@@ -35,6 +35,30 @@ SPEED_TOLERANCE_M_S = 0.10
 HEADING_TOLERANCE_DEG = 1.0
 GATE_TOLERANCE_TICKS = 1
 
+# Startup and drain frames are included in the recorded engine counters. Four
+# process frames is deliberately small next to the 602/1204/2408 expected
+# counts, while still covering counter phase at launch and drain boundaries.
+PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE = 4
+EXPECTED_ENGINE_BACKEND = "Jolt Physics"
+EXPECTED_ENGINE_VERSION = {
+    "major": 4,
+    "minor": 7,
+    "patch": 2,
+    "hex": 263938,
+    "status": "stable",
+    "build": "official",
+    "hash": "ed1daf0bf001b61586d9930840f2f1394092c079",
+    "timestamp": 0,
+    "string": "4.7.2-stable (official)",
+}
+HOST_COHORT_KEYS = {
+    "os_name": str,
+    "os_version": str,
+    "processor_name": str,
+    "processor_count": int,
+    "display_driver": str,
+}
+
 COUNT_KEYS = (
     "gear_shift_events",
     "gear_shift_events_dropped",
@@ -128,7 +152,7 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
 
     if data.get("schema") != SCHEMA:
         err(f"{path}: schema is {data.get('schema')!r}, expected {SCHEMA!r}")
-    for section in ("mode", "engine", "schedule", "run", "endpoint", "counts", "gate", "harness"):
+    for section in ("mode", "engine", "timing", "host", "schedule", "run", "endpoint", "counts", "gate", "harness"):
         if not isinstance(data.get(section), dict):
             err(f"{path}: missing or non-object section {section!r}")
     if not isinstance(data.get("tick_trace"), list):
@@ -138,6 +162,8 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
 
     mode = data["mode"]
     engine = data["engine"]
+    timing = data["timing"]
+    host = data["host"]
     schedule = data["schedule"]
     run = data["run"]
     endpoint = data["endpoint"]
@@ -147,14 +173,53 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
     trace = data["tick_trace"]
 
     nominal_fps = mode.get("nominal_fixed_fps")
-    if nominal_fps not in EXPECTED_FPS:
+    if not is_int(nominal_fps) or nominal_fps not in EXPECTED_FPS:
         err(f"{path}: nominal_fixed_fps is {nominal_fps!r}, expected one of {sorted(EXPECTED_FPS)}")
     if mode.get("variant") != "full":
         err(f"{path}: variant is {mode.get('variant')!r}, expected 'full'")
     if mode.get("control") is not False:
         err(f"{path}: control is {mode.get('control')!r}, expected false")
-    if engine.get("fixed_fps_argument") != nominal_fps:
+    if not is_int(engine.get("fixed_fps_argument")) or engine.get("fixed_fps_argument") != nominal_fps:
         err(f"{path}: fixed_fps_argument does not match the nominal FPS label")
+    if engine.get("backend") != EXPECTED_ENGINE_BACKEND:
+        err(f"{path}: engine backend is {engine.get('backend')!r}, expected pinned {EXPECTED_ENGINE_BACKEND!r}")
+    if engine.get("version") != EXPECTED_ENGINE_VERSION:
+        err(f"{path}: engine version is {engine.get('version')!r}, expected pinned {EXPECTED_ENGINE_VERSION!r}")
+
+    physics_frames = timing.get("physics_frames")
+    process_frames = timing.get("process_frames")
+    if not is_int(physics_frames) or physics_frames <= 0:
+        err(f"{path}: timing.physics_frames is not a positive integer")
+    if not is_int(process_frames) or process_frames <= 0:
+        err(f"{path}: timing.process_frames is not a positive integer")
+    if (
+        is_int(nominal_fps)
+        and nominal_fps in EXPECTED_FPS
+        and is_int(physics_frames)
+        and physics_frames > 0
+        and is_int(process_frames)
+        and process_frames > 0
+    ):
+        ideal_process_frames = float(physics_frames) * float(nominal_fps) / 60.0
+        process_frame_delta = abs(float(process_frames) - ideal_process_frames)
+        measured_ratio = float(physics_frames) / float(process_frames)
+        nominal_ratio = 60.0 / float(nominal_fps)
+        if process_frame_delta > PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE:
+            err(
+                f"{path}: observed physics/process frame ratio {measured_ratio:.9g} "
+                f"does not match nominal {nominal_ratio:.9g} for {nominal_fps} FPS "
+                f"({physics_frames} physics vs {process_frames} process frames; "
+                f"startup/drain tolerance +/-{PROCESS_FRAME_STARTUP_DRAIN_TOLERANCE} process frames)"
+            )
+
+    for key, expected_type in HOST_COHORT_KEYS.items():
+        value = host.get(key)
+        if expected_type is int:
+            valid = is_int(value) and value > 0
+        else:
+            valid = isinstance(value, str)
+        if not valid:
+            err(f"{path}: host.{key} is missing or has the wrong type")
     for key in ("physics_ticks_per_second_pinned", "physics_ticks_per_second_observed"):
         if engine.get(key) != 60:
             err(f"{path}: {key} is {engine.get(key)!r}, expected 60")
@@ -273,6 +338,23 @@ def validate_result(data: dict[str, Any], path: Path) -> list[str]:
             if not isinstance(entry.get(key), bool):
                 err(f"{prefix}: {key} is not a boolean")
 
+    computed_gate_tick = None
+    for entry in trace:
+        if not isinstance(entry, dict):
+            continue
+        station = entry.get("road_station_m")
+        tick = entry.get("tick")
+        if is_int(tick) and is_number(station) and float(station) >= 100.0:
+            computed_gate_tick = tick
+            break
+    if computed_gate_tick is None:
+        err(f"{path}: no committed tick_trace row reaches the 100.0 m gate")
+    elif is_int(gate_tick) and gate_tick != computed_gate_tick:
+        err(
+            f"{path}: gate.first_committed_tick is {gate_tick}, but committed "
+            f"tick_trace first reaches 100.0 m at tick {computed_gate_tick}"
+        )
+
     return errors
 
 
@@ -290,6 +372,11 @@ def compare_valid_results(results: dict[int, dict[str, Any]]) -> tuple[list[str]
         "max_gate_delta_ticks": 0,
     }
     pairs = ((30, 60), (30, 120), (60, 120))
+
+    reference_host = results[30]["host"]
+    for fps in (60, 120):
+        if results[fps]["host"] != reference_host:
+            failures.append(f"30/{fps}: host cohort differs between inputs")
 
     for left, right in pairs:
         a = results[left]

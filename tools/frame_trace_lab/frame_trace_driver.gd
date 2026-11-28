@@ -356,6 +356,13 @@ func _build_result(lab, fps_text: String, variant: String, schedule: Array,
 				)
 			),
 		},
+		"host": {
+			"os_name": OS.get_name(),
+			"os_version": OS.get_version(),
+			"processor_name": OS.get_processor_name() if OS.has_method("get_processor_name") else "",
+			"processor_count": OS.get_processor_count(),
+			"display_driver": DisplayServer.get_name(),
+		},
 		"engine": {
 			"version": Engine.get_version_info(),
 			"backend": str(ProjectSettings.get_setting("physics/3d/physics_engine")),

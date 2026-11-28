@@ -320,14 +320,15 @@ echo "import_rc=0" >>"$SUMMARY"
 run_trace() {
 	_variant=$1
 	_fps=$2
-	_name="${_variant}-${_fps}"
+	_label=${3:-$_fps}
+	_name=${4:-"${_variant}-${_fps}"}
 	_result="$RESULTS/$_name.json"
 	_log="$LOGS/godot-$_name.log"
 	: >"$_result"
 	: >"$_log"
-	echo "[frame-trace] running variant=$_variant nominal-fixed-fps=$_fps"
+	echo "[frame-trace] running variant=$_variant fixed-fps=$_fps label=$_label"
 	run_godot "$RUN_DIR/$_name.pid" "$_log" \
-		env FTP_FPS="$_fps" FTP_VARIANT="$_variant" FTP_RESULT="$_result" \
+		env FTP_FPS="$_label" FTP_VARIANT="$_variant" FTP_RESULT="$_result" \
 		"$GODOT_BIN" --headless --fixed-fps "$_fps" --path "$STAGE" \
 		--script res://tools/frame_trace_lab/frame_trace_entry.gd
 	_rc=$?
@@ -354,6 +355,9 @@ for _fps in 30 60 120; do
 done
 run_trace drop 60
 run_trace short 60
+# Deliberate cadence substitution: the engine is actually launched at
+# --fixed-fps 30 while the harness label and recorded argument claim 60.
+run_trace full 30 60 wrong-cadence-30-as-60
 
 run_comparator() {
 	_name=$1
@@ -407,7 +411,37 @@ deviating["endpoint"]["road_station_m"] += 0.5
 deviating["endpoint"]["trace_station_m"] += 0.5
 for entry in deviating["tick_trace"]:
     entry["road_station_m"] += 0.5
+for entry in deviating["tick_trace"]:
+    if entry["road_station_m"] >= 100.0:
+        deviating["gate"]["first_committed_tick"] = entry["tick"]
+        break
 write("deviation-as-full-60.json", deviating)
+
+hidden_gate = load("full-60.json")
+for entry in hidden_gate["tick_trace"]:
+    if entry["tick"] in (357, 358):
+        entry["road_station_m"] = 99.99
+write("hidden-gate-as-full-60.json", hidden_gate)
+
+stale_gate = load("full-60.json")
+stale_gate["gate"]["first_committed_tick"] += 1
+write("stale-gate-as-full-60.json", stale_gate)
+
+bad_type = load("full-60.json")
+bad_type["mode"]["nominal_fixed_fps"] = []
+write("bad-type-as-full-60.json", bad_type)
+
+host_mismatch = load("full-60.json")
+host_mismatch["host"]["processor_count"] += 1
+write("host-mismatch-as-full-60.json", host_mismatch)
+
+engine_version_mismatch = load("full-60.json")
+engine_version_mismatch["engine"]["version"]["patch"] += 1
+write("engine-version-as-full-60.json", engine_version_mismatch)
+
+engine_backend_mismatch = load("full-60.json")
+engine_backend_mismatch["engine"]["backend"] = "wrong backend"
+write("engine-backend-as-full-60.json", engine_backend_mismatch)
 
 with (root / "corrupt-60.json").open("w", encoding="utf-8") as handle:
     handle.write('{"schema":')
@@ -420,11 +454,15 @@ echo "control_fixture_rc=$_control_fixture_rc" >>"$SUMMARY"
 CONTROLS_OK=1
 expect_compare_failure() {
 	_name=$1
-	shift
+	_reason=$2
+	shift 2
 	echo "[frame-trace] negative control: $_name"
 	run_comparator "$_name" "$@"
 	_rc=$?
-	if [ "$_rc" -eq 1 ]; then
+	if [ "$_rc" -eq 1 ] \
+		&& grep -q '^COMPARISON_RESULT .*"pass":false' "$LOGS/compare-$_name.log" \
+		&& grep -q '^COMPARISON FAIL$' "$LOGS/compare-$_name.log" \
+		&& grep -Fq "$_reason" "$LOGS/compare-$_name.log"; then
 		echo "compare_${_name}_rejected=yes" >>"$SUMMARY"
 	else
 		echo "compare_${_name}_rejected=no_rc$_rc" >>"$SUMMARY"
@@ -432,16 +470,32 @@ expect_compare_failure() {
 	fi
 }
 
-expect_compare_failure missing \
+expect_compare_failure missing "missing input file:" \
 	"$RESULTS/full-30.json" "$RESULTS/missing-60.json" "$RESULTS/full-120.json"
-expect_compare_failure corrupt \
+expect_compare_failure corrupt "corrupt input file" \
 	"$RESULTS/full-30.json" "$RESULTS/corrupt-60.json" "$RESULTS/full-120.json"
-expect_compare_failure drop \
+expect_compare_failure drop "command does not match the fixed full schedule" \
 	"$RESULTS/full-30.json" "$RESULTS/drop-as-full-60.json" "$RESULTS/full-120.json"
-expect_compare_failure short \
+expect_compare_failure short "ticks_committed is 1199, expected 1200" \
 	"$RESULTS/full-30.json" "$RESULTS/short-as-full-60.json" "$RESULTS/full-120.json"
-expect_compare_failure deviation \
+expect_compare_failure deviation "endpoint position differs by 0.5 m" \
 	"$RESULTS/full-30.json" "$RESULTS/deviation-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure wrong-cadence "observed physics/process frame ratio" \
+	"$RESULTS/full-30.json" "$RESULTS/wrong-cadence-30-as-60.json" "$RESULTS/full-120.json"
+expect_compare_failure hidden-gate \
+	"gate.first_committed_tick is 357, but committed tick_trace first reaches 100.0 m at tick 359" \
+	"$RESULTS/full-30.json" "$RESULTS/hidden-gate-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure stale-gate \
+	"gate.first_committed_tick is 358, but committed tick_trace first reaches 100.0 m at tick 357" \
+	"$RESULTS/full-30.json" "$RESULTS/stale-gate-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure bad-type "nominal_fixed_fps is [], expected one of" \
+	"$RESULTS/full-30.json" "$RESULTS/bad-type-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure host-cohort "host cohort differs between inputs" \
+	"$RESULTS/full-30.json" "$RESULTS/host-mismatch-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure engine-version "engine version is" \
+	"$RESULTS/full-30.json" "$RESULTS/engine-version-as-full-60.json" "$RESULTS/full-120.json"
+expect_compare_failure engine-backend "engine backend is" \
+	"$RESULTS/full-30.json" "$RESULTS/engine-backend-as-full-60.json" "$RESULTS/full-120.json"
 
 if [ "$POSITIVE_RC" -eq 0 ]; then
 	echo "positive_comparison=pass" >>"$SUMMARY"
