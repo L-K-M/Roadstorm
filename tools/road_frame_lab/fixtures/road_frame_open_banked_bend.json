@@ -1,0 +1,29 @@
+{
+  "schema": "roadstorm.road_source.v1",
+  "course_id": "lab.frame.open_banked_bend",
+  "revision": "0.1.0",
+  "closed": false,
+  "knots": [
+    {
+      "anchor": [0.0, 0.0, 0.0],
+      "handle_in": [-3.0, -0.5, 8.0],
+      "handle_out": [0.0, 1.0, -12.0],
+      "width_m": 11.0,
+      "bank_deg": -2.0
+    },
+    {
+      "anchor": [28.0, 4.0, -36.0],
+      "handle_in": [18.0, 3.0, -18.0],
+      "handle_out": [34.0, 5.0, -46.0],
+      "width_m": 9.0,
+      "bank_deg": 10.0
+    }
+  ],
+  "sections": [
+    {
+      "section_id": "lab.frame.bend.climb",
+      "surface_id": "asphalt",
+      "feature_tags": ["bend", "grade", "banked", "width_narrowing"]
+    }
+  ]
+}
