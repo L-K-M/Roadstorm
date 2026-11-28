@@ -123,6 +123,9 @@ IDENTITY_FIELDS = (
     ("revision", "revision"),
     ("status", "status"),
 )
+IDENTITY_TRANSPORT_FORMAT = "utf8-hex-v1"
+IDENTITY_TRANSPORT_KEYS = frozenset(("hex", "byte_length"))
+LOWERCASE_EVEN_HEX_RE = re.compile(r"(?:[0-9a-f]{2})*")
 
 ERROR_SCAN = ("SCRIPT ERROR", "Parse Error", "Failed to load script")
 
@@ -428,6 +431,83 @@ def _verify_identity_fidelity(
                 f"{source_path}: handling-identity-mismatch: expected {field} "
                 f"{wanted!r}, engine reported {actual!r}"
             )
+
+
+def _identity_transport_error(field: str, detail: str) -> BakeError:
+    return BakeError(f"{field}: malformed identity transport: {detail}")
+
+
+def _decode_identity_transport(report: dict[str, Any]) -> None:
+    """Decode and validate the report's lossless identity string transport.
+
+    The pinned engine cannot emit every checker-accepted control character as
+    standards-compliant JSON text, so source-derived identity strings cross
+    the process boundary as lowercase UTF-8 hex. This gate accepts exactly
+    the explicit ``utf8-hex-v1`` shape, requires lowercase even-length hex,
+    checks the declared byte length before decoding, and then decodes strict
+    UTF-8. On success the exact strings are installed under their historic
+    top-level report keys for the identity, manifest and version gates.
+    """
+    transport = report.get("identity_transport")
+    if not isinstance(transport, dict):
+        raise BakeError("engine report has no identity_transport object")
+    if set(transport) != {"format", "fields"}:
+        raise BakeError(
+            "engine report identity_transport must contain exactly format and fields"
+        )
+    if transport.get("format") != IDENTITY_TRANSPORT_FORMAT:
+        raise BakeError(
+            "engine report identity_transport format is not "
+            f"{IDENTITY_TRANSPORT_FORMAT}: {transport.get('format')!r}"
+        )
+    fields = transport.get("fields")
+    if not isinstance(fields, dict):
+        raise BakeError("engine report identity_transport fields is not an object")
+
+    expected_fields = {field for field, _source_path in IDENTITY_FIELDS}
+    actual_fields = set(fields)
+    missing = sorted(expected_fields - actual_fields)
+    if missing:
+        raise BakeError(
+            "engine report identity_transport is missing fields: " + ", ".join(missing)
+        )
+    extra = sorted(actual_fields - expected_fields)
+    if extra:
+        raise BakeError(
+            "engine report identity_transport has unexpected fields: " + ", ".join(extra)
+        )
+
+    for field, _source_path in IDENTITY_FIELDS:
+        entry = fields[field]
+        if not isinstance(entry, dict):
+            raise _identity_transport_error(field, "entry is not an object")
+        if set(entry) != IDENTITY_TRANSPORT_KEYS:
+            raise _identity_transport_error(
+                field, "entry must contain exactly hex and byte_length"
+            )
+        encoded = entry["hex"]
+        if not isinstance(encoded, str) or LOWERCASE_EVEN_HEX_RE.fullmatch(encoded) is None:
+            raise _identity_transport_error(
+                field, "hex is not lowercase even-length hexadecimal"
+            )
+        byte_length = entry["byte_length"]
+        if type(byte_length) is not int or byte_length < 0:
+            raise _identity_transport_error(
+                field, "byte_length is not a non-negative integer"
+            )
+        raw = bytes.fromhex(encoded)
+        if len(raw) != byte_length:
+            raise _identity_transport_error(
+                field,
+                f"hex decodes to {len(raw)} bytes, not byte_length {byte_length}",
+            )
+        try:
+            decoded = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise _identity_transport_error(
+                field, f"hex is not strict UTF-8: {exc}"
+            ) from exc
+        report[field] = decoded
 
 
 def _verify_numeric_fidelity(
@@ -893,10 +973,6 @@ def _read_and_validate_report(
     required_strings = (
         "source_schema_version",
         "typed_schema_version",
-        "definition_id",
-        "revision",
-        "status",
-        "display_name",
     )
     for key in required_strings:
         value = report.get(key)
@@ -913,6 +989,7 @@ def _read_and_validate_report(
             "engine report typed schema version is not "
             f"{TYPED_SCHEMA_VERSION}: {report['typed_schema_version']!r}"
         )
+    _decode_identity_transport(report)
     if not DEFINITION_ID_RE.fullmatch(report["definition_id"]):
         raise BakeError(f"engine report definition_id is malformed: {report['definition_id']!r}")
     if not REVISION_RE.fullmatch(report["revision"]):

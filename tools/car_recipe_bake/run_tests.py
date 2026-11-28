@@ -23,6 +23,12 @@ Godot build under an exclusive portable lock (BSD ``lockf`` or util-linux
 * a checker-accepted `display_name` containing a NUL character, which the
   engine round trip rewrites; the bake refuses at `display_name` with no
   output or manifest;
+* checker-accepted `display_name` values containing U+0001 and U+000B, which
+  the pinned engine retains but the old raw-JSON report transport could not
+  represent; both bake end to end with exact identity equality;
+* unit-level malformed identity-transport controls, proving non-schema hex,
+  wrong byte lengths, invalid UTF-8 and missing/unexpected fields refuse
+  before identity comparison or publication;
 * a deterministic same-inode equal-length rewrite with a restored mtime fired
   inside the final recheck seam, asserted to refuse instead of labelling the
   new bytes with the old digest;
@@ -722,6 +728,151 @@ def _check_nul_display_name_refusal(runner: Runner) -> None:
     runner.run("NUL display_name is refused at its exact source path", body)
 
 
+def _check_control_display_name_bakes(
+    runner: Runner, fixture_name: str, codepoint: int
+) -> None:
+    """A checker-accepted control character must survive the whole bake.
+
+    These two cases discriminate the old report transport: raw Godot JSON for
+    U+0001 is invalid JSON, and U+000B is emitted as the non-JSON escape
+    ``\v``. With the UTF-8 hex transport the reloaded resource can instead be
+    compared exactly and published.
+    """
+    fixture = FIXTURE_DIR / "positive" / fixture_name
+    label = "u%04x" % codepoint
+    output_dir = runner.workspace / ("out-control-display-name-" + label)
+    source_name = "Alpha" + chr(codepoint) + "Omega"
+    expected_name = source_name + " handling"
+    expected_id = "car.bake_probe_%s.handling" % label
+
+    def body() -> None:
+        accepted = _run_checker(fixture, timeout=runner.timeout)
+        accepted_output = (accepted.stdout or "") + "\n" + (accepted.stderr or "")
+        _require(
+            accepted.returncode == 0,
+            "the %s display_name fixture must pass the committed motor-ready "
+            "checker:\n" % label + accepted_output,
+        )
+
+        process = runner.bake(fixture, output_dir, expect_success=True)
+        _require(process.returncode == 0, "bake did not exit 0")
+        manifest = _load_json(output_dir / "bake_manifest.json")
+        _require(
+            manifest.get("handling_display_name") == expected_name,
+            "manifest display name is %r, expected exact source-derived %r"
+            % (manifest.get("handling_display_name"), expected_name),
+        )
+        _require(
+            manifest.get("handling_definition_id") == expected_id,
+            "manifest definition id is %r, expected %r"
+            % (manifest.get("handling_definition_id"), expected_id),
+        )
+        resource_bytes = (output_dir / "handling.tres").read_bytes()
+        _require(
+            resource_bytes.lstrip().startswith(b"[gd_resource"),
+            "control-character bake did not emit a text resource",
+        )
+
+    runner.run(
+        "%s display_name bakes exactly through the identity transport" % label,
+        body,
+    )
+
+
+def _check_malformed_identity_transport_refusal(runner: Runner) -> None:
+    """Malformed UTF-8-hex identity transport entries must refuse."""
+    module = _load_bake_cli()
+    finite = FIXTURE_DIR / "positive" / "finite.json"
+
+    def entry(value: str) -> dict[str, Any]:
+        raw = value.encode("utf-8")
+        return {"hex": raw.hex(), "byte_length": len(raw)}
+
+    def body() -> None:
+        checker = module._load_committed_checker()
+        document, findings = checker.load_json_document(finite)
+        _require(document is not None and not findings, f"finite fixture did not load: {findings}")
+        expected = module._expected_identity(document)
+        valid_fields = {
+            field: entry(expected[field]) for field, _source_path in module.IDENTITY_FIELDS
+        }
+
+        def valid_report() -> dict[str, Any]:
+            return {
+                "identity_transport": {
+                    "format": module.IDENTITY_TRANSPORT_FORMAT,
+                    "fields": json.loads(json.dumps(valid_fields)),
+                }
+            }
+
+        report = valid_report()
+        module._decode_identity_transport(report)
+        for field, _source_path in module.IDENTITY_FIELDS:
+            _require(
+                report[field] == expected[field],
+                "valid identity transport decoded %r, expected %r"
+                % (report[field], expected[field]),
+            )
+
+        def expect_refusal(mutate: Callable[[dict[str, Any]], None], needle: str) -> None:
+            mutated = valid_report()
+            mutate(mutated)
+            try:
+                module._decode_identity_transport(mutated)
+            except module.BakeError as exc:
+                message = str(exc)
+                _require(
+                    needle in message,
+                    "identity transport refusal %r does not mention %r"
+                    % (message, needle),
+                )
+            else:
+                raise CaseFailure(
+                    "malformed identity transport was accepted; wanted " + needle
+                )
+
+        expect_refusal(
+            lambda report: report["identity_transport"].update({"format": "raw-json"}),
+            "format is not",
+        )
+        expect_refusal(
+            lambda report: report["identity_transport"]["fields"].pop("display_name"),
+            "missing fields",
+        )
+        expect_refusal(
+            lambda report: report["identity_transport"]["fields"].update(
+                {"unexpected": entry("x")}
+            ),
+            "unexpected fields",
+        )
+        expect_refusal(
+            lambda report: report["identity_transport"]["fields"]["display_name"].update(
+                {"hex": "0"}
+            ),
+            "lowercase even-length hexadecimal",
+        )
+        expect_refusal(
+            lambda report: report["identity_transport"]["fields"]["display_name"].update(
+                {"byte_length": 1}
+            ),
+            "byte_length",
+        )
+        expect_refusal(
+            lambda report: report["identity_transport"]["fields"]["display_name"].update(
+                {"hex": "ff", "byte_length": 1}
+            ),
+            "strict UTF-8",
+        )
+        expect_refusal(
+            lambda report: report["identity_transport"]["fields"]["display_name"].update(
+                {"extra": True}
+            ),
+            "exactly hex and byte_length",
+        )
+
+    runner.run("control: malformed identity transport is refused", body)
+
+
 def _check_recheck_window_same_inode_rewrite_control(runner: Runner) -> None:
     """A same-inode restored-mtime rewrite inside the recheck seam refuses.
 
@@ -937,6 +1088,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         _check_input_parent_symlink_retarget_refusal(runner)
         _check_recheck_window_symlink_control(runner)
         _check_nul_display_name_refusal(runner)
+        _check_control_display_name_bakes(
+            runner, "control_u0001_display_name.json", 0x0001
+        )
+        _check_control_display_name_bakes(
+            runner, "control_u000b_display_name.json", 0x000B
+        )
+        _check_malformed_identity_transport_refusal(runner)
         _check_recheck_window_same_inode_rewrite_control(runner)
     finally:
         if args.keep_workspace:

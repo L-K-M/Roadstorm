@@ -226,8 +226,8 @@ func _compare_string(
 ) -> int:
 	if expected != actual:
 		diagnostics.append(
-			"%s: round-trip-mismatch: expected '%s', got '%s'"
-			% [path, expected, actual]
+			"%s: round-trip-mismatch: expected utf8hex %s, got utf8hex %s"
+			% [path, _identity_transport_entry(expected)["hex"], _identity_transport_entry(actual)["hex"]]
 		)
 		return 0
 	return 1
@@ -324,6 +324,31 @@ static func _binary64_hex(value: float) -> String:
 	return buffer.data_array.hex_encode()
 
 
+## Lossless ASCII transport for one reloaded identity string. Godot's
+## JSON.stringify does not emit standards-compliant JSON for every control
+## character ResourceLoader can retain, while lowercase UTF-8 hex is plain
+## ASCII and preserves the byte image exactly. The Python entry point checks
+## the declared byte length and strict UTF-8 decoding before comparing text.
+static func _identity_transport_entry(value: String) -> Dictionary:
+	var bytes := value.to_utf8_buffer()
+	return {
+		"hex": bytes.hex_encode(),
+		"byte_length": bytes.size(),
+	}
+
+
+static func _identity_transport(published: HandlingDefinition) -> Dictionary:
+	return {
+		"format": "utf8-hex-v1",
+		"fields": {
+			"definition_id": _identity_transport_entry(published.definition_id),
+			"revision": _identity_transport_entry(published.revision),
+			"status": _identity_transport_entry(_status_name(published.status)),
+			"display_name": _identity_transport_entry(published.display_name),
+		},
+	}
+
+
 func _success_report(
 	published: HandlingDefinition, source_schema_version: String, fields_compared: int
 ) -> Dictionary:
@@ -334,10 +359,7 @@ func _success_report(
 		"ok": true,
 		"source_schema_version": source_schema_version,
 		"typed_schema_version": published.schema_version,
-		"definition_id": published.definition_id,
-		"revision": published.revision,
-		"status": _status_name(published.status),
-		"display_name": published.display_name,
+		"identity_transport": _identity_transport(published),
 		"validation_diagnostics": [],
 		"mapping": {
 			"curve_points": published.acceleration_curve_speeds_m_s.size(),

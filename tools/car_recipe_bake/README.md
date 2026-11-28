@@ -30,6 +30,8 @@ rewritten.
 | `run_tests.py` | Bounded private test runner. |
 | `fixtures/positive/finite.json` | Synthetic finite-yaw motor-ready recipe. |
 | `fixtures/positive/unlimited.json` | Synthetic `{"unlimited": true}` yaw recipe. |
+| `fixtures/positive/control_u0001_display_name.json` | Checker-accepted `display_name` containing JSON `\u0001`; it must bake with the exact reloaded identity. |
+| `fixtures/positive/control_u000b_display_name.json` | Checker-accepted `display_name` containing JSON `\u000b`; it must bake with the exact reloaded identity. |
 | `fixtures/negative/null_motor_input.json` | Required input `null` with matching `unknowns` entry. |
 | `fixtures/negative/version_1_0_0.json` | Schema-valid historical `1.0.0` recipe. |
 | `fixtures/negative/stale_content_hash.json` | Wrong canonical content hash. |
@@ -128,15 +130,19 @@ failure or refusal, `2` command-line usage error.
    `ResourceLoader.load(..., CACHE_MODE_IGNORE)`, revalidates it, compares all
    18 serialized identity/handling fields, and writes a private JSON report.
    That report carries `numeric_source_bits`, the little-endian binary64 byte
-   image of every consumed numeric field keyed by dotted source path. Before
-   anything is published, the entry point derives the same mapping from the
-   frozen source bytes with the committed checker's parsing/representability
-   policy and requires exact path-to-hex equality; a mismatch, missing or
-   extra field, or malformed hex refuses with a diagnostic naming the path.
-   The entry point also derives the expected handling identity from the
-   checker-parsed document (`car_id + ".handling"`, `display_name +
-   " handling"`, copied revision and status) and requires the reloaded
-   report's exact strings; see the identity gate below.
+   image of every consumed numeric field keyed by dotted source path. It
+   carries the four source-derived identity strings only under
+   `identity_transport`, an explicit `utf8-hex-v1` object whose per-field
+   entries are lowercase even-length UTF-8 hex plus a declared byte length.
+   Before anything is published, the entry point derives the same numeric
+   mapping from the frozen source bytes with the committed checker's
+   parsing/representability policy and requires exact path-to-hex equality;
+   a mismatch, missing or extra field, or malformed hex refuses with a
+   diagnostic naming the path. The entry point also derives the expected
+   handling identity from the checker-parsed document (`car_id + ".handling"`,
+   `display_name + " handling"`, copied revision and status), strictly
+   parses/length-checks/decodes the identity transport and requires exact
+   strings; see the identity gate below.
    It then re-hashes the frozen and original raw source bytes and refuses if
    either moved while the engine was running. For the original submitted path
    the bytes are read through one descriptor that stays open across the read,
@@ -206,11 +212,26 @@ name than the frozen source. The identity gate closes that gap:
   " handling"`, and the copied `revision` and lifecycle `status`, matching
   the committed mapper's documented derivation exactly.
 * The engine reports those four fields from the reloaded `HandlingDefinition`
-  (`bake_handling.gd`), not from the in-memory mapping.
-* Every value must compare equal as an exact string. Any difference refuses
-  before publication with `<source-path>: handling-identity-mismatch:`
+  (`bake_handling.gd`), not from the in-memory mapping. They cross the
+  engine/Python boundary only as `identity_transport`, never as raw JSON
+  string values. The transport schema is explicit: the object has exactly
+  `format` and `fields`; `format` is exactly `utf8-hex-v1`; `fields` has
+  exactly `definition_id`, `display_name`, `revision` and `status`; each
+  entry has exactly lowercase even-length `hex` and a non-negative integer
+  `byte_length`. Python requires the decoded byte count to match
+  `byte_length` and decodes strict UTF-8 before use. Missing or unexpected
+  fields, malformed hex, a wrong length or invalid UTF-8 refuse as a
+  malformed identity transport.
+* Every decoded value must compare equal as an exact string. Any difference
+  refuses before publication with `<source-path>: handling-identity-mismatch:`
   naming the source member (`car_id`, `display_name`, `revision` or
   `status`), leaving no output directory or manifest.
+
+The hex boundary is necessary because the pinned engine's `JSON.stringify`
+does not produce standards-compliant JSON for every control character the
+engine can otherwise retain: U+0001 is emitted raw and U+000B as the non-JSON
+escape `\v`. UTF-8 hex is ASCII-only and lossless, so those checker-accepted
+names are neither silently banned nor falsely refused by transport syntax.
 
 The gate does not normalize the source text and does not weaken checker
 acceptance: a recipe the committed checker accepts can still be refused when
@@ -331,17 +352,33 @@ Cases:
     round trip produces a different name, and the bake exits nonzero with
     `display_name: handling-identity-mismatch`, leaving no output directory or
     manifest.
-18. `same-inode restored-mtime rewrite in the final recheck window is
+18. `u0001 display_name bakes exactly through the identity transport` -
+    end-to-end: the committed checker accepts `Alpha\u0001Omega`, the pinned
+    engine bakes it, and the manifest carries the exact source-derived name.
+    This fails under the old raw report transport because Godot emits U+0001
+    as a raw control character that Python's strict JSON parser rejects.
+19. `u000b display_name bakes exactly through the identity transport` -
+    end-to-end: the committed checker accepts `Alpha\u000bOmega`, the pinned
+    engine bakes it, and the manifest carries the exact source-derived name.
+    This fails under the old raw report transport because Godot emits the
+    non-JSON escape `\v`.
+20. `control: malformed identity transport is refused` - unit-level control
+    against the real decoder: a valid round trip is checked, then a wrong
+    format, missing/unexpected field, malformed hex, wrong byte length,
+    invalid UTF-8 and unexpected entry keys each refuse before use.
+21. `same-inode restored-mtime rewrite in the final recheck window is
     refused` - unit-level helper control: a test-only seam overwrites the
     same inode with equal-length different bytes and restores the original
     mtime; the helper refuses instead of returning the path beside the old
     digest.
 
-Positive cases 1, 2 and 11 exercise the `ResourceSaver`/`ResourceLoader` round
-trip and the exact numeric-bit gate; negative cases cover checker refusals,
-the deliberate hash control, the identity and fidelity boundaries and
-destination/source-path trust. Cases 8, 16 and 18 are unit-level and need no
-engine.
+Positive cases 1, 2, 11, 18 and 19 exercise the
+`ResourceSaver`/`ResourceLoader` round trip and the exact numeric-bit gate;
+cases 18 and 19 additionally pin the lossless identity transport for the two
+reproduced control characters. Negative cases cover checker refusals, the
+deliberate hash control, the identity and fidelity boundaries and
+destination/source-path trust. Cases 8, 16, 20 and 21 are unit-level and need
+no engine.
 
 Hosted CI runs this same suite on clean Ubuntu against the digest-verified
 pinned editor, which is where the util-linux `flock` lock path is exercised;
